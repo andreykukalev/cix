@@ -89,8 +89,8 @@ public sealed class ExecutionTests
             Paper.OnQuote(quote);
         }
 
-        public Task<ExecutionResult> Buy(decimal size, decimal price, string id = "c-1", bool postOnly = false) =>
-            Execution.PlaceAsync(new OrderIntent(Btc, OrderSide.Buy, size, price, id), postOnly, CancellationToken.None);
+        public Task<ExecutionResult> Buy(decimal size, decimal price, string id = "c-1") =>
+            Execution.PlaceAsync(new OrderIntent(Btc, OrderSide.Buy, size, price, id), postOnly: false, CancellationToken.None);
 
         public Task<PortfolioSnapshot> Snapshot() => Portfolio.GetSnapshotAsync(0, [], CancellationToken.None);
     }
@@ -195,13 +195,13 @@ public sealed class ExecutionTests
     [Fact]
     public async Task ReusedClientOrderId_IsRejected_UnlessTheExchangeRefusedTheFirst()
     {
-        var rig = new Rig();
-        await rig.Buy(0.0005m, 59_950m, "same");
+        var rig = new Rig(eur: 40m);
+        await rig.Buy(0.0003m, 59_950m, "same"); // 17.99 EUR reserved
 
-        Assert.Equal("duplicate-client-order-id", (await rig.Buy(0.0005m, 59_950m, "same")).Rule);
+        Assert.Equal("duplicate-client-order-id", (await rig.Buy(0.0003m, 59_950m, "same")).Rule);
 
-        var refused = await rig.Buy(0.0005m, 60_020m, "post", postOnly: true); // crosses the 60,010 ask: refused
-        var retried = await rig.Buy(0.0005m, 59_950m, "post");
+        var refused = await rig.Buy(0.0005m, 59_950m, "retry"); // 29.98 EUR > 22.01 left: the exchange refuses
+        var retried = await rig.Buy(0.0003m, 59_950m, "retry");
         Assert.Equal(ExecutionStatus.Failed, refused.Status);
         Assert.Equal(ExecutionStatus.Placed, retried.Status);
     }
