@@ -2,6 +2,13 @@ using System.Text.Json;
 
 namespace Cix.Engine.Execution;
 
+/// <summary>
+/// Holdings (currency → total) at the last successful reconciliation, and the notional of the engine's open orders
+/// then, which bounds how much fills since can move the holdings' value. Persisted so a deposit, withdrawal or outside
+/// trade while the engine was down is still caught.
+/// </summary>
+public sealed record HoldingsBaseline(IReadOnlyDictionary<string, decimal> Holdings, decimal EngineOrdersNotional);
+
 /// <summary>Whether trading is halted, why, by whom and since when.</summary>
 public sealed record KillSwitchState(bool Engaged, string? Reason, string? By, DateTimeOffset? Since)
 {
@@ -18,7 +25,8 @@ public sealed record EngineState(
     decimal PeakEquity,
     DateOnly? Day,
     decimal DayStartEquity,
-    IReadOnlyList<string>? KnownClientOrderIds = null)
+    IReadOnlyList<string>? KnownClientOrderIds = null,
+    HoldingsBaseline? Holdings = null)
 {
     /// <summary>Client order IDs the engine sent and hasn't yet seen finish; recorded before each send.</summary>
     public IReadOnlyList<string> Known => KnownClientOrderIds ?? [];

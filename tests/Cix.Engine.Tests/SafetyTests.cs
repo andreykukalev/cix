@@ -90,12 +90,49 @@ public sealed class ReconciliationTests
         var early = await rig.Execution.ReconcileAsync(CancellationToken.None);
         rig.Time.Advance(rig.Safety.UncertainTimeout);
         rig.Quote(60_000.00m, 60_010.00m);
-        var late = await rig.Execution.ReconcileAsync(CancellationToken.None);
+        var firstMiss = await rig.Execution.ReconcileAsync(CancellationToken.None);
+        var secondMiss = await rig.Execution.ReconcileAsync(CancellationToken.None);
 
         Assert.Equal((0, 0), (early.ResolvedUncertain, early.DroppedUncertain));
-        Assert.Equal(1, late.DroppedUncertain);
+        Assert.Equal(0, firstMiss.DroppedUncertain); // one listing alone could be lagging
+        Assert.Equal(1, secondMiss.DroppedUncertain);
         Assert.Empty(rig.Execution.Unresolved);
         Assert.Equal("duplicate-client-order-id", (await rig.Buy(0.0005m, 59_950m, "lost")).Rule); // still never reused
+    }
+}
+
+public sealed class HoldingsCheckTests
+{
+    [Fact]
+    public async Task ChangeDuringAStalePriceGap_IsComparedLater_NotAbsorbed()
+    {
+        var rig = new Rig(btc: 0.001m);
+        await rig.Execution.ReconcileAsync(CancellationToken.None); // baseline
+
+        rig.Time.Advance(TimeSpan.FromMinutes(6)); // BTC price now stale
+        rig.Exchange.ExtraBalances["BTC"] = 0.001m; // BTC deposited from outside
+        var duringGap = await rig.Execution.ReconcileAsync(CancellationToken.None);
+        rig.Quote(60_000.00m, 60_010.00m);
+        var afterGap = await rig.Execution.ReconcileAsync(CancellationToken.None);
+
+        Assert.Null(duringGap.UnexplainedChangeQuote);
+        Assert.Null(duringGap.KillSwitchReason);
+        Assert.Equal(60.005m, afterGap.UnexplainedChangeQuote);
+        Assert.True(rig.KillSwitch.IsEngaged);
+    }
+
+    [Fact]
+    public async Task LargerFills_GetAProportionalAllowance()
+    {
+        var rig = new Rig(eur: 1_000m);
+        await rig.Execution.ReconcileAsync(CancellationToken.None);
+        await rig.Buy(0.0006m, 60_010m, "taker"); // 36.01 EUR, fills at once
+        rig.Quote(60_600.00m, 60_610.00m); // the price then moves 1% before the next reconciliation
+
+        var report = await rig.Execution.ReconcileAsync(CancellationToken.None);
+
+        Assert.InRange(report.UnexplainedChangeQuote!.Value, 0.3m, 0.4m); // 0.0006 BTC up 595 per BTC since the fill, minus the 0.03 fee
+        Assert.Null(report.KillSwitchReason);
     }
 }
 
@@ -155,6 +192,20 @@ public sealed class RestartTests : IDisposable
     }
 
     [Fact]
+    public async Task DepositWhileTheEngineWasDown_IsCaughtAfterRestart()
+    {
+        var first = await FirstRunAsync();
+        await first.Execution.ReconcileAsync(CancellationToken.None); // baseline persisted
+
+        var second = first.Restart(() => Store(first.Time));
+        second.Exchange.ExtraBalances["EUR"] = 100m;
+        var report = await second.Execution.ReconcileAsync(CancellationToken.None);
+
+        Assert.Equal(100m, report.UnexplainedChangeQuote);
+        Assert.True(second.KillSwitch.IsEngaged);
+    }
+
+    [Fact]
     public async Task EngagedKillSwitch_StaysEngagedAfterRestart()
     {
         var first = await FirstRunAsync();
@@ -170,15 +221,24 @@ public sealed class RestartTests : IDisposable
 public sealed class SafetyMonitorTests
 {
     [Fact]
-    public async Task Drawdown_AtTheLimit_EngagesTheKillSwitch()
+    public async Task DrawdownAtTheLimit_CancelsBuys_ButLeavesSells_AndTheHardCeilingHalts()
     {
-        var rig = new Rig(eur: 100m, btc: 0.002m);
-        await rig.Monitor.CheckOnceAsync(CancellationToken.None); // peak 220.01
+        var rig = new Rig(eur: 200m, btc: 0.001m); // equity 260.005
+        await rig.Buy(0.0003m, 59_950m, "buy");
+        var sell = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Sell, 0.0005m, 60_010m, "sell"), false, CancellationToken.None);
 
-        rig.Quote(40_000.00m, 40_010.00m); // equity 180.01: 18.2% down
-        var reason = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // 18.75% down: over the 15% limit
+        var atLimit = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        var stillOpen = await rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None);
 
-        Assert.StartsWith("Drawdown", reason, StringComparison.Ordinal);
+        rig.Store.Update(s => s with { PeakEquity = 400m }); // 35% down: over the 30% hard ceiling
+        var atCeiling = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.Equal(ExecutionStatus.Placed, sell.Status);
+        Assert.Null(atLimit.KillSwitchReason);
+        Assert.Equal(1, atLimit.BuysCancelled);
+        Assert.Equal(OrderSide.Sell, Assert.Single(stillOpen).Side);
+        Assert.StartsWith("Drawdown", atCeiling.KillSwitchReason, StringComparison.Ordinal);
         Assert.True(rig.KillSwitch.IsEngaged);
         Assert.Equal(SafetyMonitor.By, rig.KillSwitch.State.By);
     }
@@ -193,8 +253,8 @@ public sealed class SafetyMonitorTests
         rig.Time.Advance(TimeSpan.FromMinutes(2)); // no quote for 16 minutes
         var late = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
 
-        Assert.Null(early);
-        Assert.StartsWith("No fresh market data", late, StringComparison.Ordinal);
+        Assert.Null(early.KillSwitchReason);
+        Assert.StartsWith("No fresh market data", late.KillSwitchReason, StringComparison.Ordinal);
         Assert.True(rig.KillSwitch.IsEngaged);
     }
 
@@ -206,7 +266,7 @@ public sealed class SafetyMonitorTests
 
         for (var minute = 0; minute < 20; minute++)
         {
-            Assert.Null(await rig.Monitor.CheckOnceAsync(CancellationToken.None));
+            Assert.Equal(new SafetyCheckResult(null, 0), await rig.Monitor.CheckOnceAsync(CancellationToken.None));
             rig.Time.Advance(TimeSpan.FromMinutes(1));
             rig.Quote(60_000.00m, 60_010.00m);
         }
@@ -238,5 +298,34 @@ public sealed class SafetyMonitorTests
         await rig.Buy(0.0005m, 70_000m, "far-3");
 
         Assert.False(rig.KillSwitch.IsEngaged);
+    }
+
+    [Fact]
+    public async Task Release_ResetsTheRejectStreak()
+    {
+        var rig = new Rig(safety: new SafetyOptions { MaxConsecutiveRejects = 3 });
+        for (var i = 0; i < 3; i++)
+            await rig.Buy(0.0005m, 70_000m, $"far-{i}");
+
+        rig.Execution.ReleaseKillSwitch("owner");
+        await rig.Buy(0.0005m, 70_000m, "far-after");
+
+        Assert.False(rig.KillSwitch.IsEngaged);
+    }
+
+    [Theory]
+    [InlineData(20, 2, 10)]  // tolerance above 5% of a 200 allocation
+    [InlineData(2, 1, 10)]   // uncertain timeout shorter than the 2-minute reconcile interval
+    [InlineData(2, 10, 0)]   // reject streak trigger switched off
+    public void OptionsThatWouldDisableATrigger_AreRefused(int tolerance, int uncertainMinutes, int maxRejects)
+    {
+        var options = new SafetyOptions
+        {
+            BalanceToleranceQuote = tolerance,
+            UncertainTimeout = TimeSpan.FromMinutes(uncertainMinutes),
+            MaxConsecutiveRejects = maxRejects,
+        };
+
+        Assert.Throws<InvalidOperationException>(() => options.Validate(Rig.Limits));
     }
 }

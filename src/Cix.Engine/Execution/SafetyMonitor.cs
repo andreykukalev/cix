@@ -3,10 +3,17 @@ using Cix.Engine.MarketData;
 
 namespace Cix.Engine.Execution;
 
+/// <summary>What one round of checks did.</summary>
+/// <param name="KillSwitchReason">Why the kill switch was engaged this round, or null.</param>
+/// <param name="BuysCancelled">Open buys cancelled because drawdown reached the configured limit.</param>
+public sealed record SafetyCheckResult(string? KillSwitchReason, int BuysCancelled);
+
 /// <summary>
-/// Every minute: values the portfolio (so the peak and 00:00 UTC baseline follow the market), engages the kill switch
-/// on a drawdown at the limit or market data stale for too long, and reconciles with the exchange every
-/// <see cref="SafetyOptions.ReconcileInterval"/>. The risk-gate reject streak trigger lives in <see cref="ExecutionService"/>.
+/// Every minute: values the portfolio (so the peak and 00:00 UTC baseline follow the market), acts on drawdown and on
+/// market data stale for too long, and reconciles with the exchange every <see cref="SafetyOptions.ReconcileInterval"/>.
+/// At the configured drawdown limit it cancels open buys (the gate already refuses new ones) but leaves sells working, so
+/// positions can still be reduced; at the hard ceiling (<see cref="HardCeilings.MaxDrawdownFraction"/>) it engages the
+/// kill switch. The risk-gate reject streak trigger lives in <see cref="ExecutionService"/>.
 /// </summary>
 public sealed partial class SafetyMonitor : BackgroundService
 {
@@ -32,7 +39,7 @@ public sealed partial class SafetyMonitor : BackgroundService
         TimeProvider time,
         ILogger<SafetyMonitor> logger)
     {
-        options.Validate();
+        options.Validate(limits);
         _execution = execution;
         _killSwitch = killSwitch;
         _market = market;
@@ -43,18 +50,27 @@ public sealed partial class SafetyMonitor : BackgroundService
         _startedAt = time.GetUtcNow();
     }
 
-    /// <summary>One round of checks. Returns the reason the kill switch was engaged, or null.</summary>
-    public async Task<string?> CheckOnceAsync(CancellationToken cancellationToken)
+    /// <summary>One round of checks.</summary>
+    public async Task<SafetyCheckResult> CheckOnceAsync(CancellationToken cancellationToken)
     {
         var now = _time.GetUtcNow();
         string? reason = null;
+        var buysCancelled = 0;
 
         var snapshot = await _execution.SampleAsync(cancellationToken).ConfigureAwait(false);
         if (snapshot is { PeakEquity: > 0 })
         {
             var drawdown = (snapshot.PeakEquity - snapshot.Equity) / snapshot.PeakEquity;
-            if (drawdown >= _limits.MaxDrawdownFraction)
-                reason = $"Drawdown is {drawdown:P2}, at or above the {_limits.MaxDrawdownFraction:P0} limit.";
+            if (drawdown >= HardCeilings.MaxDrawdownFraction)
+            {
+                reason = $"Drawdown is {drawdown:P2}, at or above the {HardCeilings.MaxDrawdownFraction:P0} hard ceiling.";
+            }
+            else if (drawdown >= _limits.MaxDrawdownFraction && !_killSwitch.IsEngaged)
+            {
+                buysCancelled = await _execution.CancelOpenBuysAsync(cancellationToken).ConfigureAwait(false);
+                if (buysCancelled > 0)
+                    LogDrawdownBuysCancelled(_logger, buysCancelled, drawdown);
+            }
         }
 
         // Give the poller time to deliver first quotes after a start.
@@ -81,7 +97,7 @@ public sealed partial class SafetyMonitor : BackgroundService
             reason ??= report.KillSwitchReason;
         }
 
-        return reason;
+        return new SafetyCheckResult(reason, buysCancelled);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -99,6 +115,9 @@ public sealed partial class SafetyMonitor : BackgroundService
             }
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Drawdown {Drawdown} reached the limit: cancelled {Count} open buys; sells stay allowed")]
+    private static partial void LogDrawdownBuysCancelled(ILogger logger, int count, decimal drawdown);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Safety check failed ({Error}): {Detail}")]
     private static partial void LogCheckFailed(ILogger logger, string error, string detail);

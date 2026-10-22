@@ -270,10 +270,50 @@ public sealed partial class ExecutionService
         }
     }
 
+    /// <summary>
+    /// Cancels every open buy (listed, or sent and not listed yet), leaving sells working. Used at the drawdown limit,
+    /// where the gate already refuses new buys but risk-reducing sells must stay possible. Returns how many were cancelled.
+    /// </summary>
+    public async Task<int> CancelOpenBuysAsync(CancellationToken cancellationToken)
+    {
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var open = await _exchange.GetOpenOrdersAsync(null, cancellationToken).ConfigureAwait(false);
+            var targets = open.Where(o => o.IsOpen && o.Side == OrderSide.Buy).Select(o => o.VenueOrderId).ToHashSet(StringComparer.Ordinal);
+            lock (_pending)
+            {
+                foreach (var p in _pending.Values.Where(p => p.Order.Side == OrderSide.Buy && p.VenueOrderId is not null))
+                    targets.Add(p.VenueOrderId!);
+            }
+
+            var cancelled = 0;
+            foreach (var venueOrderId in targets)
+            {
+                try
+                {
+                    if (await _exchange.CancelOrderAsync(venueOrderId, cancellationToken).ConfigureAwait(false))
+                        cancelled++;
+                }
+                catch (ExchangeException ex)
+                {
+                    LogCancelFailed(_logger, venueOrderId, ex.Message);
+                }
+            }
+
+            return cancelled;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     /// <summary>Owner only: resumes trading. Never exposed as an agent tool.</summary>
     public void ReleaseKillSwitch(string by)
     {
         by = Truncate(by);
+        Interlocked.Exchange(ref _consecutiveRejects, 0); // a fresh start, not one rejection away from halting again
         _killSwitch.Release(by);
         LogKillSwitchReleased(_logger, by);
     }
@@ -308,6 +348,7 @@ public sealed partial class ExecutionService
         }
 
         Interlocked.Exchange(ref _consecutiveRejects, 0);
+        _sentNotionalSinceReconcile += order.NotionalQuote;
         var sentAt = _time.GetUtcNow();
         _sent.Enqueue(sentAt); // counts toward the order rate even if it fails
         lock (_pending)

@@ -20,8 +20,9 @@ public sealed partial class ExecutionService
 {
     public const string ReconcilerBy = "reconciler";
 
-    private Dictionary<string, decimal>? _lastHoldings;
     private HashSet<string> _missingOnce = new(StringComparer.Ordinal);
+    private HashSet<string> _uncertainMissedOnce = new(StringComparer.Ordinal);
+    private decimal _sentNotionalSinceReconcile;
 
     /// <summary>
     /// Compares the exchange with what the engine expects. An open order the engine didn't send, or a change in holdings
@@ -53,27 +54,39 @@ public sealed partial class ExecutionService
             var resolved = 0;
             var dropped = 0;
             HashSet<string> pendingIds;
+            var missedPastTimeout = new HashSet<string>(StringComparer.Ordinal);
             lock (_pending)
             {
                 foreach (var p in _pending.Values.Where(p => p.Uncertain).ToList())
                 {
-                    var match = open.FirstOrDefault(o => string.Equals(o.ClientOrderId, p.Order.ClientOrderId, StringComparison.Ordinal));
+                    var id = p.Order.ClientOrderId;
+                    var match = open.FirstOrDefault(o => string.Equals(o.ClientOrderId, id, StringComparison.Ordinal));
                     if (match is not null)
                     {
-                        _pending[p.Order.ClientOrderId] = p with { Uncertain = false, VenueOrderId = match.VenueOrderId };
+                        _pending[id] = p with { Uncertain = false, VenueOrderId = match.VenueOrderId };
                         resolved++;
                     }
                     else if (now - p.SentAt >= _safety.UncertainTimeout)
                     {
-                        // Not listed long after sending: it never arrived, or it already filled (balances show that).
-                        _pending.Remove(p.Order.ClientOrderId);
-                        dropped++;
-                        LogUncertainDropped(_logger, p.Order.ToString());
+                        // Past the timeout and missing from two listings in a row: it never arrived, or it already
+                        // filled (the balances show that). One listing alone could just be lagging.
+                        if (_uncertainMissedOnce.Contains(id))
+                        {
+                            _pending.Remove(id);
+                            dropped++;
+                            LogUncertainDropped(_logger, p.Order.ToString());
+                        }
+                        else
+                        {
+                            missedPastTimeout.Add(id);
+                        }
                     }
                 }
 
                 pendingIds = _pending.Keys.ToHashSet(StringComparer.Ordinal);
             }
+
+            _uncertainMissedOnce = missedPastTimeout;
 
             var known = _store.Current.Known.ToHashSet(StringComparer.Ordinal);
             var unknown = open
@@ -90,26 +103,16 @@ public sealed partial class ExecutionService
             var holdings = balances
                 .GroupBy(b => b.Currency.ToUpperInvariant())
                 .ToDictionary(g => g.Key, g => g.Sum(b => b.Total), StringComparer.OrdinalIgnoreCase);
-            decimal? unexplained = null;
-            if (_lastHoldings is not null)
-            {
-                try
-                {
-                    unexplained = await _portfolio.ValueOfChangeAsync(_lastHoldings, holdings, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
-                {
-                    LogReconcileFailed(_logger, "pair rules unavailable for the holdings check");
-                }
-            }
-
-            _lastHoldings = holdings;
+            var engineOrdersNotional = open
+                .Where(o => o.IsOpen && (known.Contains(o.ClientOrderId) || pendingIds.Contains(o.ClientOrderId)))
+                .Sum(o => o.Quantity * (o.Price ?? 0m));
+            var (unexplained, allowance) = await CheckHoldingsAsync(holdings, engineOrdersNotional, cancellationToken).ConfigureAwait(false);
 
             string? reason = null;
             if (unknown.Count > 0)
                 reason = $"Open orders the engine didn't send: {string.Join(", ", unknown.Take(5))}{(unknown.Count > 5 ? ", ..." : "")}.";
-            else if (unexplained is { } change && Math.Abs(change) > _safety.BalanceToleranceQuote)
-                reason = $"Holdings changed by {change:0.##} in quote currency without matching fills (deposit, withdrawal or outside trading?).";
+            else if (unexplained is { } change && Math.Abs(change) > allowance)
+                reason = $"Holdings changed by {change:0.##} in quote currency, more than the engine's fills can explain ({allowance:0.##}): deposit, withdrawal or outside trading?";
 
             report = new ReconcileReport(unknown, resolved, dropped, unexplained, reason);
         }
@@ -121,6 +124,47 @@ public sealed partial class ExecutionService
         if (report.KillSwitchReason is not null && !_killSwitch.IsEngaged)
             await EngageKillSwitchAsync(report.KillSwitchReason, ReconcilerBy, cancellationToken).ConfigureAwait(false);
         return report;
+    }
+
+    /// <summary>
+    /// Values the change since the persisted baseline. The baseline moves forward only after a successful comparison,
+    /// so a change during a stale-price gap or a restart is still compared later rather than absorbed.
+    /// </summary>
+    private async Task<(decimal? Unexplained, decimal Allowance)> CheckHoldingsAsync(
+        Dictionary<string, decimal> holdings,
+        decimal engineOrdersNotional,
+        CancellationToken cancellationToken)
+    {
+        var baseline = _store.Current.Holdings;
+        var allowance = _safety.BalanceToleranceQuote
+            + ((baseline?.EngineOrdersNotional ?? 0m) + _sentNotionalSinceReconcile) * SafetyOptions.FillAllowanceFraction;
+        decimal? unexplained = null;
+        if (baseline is not null)
+        {
+            try
+            {
+                unexplained = await _portfolio.ValueOfChangeAsync(baseline.Holdings, holdings, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
+            {
+                LogReconcileFailed(_logger, "pair rules unavailable for the holdings check");
+            }
+
+            if (unexplained is null)
+                return (null, allowance); // keep the old baseline until a comparison succeeds
+        }
+
+        try
+        {
+            _store.Update(s => s with { Holdings = new HoldingsBaseline(holdings, engineOrdersNotional) });
+            _sentNotionalSinceReconcile = 0m;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogStateWriteFailed(_logger, ex.Message);
+        }
+
+        return (unexplained, allowance);
     }
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconciliation skipped: {Detail}")]
