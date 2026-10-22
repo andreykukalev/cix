@@ -9,7 +9,7 @@ CIX runs Claude agents that trade an allocated budget on Revolut X, on a determi
 3. **Hard ceilings are human-only.** Do not edit `src/Cix.Domain/Risk/HardCeilings.cs` or `config/risk-limits.json`; a hook blocks it. If a change seems needed, explain why and ask the owner.
 4. **The journal is append-only.** No update or delete operations on journal entries.
 5. **No secrets in the repo, prompts, logs or tool output.** Keys come from user secrets locally and Key Vault in Azure. Never print a key, even partially.
-6. **Paper trading is the default.** Live trading needs an explicit configuration switch that only the owner sets.
+6. **Paper trading is the default.** Live trading needs an explicit configuration switch that only the owner sets; a hook blocks agents from setting it in files or commands. Test against `PaperExchange`, never the real account.
 7. **Money is `decimal`.** Never use `double` or `float` for prices, sizes or balances.
 
 ## Layout
