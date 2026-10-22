@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Cix.Domain/Cix.Domain.csproj" />
+    <Project Path="src/Cix.Exchange.RevolutX/Cix.Exchange.RevolutX.csproj" />
+    <Project Path="src/Cix.Engine/Cix.Engine.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Cix.Domain.Tests/Cix.Domain.Tests.csproj" />
+    <Project Path="tests/Cix.Exchange.RevolutX.Tests/Cix.Exchange.RevolutX.Tests.csproj" />
+  </Folder>
+</Solution>

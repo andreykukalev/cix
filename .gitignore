@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+TestResults/
+*.user
+.vs/
+.idea/
+
+# Secrets: never commit keys
+*.pem
+*.key
+*.pfx
+*.p12
+secrets.json
+.env
+.env.*
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Python
+__pycache__/
+.venv/

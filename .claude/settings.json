@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./**/*.pem)",
+      "Read(./**/secrets.json)",
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-risk-limits.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-secrets-on-commit.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

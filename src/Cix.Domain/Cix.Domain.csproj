@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Keep this project free of package references: pure domain logic only. -->
+</Project>

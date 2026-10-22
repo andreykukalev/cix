@@ -1,0 +1,15 @@
+{
+  "Risk": {
+    "AllocationQuote": 200,
+    "MaxOrderQuote": 40,
+    "MaxPositionQuotePerSymbol": 100,
+    "MaxDailyLossQuote": 15,
+    "MaxDrawdownFraction": 0.15,
+    "MaxOrdersPerMinute": 4,
+    "MaxPriceDeviationFraction": 0.01,
+    "AllowedSymbols": [
+      "BTC-EUR",
+      "ETH-EUR"
+    ]
+  }
+}
