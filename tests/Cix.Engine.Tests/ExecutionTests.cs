@@ -279,7 +279,7 @@ public sealed class ExecutionTests
         Assert.Equal("kill-switch", blocked.Rule);
         Assert.Equal(("drill", "owner"), (rig.KillSwitch.State.Reason, rig.KillSwitch.State.By));
 
-        rig.Execution.ReleaseKillSwitch("owner");
+        await rig.Execution.ReleaseKillSwitchAsync("owner");
         Assert.Equal(ExecutionStatus.Placed, (await rig.Buy(0.0005m, 59_950m, "d")).Status);
     }
 

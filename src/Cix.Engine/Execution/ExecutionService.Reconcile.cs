@@ -33,6 +33,7 @@ public sealed partial class ExecutionService
     public async Task<ReconcileReport> ReconcileAsync(CancellationToken cancellationToken)
     {
         ReconcileReport report;
+        HashSet<string>? openForFills = null;
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -65,6 +66,7 @@ public sealed partial class ExecutionService
                     if (match is not null)
                     {
                         _pending[id] = p with { Uncertain = false, VenueOrderId = match.VenueOrderId };
+                        _tracked[id] = new TrackedOrder(p.Order.ToIntent(), match.VenueOrderId); // so its fill is journaled
                         resolved++;
                     }
                     else if (now - p.SentAt >= _safety.UncertainTimeout)
@@ -104,7 +106,8 @@ public sealed partial class ExecutionService
                 missingSince.Remove(id);
             _missingSince = missingSince;
 
-            await JournalFinishedOrdersAsync(openIds, cancellationToken).ConfigureAwait(false);
+            AdoptKnownOpenOrders(open, known);
+            openForFills = openIds;
 
             var holdings = balances
                 .GroupBy(b => b.Currency.ToUpperInvariant())
@@ -129,6 +132,10 @@ public sealed partial class ExecutionService
 
         if (report.KillSwitchReason is not null && !_killSwitch.IsEngaged)
             await EngageKillSwitchAsync(report.KillSwitchReason, ReconcilerBy, cancellationToken).ConfigureAwait(false);
+
+        // Bookkeeping last, outside the lock, so it never delays the checks or the kill switch.
+        if (openForFills is not null)
+            await JournalFinishedOrdersAsync(openForFills, cancellationToken).ConfigureAwait(false);
         return report;
     }
 
@@ -177,14 +184,34 @@ public sealed partial class ExecutionService
     /// Orders this process placed that are no longer open: looks each up and journals how it ended (filled size, value,
     /// fee). One still invisible to the lookup is checked again next time.
     /// </summary>
+    public const int MaxFillLookups = 5;
+
+    /// <summary>
+    /// After a restart, the engine's own orders are known by client order ID only: when one shows up open, start tracking it
+    /// so its fill is journaled too. (An order that filled while the engine was down is seen only in the balances.)
+    /// </summary>
+    private void AdoptKnownOpenOrders(IReadOnlyList<ExchangeOrder> open, HashSet<string> known)
+    {
+        lock (_pending)
+        {
+            foreach (var o in open.Where(o => o.IsOpen && known.Contains(o.ClientOrderId) && !_tracked.ContainsKey(o.ClientOrderId)))
+            {
+                var intent = new OrderIntent(MarketData.MarketDataPoller.NormaliseSymbol(o.Symbol), o.Side, o.Quantity, o.Price ?? 0m, o.ClientOrderId);
+                _tracked[o.ClientOrderId] = new TrackedOrder(intent, o.VenueOrderId);
+            }
+        }
+    }
+
     private async Task JournalFinishedOrdersAsync(HashSet<string> openIds, CancellationToken cancellationToken)
     {
-        List<(string ClientOrderId, OrderIntent Order, string VenueOrderId)> candidates;
+        List<(string ClientOrderId, TrackedOrder Tracked)> candidates;
         lock (_pending)
-            candidates = _tracked.Where(t => !openIds.Contains(t.Key)).Select(t => (t.Key, t.Value.Order, t.Value.VenueOrderId)).ToList();
+            candidates = _tracked.Where(t => !openIds.Contains(t.Key)).Select(t => (t.Key, t.Value)).ToList();
 
-        foreach (var (clientOrderId, intent, venueOrderId) in candidates)
+        foreach (var (clientOrderId, tracked) in candidates)
         {
+            var intent = tracked.Order;
+            var venueOrderId = tracked.VenueOrderId;
             ExchangeOrder? order;
             try
             {
@@ -192,17 +219,29 @@ public sealed partial class ExecutionService
             }
             catch (ExchangeException)
             {
+                order = null;
+            }
+
+            if (order is { IsOpen: true })
+                continue; // still working, just not listed yet: it will be
+
+            if (order is null)
+            {
+                // Not visible to the lookup: try again next time, but not forever.
+                lock (_pending)
+                {
+                    if (tracked.Lookups + 1 >= MaxFillLookups)
+                        _tracked.Remove(clientOrderId);
+                    else
+                        _tracked[clientOrderId] = tracked with { Lookups = tracked.Lookups + 1 };
+                }
+
                 continue;
             }
 
-            if (order is null || order.IsOpen)
-                continue;
-
-            lock (_pending)
-                _tracked.Remove(clientOrderId);
             var inv = System.Globalization.CultureInfo.InvariantCulture;
             var average = order.FilledQuantity > 0 ? order.FilledAmountQuote / order.FilledQuantity : 0m;
-            await RecordAsync(
+            var recorded = await RecordAsync(
                 order.FilledQuantity > 0 ? "fill" : "order-closed",
                 "engine",
                 $"{intent.Side} {order.FilledQuantity.ToString(inv)} of {intent.BaseSize.ToString(inv)} {intent.Symbol} ({order.Status})",
@@ -221,6 +260,11 @@ public sealed partial class ExecutionService
                     ["feeCurrency"] = order.FeeCurrency ?? string.Empty,
                     ["status"] = order.Status.ToString().ToLowerInvariant(),
                 }).ConfigureAwait(false);
+            if (recorded)
+            {
+                lock (_pending)
+                    _tracked.Remove(clientOrderId); // only once written: a failed write is retried next time
+            }
         }
     }
 

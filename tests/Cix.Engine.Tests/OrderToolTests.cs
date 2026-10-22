@@ -84,12 +84,37 @@ public sealed class OrderToolTests
         Assert.Empty(await tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData("79228162514264337593543950335", "60000")] // decimal.MaxValue
+    [InlineData("0.0005", "79228162514264337593543950335")]
+    [InlineData("0.0000000000000000000000000001", "60000")]
+    public async Task ExtremeNumbers_AreRefused_WithoutCountingTowardTheRejectStreak(string size, string price)
+    {
+        var tools = Trader();
+
+        await Assert.ThrowsAsync<McpException>(() => tools.Orders.PlaceOrder(
+            "BTC-EUR", "buy", Dec(size), Dec(price), Why, cancellationToken: CancellationToken.None));
+
+        Assert.False(tools.Rig.KillSwitch.IsEngaged);
+    }
+
+    [Fact]
+    public async Task ExchangeRefusal_IsReportedWithAFixedCode()
+    {
+        // The gate allows 40 EUR per order, but the account only holds 30: the exchange refuses for lack of funds.
+        var tools = new ToolRig(ToolRig.Observer with { AllowedTools = ["place_order"] }, eur: 30m);
+
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0006m, 59_950m, Why, cancellationToken: CancellationToken.None));
+
+        Assert.Equal(("failed", "exchange-refused"), (result.GetProperty("status").GetString(), result.GetProperty("rule").GetString()));
+    }
+
     [Fact]
     public async Task Rationale_IsFlattenedAndCapped()
     {
         var tools = Trader();
 
-        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, "line one\nline two\t" + new string('x', 2_000), cancellationToken: CancellationToken.None);
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, "line one\nline two\t\u200B\u202E" + new string('x', 2_000), cancellationToken: CancellationToken.None);
 
         var rationale = Assert.Single(tools.Journal.Entries, e => e.Kind == "order").Data!["rationale"];
         Assert.StartsWith("line one line two x", rationale, StringComparison.Ordinal);
@@ -110,6 +135,64 @@ public sealed class OrderToolTests
 
         Assert.Equal(("cancelled", "not-own", "not-found"), (own.GetProperty("status").GetString(), notOwn.GetProperty("status").GetString(), missing.GetProperty("status").GetString()));
         Assert.Equal(foreign.VenueOrderId, Assert.Single(await tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None)).VenueOrderId);
+    }
+
+    [Fact]
+    public async Task FillOfAnOrderPlacedBeforeARestart_IsStillJournaled()
+    {
+        var tools = Trader();
+        var placed = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var restarted = tools.Rig.Restart(() => tools.Rig.Store); // same exchange and state, fresh memory
+
+        await restarted.Execution.ReconcileAsync(CancellationToken.None); // sees its own order open: tracks it
+        restarted.Quote(59_900.00m, 59_940.00m); // the market trades through the 59,950 limit: it fills
+        await restarted.Execution.ReconcileAsync(CancellationToken.None);
+
+        var fill = Assert.Single(restarted.Journal.Entries, e => e.Kind == "fill");
+        Assert.Equal(placed.GetProperty("orderId").GetString(), fill.Data!["orderId"]);
+    }
+
+    [Fact]
+    public async Task PostOnlyThatWouldCross_IsReportedAsRejected_NotPlaced()
+    {
+        var tools = Trader();
+
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 60_010m, Why, postOnly: true, CancellationToken.None));
+
+        Assert.Equal(("failed", "post-only-would-cross"), (result.GetProperty("status").GetString(), result.GetProperty("rule").GetString()));
+        Assert.Empty(await tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task UncertainOrderThatTurnsUp_HasItsFillJournaled()
+    {
+        var tools = Trader();
+        tools.Rig.Exchange.HideOpenOrders = true;
+        tools.Rig.Exchange.UncertainAfterSending = true; // reached the exchange, but the engine didn't hear back
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        tools.Rig.Exchange.HideOpenOrders = false;
+        tools.Rig.Exchange.UncertainAfterSending = null;
+
+        await tools.Rig.Execution.ReconcileAsync(CancellationToken.None); // resolves it
+        tools.Rig.Quote(59_900.00m, 59_940.00m); // it fills
+        await tools.Rig.Execution.ReconcileAsync(CancellationToken.None);
+
+        Assert.Equal("uncertain", result.GetProperty("status").GetString());
+        Assert.Single(tools.Journal.Entries, e => e.Kind == "fill");
+    }
+
+    [Fact]
+    public async Task CancelledOrder_IsJournaledAsClosed_AndCancelCarriesTheClientOrderId()
+    {
+        var tools = Trader();
+        var placed = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        await tools.Orders.CancelOrder(placed.GetProperty("orderId").GetString()!, "Trend turned; stepping aside.", CancellationToken.None);
+
+        await tools.Rig.Execution.ReconcileAsync(CancellationToken.None);
+
+        var clientOrderId = placed.GetProperty("clientOrderId").GetString();
+        Assert.Equal(clientOrderId, Assert.Single(tools.Journal.Entries, e => e.Kind == "order" && e.Data!["tool"] == "cancel_order").Data!["clientOrderId"]);
+        Assert.Equal(clientOrderId, Assert.Single(tools.Journal.Entries, e => e.Kind == "order-closed").Data!["clientOrderId"]);
     }
 
     [Fact]

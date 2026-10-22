@@ -198,18 +198,18 @@ public sealed class RestartTests : IDisposable
 
     private FileEngineStateStore Store(MutableTime time) => new(Path.Combine(_dir, "state.json"), time);
 
-    private Rig FirstRun()
+    private async Task<Rig> FirstRunAsync()
     {
         var time = new MutableTime(Rig.T0);
         var rig = new Rig(eur: 1_000m, store: Store(time), time: time);
-        rig.Execution.ReleaseKillSwitch("owner"); // a new state file starts engaged
+        await rig.Execution.ReleaseKillSwitchAsync("owner"); // a new state file starts engaged
         return rig;
     }
 
     [Fact]
     public async Task RestartWithAnOpenOrder_RecoversItAsOurs()
     {
-        var first = FirstRun();
+        var first = await FirstRunAsync();
         await first.Buy(0.0006m, 59_950m, "before-restart");
 
         var second = first.Restart(() => Store(first.Time));
@@ -226,7 +226,7 @@ public sealed class RestartTests : IDisposable
     [Fact]
     public async Task CrashMidPlacement_TheOrderIsStillOursAfterRestart()
     {
-        var first = FirstRun();
+        var first = await FirstRunAsync();
         first.Exchange.CrashAfterSending = true;
 
         await Assert.ThrowsAsync<SimulatedCrashException>(() => first.Buy(0.0006m, 59_950m, "mid-flight"));
@@ -243,7 +243,7 @@ public sealed class RestartTests : IDisposable
     [Fact]
     public async Task DepositWhileTheEngineWasDown_IsCaughtAfterRestart()
     {
-        var first = FirstRun();
+        var first = await FirstRunAsync();
         await first.Execution.ReconcileAsync(CancellationToken.None); // baseline persisted
 
         var second = first.Restart(() => Store(first.Time));
@@ -257,7 +257,7 @@ public sealed class RestartTests : IDisposable
     [Fact]
     public async Task EngagedKillSwitch_StaysEngagedAfterRestart()
     {
-        var first = FirstRun();
+        var first = await FirstRunAsync();
         await first.Execution.EngageKillSwitchAsync("drill", "owner", CancellationToken.None);
 
         var second = first.Restart(() => Store(first.Time));
@@ -391,7 +391,7 @@ public sealed class SafetyMonitorTests
         for (var i = 0; i < 3; i++)
             await rig.Buy(0.0005m, 70_000m, $"far-{i}");
 
-        rig.Execution.ReleaseKillSwitch("owner");
+        await rig.Execution.ReleaseKillSwitchAsync("owner");
         await rig.Buy(0.0005m, 70_000m, "far-after");
 
         Assert.False(rig.KillSwitch.IsEngaged);

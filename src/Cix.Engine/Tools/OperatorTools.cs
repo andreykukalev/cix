@@ -16,10 +16,12 @@ public sealed class OperatorTools(ToolCallContext context, IJournal journal, Exe
         CancellationToken cancellationToken = default)
     {
         await context.RequireOperatorAsync("pause_trading", cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(reason))
-            throw new McpException("reason is required.");
-        var clean = new string(reason.Where(c => !char.IsControl(c)).ToArray()).Trim();
-        var result = await execution.EngageKillSwitchAsync(clean, "owner", cancellationToken).ConfigureAwait(false);
+        var clean = new string((reason ?? string.Empty).Where(c => !char.IsControl(c)).ToArray()).Trim();
+        if (clean.Length == 0)
+            clean = "Paused by the owner.";
+
+        // Not cancellable once started: the switch must never end up engaged with orders left uncancelled.
+        var result = await execution.EngageKillSwitchAsync(clean, "owner", CancellationToken.None).ConfigureAwait(false);
         return ToolJson.Of(new { halted = true, result.NewlyEngaged, result.Cancelled, result.NotCancelled });
     }
 
@@ -28,7 +30,7 @@ public sealed class OperatorTools(ToolCallContext context, IJournal journal, Exe
     public async Task<string> ResumeTrading(CancellationToken cancellationToken = default)
     {
         await context.RequireOperatorAsync("resume_trading", cancellationToken).ConfigureAwait(false);
-        execution.ReleaseKillSwitch("owner");
+        await execution.ReleaseKillSwitchAsync("owner").ConfigureAwait(false);
         return ToolJson.Of(new { halted = false });
     }
 

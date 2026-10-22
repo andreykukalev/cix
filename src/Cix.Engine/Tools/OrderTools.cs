@@ -15,6 +15,9 @@ namespace Cix.Engine.Tools;
 [McpServerToolType]
 public sealed class OrderTools(ToolCallContext context, ExecutionService execution, RiskLimits limits)
 {
+    public const decimal MinValue = 0.00000001m;
+    public const decimal MaxBaseSize = 1_000_000m;
+    public const decimal MaxPrice = 1_000_000_000m;
     public const int MinRationale = 10;
     public const int MaxRationale = 1_000;
 
@@ -37,8 +40,8 @@ public sealed class OrderTools(ToolCallContext context, ExecutionService executi
             "sell" => OrderSide.Sell,
             _ => throw new McpException("side must be buy or sell."),
         };
-        if (baseSize <= 0 || limitPrice <= 0)
-            throw new McpException("baseSize and limitPrice must be positive.");
+        if (baseSize is < MinValue or > MaxBaseSize || limitPrice is < MinValue or > MaxPrice)
+            throw new McpException($"baseSize must be between {MinValue} and {MaxBaseSize}, and limitPrice between {MinValue} and {MaxPrice}.");
         var why = Rationale(rationale);
 
         // The engine names the order, so an agent can't collide with or impersonate another order's ID.
@@ -70,7 +73,7 @@ public sealed class OrderTools(ToolCallContext context, ExecutionService executi
         if (result.Placed is { } placed)
             data["orderId"] = placed.VenueOrderId;
 
-        await context.RecordAsync("order", $"{orderSide} {baseSize.ToString(inv)} {normalised} @ {limitPrice.ToString(inv)}: {result.Status} ({result.Rule})", data, cancellationToken).ConfigureAwait(false);
+        await context.RecordOutcomeAsync("order", $"{orderSide} {baseSize.ToString(inv)} {normalised} @ {limitPrice.ToString(inv)}: {result.Status} ({result.Rule})", data).ConfigureAwait(false);
 
         return ToolJson.Of(new
         {
@@ -95,18 +98,18 @@ public sealed class OrderTools(ToolCallContext context, ExecutionService executi
             throw new McpException("orderId is not valid.");
         var why = Rationale(rationale);
 
-        var outcome = await execution.CancelOwnOrderAsync(orderId, cancellationToken).ConfigureAwait(false);
-        await context.RecordAsync(
+        var (outcome, clientOrderId) = await execution.CancelOwnOrderAsync(orderId, cancellationToken).ConfigureAwait(false);
+        await context.RecordOutcomeAsync(
             "order",
             $"Cancel {orderId}: {outcome}",
             new Dictionary<string, string>
             {
                 ["tool"] = "cancel_order",
                 ["orderId"] = orderId,
+                ["clientOrderId"] = clientOrderId ?? string.Empty,
                 ["status"] = outcome.ToString().ToLowerInvariant(),
                 ["rationale"] = why,
-            },
-            cancellationToken).ConfigureAwait(false);
+            }).ConfigureAwait(false);
 
         return ToolJson.Of(new
         {
@@ -125,9 +128,13 @@ public sealed class OrderTools(ToolCallContext context, ExecutionService executi
     private static string Rationale(string? rationale)
     {
         var text = string.Join(' ', (rationale ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        text = new string(text.Where(c => !char.IsControl(c)).ToArray());
+        // Drop control and format characters (zero-width, bidi overrides) that could disguise what the owner reads.
+        text = new string(text.Where(c => !char.IsControl(c) && CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.Format).ToArray());
         if (text.Length < MinRationale)
             throw new McpException($"rationale is required ({MinRationale} to {MaxRationale} characters): say why.");
-        return text.Length <= MaxRationale ? text : text[..MaxRationale];
+        if (text.Length <= MaxRationale)
+            return text;
+        var cut = char.IsHighSurrogate(text[MaxRationale - 1]) ? MaxRationale - 1 : MaxRationale; // never split a character
+        return text[..cut];
     }
 }
