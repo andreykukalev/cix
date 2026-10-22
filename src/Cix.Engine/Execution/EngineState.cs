@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Cix.Engine.Execution;
 
@@ -29,6 +30,7 @@ public sealed record EngineState(
     HoldingsBaseline? Holdings = null)
 {
     /// <summary>Client order IDs the engine sent and hasn't yet seen finish; recorded before each send.</summary>
+    [JsonIgnore]
     public IReadOnlyList<string> Known => KnownClientOrderIds ?? [];
 
     public static readonly EngineState Initial = new(KillSwitchState.Released, 0m, null, 0m);

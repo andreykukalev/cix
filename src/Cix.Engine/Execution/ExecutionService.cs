@@ -57,6 +57,7 @@ public sealed partial class ExecutionService
     private readonly Dictionary<string, PendingPlacement> _pending = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedClientOrderIds = new(StringComparer.Ordinal);
     private int _consecutiveRejects;
+    private int _streakTripped;
 
     public ExecutionService(
         IExchangeClient exchange,
@@ -103,7 +104,8 @@ public sealed partial class ExecutionService
         var result = await PlaceLockedAsync(intent, postOnly, cancellationToken).ConfigureAwait(false);
 
         // Engaging takes the placement lock, so it runs after the placement released it.
-        if (result.Status == ExecutionStatus.Rejected && Volatile.Read(ref _consecutiveRejects) >= _safety.MaxConsecutiveRejects && !_killSwitch.IsEngaged)
+        // Only a gate rejection made by this call can trip the streak (engine-side rejects never count).
+        if (Interlocked.Exchange(ref _streakTripped, 0) == 1 && !_killSwitch.IsEngaged)
         {
             await EngageKillSwitchAsync(
                 $"{_safety.MaxConsecutiveRejects} orders in a row were rejected by the risk gate (last: {result.Rule}).",
@@ -162,7 +164,8 @@ public sealed partial class ExecutionService
             var verdict = _gate.Evaluate(rounded, portfolio, _market.Snapshot(rounded.Symbol), pair);
             if (verdict.Order is not { } order)
             {
-                Interlocked.Increment(ref _consecutiveRejects);
+                if (Interlocked.Increment(ref _consecutiveRejects) >= _safety.MaxConsecutiveRejects && verdict.Rule != "kill-switch")
+                    Interlocked.Exchange(ref _streakTripped, 1);
                 LogRejected(_logger, intent.ClientOrderId ?? string.Empty, verdict.Rule, verdict.Reason);
                 return new ExecutionResult(ExecutionStatus.Rejected, verdict.Rule, verdict.Reason);
             }

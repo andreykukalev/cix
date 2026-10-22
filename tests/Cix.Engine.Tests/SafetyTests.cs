@@ -34,9 +34,12 @@ public sealed class ReconciliationTests
         await rig.Paper.CancelOrderAsync(placed.Placed!.VenueOrderId, CancellationToken.None);
         rig.Time.Advance(TimeSpan.FromMinutes(3)); // past the pending window
         rig.Quote(60_000.00m, 60_010.00m);
-        await rig.Execution.ReconcileAsync(CancellationToken.None); // missing once: kept
+        await rig.Execution.ReconcileAsync(CancellationToken.None); // first seen missing: kept
+        await rig.Execution.ReconcileAsync(CancellationToken.None); // an extra call at once doesn't shorten the wait
         var keptAfterOne = rig.Store.Current.Known.ToList();
-        await rig.Execution.ReconcileAsync(CancellationToken.None); // missing twice: forgotten
+        rig.Time.Advance(rig.Safety.ReconcileInterval);
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Execution.ReconcileAsync(CancellationToken.None); // missing for a full interval: forgotten
 
         Assert.False(rig.KillSwitch.IsEngaged);
         Assert.Equal(new[] { "a" }, keptAfterOne);
@@ -101,6 +104,53 @@ public sealed class ReconciliationTests
     }
 }
 
+public sealed class FailureTests
+{
+    private sealed class FailingStore : IEngineStateStore
+    {
+        private readonly InMemoryEngineStateStore _inner = new();
+
+        public bool FailWrites { get; set; }
+
+        public EngineState Current => _inner.Current;
+
+        /// <summary>Like the file store, only a real change writes, so only a real change can fail.</summary>
+        public EngineState Update(Func<EngineState, EngineState> change)
+        {
+            var next = change(Current);
+            if (next == Current)
+                return Current;
+            return FailWrites ? throw new IOException("Disk full.") : _inner.Update(_ => next);
+        }
+    }
+
+    [Fact]
+    public async Task OrderThatCannotBeRecorded_IsNotSent()
+    {
+        var store = new FailingStore();
+        var rig = new Rig(store: store);
+        await rig.Snapshot(); // baselines written while the disk works
+        store.FailWrites = true;
+
+        var result = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 59_950m, "x"), false, CancellationToken.None);
+
+        Assert.Equal("state-unavailable", result.Rule);
+        Assert.Empty(await rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ExchangeUnavailable_SkipsReconciliation_WithoutTriggering()
+    {
+        var rig = new Rig();
+        rig.Exchange.FailReads = true;
+
+        var report = await rig.Execution.ReconcileAsync(CancellationToken.None);
+
+        Assert.Same(ReconcileReport.Skipped, report);
+        Assert.False(rig.KillSwitch.IsEngaged);
+    }
+}
+
 public sealed class HoldingsCheckTests
 {
     [Fact]
@@ -148,19 +198,18 @@ public sealed class RestartTests : IDisposable
 
     private FileEngineStateStore Store(MutableTime time) => new(Path.Combine(_dir, "state.json"), time);
 
-    private async Task<Rig> FirstRunAsync()
+    private Rig FirstRun()
     {
         var time = new MutableTime(Rig.T0);
-        var store = Store(time);
-        var rig = new Rig(eur: 1_000m, store: store, time: time);
+        var rig = new Rig(eur: 1_000m, store: Store(time), time: time);
         rig.Execution.ReleaseKillSwitch("owner"); // a new state file starts engaged
-        return await Task.FromResult(rig);
+        return rig;
     }
 
     [Fact]
     public async Task RestartWithAnOpenOrder_RecoversItAsOurs()
     {
-        var first = await FirstRunAsync();
+        var first = FirstRun();
         await first.Buy(0.0006m, 59_950m, "before-restart");
 
         var second = first.Restart(() => Store(first.Time));
@@ -177,7 +226,7 @@ public sealed class RestartTests : IDisposable
     [Fact]
     public async Task CrashMidPlacement_TheOrderIsStillOursAfterRestart()
     {
-        var first = await FirstRunAsync();
+        var first = FirstRun();
         first.Exchange.CrashAfterSending = true;
 
         await Assert.ThrowsAsync<SimulatedCrashException>(() => first.Buy(0.0006m, 59_950m, "mid-flight"));
@@ -194,7 +243,7 @@ public sealed class RestartTests : IDisposable
     [Fact]
     public async Task DepositWhileTheEngineWasDown_IsCaughtAfterRestart()
     {
-        var first = await FirstRunAsync();
+        var first = FirstRun();
         await first.Execution.ReconcileAsync(CancellationToken.None); // baseline persisted
 
         var second = first.Restart(() => Store(first.Time));
@@ -208,7 +257,7 @@ public sealed class RestartTests : IDisposable
     [Fact]
     public async Task EngagedKillSwitch_StaysEngagedAfterRestart()
     {
-        var first = await FirstRunAsync();
+        var first = FirstRun();
         await first.Execution.EngageKillSwitchAsync("drill", "owner", CancellationToken.None);
 
         var second = first.Restart(() => Store(first.Time));
@@ -273,6 +322,41 @@ public sealed class SafetyMonitorTests
 
         Assert.False(rig.KillSwitch.IsEngaged);
         Assert.Equal(new[] { "a" }, rig.Store.Current.Known);
+    }
+
+    [Fact]
+    public async Task Reconciliation_RunsOnSchedule_CatchingADepositAtTheNextRun()
+    {
+        var rig = new Rig();
+        var results = new List<SafetyCheckResult>();
+        for (var minute = 0; minute <= 4; minute++)
+        {
+            results.Add(await rig.Monitor.CheckOnceAsync(CancellationToken.None)); // reconciles at minutes 0, 2 and 4
+            if (minute == 2)
+                rig.Exchange.ExtraBalances["EUR"] = 50m; // deposited after the minute-2 run
+            rig.Time.Advance(TimeSpan.FromMinutes(1));
+            rig.Quote(60_000.00m, 60_010.00m);
+        }
+
+        Assert.All(results.Take(4), r => Assert.Null(r.KillSwitchReason)); // minute 3 doesn't reconcile
+        Assert.StartsWith("Holdings changed", results[4].KillSwitchReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EngineSideRejects_DoNotCountTowardTheStreak()
+    {
+        var rig = new Rig(eur: 1_000m, safety: new SafetyOptions { MaxConsecutiveRejects = 3 });
+        await rig.Buy(0.0005m, 59_950m, "ok");
+        await rig.Buy(0.0005m, 70_000m, "far-1");
+        await rig.Buy(0.0005m, 70_000m, "far-2"); // gate streak: 2
+
+        for (var i = 0; i < 3; i++)
+            Assert.Equal("duplicate-client-order-id", (await rig.Buy(0.0005m, 59_950m, "ok")).Rule);
+        var engagedByDuplicates = rig.KillSwitch.IsEngaged;
+        await rig.Buy(0.0005m, 70_000m, "far-3"); // the third gate rejection
+
+        Assert.False(engagedByDuplicates);
+        Assert.True(rig.KillSwitch.IsEngaged);
     }
 
     [Fact]

@@ -24,8 +24,7 @@ internal sealed class Rig
         IMarketDataSource? pairSource = null,
         SafetyOptions? safety = null,
         PaperExchange? paper = null,
-        MutableTime? time = null,
-        bool quote = true)
+        MutableTime? time = null)
     {
         Time = time ?? new MutableTime(T0);
         Safety = safety ?? new SafetyOptions();
@@ -48,8 +47,7 @@ internal sealed class Rig
             Exchange, new RiskGate(Limits, Time), Portfolio, State, pairs, KillSwitch, Store, Time,
             NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety);
         Monitor = new SafetyMonitor(Execution, KillSwitch, State, Limits, Safety, Time, NullLogger<SafetyMonitor>.Instance);
-        if (quote)
-            Quote(60_000.00m, 60_010.00m);
+        Quote(60_000.00m, 60_010.00m);
     }
 
     public static RiskLimits Limits { get; } = new(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, new HashSet<string> { Btc });

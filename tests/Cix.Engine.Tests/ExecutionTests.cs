@@ -16,6 +16,9 @@ internal sealed class FlakyExchange(IExchangeClient inner) : IExchangeClient
 
     public bool HideOpenOrders { get; set; }
 
+    /// <summary>Open orders can't be read (an outage).</summary>
+    public bool FailReads { get; set; }
+
     /// <summary>The order reaches the exchange, then the engine process dies before it hears back.</summary>
     public bool CrashAfterSending { get; set; }
 
@@ -62,6 +65,8 @@ internal sealed class FlakyExchange(IExchangeClient inner) : IExchangeClient
     public async Task<IReadOnlyList<ExchangeOrder>> GetOpenOrdersAsync(string? symbol, CancellationToken cancellationToken)
     {
         OpenOrderLookups++;
+        if (FailReads)
+            throw new ExchangeException("Service unavailable.", 503);
         return HideOpenOrders ? [] : await inner.GetOpenOrdersAsync(symbol, cancellationToken);
     }
 

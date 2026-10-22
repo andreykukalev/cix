@@ -20,7 +20,7 @@ public sealed partial class ExecutionService
 {
     public const string ReconcilerBy = "reconciler";
 
-    private HashSet<string> _missingOnce = new(StringComparer.Ordinal);
+    private Dictionary<string, DateTimeOffset> _missingSince = new(StringComparer.Ordinal);
     private HashSet<string> _uncertainMissedOnce = new(StringComparer.Ordinal);
     private decimal _sentNotionalSinceReconcile;
 
@@ -93,12 +93,15 @@ public sealed partial class ExecutionService
                 .Where(o => o.IsOpen && !known.Contains(o.ClientOrderId) && !pendingIds.Contains(o.ClientOrderId))
                 .Select(o => o.VenueOrderId)
                 .ToList();
-            // Forget an ID only when two reconciliations in a row don't see it, so an order sent just before a restart
-            // has time to be listed before it could be mistaken for someone else's.
+            // Forget an ID only once it has been missing for a full reconcile interval (seen missing at least twice), so an
+            // order sent just before a restart has time to be listed before it could be mistaken for someone else's.
             var missing = known.Where(id => !openIds.Contains(id) && !pendingIds.Contains(id)).ToHashSet(StringComparer.Ordinal);
-            ForgetKnown(missing.Where(_missingOnce.Contains).ToList());
-            missing.ExceptWith(_missingOnce);
-            _missingOnce = missing;
+            var missingSince = missing.ToDictionary(id => id, id => _missingSince.GetValueOrDefault(id, now), StringComparer.Ordinal);
+            var forget = missingSince.Where(m => m.Value < now && now - m.Value >= _safety.ReconcileInterval).Select(m => m.Key).ToList();
+            ForgetKnown(forget);
+            foreach (var id in forget)
+                missingSince.Remove(id);
+            _missingSince = missingSince;
 
             var holdings = balances
                 .GroupBy(b => b.Currency.ToUpperInvariant())
