@@ -1,0 +1,10 @@
+title = "CIX gitleaks config"
+
+[extend]
+useDefault = true
+
+# Identifiers that look like keys to the generic rule but are type names.
+[[allowlists]]
+description = "Code identifiers, not secrets"
+regexTarget = "match"
+regexes = ['''IEd25519Signer''']
