@@ -2,6 +2,7 @@ using Cix.Domain;
 using Cix.Domain.Exchange;
 using Cix.Domain.Risk;
 using Cix.Engine.Execution;
+using Cix.Engine.Journal;
 using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -45,7 +46,7 @@ internal sealed class Rig
         Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, Limits, Time);
         Execution = new ExecutionService(
             Exchange, new RiskGate(Limits, Time), Portfolio, State, pairs, KillSwitch, Store, Time,
-            NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety);
+            NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety, Journal);
         Monitor = new SafetyMonitor(Execution, KillSwitch, State, Limits, Safety, Time, NullLogger<SafetyMonitor>.Instance);
         Quote(60_000.00m, 60_010.00m);
     }
@@ -53,6 +54,7 @@ internal sealed class Rig
     public static RiskLimits Limits { get; } = new(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, new HashSet<string> { Btc });
 
     public MutableTime Time { get; }
+    public InMemoryJournal Journal { get; } = new();
     public SafetyOptions Safety { get; }
     public MarketState State { get; }
     public PaperExchange Paper { get; }

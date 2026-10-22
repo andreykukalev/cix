@@ -1,3 +1,4 @@
+using Cix.Domain;
 using Cix.Domain.Exchange;
 
 namespace Cix.Engine.Execution;
@@ -103,6 +104,8 @@ public sealed partial class ExecutionService
                 missingSince.Remove(id);
             _missingSince = missingSince;
 
+            await JournalFinishedOrdersAsync(openIds, cancellationToken).ConfigureAwait(false);
+
             var holdings = balances
                 .GroupBy(b => b.Currency.ToUpperInvariant())
                 .ToDictionary(g => g.Key, g => g.Sum(b => b.Total), StringComparer.OrdinalIgnoreCase);
@@ -168,6 +171,57 @@ public sealed partial class ExecutionService
         }
 
         return (unexplained, allowance);
+    }
+
+    /// <summary>
+    /// Orders this process placed that are no longer open: looks each up and journals how it ended (filled size, value,
+    /// fee). One still invisible to the lookup is checked again next time.
+    /// </summary>
+    private async Task JournalFinishedOrdersAsync(HashSet<string> openIds, CancellationToken cancellationToken)
+    {
+        List<(string ClientOrderId, OrderIntent Order, string VenueOrderId)> candidates;
+        lock (_pending)
+            candidates = _tracked.Where(t => !openIds.Contains(t.Key)).Select(t => (t.Key, t.Value.Order, t.Value.VenueOrderId)).ToList();
+
+        foreach (var (clientOrderId, intent, venueOrderId) in candidates)
+        {
+            ExchangeOrder? order;
+            try
+            {
+                order = await _exchange.GetOrderAsync(venueOrderId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ExchangeException)
+            {
+                continue;
+            }
+
+            if (order is null || order.IsOpen)
+                continue;
+
+            lock (_pending)
+                _tracked.Remove(clientOrderId);
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            var average = order.FilledQuantity > 0 ? order.FilledAmountQuote / order.FilledQuantity : 0m;
+            await RecordAsync(
+                order.FilledQuantity > 0 ? "fill" : "order-closed",
+                "engine",
+                $"{intent.Side} {order.FilledQuantity.ToString(inv)} of {intent.BaseSize.ToString(inv)} {intent.Symbol} ({order.Status})",
+                new Dictionary<string, string>
+                {
+                    ["clientOrderId"] = clientOrderId,
+                    ["orderId"] = venueOrderId,
+                    ["symbol"] = intent.Symbol,
+                    ["side"] = intent.Side.ToString().ToLowerInvariant(),
+                    ["size"] = intent.BaseSize.ToString(inv),
+                    ["limitPrice"] = intent.LimitPrice.ToString(inv),
+                    ["filledSize"] = order.FilledQuantity.ToString(inv),
+                    ["filledQuote"] = order.FilledAmountQuote.ToString(inv),
+                    ["averagePrice"] = Math.Round(average, 8).ToString(inv),
+                    ["fee"] = order.TotalFee.ToString(inv),
+                    ["feeCurrency"] = order.FeeCurrency ?? string.Empty,
+                    ["status"] = order.Status.ToString().ToLowerInvariant(),
+                }).ConfigureAwait(false);
+        }
     }
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconciliation skipped: {Detail}")]
