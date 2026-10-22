@@ -3,9 +3,11 @@ using Cix.Engine;
 using Cix.Engine.Execution;
 using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
+using Cix.Engine.Strategy;
+using Cix.Engine.Tools;
 using Cix.Exchange.RevolutX;
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 // Human-only file, copied next to the binary (see CLAUDE.md rule 3).
 builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "risk-limits.json"), optional: false, reloadOnChange: false);
@@ -39,7 +41,17 @@ builder.Services.AddCixExecution(
     builder.Configuration.GetSection(ExecutionOptions.SectionName).Get<ExecutionOptions>() ?? new ExecutionOptions(),
     builder.Configuration.GetSection(SafetyOptions.SectionName).Get<SafetyOptions>() ?? new SafetyOptions());
 
+// The MCP tool server: agents' only way in. Loopback only; operator tools need the key from user secrets.
+var toolServer = builder.Configuration.GetSection(ToolServerOptions.SectionName).Get<ToolServerOptions>() ?? new ToolServerOptions();
+builder.Services.AddCixToolServer(
+    mode,
+    toolServer,
+    builder.Configuration.GetSection(StrategyOptions.SectionName).Get<StrategyOptions>() ?? new StrategyOptions(),
+    builder.Configuration.GetSection(JournalOptions.SectionName).Get<JournalOptions>() ?? new JournalOptions());
+builder.WebHost.UseUrls(toolServer.Url);
+
 builder.Services.AddHostedService<HeartbeatService>();
 
-var host = builder.Build();
-host.Run();
+var app = builder.Build();
+app.MapCixToolServer();
+app.Run();
