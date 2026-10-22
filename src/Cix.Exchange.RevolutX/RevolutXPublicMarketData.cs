@@ -5,14 +5,15 @@ using static Cix.Exchange.RevolutX.RevolutXTransport;
 namespace Cix.Exchange.RevolutX;
 
 /// <summary>
-/// Revolut X public (unauthenticated) market data: pairs and candles. Needs no API key, holds no signer and has
+/// Revolut X public (unauthenticated) market data: pairs, candles and the top of the order book. Needs no API key, holds no signer and has
 /// no order methods, so paper trading runs without any trading credentials on the machine.
 /// </summary>
 /// <remarks>Public endpoints allow 1 request per second, so callers should cache pairs and poll candles sparingly.</remarks>
-public sealed class RevolutXPublicMarketData : IMarketDataSource
+public sealed class RevolutXPublicMarketData : IMarketDataSource, IQuoteSource
 {
     private readonly RevolutXTransport _transport;
     private readonly string? _region;
+    private readonly TimeProvider _time;
 
     public RevolutXPublicMarketData(
         HttpClient http,
@@ -21,8 +22,9 @@ public sealed class RevolutXPublicMarketData : IMarketDataSource
         Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _time = time ?? TimeProvider.System;
         _region = string.IsNullOrWhiteSpace(options.PublicRegion) ? null : options.PublicRegion.Trim().ToUpperInvariant();
-        _transport = new RevolutXTransport(http, options, auth: null, requestsPerSecond: 1, requestsPerMinute: 60, time ?? TimeProvider.System, delay);
+        _transport = new RevolutXTransport(http, options, auth: null, requestsPerSecond: 1, requestsPerMinute: 60, _time, delay);
     }
 
     public async Task<IReadOnlyList<PairInfo>> GetPairsAsync(CancellationToken cancellationToken)
@@ -42,6 +44,17 @@ public sealed class RevolutXPublicMarketData : IMarketDataSource
         var response = await _transport.SendAsync(HttpMethod.Get, path, query, null, cancellationToken).ConfigureAwait(false);
         EnsureSuccess(response);
         return Parse(response, RevolutXParser.ParseCandles);
+    }
+
+    public async Task<MarketQuote> GetQuoteAsync(string symbol, CancellationToken cancellationToken)
+    {
+        var normalised = RevolutXParser.NormaliseSymbol(symbol);
+        var path = $"/api/2.0/public/order-book/{Uri.EscapeDataString(normalised)}";
+
+        var response = await _transport.SendAsync(HttpMethod.Get, path, RegionQuery("limit=5"), null, cancellationToken).ConfigureAwait(false);
+        EnsureSuccess(response);
+        var receivedAt = _time.GetUtcNow();
+        return Parse(response, root => RevolutXParser.ParseOrderBookTop(root, normalised, receivedAt));
     }
 
     private string? RegionQuery(string? query) =>

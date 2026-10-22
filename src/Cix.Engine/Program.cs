@@ -1,5 +1,6 @@
 using Cix.Domain.Risk;
 using Cix.Engine;
+using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
 using Cix.Exchange.RevolutX;
 
@@ -24,6 +25,11 @@ builder.Services.AddCixExchange(
     mode,
     builder.Configuration.GetSection(RevolutXOptions.SectionName).Get<RevolutXOptions>() ?? new RevolutXOptions(),
     builder.Configuration.GetSection(PaperOptions.SectionName).Get<PaperOptions>() ?? new PaperOptions());
+
+// Polls quotes and candles for the symbols the risk gate allows; fails startup if the schedule exceeds the rate limit.
+builder.Services.AddCixMarketData(
+    builder.Configuration.GetSection(MarketDataOptions.SectionName).Get<MarketDataOptions>() ?? new MarketDataOptions(),
+    limits.AllowedSymbols);
 
 builder.Services.AddHostedService<HeartbeatService>();
 

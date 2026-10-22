@@ -58,6 +58,52 @@ internal static class RevolutXParser
             Dec(c, "close"),
             Dec(c, "volume"))).ToList();
 
+    /// <summary>
+    /// Top of the public order book: <c>{ data: { bids: [{price, quantity, count}], asks: [...] }, metadata: { timestamp } }</c>.
+    /// Uses the exchange timestamp when present (never later than <paramref name="receivedAt"/>), otherwise the receipt time.
+    /// </summary>
+    public static MarketQuote ParseOrderBookTop(JsonElement root, string symbol, DateTimeOffset receivedAt)
+    {
+        var data = Data(root);
+        var bids = data.TryGetProperty("bids", out var b) && b.ValueKind == JsonValueKind.Array ? b : default;
+        var asks = data.TryGetProperty("asks", out var a) && a.ValueKind == JsonValueKind.Array ? a : default;
+        if (bids.ValueKind != JsonValueKind.Array || asks.ValueKind != JsonValueKind.Array || bids.GetArrayLength() == 0 || asks.GetArrayLength() == 0)
+            throw new FormatException("Order book has no bids or asks.");
+
+        // Sort defensively: best bid is the highest price, best ask the lowest.
+        var bestBid = bids.EnumerateArray().OrderByDescending(l => Dec(l, "price")).First();
+        var bestAsk = asks.EnumerateArray().OrderBy(l => Dec(l, "price")).First();
+
+        var asOf = receivedAt;
+        if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("metadata", out var meta)
+            && meta.ValueKind == JsonValueKind.Object
+            && meta.TryGetProperty("timestamp", out _))
+        {
+            // Never let an unexpected timestamp format stop quotes: the receive time is a safe upper bound.
+            try
+            {
+                var exchangeTime = Time(meta, "timestamp");
+                if (exchangeTime < asOf)
+                    asOf = exchangeTime;
+            }
+            catch (Exception ex) when (ex is FormatException or InvalidOperationException or OverflowException or ArgumentOutOfRangeException)
+            {
+            }
+        }
+
+        var quote = new MarketQuote(
+            NormaliseSymbol(symbol),
+            Dec(bestBid, "price"),
+            Dec(bestBid, "quantity"),
+            Dec(bestAsk, "price"),
+            Dec(bestAsk, "quantity"),
+            asOf);
+        if (!quote.IsValid)
+            throw new FormatException("Order book top is invalid: prices must be positive, sizes non-negative and bid <= ask.");
+        return quote;
+    }
+
     public static PlacedOrder ParsePlaced(JsonElement root)
     {
         var data = Data(root);

@@ -25,7 +25,7 @@ namespace Cix.Engine.Paper;
 /// <item>Placing the same client order ID again returns the existing order; reusing it with different details is rejected.</item>
 /// </list>
 /// </remarks>
-public sealed class PaperExchange : IExchangeClient
+public sealed class PaperExchange : IExchangeClient, IQuoteListener
 {
     private readonly IMarketDataSource _marketData;
     private readonly PaperOptions _options;
@@ -58,7 +58,7 @@ public sealed class PaperExchange : IExchangeClient
     public void OnQuote(MarketQuote quote)
     {
         ArgumentNullException.ThrowIfNull(quote);
-        if (quote.Bid <= 0 || quote.Ask <= 0 || quote.Bid > quote.Ask || quote.BidSize < 0 || quote.AskSize < 0)
+        if (!quote.IsValid)
             throw new ArgumentException("A quote needs positive prices, non-negative sizes and bid <= ask.", nameof(quote));
 
         lock (_gate)
