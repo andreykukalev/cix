@@ -42,6 +42,9 @@ public static class FeatureCalculator
     /// <summary>EMAs closer than this fraction count as a flat trend.</summary>
     public const decimal FlatBand = 0.001m;
 
+    /// <summary>Features are stale when the newest hourly candle closed longer ago than this.</summary>
+    public static readonly TimeSpan MaxHourlyCandleAge = TimeSpan.FromHours(2);
+
     public static FeatureSet Compute(
         string symbol,
         IReadOnlyList<Candle> hourly,
@@ -63,14 +66,19 @@ public static class FeatureCalculator
         decimal? high = last24.Count > 0 ? last24.Max(c => c.High) : null;
         decimal? low = last24.Count > 0 ? last24.Min(c => c.Low) : null;
 
+        // Find the reference candles by time, so a gap in the series can't turn "24h" into something longer.
+        var newest = hourly.Count > 0 ? hourly[^1] : null;
+        var dayAgo = newest is null ? null : hourly.LastOrDefault(c => c.Start == newest.Start - TimeSpan.FromHours(24));
+        var candlesStale = newest is null || now - (newest.Start + TimeSpan.FromHours(1)) > MaxHourlyCandleAge;
+
         decimal? volumeChange = null;
-        if (last24.Count == 24 && prior24.Count == 24)
+        if (last24.Count == 24 && prior24.Count == 24 && prior24[0].Start == newest!.Start - TimeSpan.FromHours(47))
             volumeChange = Indicators.Change(prior24.Sum(c => c.Volume), last24.Sum(c => c.Volume));
 
         return new FeatureSet(
             symbol,
             now,
-            IsStale: quote is null || now - quote.AsOf > maxQuoteAge,
+            IsStale: quote is null || now - quote.AsOf > maxQuoteAge || candlesStale,
             Price: Round(price, 8),
             Bid: quote?.Bid,
             Ask: quote?.Ask,
@@ -80,8 +88,8 @@ public static class FeatureCalculator
             Ema50: Round(ema50, 8),
             Atr14: Round(atr, 8),
             AtrFraction: atr is null || price is null or 0 ? null : Round(atr / price, 6),
-            Return1h: closes.Count >= 2 && price is not null ? Round(Indicators.Change(closes[^2], price.Value), 6) : null,
-            Return24h: closes.Count >= 25 && price is not null ? Round(Indicators.Change(closes[^25], price.Value), 6) : null,
+            Return1h: closes.Count >= 2 && price is not null && hourly[^2].Start == newest!.Start - TimeSpan.FromHours(1) ? Round(Indicators.Change(closes[^2], price.Value), 6) : null,
+            Return24h: dayAgo is not null && price is not null ? Round(Indicators.Change(dayAgo.Close, price.Value), 6) : null,
             High24h: high,
             Low24h: low,
             FromHigh24hFraction: high is null || price is null ? null : Round(Indicators.Change(high.Value, price.Value), 6),

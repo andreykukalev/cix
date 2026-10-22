@@ -89,6 +89,50 @@ public sealed class FeatureCalculatorTests
         Assert.NotNull(features.Atr14);
     }
 
+    [Theory]
+    [InlineData(-1, Trend.Down)]
+    [InlineData(0, Trend.Flat)]
+    public void Compute_FallingOrSidewaysMarket_ReportsTrend(int step, Trend expected)
+    {
+        var candles = Enumerable.Range(0, 60)
+            .Select(i => new Candle(Now.AddHours(i - 60), 200m + (step * i), 201m + (step * i), 199m + (step * i), 200m + (step * i), 1m))
+            .ToList();
+
+        var features = FeatureCalculator.Compute("BTC-EUR", candles, null, Now, TimeSpan.FromMinutes(2));
+
+        Assert.Equal(expected, features.Trend);
+        Assert.Equal(candles[^1].Close, features.Price); // falls back to the last close without a quote
+    }
+
+    [Fact]
+    public void Compute_RisingMarket_OneHourReturnAndAtrFraction()
+    {
+        var features = FeatureCalculator.Compute("BTC-EUR", RisingMarket(), QuoteAt(Now), Now, TimeSpan.FromMinutes(2));
+
+        Assert.Equal(Math.Round((160m - 158m) / 158m, 6), features.Return1h);
+        Assert.Equal(Math.Round(2m / 160m, 6), features.AtrFraction); // every true range is 2
+    }
+
+    [Fact]
+    public void Compute_GapInHourlySeries_LeavesTimeBasedReturnsUnknown()
+    {
+        var candles = RisingMarket();
+        candles.RemoveAt(40); // a missing hour shifts every index-based reference
+
+        var features = FeatureCalculator.Compute("BTC-EUR", candles, QuoteAt(Now), Now, TimeSpan.FromMinutes(2));
+
+        Assert.Equal(0.185185m, features.Return24h); // still the candle exactly 24h earlier
+        Assert.Null(features.VolumeChange24h);
+    }
+
+    [Fact]
+    public void Compute_OldCandles_AreStaleEvenWithAFreshQuote()
+    {
+        var features = FeatureCalculator.Compute("BTC-EUR", RisingMarket(), QuoteAt(Now.AddHours(3)), Now.AddHours(3), TimeSpan.FromMinutes(2));
+
+        Assert.True(features.IsStale);
+    }
+
     [Fact]
     public void Compute_OldQuote_IsStale()
     {

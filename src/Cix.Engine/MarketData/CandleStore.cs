@@ -43,8 +43,7 @@ public sealed class InMemoryCandleStore(int maxPerSeries = 5_000) : ICandleStore
     {
         lock (_gate)
         {
-            var series = Series(symbol, intervalMinutes);
-            return series.Count == 0 ? null : series.Values[series.Count - 1];
+            return _series.TryGetValue(Key(symbol, intervalMinutes), out var series) && series.Count > 0 ? series.Values[series.Count - 1] : null;
         }
     }
 
@@ -53,14 +52,19 @@ public sealed class InMemoryCandleStore(int maxPerSeries = 5_000) : ICandleStore
         ArgumentOutOfRangeException.ThrowIfNegative(count);
         lock (_gate)
         {
-            var values = Series(symbol, intervalMinutes).Values;
+            if (!_series.TryGetValue(Key(symbol, intervalMinutes), out var series))
+                return [];
+            var values = series.Values;
             return values.Skip(Math.Max(0, values.Count - count)).ToList();
         }
     }
 
+    private static (string Symbol, int Interval) Key(string symbol, int intervalMinutes) => (symbol.ToUpperInvariant(), intervalMinutes);
+
+    /// <summary>Gets or creates a series; only writes create one, so reads for unknown symbols can't grow the store.</summary>
     private SortedList<DateTimeOffset, Candle> Series(string symbol, int intervalMinutes)
     {
-        var key = (Symbol: symbol.ToUpperInvariant(), Interval: intervalMinutes);
+        var key = Key(symbol, intervalMinutes);
         if (!_series.TryGetValue(key, out var series))
         {
             series = [];

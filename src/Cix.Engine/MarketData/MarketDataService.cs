@@ -25,7 +25,7 @@ public sealed class FeatureService(ICandleStore store, MarketState state, Market
 
     public FeatureSet GetFeatures(string symbol)
     {
-        var normalised = symbol.Trim().Replace('/', '-').ToUpperInvariant();
+        var normalised = MarketDataPoller.NormaliseSymbol(symbol);
         var hourly = store.Recent(normalised, MarketDataPoller.HourInterval, HourlyCandlesNeeded);
         return FeatureCalculator.Compute(normalised, hourly, state.Quote(normalised), time.GetUtcNow(), options.MaxQuoteAge);
     }

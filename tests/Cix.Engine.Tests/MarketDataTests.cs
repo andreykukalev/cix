@@ -1,5 +1,6 @@
 using Cix.Domain;
 using Cix.Domain.Exchange;
+using Cix.Domain.MarketData;
 using Cix.Domain.Risk;
 using Cix.Engine.MarketData;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -102,13 +103,13 @@ public sealed class MarketDataPollerTests
     {
         var rig = new Rig();
 
-        await rig.Poller.PollOnceAsync(CancellationToken.None);
+        await rig.RunFor(TimeSpan.FromSeconds(2)); // one candle series per poll: 1m, then 1h
 
         var now = rig.Time.GetUtcNow();
         var hourly = rig.Store.Recent(Btc, 60, 1000);
         var minutes = rig.Store.Recent(Btc, 1, 1000);
         Assert.Equal(7 * 24, hourly.Count); // 12:00 is still open
-        Assert.Equal(now.AddHours(-1).AddSeconds(-30), hourly[^1].Start);
+        Assert.Equal(new DateTimeOffset(2026, 10, 22, 11, 0, 0, TimeSpan.Zero), hourly[^1].Start);
         Assert.Equal(6 * 60, minutes.Count);
         Assert.All(hourly, c => Assert.True(c.Start + TimeSpan.FromHours(1) <= now));
         Assert.All(minutes, c => Assert.True(c.Start + TimeSpan.FromMinutes(1) <= now));
@@ -174,6 +175,71 @@ public sealed class MarketDataPollerTests
 
         Assert.NotNull(rig.State.Quote(Btc));
         Assert.NotEmpty(rig.Store.Recent(Btc, 1, 10));
+    }
+
+    [Fact]
+    public async Task CandleCatchUp_NeverDelaysQuotesBeyondOnePoll()
+    {
+        var rig = new Rig(pageSize: 10); // slow catch-up: many pages per series
+
+        await rig.RunFor(TimeSpan.FromMinutes(1));
+
+        var quotes = rig.Market.Requests.Where(r => r.Kind == "quote").Select(r => r.At).ToList();
+        Assert.Equal(12, quotes.Count);
+        Assert.All(quotes.Zip(quotes.Skip(1)), p => Assert.Equal(TimeSpan.FromSeconds(5), p.Second - p.First));
+        Assert.True(rig.Market.Requests.GroupBy(r => r.At).Max(g => g.Count(r => r.Kind != "quote")) <= rig.Options.MaxCatchUpPages);
+    }
+
+    [Fact]
+    public async Task FailureMidPaging_CountsEveryRequest_AndResumesWithoutGaps()
+    {
+        var rig = new Rig(pageSize: 50);
+        var market = new FailingAfter(rig.Market, successes: 3);
+        var poller = new MarketDataPoller(market, rig.Market, rig.Store, rig.State, [], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance);
+
+        var requests = await poller.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal(5, requests); // 1 quote + 3 good pages + the failed one
+        Assert.Equal(150, rig.Store.Recent(Btc, 1, 1000).Count);
+
+        market.Recover();
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        await poller.PollOnceAsync(CancellationToken.None); // 1h first load (never ran)
+        rig.Time.Advance(TimeSpan.FromSeconds(1));
+        await poller.PollOnceAsync(CancellationToken.None); // 1m resumes from the last stored candle
+
+        var minutes = rig.Store.Recent(Btc, 1, 1000);
+        for (var i = 1; i < minutes.Count; i++)
+            Assert.Equal(TimeSpan.FromMinutes(1), minutes[i].Start - minutes[i - 1].Start);
+        Assert.Equal(361, minutes.Count); // 06:00 to 12:00, the 12:01 candle still open
+    }
+
+    private sealed class FailingAfter(IMarketDataSource inner, int successes) : IMarketDataSource
+    {
+        private int _left = successes;
+
+        public void Recover() => _left = int.MaxValue;
+
+        public Task<IReadOnlyList<PairInfo>> GetPairsAsync(CancellationToken cancellationToken) => inner.GetPairsAsync(cancellationToken);
+
+        public Task<IReadOnlyList<Candle>> GetCandlesAsync(string symbol, int intervalMinutes, DateTimeOffset since, CancellationToken cancellationToken) =>
+            _left-- > 0 ? inner.GetCandlesAsync(symbol, intervalMinutes, since, cancellationToken) : throw new HttpRequestException("Connection reset.");
+    }
+
+    [Fact]
+    public async Task FeatureService_ServesFeaturesForAnySymbolSpelling()
+    {
+        var rig = new Rig();
+        await rig.RunFor(TimeSpan.FromSeconds(2));
+        var service = new FeatureService(rig.Store, rig.State, rig.Options, rig.Time);
+
+        var features = service.GetFeatures("btc/eur");
+
+        Assert.Equal(Btc, features.Symbol);
+        Assert.Equal(FeatureService.HourlyCandlesNeeded, features.HourlyCandles);
+        Assert.False(features.IsStale);
+        Assert.Equal(Trend.Up, features.Trend);
+        Assert.Equal(0, service.GetFeatures("DOGE-EUR").HourlyCandles);
     }
 
     [Fact]

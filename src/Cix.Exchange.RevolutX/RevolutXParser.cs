@@ -80,9 +80,16 @@ internal static class RevolutXParser
             && meta.ValueKind == JsonValueKind.Object
             && meta.TryGetProperty("timestamp", out _))
         {
-            var exchangeTime = Time(meta, "timestamp");
-            if (exchangeTime < asOf)
-                asOf = exchangeTime;
+            // Never let an unexpected timestamp format stop quotes: the receive time is a safe upper bound.
+            try
+            {
+                var exchangeTime = Time(meta, "timestamp");
+                if (exchangeTime < asOf)
+                    asOf = exchangeTime;
+            }
+            catch (Exception ex) when (ex is FormatException or InvalidOperationException or OverflowException or ArgumentOutOfRangeException)
+            {
+            }
         }
 
         var quote = new MarketQuote(

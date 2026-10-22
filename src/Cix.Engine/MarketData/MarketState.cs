@@ -20,7 +20,7 @@ public sealed class MarketState(TimeProvider time)
         if (!quote.IsValid || quote.AsOf > time.GetUtcNow())
             return false;
 
-        var symbol = quote.Symbol.ToUpperInvariant();
+        var symbol = MarketDataPoller.NormaliseSymbol(quote.Symbol);
         lock (_gate)
         {
             if (_quotes.TryGetValue(symbol, out var current) && current.AsOf > quote.AsOf)
@@ -35,7 +35,7 @@ public sealed class MarketState(TimeProvider time)
     {
         lock (_gate)
         {
-            return _quotes.TryGetValue(symbol.ToUpperInvariant(), out var quote) ? quote : null;
+            return _quotes.TryGetValue(MarketDataPoller.NormaliseSymbol(symbol), out var quote) ? quote : null;
         }
     }
 
@@ -47,7 +47,7 @@ public sealed class MarketState(TimeProvider time)
     {
         var quote = Quote(symbol);
         return quote is null
-            ? new MarketSnapshot(symbol.ToUpperInvariant(), 0m, DateTimeOffset.MinValue)
+            ? new MarketSnapshot(MarketDataPoller.NormaliseSymbol(symbol), 0m, DateTimeOffset.MinValue)
             : new MarketSnapshot(quote.Symbol, quote.Mid, quote.AsOf);
     }
 }
