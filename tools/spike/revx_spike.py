@@ -133,8 +133,27 @@ def public_check(symbol: str) -> int:
         text = r.text
         print("  " + (text[:700] + ("..." if len(text) > 700 else "")))
         time.sleep(1.2)  # public endpoints allow 1 request per second
+    paging_check(symbol, now_ms)
     print("Paste this output into issue #3.")
     return 0
+
+
+def paging_check(symbol: str, now_ms: int) -> None:
+    """Asks for 24h of 1m candles to see how a long range is paged: the engine assumes oldest first, starting at `since`."""
+    since = now_ms - 24 * 60 * 60_000
+    path = f"/api/1.0/public/candles/{symbol}"
+    r = requests.get(BASE + path, params={"interval": 1, "since": since, "region": "EEA"},
+                     headers={"Accept": "application/json"}, timeout=15)
+    print(f"candles paging: GET {path} (24h of 1m) -> HTTP {r.status_code}")
+    rows = r.json().get("data", []) if r.ok else []
+    if not rows:
+        print("  no candles returned")
+        return
+    starts = [int(c["start"]) for c in rows]
+    ascending = all(a < b for a, b in zip(starts, starts[1:]))
+    print(f"  count={len(rows)} ascending={ascending}")
+    print(f"  first start - since = {(starts[0] - since) / 60_000:.1f} min, now - last start = {(now_ms - starts[-1]) / 60_000:.1f} min")
+    print("  oldest-first from since" if ascending and starts[0] - since < 120_000 else "  NOT oldest-first from since: report this")
 
 
 def main() -> int:
