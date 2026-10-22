@@ -34,6 +34,8 @@ public sealed record KillSwitchResult(bool NewlyEngaged, int Cancelled, IReadOnl
 /// </summary>
 public sealed partial class ExecutionService
 {
+    public const string RejectStreakBy = "execution";
+
     /// <summary>How long a sent order counts as pending exposure while it may not show in open orders yet.</summary>
     public static readonly TimeSpan PendingWindow = TimeSpan.FromMinutes(2);
 
@@ -45,6 +47,8 @@ public sealed partial class ExecutionService
     private readonly MarketState _market;
     private readonly PairCatalog _pairs;
     private readonly KillSwitch _killSwitch;
+    private readonly IEngineStateStore _store;
+    private readonly SafetyOptions _safety;
     private readonly TimeProvider _time;
     private readonly ILogger<ExecutionService> _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -52,6 +56,7 @@ public sealed partial class ExecutionService
     private readonly Queue<DateTimeOffset> _sent = new();
     private readonly Dictionary<string, PendingPlacement> _pending = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedClientOrderIds = new(StringComparer.Ordinal);
+    private int _consecutiveRejects;
 
     public ExecutionService(
         IExchangeClient exchange,
@@ -60,9 +65,11 @@ public sealed partial class ExecutionService
         MarketState market,
         PairCatalog pairs,
         KillSwitch killSwitch,
+        IEngineStateStore store,
         TimeProvider time,
         ILogger<ExecutionService> logger,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        SafetyOptions? safety = null)
     {
         _exchange = exchange;
         _gate = gate;
@@ -70,9 +77,15 @@ public sealed partial class ExecutionService
         _market = market;
         _pairs = pairs;
         _killSwitch = killSwitch;
+        _store = store;
+        _safety = safety ?? new SafetyOptions();
+        _safety.Validate();
         _time = time;
         _logger = logger;
         _delay = delay ?? ((d, ct) => Task.Delay(d, time, ct));
+
+        // After a restart, orders sent before it are still ours: their IDs can't be reused and aren't "unknown".
+        _usedClientOrderIds.UnionWith(store.Current.Known);
     }
 
     /// <summary>Orders sent whose outcome is unknown; they block reuse of their client order ID until reconciled.</summary>
@@ -86,6 +99,22 @@ public sealed partial class ExecutionService
     }
 
     public async Task<ExecutionResult> PlaceAsync(OrderIntent intent, bool postOnly, CancellationToken cancellationToken)
+    {
+        var result = await PlaceLockedAsync(intent, postOnly, cancellationToken).ConfigureAwait(false);
+
+        // Engaging takes the placement lock, so it runs after the placement released it.
+        if (result.Status == ExecutionStatus.Rejected && Volatile.Read(ref _consecutiveRejects) >= _safety.MaxConsecutiveRejects && !_killSwitch.IsEngaged)
+        {
+            await EngageKillSwitchAsync(
+                $"{_safety.MaxConsecutiveRejects} orders in a row were rejected by the risk gate (last: {result.Rule}).",
+                RejectStreakBy,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return result;
+    }
+
+    private async Task<ExecutionResult> PlaceLockedAsync(OrderIntent intent, bool postOnly, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
         intent = intent with { Symbol = MarketDataPoller.NormaliseSymbol(intent.Symbol) };
@@ -133,6 +162,7 @@ public sealed partial class ExecutionService
             var verdict = _gate.Evaluate(rounded, portfolio, _market.Snapshot(rounded.Symbol), pair);
             if (verdict.Order is not { } order)
             {
+                Interlocked.Increment(ref _consecutiveRejects);
                 LogRejected(_logger, intent.ClientOrderId ?? string.Empty, verdict.Rule, verdict.Reason);
                 return new ExecutionResult(ExecutionStatus.Rejected, verdict.Rule, verdict.Reason);
             }
@@ -147,19 +177,18 @@ public sealed partial class ExecutionService
 
     /// <summary>
     /// Values the portfolio so peak equity and the 00:00 UTC baseline follow the market, not just order attempts.
-    /// Called every minute by <see cref="PortfolioSampler"/>. Returns false if the portfolio can't be valued now.
+    /// Called every minute by <see cref="SafetyMonitor"/>. Returns null if the portfolio can't be valued now.
     /// </summary>
-    public async Task<bool> SampleAsync(CancellationToken cancellationToken)
+    public async Task<PortfolioSnapshot?> SampleAsync(CancellationToken cancellationToken)
     {
         try
         {
-            await _portfolio.GetSnapshotAsync(0, PendingSnapshot(), cancellationToken).ConfigureAwait(false);
-            return true;
+            return await _portfolio.GetSnapshotAsync(0, PendingSnapshot(), cancellationToken).ConfigureAwait(false);
         }
         catch (PortfolioUnavailableException ex)
         {
             LogSampleFailed(_logger, ex.Message);
-            return false;
+            return null;
         }
     }
 
@@ -265,6 +294,20 @@ public sealed partial class ExecutionService
         if (_killSwitch.IsEngaged)
             return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
+        // Record the ID before sending: if the engine dies mid-send, the order is still recognised as ours after a restart.
+        try
+        {
+            _store.Update(s => s.Known.Contains(order.ClientOrderId, StringComparer.Ordinal)
+                ? s
+                : s with { KnownClientOrderIds = [.. s.Known, order.ClientOrderId] });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogStateWriteFailed(_logger, ex.Message);
+            return Reject("state-unavailable", "The engine could not record the order before sending it; nothing was sent.");
+        }
+
+        Interlocked.Exchange(ref _consecutiveRejects, 0);
         var sentAt = _time.GetUtcNow();
         _sent.Enqueue(sentAt); // counts toward the order rate even if it fails
         lock (_pending)
@@ -300,6 +343,8 @@ public sealed partial class ExecutionService
                 _pending.Remove(order.ClientOrderId);
                 _usedClientOrderIds.Remove(order.ClientOrderId); // refused, so the same intent may be retried
             }
+
+            ForgetKnown([order.ClientOrderId]);
 
             LogFailed(_logger, order.ToString(), ex.ErrorId ?? ex.StatusCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "error");
             return new ExecutionResult(ExecutionStatus.Failed, ex.ErrorId ?? "exchange-error", "The exchange refused the order.", order);
@@ -361,6 +406,23 @@ public sealed partial class ExecutionService
 
     private static ExecutionResult Reject(string rule, string reason) => new(ExecutionStatus.Rejected, rule, reason);
 
+    /// <summary>Drops finished orders from the persisted known set. A failed write only leaves extra IDs, which is safe.</summary>
+    private void ForgetKnown(IReadOnlyCollection<string> clientOrderIds)
+    {
+        if (clientOrderIds.Count == 0)
+            return;
+        try
+        {
+            _store.Update(s => s.Known.Any(clientOrderIds.Contains)
+                ? s with { KnownClientOrderIds = s.Known.Where(id => !clientOrderIds.Contains(id)).ToList() }
+                : s);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogStateWriteFailed(_logger, ex.Message);
+        }
+    }
+
     private static string Truncate(string text)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);
@@ -386,7 +448,7 @@ public sealed partial class ExecutionService
     [LoggerMessage(Level = LogLevel.Warning, Message = "Kill switch released by {By}")]
     private static partial void LogKillSwitchReleased(ILogger logger, string by);
 
-    [LoggerMessage(Level = LogLevel.Critical, Message = "Kill switch is engaged in memory but its state file could not be written: {Detail}")]
+    [LoggerMessage(Level = LogLevel.Critical, Message = "The engine state file could not be written: {Detail}")]
     private static partial void LogStateWriteFailed(ILogger logger, string detail);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Portfolio could not be valued: {Detail}")]

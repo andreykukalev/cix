@@ -36,7 +36,8 @@ builder.Services.AddCixMarketData(
 // The only order path: every placement goes through the risk gate (ApprovedOrder makes skipping it a compile error).
 builder.Services.AddCixExecution(
     mode,
-    builder.Configuration.GetSection(ExecutionOptions.SectionName).Get<ExecutionOptions>() ?? new ExecutionOptions());
+    builder.Configuration.GetSection(ExecutionOptions.SectionName).Get<ExecutionOptions>() ?? new ExecutionOptions(),
+    builder.Configuration.GetSection(SafetyOptions.SectionName).Get<SafetyOptions>() ?? new SafetyOptions());
 
 builder.Services.AddHostedService<HeartbeatService>();
 

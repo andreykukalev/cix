@@ -16,9 +16,26 @@ internal sealed class FlakyExchange(IExchangeClient inner) : IExchangeClient
 
     public bool HideOpenOrders { get; set; }
 
+    /// <summary>The order reaches the exchange, then the engine process dies before it hears back.</summary>
+    public bool CrashAfterSending { get; set; }
+
+    /// <summary>Added to the inner balances, like a deposit made outside the engine.</summary>
+    public Dictionary<string, decimal> ExtraBalances { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public int OpenOrderLookups { get; private set; }
 
-    public Task<IReadOnlyList<Balance>> GetBalancesAsync(CancellationToken cancellationToken) => inner.GetBalancesAsync(cancellationToken);
+    public async Task<IReadOnlyList<Balance>> GetBalancesAsync(CancellationToken cancellationToken)
+    {
+        var balances = (await inner.GetBalancesAsync(cancellationToken)).ToList();
+        foreach (var (currency, extra) in ExtraBalances)
+        {
+            var current = balances.FirstOrDefault(b => string.Equals(b.Currency, currency, StringComparison.OrdinalIgnoreCase));
+            balances.Remove(current!);
+            balances.Add(new Balance(currency, (current?.Available ?? 0m) + extra, current?.Reserved ?? 0m, (current?.Total ?? 0m) + extra));
+        }
+
+        return balances;
+    }
 
     public Task<IReadOnlyList<PairInfo>> GetPairsAsync(CancellationToken cancellationToken) => inner.GetPairsAsync(cancellationToken);
 
@@ -27,6 +44,12 @@ internal sealed class FlakyExchange(IExchangeClient inner) : IExchangeClient
 
     public async Task<PlacedOrder> PlaceLimitOrderAsync(ApprovedOrder order, bool postOnly, CancellationToken cancellationToken)
     {
+        if (CrashAfterSending)
+        {
+            await inner.PlaceLimitOrderAsync(order, postOnly, cancellationToken);
+            throw new SimulatedCrashException();
+        }
+
         if (UncertainAfterSending is null)
             return await inner.PlaceLimitOrderAsync(order, postOnly, cancellationToken);
         if (UncertainAfterSending == true)
@@ -45,55 +68,13 @@ internal sealed class FlakyExchange(IExchangeClient inner) : IExchangeClient
     public Task<bool> CancelOrderAsync(string venueOrderId, CancellationToken cancellationToken) => inner.CancelOrderAsync(venueOrderId, cancellationToken);
 }
 
+internal sealed class SimulatedCrashException : Exception
+{
+}
+
 public sealed class ExecutionTests
 {
     private const string Btc = "BTC-EUR";
-    private static readonly DateTimeOffset T0 = new(2026, 10, 22, 12, 0, 0, TimeSpan.Zero);
-
-    private sealed class Rig
-    {
-        public Rig(decimal eur = 200m, decimal btc = 0m, IEngineStateStore? store = null, IMarketDataSource? pairSource = null)
-        {
-            var options = new PaperOptions();
-            options.InitialBalances["EUR"] = eur;
-            options.InitialBalances["BTC"] = btc;
-            Paper = new PaperExchange(new FakeMarketData(), options, Time);
-            Exchange = new FlakyExchange(Paper);
-            State = new MarketState(Time);
-            Store = store ?? new InMemoryEngineStateStore();
-            KillSwitch = new KillSwitch(Store, Time);
-            var pairs = new PairCatalog(pairSource ?? new FakeMarketData(), Time);
-            Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, Limits, Time);
-            Execution = new ExecutionService(
-                Exchange, new RiskGate(Limits, Time), Portfolio, State, pairs, KillSwitch, Time,
-                NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask);
-            Quote(60_000.00m, 60_010.00m);
-        }
-
-        public static RiskLimits Limits { get; } = new(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, new HashSet<string> { Btc });
-
-        public MutableTime Time { get; } = new(T0);
-        public MarketState State { get; }
-        public PaperExchange Paper { get; }
-        public FlakyExchange Exchange { get; }
-        public IEngineStateStore Store { get; }
-        public KillSwitch KillSwitch { get; }
-        public PortfolioService Portfolio { get; }
-        public ExecutionService Execution { get; }
-
-        /// <summary>A fresh quote at the current time, to both the engine's market state and the paper exchange.</summary>
-        public void Quote(decimal bid, decimal ask)
-        {
-            var quote = new MarketQuote(Btc, bid, 0.01m, ask, 0.01m, Time.GetUtcNow());
-            State.Update(quote);
-            Paper.OnQuote(quote);
-        }
-
-        public Task<ExecutionResult> Buy(decimal size, decimal price, string id = "c-1") =>
-            Execution.PlaceAsync(new OrderIntent(Btc, OrderSide.Buy, size, price, id), postOnly: false, CancellationToken.None);
-
-        public Task<PortfolioSnapshot> Snapshot() => Portfolio.GetSnapshotAsync(0, [], CancellationToken.None);
-    }
 
     [Fact]
     public async Task OrderWithinLimits_IsRoundedApprovedAndPlaced()
