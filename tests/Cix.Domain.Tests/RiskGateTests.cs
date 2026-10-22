@@ -216,6 +216,17 @@ public sealed class RiskGateTests
     }
 
     [Fact]
+    public void Evaluate_OpenBuys_CountTowardThePositionCap()
+    {
+        var portfolio = Portfolio(btcPosition: 50m) with { OpenBuyQuoteBySymbol = new Dictionary<string, decimal> { [Btc] = 40m } };
+
+        var verdict = Gate().Evaluate(Buy(0.0008m), portfolio, Market()); // 40 asked, 10 left of 100
+
+        Assert.Equal("position-cap", verdict.Rule);
+        Assert.Equal(0.0002m, verdict.Order!.BaseSize);
+    }
+
+    [Fact]
     public void Evaluate_MarketDataFromTheFuture_Rejects() =>
         Assert.Equal("stale-market-data", Gate().Evaluate(Buy(0.0006m), Portfolio(), Market(asOf: Now.AddMinutes(1))).Rule);
 

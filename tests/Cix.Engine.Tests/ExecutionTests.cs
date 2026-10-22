@@ -52,7 +52,7 @@ public sealed class ExecutionTests
 
     private sealed class Rig
     {
-        public Rig(decimal eur = 200m, decimal btc = 0m, IEngineStateStore? store = null)
+        public Rig(decimal eur = 200m, decimal btc = 0m, IEngineStateStore? store = null, IMarketDataSource? pairSource = null)
         {
             var options = new PaperOptions();
             options.InitialBalances["EUR"] = eur;
@@ -62,7 +62,7 @@ public sealed class ExecutionTests
             State = new MarketState(Time);
             Store = store ?? new InMemoryEngineStateStore();
             KillSwitch = new KillSwitch(Store, Time);
-            var pairs = new PairCatalog(new FakeMarketData(), Time);
+            var pairs = new PairCatalog(pairSource ?? new FakeMarketData(), Time);
             Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, Limits, Time);
             Execution = new ExecutionService(
                 Exchange, new RiskGate(Limits, Time), Portfolio, State, pairs, KillSwitch, Time,
@@ -89,8 +89,8 @@ public sealed class ExecutionTests
             Paper.OnQuote(quote);
         }
 
-        public Task<ExecutionResult> Buy(decimal size, decimal price, string id = "c-1") =>
-            Execution.PlaceAsync(new OrderIntent(Btc, OrderSide.Buy, size, price, id), postOnly: false, CancellationToken.None);
+        public Task<ExecutionResult> Buy(decimal size, decimal price, string id = "c-1", bool postOnly = false) =>
+            Execution.PlaceAsync(new OrderIntent(Btc, OrderSide.Buy, size, price, id), postOnly, CancellationToken.None);
 
         public Task<PortfolioSnapshot> Snapshot() => Portfolio.GetSnapshotAsync(0, [], CancellationToken.None);
     }
@@ -135,20 +135,16 @@ public sealed class ExecutionTests
     }
 
     [Fact]
-    public async Task OpenBuys_CountTowardTheAllocation()
+    public async Task OpenBuys_CountTowardThePositionCap()
     {
         var rig = new Rig(eur: 1_000m);
-        for (var i = 0; i < 5; i++)
-        {
-            Assert.Equal(ExecutionStatus.Placed, (await rig.Buy(0.0006m, 59_950m, $"c-{i}")).Status); // 35.97 EUR each
-            rig.Time.Advance(TimeSpan.FromSeconds(16)); // stay under 4 orders a minute
-            rig.Quote(60_000.00m, 60_010.00m);
-        }
+        await rig.Buy(0.0006m, 59_950m, "a"); // 35.97 EUR each, resting
+        await rig.Buy(0.0006m, 59_950m, "b");
 
-        var result = await rig.Buy(0.0006m, 59_950m, "c-5"); // 179.85 open, 20.15 left of 200
+        var result = await rig.Buy(0.0006m, 59_950m, "c"); // 71.94 working, 28.06 left of the 100 cap
 
-        Assert.Equal("allocation-cap", result.Rule);
-        Assert.Equal(0.00033611m, result.Order!.BaseSize);
+        Assert.Equal("position-cap", result.Rule);
+        Assert.Equal(0.00046805m, result.Order!.BaseSize);
     }
 
     [Fact]
@@ -166,23 +162,74 @@ public sealed class ExecutionTests
     }
 
     [Fact]
-    public async Task OrdersNotListedYet_StillCountTowardTheAllocation()
+    public async Task OrdersNotListedYet_StillCountTowardThePositionCap()
     {
         var rig = new Rig(eur: 1_000m);
-        rig.Exchange.HideOpenOrders = true; // the venue hasn't listed any of them yet
-        for (var i = 0; i < 5; i++)
-        {
-            await rig.Buy(0.0006m, 59_950m, $"c-{i}");
-            rig.Time.Advance(TimeSpan.FromSeconds(16));
-            rig.Quote(60_000.00m, 60_010.00m);
-        }
+        rig.Exchange.HideOpenOrders = true; // the venue hasn't listed them yet
+        await rig.Buy(0.0006m, 59_950m, "a");
+        await rig.Buy(0.0006m, 59_950m, "b");
 
         var withoutOverlay = await rig.Snapshot();
-        var result = await rig.Buy(0.0006m, 59_950m, "c-5");
+        var result = await rig.Buy(0.0006m, 59_950m, "c");
 
         Assert.Equal(0m, withoutOverlay.TotalExposureQuote);
-        Assert.Equal("allocation-cap", result.Rule); // the five sent orders still count
-        Assert.Equal(0.00033611m, result.Order!.BaseSize);
+        Assert.Equal("position-cap", result.Rule);
+        Assert.Equal(0.00046805m, result.Order!.BaseSize);
+    }
+
+    [Fact]
+    public async Task PendingOrderThatWasCancelled_StopsCounting()
+    {
+        var rig = new Rig(eur: 1_000m);
+        rig.Exchange.HideOpenOrders = true;
+        var placed = await rig.Buy(0.0006m, 59_950m, "a");
+        await rig.Paper.CancelOrderAsync(placed.Placed!.VenueOrderId, CancellationToken.None);
+
+        var result = await rig.Buy(0.0006m, 59_950m, "b");
+
+        Assert.Equal(("ok", 0.0006m), (result.Rule, result.Order!.BaseSize));
+        var snapshot = await rig.Portfolio.GetSnapshotAsync(0, [], CancellationToken.None);
+        Assert.Equal(0m, snapshot.TotalExposureQuote);
+    }
+
+    [Fact]
+    public async Task ReusedClientOrderId_IsRejected_UnlessTheExchangeRefusedTheFirst()
+    {
+        var rig = new Rig();
+        await rig.Buy(0.0005m, 59_950m, "same");
+
+        Assert.Equal("duplicate-client-order-id", (await rig.Buy(0.0005m, 59_950m, "same")).Rule);
+
+        var refused = await rig.Buy(0.0005m, 60_020m, "post", postOnly: true); // crosses the 60,010 ask: refused
+        var retried = await rig.Buy(0.0005m, 59_950m, "post");
+        Assert.Equal(ExecutionStatus.Failed, refused.Status);
+        Assert.Equal(ExecutionStatus.Placed, retried.Status);
+    }
+
+    [Fact]
+    public async Task Approval_SendsAtMostOneOrder()
+    {
+        var rig = new Rig();
+        var placed = await rig.Buy(0.0005m, 59_950m, "once");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => rig.Paper.PlaceLimitOrderAsync(placed.Order!, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task PairRulesUnavailable_RejectsInsteadOfThrowing()
+    {
+        var rig = new Rig(pairSource: new FailingPairs());
+
+        Assert.Equal("pairs-unavailable", (await rig.Buy(0.0005m, 59_950m)).Rule);
+    }
+
+    private sealed class FailingPairs : IMarketDataSource
+    {
+        public Task<IReadOnlyList<PairInfo>> GetPairsAsync(CancellationToken cancellationToken) =>
+            throw new HttpRequestException("Connection refused.");
+
+        public Task<IReadOnlyList<Candle>> GetCandlesAsync(string symbol, int intervalMinutes, DateTimeOffset since, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<Candle>>([]);
     }
 
     [Fact]
@@ -248,6 +295,22 @@ public sealed class ExecutionTests
 
         rig.Execution.ReleaseKillSwitch("owner");
         Assert.Equal(ExecutionStatus.Placed, (await rig.Buy(0.0005m, 59_950m, "d")).Status);
+    }
+
+    [Fact]
+    public async Task KillSwitch_CancelsOrdersTheExchangeHasNotListedYet_AndReportsUncertainOnes()
+    {
+        var rig = new Rig(eur: 1_000m);
+        rig.Exchange.HideOpenOrders = true;
+        await rig.Buy(0.0005m, 59_950m, "a");
+        rig.Exchange.UncertainAfterSending = false;
+        await rig.Buy(0.0005m, 59_900m, "u");
+
+        var result = await rig.Execution.EngageKillSwitchAsync("drill", "owner", CancellationToken.None);
+
+        Assert.Equal(1, result.Cancelled);
+        Assert.Equal(new[] { "uncertain:u" }, result.NotCancelled);
+        Assert.Empty(await rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None));
     }
 
     [Fact]
@@ -330,7 +393,7 @@ public sealed class EngineStateStoreTests : IDisposable
     {
         var path = Path.Combine(_dir, "state.json");
         var time = new MutableTime(new DateTimeOffset(2026, 10, 22, 12, 0, 0, TimeSpan.Zero));
-        var first = new FileEngineStateStore(path);
+        var first = new FileEngineStateStore(path, time);
         first.Update(s => s with
         {
             KillSwitch = new KillSwitchState(true, "drill", "owner", time.GetUtcNow()),
@@ -339,7 +402,7 @@ public sealed class EngineStateStoreTests : IDisposable
             DayStartEquity = 240m,
         });
 
-        var restarted = new FileEngineStateStore(path);
+        var restarted = new FileEngineStateStore(path, time);
 
         Assert.True(new KillSwitch(restarted, time).IsEngaged);
         Assert.Equal(first.Current, restarted.Current);
@@ -353,10 +416,32 @@ public sealed class EngineStateStoreTests : IDisposable
         var path = Path.Combine(_dir, "state.json");
         File.WriteAllText(path, "{ not json");
 
-        Assert.Throws<InvalidOperationException>(() => new FileEngineStateStore(path));
+        Assert.Throws<InvalidOperationException>(() => new FileEngineStateStore(path, TimeProvider.System));
     }
 
     [Fact]
-    public void MissingStateFile_StartsReleased() =>
-        Assert.Equal(EngineState.Initial, new FileEngineStateStore(Path.Combine(_dir, "none.json")).Current);
+    public void StateFileWithoutKillSwitch_StopsStartup()
+    {
+        Directory.CreateDirectory(_dir);
+        var path = Path.Combine(_dir, "state.json");
+        File.WriteAllText(path, "{}");
+
+        Assert.Throws<InvalidOperationException>(() => new FileEngineStateStore(path, TimeProvider.System));
+    }
+
+    [Fact]
+    public void MissingStateFile_StartsEngaged_AndWritesTheFile()
+    {
+        var path = Path.Combine(_dir, "none.json");
+
+        var store = new FileEngineStateStore(path, TimeProvider.System);
+
+        Assert.True(store.Current.KillSwitch.Engaged);
+        Assert.Equal(FileEngineStateStore.NewFileReason, store.Current.KillSwitch.Reason);
+        Assert.True(File.Exists(path));
+    }
+
+    [Fact]
+    public void RelativeStatePath_IsRefused() =>
+        Assert.Throws<ArgumentException>(() => new FileEngineStateStore("state.json", TimeProvider.System));
 }

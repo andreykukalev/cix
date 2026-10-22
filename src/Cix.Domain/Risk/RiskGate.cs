@@ -150,7 +150,9 @@ public sealed class RiskGate
         if (-portfolio.PnlToday >= _limits.MaxDailyLossQuote)
             return Sizing.No("daily-loss", "The daily loss limit is reached; new buys are halted until tomorrow (UTC).");
 
-        var positionQuote = portfolio.PositionQuoteBySymbol.GetValueOrDefault(intent.Symbol);
+        // Buys already working count toward the position they will become.
+        var positionQuote = portfolio.PositionQuoteBySymbol.GetValueOrDefault(intent.Symbol)
+            + (portfolio.OpenBuyQuoteBySymbol?.GetValueOrDefault(intent.Symbol) ?? 0m);
         var room = new[]
         {
             ("max-order", _limits.MaxOrderQuote),
@@ -170,8 +172,7 @@ public sealed class RiskGate
             : Sizing.Shrink(resized, room.Item1, $"Order reduced to {room.Item2:0.##} quote to stay within {room.Item1}.");
     }
 
-    private static decimal RoundDown(decimal value, decimal step) =>
-        step <= 0 ? value : Math.Floor(value / step) * step;
+    private static decimal RoundDown(decimal value, decimal step) => Steps.Floor(value, step);
 
-    private static bool IsMultiple(decimal value, decimal step) => step <= 0 || value % step == 0;
+    private static bool IsMultiple(decimal value, decimal step) => Steps.IsMultiple(value, step);
 }

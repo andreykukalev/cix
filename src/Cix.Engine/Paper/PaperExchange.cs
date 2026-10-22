@@ -107,6 +107,7 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
     public async Task<PlacedOrder> PlaceLimitOrderAsync(ApprovedOrder approvedOrder, bool postOnly, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(approvedOrder);
+        approvedOrder.Claim();
         ArgumentException.ThrowIfNullOrWhiteSpace(approvedOrder.ClientOrderId);
         var pairs = await EnsurePairsAsync(cancellationToken).ConfigureAwait(false);
 

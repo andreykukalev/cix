@@ -10,6 +10,8 @@ namespace Cix.Domain.Risk;
 /// </summary>
 public sealed class ApprovedOrder
 {
+    private int _claimed;
+
     internal ApprovedOrder(OrderIntent order, DateTimeOffset approvedAt)
     {
         ArgumentNullException.ThrowIfNull(order);
@@ -35,6 +37,17 @@ public sealed class ApprovedOrder
     public DateTimeOffset ApprovedAt { get; }
 
     public decimal NotionalQuote => BaseSize * LimitPrice;
+
+    /// <summary>
+    /// Marks the approval as used. Exchange clients call this before sending, so one approval sends at most one order:
+    /// an old approval can't be replayed past the kill switch, rate limit or a newer portfolio.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The approval was already used.</exception>
+    public void Claim()
+    {
+        if (Interlocked.Exchange(ref _claimed, 1) == 1)
+            throw new InvalidOperationException("This approval was already used; ask the risk gate again.");
+    }
 
     /// <summary>The approved order as a plain intent, for logging and the journal. It can't be placed.</summary>
     public OrderIntent ToIntent() => new(Symbol, Side, BaseSize, LimitPrice, ClientOrderId);

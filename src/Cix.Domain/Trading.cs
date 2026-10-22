@@ -26,6 +26,7 @@ public sealed record OrderIntent(
 /// <param name="Equity">Quote balance plus positions at the reference price.</param>
 /// <param name="PnlToday">Change in equity since 00:00 UTC, unrealised losses included, so losing positions count before they are sold.</param>
 /// <param name="TotalExposureQuote">Positions plus open buy orders, in quote.</param>
+/// <param name="OpenBuyQuoteBySymbol">Open and just-sent buy orders per symbol, in quote; they count toward the position cap.</param>
 public sealed record PortfolioSnapshot(
     decimal Equity,
     decimal PeakEquity,
@@ -33,7 +34,8 @@ public sealed record PortfolioSnapshot(
     decimal TotalExposureQuote,
     IReadOnlyDictionary<string, decimal> PositionQuoteBySymbol,
     int OrdersInLastMinute,
-    bool KillSwitchEngaged);
+    bool KillSwitchEngaged,
+    IReadOnlyDictionary<string, decimal>? OpenBuyQuoteBySymbol = null);
 
 /// <summary>Market reference for one symbol, typically the mid price.</summary>
 public sealed record MarketSnapshot(string Symbol, decimal ReferencePrice, DateTimeOffset AsOf);

@@ -44,24 +44,43 @@ public sealed class InMemoryEngineStateStore : IEngineStateStore
 }
 
 /// <summary>
-/// JSON file for live trading. Written to a temporary file and moved into place, so a crash never leaves half a file.
-/// An unreadable file stops startup rather than starting with the kill switch released.
+/// JSON file for live trading. Written to a temporary file, flushed to disk and moved into place, so a crash never
+/// leaves half a file. Fails closed: an unreadable file stops startup, a missing file starts with the kill switch
+/// engaged (a lost or moved file must not silently resume trading), and a failed write never keeps the switch released.
 /// </summary>
 public sealed class FileEngineStateStore : IEngineStateStore
 {
+    public const string NewFileReason = "No engine state file was found; the owner must confirm before trading starts.";
+
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     private readonly Lock _gate = new();
     private readonly string _path;
 
-    public FileEngineStateStore(string path)
+    public FileEngineStateStore(string path, TimeProvider time)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        _path = Path.GetFullPath(path);
-        Current = Load(_path);
+        ArgumentNullException.ThrowIfNull(time);
+        if (!Path.IsPathFullyQualified(path))
+            throw new ArgumentException("The engine state file needs an absolute path.", nameof(path));
+
+        _path = path;
+        if (File.Exists(_path))
+        {
+            Current = Load(_path);
+        }
+        else
+        {
+            Current = EngineState.Initial with { KillSwitch = new KillSwitchState(true, NewFileReason, "engine", time.GetUtcNow()) };
+            Write(Current);
+        }
     }
 
     public EngineState Current { get; private set; }
 
+    /// <summary>
+    /// Persists, then publishes. Engaging the kill switch is the exception: it takes effect in memory first, so a disk
+    /// that can't be written never leaves trading running (the write error still surfaces to the caller).
+    /// </summary>
     public EngineState Update(Func<EngineState, EngineState> change)
     {
         ArgumentNullException.ThrowIfNull(change);
@@ -71,24 +90,37 @@ public sealed class FileEngineStateStore : IEngineStateStore
             if (next == Current)
                 return Current;
 
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            var temp = _path + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(next, Json));
-            File.Move(temp, _path, overwrite: true);
+            if (next.KillSwitch.Engaged && !Current.KillSwitch.Engaged)
+                Current = next;
+
+            Write(next);
             Current = next;
             return Current;
         }
     }
 
+    private void Write(EngineState state)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        var temp = _path + ".tmp";
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(stream, state, Json);
+            stream.Flush(flushToDisk: true);
+        }
+
+        File.Move(temp, _path, overwrite: true);
+    }
+
     private static EngineState Load(string path)
     {
-        if (!File.Exists(path))
-            return EngineState.Initial;
 
         try
         {
-            return JsonSerializer.Deserialize<EngineState>(File.ReadAllText(path), Json)
-                ?? throw new InvalidOperationException("The engine state file is empty.");
+            var state = JsonSerializer.Deserialize<EngineState>(File.ReadAllText(path), Json);
+            if (state?.KillSwitch is null)
+                throw new InvalidOperationException($"The engine state file '{path}' has no kill switch state; fix or remove it deliberately.");
+            return state;
         }
         catch (JsonException ex)
         {

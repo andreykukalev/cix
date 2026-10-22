@@ -9,7 +9,8 @@ namespace Cix.Engine.Execution;
 public sealed class PortfolioUnavailableException(string message, Exception? inner = null) : Exception(message, inner);
 
 /// <summary>An order the engine sent that may not show in open orders yet, or whose placement outcome is unknown.</summary>
-public sealed record PendingPlacement(ApprovedOrder Order, DateTimeOffset SentAt, bool Uncertain);
+/// <param name="VenueOrderId">Set once the exchange confirmed it, so the kill switch can cancel it before it is listed.</param>
+public sealed record PendingPlacement(ApprovedOrder Order, DateTimeOffset SentAt, bool Uncertain, string? VenueOrderId = null);
 
 /// <summary>
 /// Builds the risk gate's <see cref="PortfolioSnapshot"/> from exchange balances, open orders and current prices, so it
@@ -37,8 +38,17 @@ public sealed class PortfolioService(
         var symbolPairs = new List<PairInfo>();
         foreach (var symbol in limits.AllowedSymbols.Order(StringComparer.Ordinal))
         {
-            symbolPairs.Add(await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false)
-                ?? throw new PortfolioUnavailableException($"The exchange doesn't list {symbol}."));
+            PairInfo? pair;
+            try
+            {
+                pair = await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
+            {
+                throw new PortfolioUnavailableException("The exchange's trading rules could not be loaded.", ex);
+            }
+
+            symbolPairs.Add(pair ?? throw new PortfolioUnavailableException($"The exchange doesn't list {symbol}."));
         }
 
         var quoteCurrency = symbolPairs.Select(p => p.Quote).Distinct(StringComparer.OrdinalIgnoreCase).ToList() switch
@@ -79,15 +89,23 @@ public sealed class PortfolioService(
         }
 
         var allowed = symbolPairs.Select(p => p.Symbol).ToHashSet(StringComparer.Ordinal);
-        var openBuys = openOrders
+        var openBuyOrders = openOrders
             .Where(o => o.IsOpen && o.Side == OrderSide.Buy && allowed.Contains(MarketDataPoller.NormaliseSymbol(o.Symbol)))
-            .Sum(o => Math.Max(0m, o.Quantity - o.FilledQuantity) * (o.Price ?? 0m));
+            .ToList();
+        if (openBuyOrders.Any(o => o.Price is null))
+            throw new PortfolioUnavailableException("An open buy order has no limit price, so its exposure is unknown.");
+        var buysBySymbol = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        foreach (var o in openBuyOrders)
+            Add(buysBySymbol, MarketDataPoller.NormaliseSymbol(o.Symbol), Math.Max(0m, o.Quantity - o.FilledQuantity) * o.Price!.Value);
 
-        // Sent but not listed yet (or outcome unknown): count it, so a slow exchange can't let us exceed the allocation.
+        // Sent but not listed yet (or outcome unknown): count it, so a slow exchange can't let us exceed a cap.
         var listed = openOrders.Select(o => o.ClientOrderId).ToHashSet(StringComparer.Ordinal);
-        var pendingBuys = pending
-            .Where(p => p.Order.Side == OrderSide.Buy && !listed.Contains(p.Order.ClientOrderId))
-            .Sum(p => p.Order.NotionalQuote);
+        foreach (var p in pending.Where(p => p.Order.Side == OrderSide.Buy && !listed.Contains(p.Order.ClientOrderId)))
+        {
+            if (await IsFinishedAsync(p, cancellationToken).ConfigureAwait(false))
+                continue; // filled or cancelled already: a fill is in the balances now
+            Add(buysBySymbol, p.Order.Symbol, p.Order.NotionalQuote);
+        }
 
         var equity = TotalOf(balances, quoteCurrency) + positions.Values.Sum();
         var today = DateOnly.FromDateTime(now.UtcDateTime);
@@ -102,11 +120,31 @@ public sealed class PortfolioService(
             Equity: equity,
             PeakEquity: state.PeakEquity,
             PnlToday: equity - state.DayStartEquity,
-            TotalExposureQuote: positions.Values.Sum() + openBuys + pendingBuys,
+            TotalExposureQuote: positions.Values.Sum() + buysBySymbol.Values.Sum(),
             PositionQuoteBySymbol: positions,
             OrdersInLastMinute: ordersInLastMinute,
-            KillSwitchEngaged: killSwitch.IsEngaged);
+            KillSwitchEngaged: killSwitch.IsEngaged,
+            OpenBuyQuoteBySymbol: buysBySymbol);
     }
+
+    /// <summary>True only when the exchange reports the order as finished; unknown (not visible yet) counts as working.</summary>
+    private async Task<bool> IsFinishedAsync(PendingPlacement pending, CancellationToken cancellationToken)
+    {
+        if (pending.VenueOrderId is null)
+            return false;
+        try
+        {
+            var order = await exchange.GetOrderAsync(pending.VenueOrderId, cancellationToken).ConfigureAwait(false);
+            return order is { IsOpen: false };
+        }
+        catch (ExchangeException)
+        {
+            return false;
+        }
+    }
+
+    private static void Add(Dictionary<string, decimal> totals, string symbol, decimal amount) =>
+        totals[symbol] = totals.GetValueOrDefault(symbol) + amount;
 
     private static decimal TotalOf(IReadOnlyList<Balance> balances, string currency) =>
         balances.Where(b => string.Equals(b.Currency, currency, StringComparison.OrdinalIgnoreCase)).Sum(b => b.Total);

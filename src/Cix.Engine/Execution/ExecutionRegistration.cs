@@ -6,13 +6,11 @@ public sealed class ExecutionOptions
     public const string SectionName = "Execution";
 
     /// <summary>
-    /// Live mode only: where the kill switch and loss baselines persist. Defaults to the user profile's local data folder
-    /// (under <c>/home</c> on App Service, which survives restarts). Paper mode keeps this state in memory, like its balances.
+    /// Live mode only, required: absolute path where the kill switch and loss baselines persist. It must be on storage that
+    /// survives restarts and redeploys (on App Service Linux, under <c>/home</c>). Paper mode keeps this state in memory,
+    /// like its balances.
     /// </summary>
     public string? StateFile { get; set; }
-
-    public static string DefaultStateFile =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "cix", "engine-state.json");
 }
 
 public static class ExecutionRegistration
@@ -27,13 +25,17 @@ public static class ExecutionRegistration
         ArgumentNullException.ThrowIfNull(options);
 
         services.AddSingleton(options);
-        services.AddSingleton<IEngineStateStore>(_ => mode == TradingMode.Live
-            ? new FileEngineStateStore(string.IsNullOrWhiteSpace(options.StateFile) ? ExecutionOptions.DefaultStateFile : options.StateFile)
+        if (mode == TradingMode.Live && string.IsNullOrWhiteSpace(options.StateFile))
+            throw new InvalidOperationException("Live trading needs Execution:StateFile, an absolute path on persistent storage.");
+
+        services.AddSingleton<IEngineStateStore>(sp => mode == TradingMode.Live
+            ? new FileEngineStateStore(options.StateFile!, sp.GetRequiredService<TimeProvider>())
             : new InMemoryEngineStateStore());
         services.AddSingleton<PairCatalog>();
         services.AddSingleton<KillSwitch>();
         services.AddSingleton<PortfolioService>();
         services.AddSingleton<ExecutionService>();
+        services.AddHostedService<PortfolioSampler>();
         return services;
     }
 }

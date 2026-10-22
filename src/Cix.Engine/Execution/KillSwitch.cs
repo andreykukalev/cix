@@ -26,8 +26,8 @@ public sealed class KillSwitch(IEngineStateStore store, TimeProvider time)
         return engaged;
     }
 
-    /// <summary>Owner only. Resumes trading; the risk gate's other limits still apply.</summary>
-    public void Release(string by)
+    /// <summary>Owner only, through <see cref="ExecutionService.ReleaseKillSwitch"/>. The risk gate's other limits still apply.</summary>
+    internal void Release(string by)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(by);
         store.Update(s => s with { KillSwitch = KillSwitchState.Released });

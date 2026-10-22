@@ -51,6 +51,7 @@ public sealed partial class ExecutionService
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly Queue<DateTimeOffset> _sent = new();
     private readonly Dictionary<string, PendingPlacement> _pending = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _usedClientOrderIds = new(StringComparer.Ordinal);
 
     public ExecutionService(
         IExchangeClient exchange,
@@ -101,9 +102,20 @@ public sealed partial class ExecutionService
             {
                 if (_pending.TryGetValue(intent.ClientOrderId ?? string.Empty, out var earlier) && earlier.Uncertain)
                     return Reject("placement-unresolved", "An earlier order with this client order ID has an unknown outcome; it must be reconciled first.");
+                if (_usedClientOrderIds.Contains(intent.ClientOrderId ?? string.Empty))
+                    return Reject("duplicate-client-order-id", "This client order ID was already sent; use a new one for a new order.");
             }
 
-            var pair = await _pairs.GetAsync(intent.Symbol, cancellationToken).ConfigureAwait(false);
+            PairInfo? pair;
+            try
+            {
+                pair = await _pairs.GetAsync(intent.Symbol, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
+            {
+                return Reject("pairs-unavailable", "The exchange's trading rules could not be loaded.");
+            }
+
             if (pair is null)
                 return Reject("unknown-symbol", $"The exchange doesn't list {intent.Symbol}.");
 
@@ -133,6 +145,24 @@ public sealed partial class ExecutionService
         }
     }
 
+    /// <summary>
+    /// Values the portfolio so peak equity and the 00:00 UTC baseline follow the market, not just order attempts.
+    /// Called every minute by <see cref="PortfolioSampler"/>. Returns false if the portfolio can't be valued now.
+    /// </summary>
+    public async Task<bool> SampleAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _portfolio.GetSnapshotAsync(0, PendingSnapshot(), cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (PortfolioUnavailableException ex)
+        {
+            LogSampleFailed(_logger, ex.Message);
+            return false;
+        }
+    }
+
     /// <summary>Requests cancellation of one order. Cancelling never adds risk, so it needs no gate.</summary>
     public Task<bool> CancelAsync(string venueOrderId, CancellationToken cancellationToken) =>
         _exchange.CancelOrderAsync(venueOrderId, cancellationToken);
@@ -143,7 +173,20 @@ public sealed partial class ExecutionService
     /// </summary>
     public async Task<KillSwitchResult> EngageKillSwitchAsync(string reason, string by, CancellationToken cancellationToken)
     {
-        var newly = _killSwitch.Engage(reason, by);
+        reason = Truncate(reason);
+        by = Truncate(by);
+        bool newly;
+        try
+        {
+            newly = _killSwitch.Engage(reason, by);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Engaged in memory regardless (see FileEngineStateStore); keep going and cancel orders.
+            newly = true;
+            LogStateWriteFailed(_logger, ex.Message);
+        }
+
         LogKillSwitch(_logger, by, reason);
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -162,19 +205,31 @@ public sealed partial class ExecutionService
                 return new KillSwitchResult(newly, 0, ["(open orders could not be listed)"]);
             }
 
-            foreach (var order in open.Where(o => o.IsOpen))
+            // Orders sent moments ago may not be listed yet: cancel those by their venue ID too.
+            var targets = open.Where(o => o.IsOpen).Select(o => o.VenueOrderId).ToHashSet(StringComparer.Ordinal);
+            lock (_pending)
+            {
+                foreach (var pending in _pending.Values)
+                {
+                    if (pending.VenueOrderId is { } venueId)
+                        targets.Add(venueId);
+                    else if (pending.Uncertain)
+                        notCancelled.Add($"uncertain:{pending.Order.ClientOrderId}"); // unknown venue ID: reconcile by hand
+                }
+            }
+
+            foreach (var venueOrderId in targets)
             {
                 try
                 {
-                    if (await _exchange.CancelOrderAsync(order.VenueOrderId, cancellationToken).ConfigureAwait(false))
+                    // False = the exchange doesn't know it (already filled or cancelled): nothing left to stop.
+                    if (await _exchange.CancelOrderAsync(venueOrderId, cancellationToken).ConfigureAwait(false))
                         cancelled++;
-                    else
-                        notCancelled.Add(order.VenueOrderId);
                 }
                 catch (ExchangeException ex)
                 {
-                    LogCancelFailed(_logger, order.VenueOrderId, ex.Message);
-                    notCancelled.Add(order.VenueOrderId);
+                    LogCancelFailed(_logger, venueOrderId, ex.Message);
+                    notCancelled.Add(venueOrderId);
                 }
             }
 
@@ -189,6 +244,7 @@ public sealed partial class ExecutionService
     /// <summary>Owner only: resumes trading. Never exposed as an agent tool.</summary>
     public void ReleaseKillSwitch(string by)
     {
+        by = Truncate(by);
         _killSwitch.Release(by);
         LogKillSwitchReleased(_logger, by);
     }
@@ -198,32 +254,35 @@ public sealed partial class ExecutionService
     {
         ArgumentNullException.ThrowIfNull(intent);
         ArgumentNullException.ThrowIfNull(pair);
-        var size = Floor(intent.BaseSize, pair.BaseStep);
-        var price = intent.Side == OrderSide.Buy ? Floor(intent.LimitPrice, pair.QuoteStep) : Ceiling(intent.LimitPrice, pair.QuoteStep);
+        var size = Steps.Floor(intent.BaseSize, pair.BaseStep);
+        var price = intent.Side == OrderSide.Buy ? Steps.Floor(intent.LimitPrice, pair.QuoteStep) : Steps.Ceiling(intent.LimitPrice, pair.QuoteStep);
         return intent with { BaseSize = size, LimitPrice = price };
     }
 
     private async Task<ExecutionResult> SendAsync(ApprovedOrder order, RiskVerdict verdict, bool postOnly, CancellationToken cancellationToken)
     {
+        // The kill switch may have engaged while the portfolio was being read; it flips before taking the lock.
+        if (_killSwitch.IsEngaged)
+            return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
+
         var sentAt = _time.GetUtcNow();
         _sent.Enqueue(sentAt); // counts toward the order rate even if it fails
         lock (_pending)
+        {
             _pending[order.ClientOrderId] = new PendingPlacement(order, sentAt, Uncertain: false);
+            _usedClientOrderIds.Add(order.ClientOrderId);
+        }
 
         try
         {
             var placed = await _exchange.PlaceLimitOrderAsync(order, postOnly, cancellationToken).ConfigureAwait(false);
-            LogPlaced(_logger, order.ToString(), placed.VenueOrderId);
-            return new ExecutionResult(ExecutionStatus.Placed, verdict.Rule, verdict.Reason, order, placed);
+            return Confirmed(order, verdict, placed, sentAt);
         }
         catch (OrderPlacementUncertainException)
         {
             var found = await FindByClientOrderIdAsync(order).ConfigureAwait(false);
             if (found is not null)
-            {
-                LogPlaced(_logger, order.ToString(), found.VenueOrderId);
-                return new ExecutionResult(ExecutionStatus.Placed, verdict.Rule, verdict.Reason, order, found);
-            }
+                return Confirmed(order, verdict, found, sentAt);
 
             lock (_pending)
                 _pending[order.ClientOrderId] = new PendingPlacement(order, sentAt, Uncertain: true);
@@ -237,10 +296,22 @@ public sealed partial class ExecutionService
         catch (ExchangeException ex)
         {
             lock (_pending)
+            {
                 _pending.Remove(order.ClientOrderId);
+                _usedClientOrderIds.Remove(order.ClientOrderId); // refused, so the same intent may be retried
+            }
+
             LogFailed(_logger, order.ToString(), ex.ErrorId ?? ex.StatusCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "error");
             return new ExecutionResult(ExecutionStatus.Failed, ex.ErrorId ?? "exchange-error", "The exchange refused the order.", order);
         }
+    }
+
+    private ExecutionResult Confirmed(ApprovedOrder order, RiskVerdict verdict, PlacedOrder placed, DateTimeOffset sentAt)
+    {
+        lock (_pending)
+            _pending[order.ClientOrderId] = new PendingPlacement(order, sentAt, Uncertain: false, placed.VenueOrderId);
+        LogPlaced(_logger, order.ToString(), placed.VenueOrderId);
+        return new ExecutionResult(ExecutionStatus.Placed, verdict.Rule, verdict.Reason, order, placed);
     }
 
     /// <summary>Looks for the order among open orders a few times. Uses its own timeout, not the caller's token,
@@ -290,9 +361,12 @@ public sealed partial class ExecutionService
 
     private static ExecutionResult Reject(string rule, string reason) => new(ExecutionStatus.Rejected, rule, reason);
 
-    private static decimal Floor(decimal value, decimal step) => step <= 0 ? value : Math.Floor(value / step) * step;
+    private static string Truncate(string text)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+        return text.Length <= 200 ? text : text[..200];
+    }
 
-    private static decimal Ceiling(decimal value, decimal step) => step <= 0 ? value : Math.Ceiling(value / step) * step;
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Order {ClientOrderId} rejected by {Rule}: {Reason}")]
     private static partial void LogRejected(ILogger logger, string clientOrderId, string rule, string reason);
@@ -311,6 +385,12 @@ public sealed partial class ExecutionService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Kill switch released by {By}")]
     private static partial void LogKillSwitchReleased(ILogger logger, string by);
+
+    [LoggerMessage(Level = LogLevel.Critical, Message = "Kill switch is engaged in memory but its state file could not be written: {Detail}")]
+    private static partial void LogStateWriteFailed(ILogger logger, string detail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Portfolio could not be valued: {Detail}")]
+    private static partial void LogSampleFailed(ILogger logger, string detail);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Could not cancel {VenueOrderId}: {Detail}")]
     private static partial void LogCancelFailed(ILogger logger, string venueOrderId, string detail);

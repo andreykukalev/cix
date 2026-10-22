@@ -78,6 +78,7 @@ public sealed class RevolutXClient : IExchangeClient
     public async Task<PlacedOrder> PlaceLimitOrderAsync(ApprovedOrder approvedOrder, bool postOnly, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(approvedOrder);
+        approvedOrder.Claim();
         if (approvedOrder.BaseSize <= 0 || approvedOrder.LimitPrice <= 0)
             throw new ArgumentException("Size and price must be positive.", nameof(approvedOrder));
         ArgumentException.ThrowIfNullOrWhiteSpace(approvedOrder.ClientOrderId);
