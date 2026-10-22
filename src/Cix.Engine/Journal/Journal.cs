@@ -186,7 +186,7 @@ public sealed class InMemoryJournal : IJournal
         ArgumentNullException.ThrowIfNull(query);
         lock (_gate)
         {
-            IReadOnlyList<JournalEntry> result = _entries
+            IReadOnlyList<JournalEntry> result = Enumerable.Reverse(_entries) // same-time entries newest-written first, like FileJournal
                 .Where(e => FileJournal.Matches(e, query))
                 .OrderByDescending(e => e.At)
                 .Take(Math.Clamp(query.Limit, 1, FileJournal.MaxQueryLimit))
