@@ -21,6 +21,7 @@ Setup:
 Usage:
   python revx_spike.py --symbol BTC-EUR
   python revx_spike.py --symbol BTC-EUR --place-and-cancel
+  python revx_spike.py --symbol BTC-EUR --public     # public market data only, no keys needed
 
 Never commit revx_private.pem; .gitignore excludes *.pem.
 """
@@ -117,14 +118,36 @@ def cancel_and_confirm(revx: RevX, venue_id: str) -> int:
     return 1
 
 
+def public_check(symbol: str) -> int:
+    """Calls the unauthenticated endpoints the engine uses and prints raw responses (issue #3)."""
+    now_ms = int(time.time() * 1000)
+    calls = [
+        ("order book", f"/api/2.0/public/order-book/{symbol}", {"limit": 3, "region": "EEA"}),
+        ("tickers", "/api/1.0/public/tickers", {"symbols": symbol, "region": "EEA"}),
+        ("candles 1m", f"/api/1.0/public/candles/{symbol}", {"interval": 1, "since": now_ms - 5 * 60_000, "region": "EEA"}),
+        ("pairs", "/api/1.0/public/configuration/pairs", {"region": "EEA"}),
+    ]
+    for name, path, params in calls:
+        r = requests.get(BASE + path, params=params, headers={"Accept": "application/json"}, timeout=15)
+        print(f"{name}: GET {path} -> HTTP {r.status_code}, Retry-After={r.headers.get('Retry-After')}")
+        text = r.text
+        print("  " + (text[:700] + ("..." if len(text) > 700 else "")))
+        time.sleep(1.2)  # public endpoints allow 1 request per second
+    print("Paste this output into issue #3.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default="BTC-EUR")
     ap.add_argument("--place-and-cancel", action="store_true",
                     help="place a tiny post-only limit buy 20%% below market, then cancel it")
     ap.add_argument("--list-active", action="store_true", help="list active orders and exit")
+    ap.add_argument("--public", action="store_true", help="check public market-data endpoints (no keys) and exit")
     ap.add_argument("--cancel", metavar="VENUE_ORDER_ID", help="cancel one order by ID, confirm, and exit")
     args = ap.parse_args()
+    if args.public:
+        return public_check(args.symbol)
 
     api_key = os.environ.get("REVX_API_KEY")
     key_path = os.environ.get("REVX_PRIVATE_KEY_PATH")
