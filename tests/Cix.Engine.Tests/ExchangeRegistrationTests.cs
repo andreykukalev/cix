@@ -1,4 +1,6 @@
 using Cix.Domain.Exchange;
+using Cix.Domain.Risk;
+using Cix.Engine.Execution;
 using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
 using Cix.Exchange.RevolutX;
@@ -43,6 +45,22 @@ public sealed class ExchangeRegistrationTests
         using var provider = services.BuildServiceProvider();
         Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IMarketDataSource>());
         Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IQuoteSource>());
+    }
+
+    [Fact]
+    public void Paper_FullEngine_ResolvesTheExecutionService_WithInMemoryState()
+    {
+        var limits = new RiskLimits(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, new HashSet<string> { "BTC-EUR" });
+        var services = Services(TradingMode.Paper);
+        services.AddLogging();
+        services.AddSingleton(limits);
+        services.AddSingleton(new RiskGate(limits));
+        services.AddCixMarketData(new MarketDataOptions(), limits.AllowedSymbols);
+        services.AddCixExecution(TradingMode.Paper, new ExecutionOptions());
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+
+        Assert.NotNull(provider.GetRequiredService<ExecutionService>());
+        Assert.IsType<InMemoryEngineStateStore>(provider.GetRequiredService<IEngineStateStore>());
     }
 
     [Fact]

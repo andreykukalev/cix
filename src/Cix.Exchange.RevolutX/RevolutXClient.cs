@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Cix.Domain;
 using Cix.Domain.Exchange;
+using Cix.Domain.Risk;
 
 using static Cix.Exchange.RevolutX.RevolutXTransport;
 
@@ -74,14 +75,14 @@ public sealed class RevolutXClient : IExchangeClient
     /// The caller must already have rounded size and price to the pair's <see cref="PairInfo.BaseStep"/> and
     /// <see cref="PairInfo.QuoteStep"/>; this client sends them unchanged.
     /// </remarks>
-    public async Task<PlacedOrder> PlaceLimitOrderAsync(OrderIntent approvedOrder, bool postOnly, CancellationToken cancellationToken)
+    public async Task<PlacedOrder> PlaceLimitOrderAsync(ApprovedOrder approvedOrder, bool postOnly, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(approvedOrder);
         if (approvedOrder.BaseSize <= 0 || approvedOrder.LimitPrice <= 0)
             throw new ArgumentException("Size and price must be positive.", nameof(approvedOrder));
         ArgumentException.ThrowIfNullOrWhiteSpace(approvedOrder.ClientOrderId);
 
-        var body = BuildLimitOrderBody(approvedOrder, postOnly);
+        var body = BuildLimitOrderBody(approvedOrder.ToIntent(), postOnly);
         var response = await _transport.SendAsync(HttpMethod.Post, "/api/1.0/orders", null, body, cancellationToken, approvedOrder.ClientOrderId)
             .ConfigureAwait(false);
         EnsureSuccess(response);

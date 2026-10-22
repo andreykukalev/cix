@@ -23,10 +23,13 @@ public sealed record OrderIntent(
 }
 
 /// <summary>Portfolio state the risk gate needs, in the allocation's quote currency.</summary>
+/// <param name="Equity">Quote balance plus positions at the reference price.</param>
+/// <param name="PnlToday">Change in equity since 00:00 UTC, unrealised losses included, so losing positions count before they are sold.</param>
+/// <param name="TotalExposureQuote">Positions plus open buy orders, in quote.</param>
 public sealed record PortfolioSnapshot(
     decimal Equity,
     decimal PeakEquity,
-    decimal RealizedPnlToday,
+    decimal PnlToday,
     decimal TotalExposureQuote,
     IReadOnlyDictionary<string, decimal> PositionQuoteBySymbol,
     int OrdersInLastMinute,

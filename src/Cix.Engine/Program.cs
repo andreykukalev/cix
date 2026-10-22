@@ -1,5 +1,6 @@
 using Cix.Domain.Risk;
 using Cix.Engine;
+using Cix.Engine.Execution;
 using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
 using Cix.Exchange.RevolutX;
@@ -16,6 +17,7 @@ var limits = builder.Configuration.GetSection("Risk").Get<RiskLimitsOptions>()?.
 var mode = TradingModeResolver.Resolve(builder.Configuration, builder.Environment.EnvironmentName);
 
 // Fails fast if configured limits exceed the hard ceilings.
+builder.Services.AddSingleton(limits);
 builder.Services.AddSingleton(new RiskGate(limits));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(new TradingContext(mode));
@@ -30,6 +32,11 @@ builder.Services.AddCixExchange(
 builder.Services.AddCixMarketData(
     builder.Configuration.GetSection(MarketDataOptions.SectionName).Get<MarketDataOptions>() ?? new MarketDataOptions(),
     limits.AllowedSymbols);
+
+// The only order path: every placement goes through the risk gate (ApprovedOrder makes skipping it a compile error).
+builder.Services.AddCixExecution(
+    mode,
+    builder.Configuration.GetSection(ExecutionOptions.SectionName).Get<ExecutionOptions>() ?? new ExecutionOptions());
 
 builder.Services.AddHostedService<HeartbeatService>();
 

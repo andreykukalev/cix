@@ -1,3 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- Keep this project free of package references: pure domain logic only. -->
+  <ItemGroup>
+    <!-- Tests build ApprovedOrder directly to exercise exchange clients with orders the gate would refuse.
+         Production code can only get one from RiskGate. -->
+    <InternalsVisibleTo Include="Cix.Domain.Tests" />
+    <InternalsVisibleTo Include="Cix.Engine.Tests" />
+    <InternalsVisibleTo Include="Cix.Exchange.RevolutX.Tests" />
+  </ItemGroup>
 </Project>
