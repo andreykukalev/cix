@@ -40,3 +40,16 @@ Run the tests before finishing any task. A change to the risk gate needs a new o
 ## Roles
 
 Use the subagents in `.claude/agents` for fresh-context work: `researcher` for library, API or Azure questions; `reviewer` before opening a PR; `security-reviewer` for any change touching keys, orders, risk limits or tools. Use the skills in `.claude/skills` for ADRs, test plans, agent evals, backtest reports and security checklists.
+
+## Agent workflow notes
+
+Learned while building #1–#3 in cloud sessions; follow them unless the environment has changed.
+
+- **Building:** cloud sessions may have no .NET SDK and no NuGet access, so CI (`.github/workflows`) is the build. Push the branch and open a draft PR to trigger it; it runs on `pull_request` and on push to `main`. Work through test arithmetic by hand, since a wrong expectation only shows up in CI.
+- **GitHub:** use `gh api` with REST endpoints; GraphQL (and so `gh pr ready`, `gh pr create`) may be blocked. Create PRs with `POST repos/{owner}/{repo}/pulls` (`-F draft=true`), mark ready with `POST repos/{owner}/{repo}/pulls/{n}/ccr/ready_for_review`, and poll CI with `GET repos/{owner}/{repo}/commits/{sha}/check-runs`.
+- **Before every PR:** run gitleaks with `.gitleaks.toml` locally, then the `reviewer` subagent, plus `security-reviewer` for anything touching orders, market data that prices orders, keys, limits or tools. Fix the findings, wait for green CI, then mark ready. The owner merges; never merge yourself.
+- **After a merge:** check whether the PR merged before your last push (`GET .../pulls/{n}` → `merged`). If it did, move the extra commits to a new branch from `origin/main` and open a follow-up PR.
+- **Commits:** author as the owner (`git -c user.name=... -c user.email=...`) with the session's co-author trailers; one issue per branch (`feature/{n}-short-name`).
+- **Testing time:** inject `TimeProvider` and drive loops from tests (`MutableTime`, `PollOnceAsync`); never sleep in tests.
+- **Spike results:** when the owner runs `tools/spike/revx_spike.py`, record the output on the issue and turn real responses into test fixtures.
+- **Exchange quirks:** see `docs/research/revolut-x-api.md` before touching the Revolut X client.
