@@ -127,6 +127,45 @@ public sealed class PortfolioService(
             OpenBuyQuoteBySymbol: buysBySymbol);
     }
 
+    /// <summary>
+    /// The value, at current prices, of the change from <paramref name="before"/> to <paramref name="after"/> holdings
+    /// (currency → total). Fills move value between currencies at about the market price, so this stays near zero minus
+    /// fees; a deposit, withdrawal or trade outside the engine shows up as a jump. Null when a changed allowed asset has
+    /// no fresh price. Changes in assets outside the allowed symbols are ignored, as they are outside the allocation.
+    /// </summary>
+    public async Task<decimal?> ValueOfChangeAsync(
+        IReadOnlyDictionary<string, decimal> before,
+        IReadOnlyDictionary<string, decimal> after,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(before);
+        ArgumentNullException.ThrowIfNull(after);
+        var prices = new Dictionary<string, decimal?>(StringComparer.OrdinalIgnoreCase);
+        var now = time.GetUtcNow();
+        foreach (var symbol in limits.AllowedSymbols)
+        {
+            var pair = await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false);
+            if (pair is null)
+                continue;
+            prices[pair.Quote] = 1m;
+            var quote = market.Quote(pair.Symbol);
+            prices[pair.Base] = quote is not null && now - quote.AsOf <= HardCeilings.MaxMarketDataAge ? quote.Mid : null;
+        }
+
+        var total = 0m;
+        foreach (var currency in before.Keys.Union(after.Keys, StringComparer.OrdinalIgnoreCase))
+        {
+            var change = after.GetValueOrDefault(currency) - before.GetValueOrDefault(currency);
+            if (change == 0 || !prices.TryGetValue(currency, out var price))
+                continue;
+            if (price is null)
+                return null;
+            total += change * price.Value;
+        }
+
+        return total;
+    }
+
     /// <summary>True only when the exchange reports the order as finished; unknown (not visible yet) counts as working.</summary>
     private async Task<bool> IsFinishedAsync(PendingPlacement pending, CancellationToken cancellationToken)
     {

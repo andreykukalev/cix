@@ -1,6 +1,14 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Cix.Engine.Execution;
+
+/// <summary>
+/// Holdings (currency → total) at the last successful reconciliation, and the notional of the engine's open orders
+/// then, which bounds how much fills since can move the holdings' value. Persisted so a deposit, withdrawal or outside
+/// trade while the engine was down is still caught.
+/// </summary>
+public sealed record HoldingsBaseline(IReadOnlyDictionary<string, decimal> Holdings, decimal EngineOrdersNotional);
 
 /// <summary>Whether trading is halted, why, by whom and since when.</summary>
 public sealed record KillSwitchState(bool Engaged, string? Reason, string? By, DateTimeOffset? Since)
@@ -9,11 +17,22 @@ public sealed record KillSwitchState(bool Engaged, string? Reason, string? By, D
 }
 
 /// <summary>
-/// State that must survive a restart until the journal lands (#6): the kill switch and the baselines for drawdown and
-/// daily loss. Losing them would silently re-enable trading or reset the loss limits.
+/// State that must survive a restart until the journal lands (#6): the kill switch, the baselines for drawdown and
+/// daily loss, and the client order IDs of orders the engine sent that may still be open. Losing them would silently
+/// re-enable trading, reset the loss limits, or make the engine's own orders look like someone else's after a restart.
 /// </summary>
-public sealed record EngineState(KillSwitchState KillSwitch, decimal PeakEquity, DateOnly? Day, decimal DayStartEquity)
+public sealed record EngineState(
+    KillSwitchState KillSwitch,
+    decimal PeakEquity,
+    DateOnly? Day,
+    decimal DayStartEquity,
+    IReadOnlyList<string>? KnownClientOrderIds = null,
+    HoldingsBaseline? Holdings = null)
 {
+    /// <summary>Client order IDs the engine sent and hasn't yet seen finish; recorded before each send.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> Known => KnownClientOrderIds ?? [];
+
     public static readonly EngineState Initial = new(KillSwitchState.Released, 0m, null, 0m);
 }
 
