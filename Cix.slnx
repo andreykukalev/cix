@@ -7,5 +7,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/Cix.Domain.Tests/Cix.Domain.Tests.csproj" />
     <Project Path="tests/Cix.Exchange.RevolutX.Tests/Cix.Exchange.RevolutX.Tests.csproj" />
+    <Project Path="tests/Cix.Engine.Tests/Cix.Engine.Tests.csproj" />
   </Folder>
 </Solution>

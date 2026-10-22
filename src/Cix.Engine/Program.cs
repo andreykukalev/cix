@@ -1,5 +1,7 @@
 using Cix.Domain.Risk;
 using Cix.Engine;
+using Cix.Engine.Paper;
+using Cix.Exchange.RevolutX;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -9,9 +11,20 @@ builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "risk-l
 var limits = builder.Configuration.GetSection("Risk").Get<RiskLimitsOptions>()?.ToRiskLimits()
     ?? throw new InvalidOperationException("Missing 'Risk' configuration section.");
 
+// Paper unless the owner configures Live, and Live only in Production (CLAUDE.md rule 6).
+var mode = TradingModeResolver.Resolve(builder.Configuration, builder.Environment.EnvironmentName);
+
 // Fails fast if configured limits exceed the hard ceilings.
 builder.Services.AddSingleton(new RiskGate(limits));
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton(new TradingContext(mode));
+
+// Paper mode registers no order-capable client; see ExchangeRegistration.
+builder.Services.AddCixExchange(
+    mode,
+    builder.Configuration.GetSection(RevolutXOptions.SectionName).Get<RevolutXOptions>() ?? new RevolutXOptions(),
+    builder.Configuration.GetSection(PaperOptions.SectionName).Get<PaperOptions>() ?? new PaperOptions());
+
 builder.Services.AddHostedService<HeartbeatService>();
 
 var host = builder.Build();
