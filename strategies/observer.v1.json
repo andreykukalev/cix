@@ -1,0 +1,17 @@
+{
+  "name": "observer",
+  "version": 1,
+  "status": "paper",
+  "createdBy": "engine",
+  "instructions": "Observe only. Read the strategy spec, the market view and the portfolio, then summarise in three sentences what you would do and why. Do not place orders: this spec does not allow them. Use it to check the tool server end to end before a trading spec exists.",
+  "parameters": {
+    "symbols": ["BTC-EUR", "ETH-EUR"]
+  },
+  "allowedTools": [
+    "get_strategy_spec",
+    "get_market_view",
+    "get_features",
+    "get_portfolio",
+    "get_open_orders"
+  ]
+}

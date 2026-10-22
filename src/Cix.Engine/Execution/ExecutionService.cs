@@ -195,6 +195,42 @@ public sealed partial class ExecutionService
         }
     }
 
+    private (DateTimeOffset At, PortfolioSnapshot Snapshot)? _portfolioCache;
+
+    /// <summary>
+    /// The portfolio for tools: the latest valuation if under <see cref="OpenOrdersCacheTtl"/> old, otherwise a fresh one.
+    /// Returns the snapshot and when it was taken, or null if the portfolio can't be valued now.
+    /// </summary>
+    public async Task<(PortfolioSnapshot Snapshot, DateTimeOffset At)?> GetPortfolioAsync(CancellationToken cancellationToken)
+    {
+        var now = _time.GetUtcNow();
+        if (_portfolioCache is { } cached && now - cached.At < OpenOrdersCacheTtl)
+            return (cached.Snapshot, cached.At);
+
+        var snapshot = await SampleAsync(cancellationToken).ConfigureAwait(false);
+        if (snapshot is null)
+            return null;
+        _portfolioCache = (now, snapshot);
+        return (snapshot, now);
+    }
+
+    /// <summary>How long agents' views of open orders and the portfolio may be cached, so a looping agent can't use up the exchange's rate limit.</summary>
+    public static readonly TimeSpan OpenOrdersCacheTtl = TimeSpan.FromSeconds(10);
+
+    private (DateTimeOffset At, IReadOnlyList<ExchangeOrder> Orders)? _openOrdersCache;
+
+    /// <summary>Open orders for tools: read-only, cached for <see cref="OpenOrdersCacheTtl"/>.</summary>
+    public async Task<IReadOnlyList<ExchangeOrder>> GetOpenOrdersAsync(CancellationToken cancellationToken)
+    {
+        var now = _time.GetUtcNow();
+        if (_openOrdersCache is { } cached && now - cached.At < OpenOrdersCacheTtl)
+            return cached.Orders;
+
+        var orders = await _exchange.GetOpenOrdersAsync(null, cancellationToken).ConfigureAwait(false);
+        _openOrdersCache = (now, orders);
+        return orders;
+    }
+
     /// <summary>Requests cancellation of one order. Cancelling never adds risk, so it needs no gate.</summary>
     public Task<bool> CancelAsync(string venueOrderId, CancellationToken cancellationToken) =>
         _exchange.CancelOrderAsync(venueOrderId, cancellationToken);
