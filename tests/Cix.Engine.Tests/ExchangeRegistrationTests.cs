@@ -1,4 +1,5 @@
 using Cix.Domain.Exchange;
+using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
 using Cix.Exchange.RevolutX;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,5 +37,25 @@ public sealed class ExchangeRegistrationTests
 
         Assert.Contains(services, d => d.ServiceType == typeof(RevolutXClient));
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(PaperExchange));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(IQuoteListener));
+
+        // Market data stays on the unsigned public client even in Live mode.
+        using var provider = services.BuildServiceProvider();
+        Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IMarketDataSource>());
+        Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IQuoteSource>());
+    }
+
+    [Fact]
+    public void Paper_WithMarketData_ResolvesThePoller_AndFeedsThePaperExchange()
+    {
+        var services = Services(TradingMode.Paper);
+        services.AddLogging();
+        services.AddCixMarketData(new MarketDataOptions(), ["BTC-EUR"]);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+
+        var poller = provider.GetRequiredService<MarketDataPoller>();
+
+        Assert.Equal(new[] { "BTC-EUR" }, poller.Symbols);
+        Assert.IsType<PaperExchange>(Assert.Single(provider.GetServices<IQuoteListener>()));
     }
 }

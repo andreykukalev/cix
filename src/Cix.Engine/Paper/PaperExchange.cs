@@ -25,7 +25,7 @@ namespace Cix.Engine.Paper;
 /// <item>Placing the same client order ID again returns the existing order; reusing it with different details is rejected.</item>
 /// </list>
 /// </remarks>
-public sealed class PaperExchange : IExchangeClient
+public sealed class PaperExchange : IExchangeClient, IQuoteListener
 {
     private readonly IMarketDataSource _marketData;
     private readonly PaperOptions _options;
