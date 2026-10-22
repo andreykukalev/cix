@@ -72,7 +72,9 @@ public sealed class FileStrategySpecStore : IStrategySpecStore
     {
         ArgumentNullException.ThrowIfNull(options);
         if (string.IsNullOrWhiteSpace(options.Name) || options.Version is null)
-            return; // no strategy configured: read-only tools still work, agent tools refuse
+            return; // no strategy configured: agent tools refuse
+        if (!System.Text.RegularExpressions.Regex.IsMatch(options.Name, "^[a-z0-9-]{1,40}$") || options.Version is < 1)
+            throw new InvalidOperationException("Strategy:Name must be lowercase letters, digits and dashes, and Strategy:Version at least 1.");
 
         var directory = Path.IsPathFullyQualified(options.Directory)
             ? options.Directory

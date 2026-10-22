@@ -46,7 +46,20 @@ public sealed partial class ToolCallContext(
     ToolServerOptions options,
     TimeProvider time)
 {
-    public string Agent => Header(ToolServerOptions.AgentHeader) ?? "agent";
+    /// <summary>Names that only the owner or the engine itself appear as in the journal; agents can't claim them.</summary>
+    public static readonly IReadOnlySet<string> ReservedActors = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "owner", "engine", "execution", "reconciler", "safety-monitor", "invalid",
+    };
+
+    public string Agent
+    {
+        get
+        {
+            var name = Header(ToolServerOptions.AgentHeader);
+            return name is null ? "agent" : ReservedActors.Contains(name) ? "invalid" : name;
+        }
+    }
 
     public string? RunId => Header(ToolServerOptions.RunHeader);
 
@@ -63,22 +76,37 @@ public sealed partial class ToolCallContext(
         }
     }
 
-    /// <summary>Throws unless the active spec lets agents call <paramref name="tool"/>. The operator may call any agent tool.</summary>
-    public void RequireAllowed(string tool)
+    /// <summary>
+    /// Throws unless the active spec lets agents call <paramref name="tool"/>; a refusal is journaled first. The operator
+    /// may call any agent tool.
+    /// </summary>
+    public async Task RequireAllowedAsync(string tool, CancellationToken cancellationToken)
     {
         if (IsOperator)
             return;
-        if (specs.Active is not { } spec)
-            throw new McpException("No strategy spec is active, so agent tools are disabled.");
-        if (!spec.Allows(tool))
-            throw new McpException($"The active strategy spec ({spec.Label}) doesn't allow {tool}.");
+        var reason = specs.Active is not { } spec
+            ? "No strategy spec is active, so agent tools are disabled."
+            : spec.Allows(tool) ? null : $"The active strategy spec ({spec.Label}) doesn't allow {tool}.";
+        if (reason is null)
+            return;
+        await DenyAsync(tool, reason, cancellationToken).ConfigureAwait(false);
+        throw new McpException(reason);
     }
 
-    public void RequireOperator()
+    public async Task RequireOperatorAsync(string tool, CancellationToken cancellationToken)
     {
-        if (!IsOperator)
-            throw new McpException("This is an operator tool.");
+        if (IsOperator)
+            return;
+        const string reason = "This is an operator tool.";
+        await DenyAsync(tool, reason, cancellationToken).ConfigureAwait(false); // no key material is recorded
+        throw new McpException(reason);
     }
+
+    private Task DenyAsync(string tool, string reason, CancellationToken cancellationToken) =>
+        journal.AppendAsync(
+            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), "tool-denied", Agent, RunId, specs.Active?.Label, reason,
+                new Dictionary<string, string>(StringComparer.Ordinal) { ["tool"] = tool }),
+            cancellationToken);
 
     public Task JournalAsync(string tool, string summary, IReadOnlyDictionary<string, string>? data, CancellationToken cancellationToken)
     {
@@ -100,8 +128,11 @@ public sealed partial class ToolCallContext(
     private string? Header(string name)
     {
         var value = http.HttpContext?.Request.Headers[name].ToString();
-        return string.IsNullOrEmpty(value) ? null : SafeLabel().IsMatch(value) ? value : "invalid";
+        return string.IsNullOrEmpty(value) ? null : IsSafeLabel(value) ? value : "invalid";
     }
+
+    /// <summary>Short plain text: letters, digits and <c>. _ : -</c>, up to 64 characters.</summary>
+    public static bool IsSafeLabel(string? value) => value is not null && SafeLabel().IsMatch(value);
 
     [GeneratedRegex("^[A-Za-z0-9._:-]{1,64}$")]
     private static partial Regex SafeLabel();

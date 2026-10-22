@@ -17,7 +17,6 @@ public sealed class AgentTools(
     ToolCallContext context,
     FeatureService features,
     ExecutionService execution,
-    IExchangeClient exchange,
     KillSwitch killSwitch,
     RiskLimits limits)
 {
@@ -25,7 +24,7 @@ public sealed class AgentTools(
     [Description("Compact features for every tradable symbol: price, spread, trend, volatility, returns and 24h range. Ratios are fractions (0.05 = 5%). Check isStale before acting.")]
     public async Task<string> GetMarketView(CancellationToken cancellationToken)
     {
-        context.RequireAllowed("get_market_view");
+        await context.RequireAllowedAsync("get_market_view", cancellationToken).ConfigureAwait(false);
         var view = limits.AllowedSymbols.Order(StringComparer.Ordinal).Select(features.GetFeatures).ToList();
         await context.JournalAsync("get_market_view", $"{view.Count} symbols", null, cancellationToken).ConfigureAwait(false);
         return ToolJson.Of(view);
@@ -37,7 +36,7 @@ public sealed class AgentTools(
         [Description("Symbol such as BTC-EUR.")] string symbol,
         CancellationToken cancellationToken)
     {
-        context.RequireAllowed("get_features");
+        await context.RequireAllowedAsync("get_features", cancellationToken).ConfigureAwait(false);
         var normalised = ToolJson.Symbol(symbol, limits.AllowedSymbols);
         var result = features.GetFeatures(normalised);
         await context.JournalAsync("get_features", normalised, new Dictionary<string, string> { ["symbol"] = normalised }, cancellationToken).ConfigureAwait(false);
@@ -48,12 +47,14 @@ public sealed class AgentTools(
     [Description("Equity, peak, today's P&L, exposure, positions and open buys per symbol in quote currency, the risk limits that apply, and whether trading is halted.")]
     public async Task<string> GetPortfolio(CancellationToken cancellationToken)
     {
-        context.RequireAllowed("get_portfolio");
-        var snapshot = await execution.SampleAsync(cancellationToken).ConfigureAwait(false);
+        await context.RequireAllowedAsync("get_portfolio", cancellationToken).ConfigureAwait(false);
+        var valued = await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false);
+        var snapshot = valued?.Snapshot;
         var state = killSwitch.State;
         var result = new
         {
             available = snapshot is not null,
+            asOf = valued?.At,
             snapshot?.Equity,
             snapshot?.PeakEquity,
             snapshot?.PnlToday,
@@ -82,11 +83,11 @@ public sealed class AgentTools(
     [Description("Open orders on the account: IDs, symbol, side, size, filled size, limit price and status.")]
     public async Task<string> GetOpenOrders(CancellationToken cancellationToken)
     {
-        context.RequireAllowed("get_open_orders");
+        await context.RequireAllowedAsync("get_open_orders", cancellationToken).ConfigureAwait(false);
         IReadOnlyList<ExchangeOrder> open;
         try
         {
-            open = await exchange.GetOpenOrdersAsync(null, cancellationToken).ConfigureAwait(false);
+            open = await execution.GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (ExchangeException)
         {
@@ -96,7 +97,7 @@ public sealed class AgentTools(
         var result = open.Where(o => o.IsOpen).Select(o => new
         {
             orderId = o.VenueOrderId,
-            o.ClientOrderId,
+            clientOrderId = ToolCallContext.IsSafeLabel(o.ClientOrderId) ? o.ClientOrderId : "foreign", // exchange text: never pass it raw to an agent
             symbol = MarketDataPoller.NormaliseSymbol(o.Symbol),
             o.Side,
             size = o.Quantity,
@@ -110,7 +111,7 @@ public sealed class AgentTools(
     }
 
     [McpServerTool(Name = "get_strategy_spec", ReadOnly = true)]
-    [Description("The active strategy spec: its version label, instructions, parameters and the tools it allows. Read it at the start of every run.")]
+    [Description("The active strategy spec: its version label, instructions, parameters and the tools it allows. Read it at the start of every run. Always allowed, so an agent can learn its own rules.")]
     public async Task<string> GetStrategySpec(CancellationToken cancellationToken)
     {
         if (context.Spec is not { } spec)

@@ -19,14 +19,15 @@ public sealed class OperatorTools(ToolCallContext context, IJournal journal)
         [Description("Entry kind, for example order.")] string? kind = null,
         [Description("Agent run ID.")] string? runId = null,
         [Description("Client order ID.")] string? clientOrderId = null,
+        [Description("Strategy spec, for example trend or trend@v2.")] string? specVersion = null,
         [Description("At most this many entries (1-200).")] int limit = 50,
         CancellationToken cancellationToken = default)
     {
-        context.RequireOperator();
+        await context.RequireOperatorAsync("query_journal", cancellationToken).ConfigureAwait(false);
         if (limit is < 1 or > MaxEntries)
             throw new McpException($"limit must be between 1 and {MaxEntries}.");
         var entries = await journal.QueryAsync(
-            new JournalQuery(ToolJson.Date(from, "from"), ToolJson.Date(to, "to"), kind, runId, null, clientOrderId, limit),
+            new JournalQuery(ToolJson.Date(from, "from"), ToolJson.Date(to, "to"), kind, runId, specVersion, clientOrderId, limit),
             cancellationToken).ConfigureAwait(false);
         return ToolJson.Of(entries);
     }
@@ -37,14 +38,14 @@ public sealed class OperatorTools(ToolCallContext context, IJournal journal)
         [Description("UTC day, yyyy-MM-dd.")] string date,
         CancellationToken cancellationToken = default)
     {
-        context.RequireOperator();
+        await context.RequireOperatorAsync("get_daily_summary", cancellationToken).ConfigureAwait(false);
         var day = ToolJson.Date(date, "date") ?? throw new McpException("date is required.");
         var entries = await journal.QueryAsync(new JournalQuery(day, day, Limit: FileJournal.MaxQueryLimit), cancellationToken).ConfigureAwait(false);
         return ToolJson.Of(new
         {
             date = day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
             entries = entries.Count,
-            truncated = entries.Count >= FileJournal.MaxQueryLimit,
+            truncated = entries.Count >= FileJournal.MaxQueryLimit, // only past 20,000 entries in a day
             byKind = entries.GroupBy(e => e.Kind).ToDictionary(g => g.Key, g => g.Count()),
             byActor = entries.GroupBy(e => e.Actor).ToDictionary(g => g.Key, g => g.Count()),
             byTool = entries.Where(e => e.Data?.ContainsKey("tool") == true).GroupBy(e => e.Data!["tool"]).ToDictionary(g => g.Key, g => g.Count()),

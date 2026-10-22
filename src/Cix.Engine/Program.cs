@@ -48,10 +48,10 @@ builder.Services.AddCixToolServer(
     toolServer,
     builder.Configuration.GetSection(StrategyOptions.SectionName).Get<StrategyOptions>() ?? new StrategyOptions(),
     builder.Configuration.GetSection(JournalOptions.SectionName).Get<JournalOptions>() ?? new JournalOptions());
-builder.WebHost.UseUrls(toolServer.Url);
+builder.WebHost.ListenOnLoopback(builder.Configuration, toolServer);
 
 builder.Services.AddHostedService<HeartbeatService>();
 
 var app = builder.Build();
-app.MapCixToolServer();
+app.UseCixToolServer();
 app.Run();

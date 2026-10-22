@@ -48,7 +48,8 @@ public interface IJournal
 /// </summary>
 public sealed class FileJournal : IJournal
 {
-    public const int MaxQueryLimit = 1_000;
+    /// <summary>Most entries one query returns; tools ask for far fewer, summaries use it to count a whole day.</summary>
+    public const int MaxQueryLimit = 20_000;
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -76,7 +77,17 @@ public sealed class FileJournal : IJournal
         await _write.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+            await using var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+            if (stream.Length > 0)
+            {
+                // A crash can leave a torn last line; start on a fresh line so this entry stays readable.
+                stream.Seek(-1, SeekOrigin.End);
+                var last = stream.ReadByte();
+                stream.Seek(0, SeekOrigin.End);
+                if (last != '\n')
+                    line = "\n" + line;
+            }
+
             await using var writer = new StreamWriter(stream);
             await writer.WriteAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
             await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -110,6 +121,7 @@ public sealed class FileJournal : IJournal
                     entries.Add(entry);
             }
 
+            entries.Reverse(); // so entries with the same time come back newest-written first
             results.AddRange(entries.OrderByDescending(e => e.At));
             if (results.Count >= limit)
                 break;

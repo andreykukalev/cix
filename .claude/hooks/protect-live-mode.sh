@@ -15,13 +15,20 @@ if printf '%s' "$input" | grep -qiE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*(
   fi
 fi
 
+# 1b. A strategy spec marked for live trading: only the owner promotes a spec to live.
+if printf '%s' "$input" | grep -qiE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*strategies/[^"]*\.json"'; then
+  if printf '%s' "$input" | grep -qiE 'status[\\"]*[[:space:]]*:[[:space:]]*[\\"]*live'; then
+    block
+  fi
+fi
+
 # 2. Commands that set or touch the trading mode (environment variables, arguments, user secrets)
 #    or edit configuration files to say Live.
 if printf '%s' "$input" | grep -qiE '"command"[[:space:]]*:'; then
   if printf '%s' "$input" | grep -qiE 'trading(__|:)mode'; then
     block
   fi
-  if printf '%s' "$input" | grep -qiE '(appsettings|launchSettings|secrets\.json|\.env)' \
+  if printf '%s' "$input" | grep -qiE '(appsettings|launchSettings|secrets\.json|\.env|strategies/)' \
      && printf '%s' "$input" | grep -qiE '(^|[^a-z])live([^a-z]|$)'; then
     block
   fi
