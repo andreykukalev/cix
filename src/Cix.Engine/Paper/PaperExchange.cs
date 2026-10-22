@@ -58,7 +58,7 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
     public void OnQuote(MarketQuote quote)
     {
         ArgumentNullException.ThrowIfNull(quote);
-        if (quote.Bid <= 0 || quote.Ask <= 0 || quote.Bid > quote.Ask || quote.BidSize < 0 || quote.AskSize < 0)
+        if (!quote.IsValid)
             throw new ArgumentException("A quote needs positive prices, non-negative sizes and bid <= ask.", nameof(quote));
 
         lock (_gate)

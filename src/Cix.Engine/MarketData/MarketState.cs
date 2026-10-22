@@ -4,18 +4,30 @@ using Cix.Domain.Exchange;
 namespace Cix.Engine.MarketData;
 
 /// <summary>Latest quote per symbol. The risk gate prices orders from <see cref="Snapshot"/>.</summary>
-public sealed class MarketState
+public sealed class MarketState(TimeProvider time)
 {
     private readonly Lock _gate = new();
     private readonly Dictionary<string, MarketQuote> _quotes = new(StringComparer.Ordinal);
 
-    public void Update(MarketQuote quote)
+    /// <summary>
+    /// Stores the quote unless it is invalid (zero or negative prices, crossed book), from the future, or older than the
+    /// one held. Rejected quotes leave the last valid one in place, which then ages until the risk gate refuses it.
+    /// Returns whether the quote was accepted.
+    /// </summary>
+    public bool Update(MarketQuote quote)
     {
         ArgumentNullException.ThrowIfNull(quote);
+        if (!quote.IsValid || quote.AsOf > time.GetUtcNow())
+            return false;
+
+        var symbol = quote.Symbol.ToUpperInvariant();
         lock (_gate)
         {
-            if (!_quotes.TryGetValue(quote.Symbol, out var current) || current.AsOf <= quote.AsOf)
-                _quotes[quote.Symbol] = quote;
+            if (_quotes.TryGetValue(symbol, out var current) && current.AsOf > quote.AsOf)
+                return false;
+
+            _quotes[symbol] = quote with { Symbol = symbol };
+            return true;
         }
     }
 

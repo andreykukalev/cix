@@ -40,6 +40,8 @@ public sealed class MarketDataOptions
     {
         if (QuoteInterval <= TimeSpan.Zero || MinuteCandleInterval <= TimeSpan.Zero || HourCandleInterval <= TimeSpan.Zero)
             throw new InvalidOperationException("MarketData intervals must be positive.");
+        if (MaxBudgetShare is <= 0 or > 1)
+            throw new InvalidOperationException("MarketData:MaxBudgetShare must be above 0 and at most 1.");
         if (MaxCatchUpPages < 1)
             throw new InvalidOperationException("MarketData:MaxCatchUpPages must be at least 1.");
 

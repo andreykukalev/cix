@@ -60,6 +60,17 @@ public sealed class PublicMarketDataTests
         Assert.Throws<FormatException>(() => RevolutXParser.ParseOrderBookTop(doc.RootElement, "BTC-EUR", Now));
     }
 
+    [Theory]
+    [InlineData("0", "3")]      // zero bid
+    [InlineData("5", "3")]      // crossed book
+    [InlineData("-1", "3")]     // negative price
+    public void ParseOrderBookTop_InvalidTop_Throws(string bid, string ask)
+    {
+        using var doc = JsonDocument.Parse($$$"""{"data":{"bids":[{"price":"{{{bid}}}","quantity":"1"}],"asks":[{"price":"{{{ask}}}","quantity":"1"}]}}""");
+
+        Assert.Throws<FormatException>(() => RevolutXParser.ParseOrderBookTop(doc.RootElement, "BTC-EUR", Now));
+    }
+
     [Fact]
     public async Task GetQuoteAsync_ServerError_Throws()
     {

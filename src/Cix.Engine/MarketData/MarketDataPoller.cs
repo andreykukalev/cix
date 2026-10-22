@@ -40,7 +40,7 @@ public sealed partial class MarketDataPoller
         _state = state;
         _listeners = listeners.ToList();
         _options = options;
-        _symbols = symbols.Select(s => s.Trim().Replace('/', '-').ToUpperInvariant()).Distinct().Order(StringComparer.Ordinal).ToList();
+        _symbols = NormaliseSymbols(symbols);
         _time = time;
         _logger = logger;
 
@@ -93,7 +93,12 @@ public sealed partial class MarketDataPoller
     private async Task<int> PollQuoteAsync(string symbol, CancellationToken cancellationToken)
     {
         var quote = await _quotes.GetQuoteAsync(symbol, cancellationToken).ConfigureAwait(false);
-        _state.Update(quote);
+        if (!_state.Update(quote))
+        {
+            LogQuoteRejected(_logger, symbol);
+            return 1;
+        }
+
         foreach (var listener in _listeners)
         {
             try
@@ -136,12 +141,19 @@ public sealed partial class MarketDataPoller
         return requests;
     }
 
+    /// <summary>Upper-case dash form ("BTC-EUR"), de-duplicated and sorted.</summary>
+    public static IReadOnlyList<string> NormaliseSymbols(IEnumerable<string> symbols) =>
+        symbols.Select(s => s.Trim().Replace('/', '-').ToUpperInvariant()).Distinct().Order(StringComparer.Ordinal).ToList();
+
     /// <summary>Rounds down to a candle boundary, so the first load starts with a whole candle.</summary>
     private static DateTimeOffset AlignDown(DateTimeOffset time, TimeSpan interval) =>
         new(time.UtcTicks - (time.UtcTicks % interval.Ticks), TimeSpan.Zero);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Market data {Kind} poll for {Symbol} failed ({Error}): {Detail}")]
     private static partial void LogPollFailed(ILogger logger, string kind, string symbol, string error, string detail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Rejected an invalid, future or out-of-order quote for {Symbol}")]
+    private static partial void LogQuoteRejected(ILogger logger, string symbol);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Quote listener {Listener} failed for {Symbol}: {Detail}")]
     private static partial void LogListenerFailed(ILogger logger, string listener, string symbol, string detail);

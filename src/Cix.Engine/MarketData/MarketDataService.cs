@@ -38,7 +38,8 @@ public static class MarketDataRegistration
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
-        var symbolList = symbols.ToList();
+        ArgumentNullException.ThrowIfNull(symbols);
+        var symbolList = MarketDataPoller.NormaliseSymbols(symbols);
         options.Validate(symbolList.Count);
 
         services.AddSingleton(options);

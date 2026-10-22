@@ -70,6 +70,7 @@ public sealed class MarketDataPollerTests
         {
             Time = new MutableTime(Start);
             Market = new SimulatedMarket(Time, pageSize);
+            State = new MarketState(Time);
             Options = options ?? new MarketDataOptions();
             Poller = new MarketDataPoller(Market, Market, Store, State, listeners, Options, ["btc/eur"], Time, NullLogger<MarketDataPoller>.Instance);
         }
@@ -78,7 +79,7 @@ public sealed class MarketDataPollerTests
         public SimulatedMarket Market { get; }
         public MarketDataOptions Options { get; }
         public InMemoryCandleStore Store { get; } = new();
-        public MarketState State { get; } = new();
+        public MarketState State { get; }
         public MarketDataPoller Poller { get; }
 
         /// <summary>Calls the poller once a second, like the hosted service. Returns the requests made.</summary>
@@ -209,7 +210,7 @@ public sealed class MarketDataPollerTests
     [Fact]
     public void NoQuoteYet_SnapshotHasNoPrice()
     {
-        var snapshot = new MarketState().Snapshot("btc-eur");
+        var snapshot = new MarketState(TimeProvider.System).Snapshot("btc-eur");
 
         Assert.Equal(Btc, snapshot.Symbol);
         Assert.Equal(0m, snapshot.ReferencePrice);
@@ -223,8 +224,14 @@ public sealed class MarketDataPollerTests
         string[] symbols = ["BTC-EUR", "ETH-EUR", "SOL-EUR", "XRP-EUR"]; // 4 x 13.2 = 52.8 a minute > 48
 
         Assert.Throws<InvalidOperationException>(() => new MarketDataPoller(
-            market, market, new InMemoryCandleStore(), new MarketState(), [], new MarketDataOptions(), symbols, time, NullLogger<MarketDataPoller>.Instance));
+            market, market, new InMemoryCandleStore(), new MarketState(time), [], new MarketDataOptions(), symbols, time, NullLogger<MarketDataPoller>.Instance));
     }
+
+    [Theory]
+    [InlineData(0.0)]
+    [InlineData(1.5)]
+    public void Options_BudgetShareOutOfRange_Throws(double share) =>
+        Assert.Throws<InvalidOperationException>(() => new MarketDataOptions { MaxBudgetShare = (decimal)share }.Validate(1));
 
     [Fact]
     public void Options_DefaultScheduleFitsThreeSymbols() =>
@@ -238,11 +245,60 @@ public sealed class MarketStateAndStoreTests
     [Fact]
     public void Update_IgnoresAnOlderQuote()
     {
-        var state = new MarketState();
-        state.Update(new MarketQuote("BTC-EUR", 100m, 1m, 102m, 1m, T));
-        state.Update(new MarketQuote("BTC-EUR", 90m, 1m, 92m, 1m, T.AddSeconds(-5)));
+        var state = new MarketState(new MutableTime(T));
+        Assert.True(state.Update(new MarketQuote("BTC-EUR", 100m, 1m, 102m, 1m, T)));
+        Assert.False(state.Update(new MarketQuote("BTC-EUR", 90m, 1m, 92m, 1m, T.AddSeconds(-5))));
 
         Assert.Equal(new MarketSnapshot("BTC-EUR", 101m, T), state.Snapshot("btc-eur"));
+    }
+
+    public static TheoryData<decimal, decimal, decimal> InvalidQuotes => new()
+    {
+        { 0m, 102m, 1m },     // zero bid would halve the mid
+        { -1m, 102m, 1m },    // negative price
+        { 103m, 102m, 1m },   // crossed book
+        { 100m, 102m, -1m },  // negative size
+    };
+
+    [Theory]
+    [MemberData(nameof(InvalidQuotes))]
+    public void Update_RejectsInvalidQuotes_AndKeepsTheLastValidOne(decimal bid, decimal ask, decimal size)
+    {
+        var state = new MarketState(new MutableTime(T.AddSeconds(10)));
+        state.Update(new MarketQuote("BTC-EUR", 100m, 1m, 102m, 1m, T));
+
+        Assert.False(state.Update(new MarketQuote("BTC-EUR", bid, size, ask, 1m, T.AddSeconds(5))));
+        Assert.Equal(new MarketSnapshot("BTC-EUR", 101m, T), state.Snapshot("BTC-EUR"));
+    }
+
+    [Fact]
+    public void Update_RejectsAQuoteFromTheFuture_SoItCannotLookFreshOrBlockRealUpdates()
+    {
+        var state = new MarketState(new MutableTime(T));
+
+        Assert.False(state.Update(new MarketQuote("BTC-EUR", 100m, 1m, 102m, 1m, T.AddMinutes(10))));
+        Assert.True(state.Update(new MarketQuote("BTC-EUR", 100m, 1m, 102m, 1m, T)));
+    }
+
+    [Fact]
+    public void CrossedBookFromTheSource_NeverReachesTheGateOrListeners()
+    {
+        var time = new MutableTime(T);
+        var listener = new RecordingListener();
+        var state = new MarketState(time);
+        var poller = new MarketDataPoller(
+            new FakeMarketData(), new FixedQuote(new MarketQuote("BTC-EUR", 0m, 1m, 100_000m, 1m, T)), new InMemoryCandleStore(), state,
+            [listener], new MarketDataOptions(), ["BTC-EUR"], time, NullLogger<MarketDataPoller>.Instance);
+
+        _ = poller.PollOnceAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+        Assert.Equal(0m, state.Snapshot("BTC-EUR").ReferencePrice);
+        Assert.Empty(listener.Quotes);
+    }
+
+    private sealed class FixedQuote(MarketQuote quote) : IQuoteSource
+    {
+        public Task<MarketQuote> GetQuoteAsync(string symbol, CancellationToken cancellationToken) => Task.FromResult(quote);
     }
 
     [Fact]

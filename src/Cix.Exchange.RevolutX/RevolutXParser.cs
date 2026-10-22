@@ -85,13 +85,16 @@ internal static class RevolutXParser
                 asOf = exchangeTime;
         }
 
-        return new MarketQuote(
+        var quote = new MarketQuote(
             NormaliseSymbol(symbol),
             Dec(bestBid, "price"),
             Dec(bestBid, "quantity"),
             Dec(bestAsk, "price"),
             Dec(bestAsk, "quantity"),
             asOf);
+        if (!quote.IsValid)
+            throw new FormatException("Order book top is invalid: prices must be positive, sizes non-negative and bid <= ask.");
+        return quote;
     }
 
     public static PlacedOrder ParsePlaced(JsonElement root)

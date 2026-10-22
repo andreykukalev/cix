@@ -10,4 +10,7 @@ public sealed record MarketQuote(
     DateTimeOffset AsOf)
 {
     public decimal Mid => (Bid + Ask) / 2m;
+
+    /// <summary>Positive prices, non-negative sizes and an uncrossed book. Anything else must never price an order.</summary>
+    public bool IsValid => Bid > 0 && Ask > 0 && Bid <= Ask && BidSize >= 0 && AskSize >= 0;
 }
