@@ -1,3 +1,5 @@
+using Cix.Domain;
+using Cix.Domain.Risk;
 using System.Net;
 using System.Text;
 
@@ -96,4 +98,10 @@ internal sealed class ClientHarness
             Delays.Add(delay);
             return Task.CompletedTask;
         });
+}
+
+/// <summary>Builds an <see cref="ApprovedOrder"/> without the gate, to test how clients handle orders the gate would refuse.</summary>
+internal static class TestApproval
+{
+    public static ApprovedOrder Approved(this OrderIntent order) => new(order, DateTimeOffset.UnixEpoch);
 }

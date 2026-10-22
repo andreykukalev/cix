@@ -1,4 +1,7 @@
+using System.Globalization;
+using System.Reflection;
 using Cix.Domain;
+using Cix.Domain.Exchange;
 using Cix.Domain.Risk;
 
 namespace Cix.Domain.Tests;
@@ -155,6 +158,111 @@ public sealed class RiskGateTests
 
         Assert.Equal(RiskOutcome.Resized, verdict.Outcome);
         Assert.Equal(0.0005m, verdict.Order!.BaseSize);
+    }
+
+    private static PairInfo Pair(decimal baseStep = 0.00000001m, decimal quoteStep = 0.01m, decimal minQuote = 0.1m, decimal maxSize = 200m, bool active = true) =>
+        new(Btc, "BTC", "EUR", baseStep, quoteStep, baseStep, maxSize, minQuote, active);
+
+    [Fact]
+    public void Evaluate_WithPair_ResizeRoundsDownToTheBaseStep()
+    {
+        var verdict = Gate().Evaluate(Buy(0.002m), Portfolio(), Market(), Pair(baseStep: 0.0005m)); // 40 EUR allows 0.0008
+
+        Assert.Equal(RiskOutcome.Resized, verdict.Outcome);
+        Assert.Equal(0.0005m, verdict.Order!.BaseSize);
+    }
+
+    [Theory]
+    [InlineData("0.00061", "50000", "step")]       // size off a 0.0001 step
+    [InlineData("0.0006", "50000.005", "step")]    // price off a 0.01 step
+    public void Evaluate_OffStep_Rejects(string size, string price, string rule)
+    {
+        var order = Buy(decimal.Parse(size, CultureInfo.InvariantCulture), decimal.Parse(price, CultureInfo.InvariantCulture));
+
+        var verdict = Gate().Evaluate(order, Portfolio(), Market(), Pair(baseStep: 0.0001m));
+
+        Assert.Equal(rule, verdict.Rule);
+        Assert.Null(verdict.Order);
+    }
+
+    [Fact]
+    public void Evaluate_InactivePair_Rejects() =>
+        Assert.Equal("pair-inactive", Gate().Evaluate(Buy(0.0006m), Portfolio(), Market(), Pair(active: false)).Rule);
+
+    [Fact]
+    public void Evaluate_BelowExchangeMinimum_Rejects()
+    {
+        var verdict = Gate().Evaluate(Buy(0.0001m), Portfolio(), Market(), Pair(minQuote: 10m)); // 5 EUR
+
+        Assert.Equal("exchange-min-size", verdict.Rule);
+    }
+
+    [Fact]
+    public void Evaluate_ResizedBelowExchangeMinimum_Rejects()
+    {
+        var verdict = Gate().Evaluate(Buy(0.0008m), Portfolio(exposure: 195m), Market(), Pair(minQuote: 10m)); // 5 EUR left
+
+        Assert.Equal("exchange-min-size", verdict.Rule);
+        Assert.Contains("allocation-cap", verdict.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Evaluate_AboveExchangeMaximum_ResizesToIt()
+    {
+        var verdict = Gate().Evaluate(Buy(0.0008m), Portfolio(), Market(), Pair(maxSize: 0.0005m));
+
+        Assert.Equal("exchange-max-size", verdict.Rule);
+        Assert.Equal(0.0005m, verdict.Order!.BaseSize);
+    }
+
+    [Fact]
+    public void Evaluate_OpenBuys_CountTowardThePositionCap()
+    {
+        var portfolio = Portfolio(btcPosition: 50m) with { OpenBuyQuoteBySymbol = new Dictionary<string, decimal> { [Btc] = 40m } };
+
+        var verdict = Gate().Evaluate(Buy(0.0008m), portfolio, Market()); // 40 asked, 10 left of 100
+
+        Assert.Equal("position-cap", verdict.Rule);
+        Assert.Equal(0.0002m, verdict.Order!.BaseSize);
+    }
+
+    [Fact]
+    public void Evaluate_MarketDataFromTheFuture_Rejects() =>
+        Assert.Equal("stale-market-data", Gate().Evaluate(Buy(0.0006m), Portfolio(), Market(asOf: Now.AddMinutes(1))).Rule);
+
+    [Fact]
+    public void Evaluate_MissingClientOrderId_Rejects() =>
+        Assert.Equal("invalid-order", Gate().Evaluate(Buy(0.0006m) with { ClientOrderId = " " }, Portfolio(), Market()).Rule);
+
+    [Fact]
+    public void Evaluate_Approval_CarriesTheApprovedValuesAndTime()
+    {
+        var order = Gate().Evaluate(Buy(0.0006m), Portfolio(), Market()).Order!;
+
+        Assert.Equal((Btc, OrderSide.Buy, 0.0006m, 50_000m, "c-1", Now), (order.Symbol, order.Side, order.BaseSize, order.LimitPrice, order.ClientOrderId, order.ApprovedAt));
+        Assert.Equal(new OrderIntent(Btc, OrderSide.Buy, 0.0006m, 50_000m, "c-1"), order.ToIntent());
+    }
+
+    [Fact]
+    public void ApprovedOrder_CanOnlyBeCreatedByTheGate()
+    {
+        var type = typeof(ApprovedOrder);
+
+        Assert.True(type.IsSealed);
+        Assert.Empty(type.GetConstructors(BindingFlags.Public | BindingFlags.Instance));
+        Assert.DoesNotContain(type.GetConstructors(BindingFlags.NonPublic | BindingFlags.Instance), c => c.IsFamily || c.IsFamilyOrAssembly);
+        Assert.Null(type.GetMethod("<Clone>$")); // not a record: no `with` copies
+        Assert.DoesNotContain(
+            typeof(ApprovedOrder).Assembly.GetExportedTypes().SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static)),
+            m => m.ReturnType == typeof(ApprovedOrder) || m.ReturnType == typeof(RiskVerdict) && m.Name != nameof(RiskVerdict.Reject));
+    }
+
+    [Fact]
+    public void ExchangeClients_AcceptOnlyApprovedOrders()
+    {
+        var place = typeof(IExchangeClient).GetMethod(nameof(IExchangeClient.PlaceLimitOrderAsync))!;
+
+        Assert.Equal(typeof(ApprovedOrder), place.GetParameters()[0].ParameterType);
     }
 
     [Fact]

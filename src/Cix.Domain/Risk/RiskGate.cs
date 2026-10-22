@@ -1,3 +1,5 @@
+using Cix.Domain.Exchange;
+
 namespace Cix.Domain.Risk;
 
 public enum RiskOutcome
@@ -7,13 +9,16 @@ public enum RiskOutcome
     Rejected,
 }
 
-/// <summary>The gate's decision. <see cref="Order"/> is what may be sent; null when rejected.</summary>
+/// <summary>
+/// The gate's decision. <see cref="Order"/> is what may be sent; null when rejected. Only the gate can build an accepting
+/// verdict, because only it can create an <see cref="ApprovedOrder"/>.
+/// </summary>
 /// <param name="Rule">Short machine-readable rule name, for example <c>allocation-cap</c>.</param>
 /// <param name="Reason">Human- and agent-readable explanation.</param>
-public sealed record RiskVerdict(RiskOutcome Outcome, OrderIntent? Order, string Rule, string Reason)
+public sealed record RiskVerdict(RiskOutcome Outcome, ApprovedOrder? Order, string Rule, string Reason)
 {
-    public static RiskVerdict Accept(OrderIntent order) => new(RiskOutcome.Accepted, order, "ok", "Within all limits.");
-    public static RiskVerdict Resize(OrderIntent order, string rule, string reason) => new(RiskOutcome.Resized, order, rule, reason);
+    internal static RiskVerdict Accept(ApprovedOrder order) => new(RiskOutcome.Accepted, order, "ok", "Within all limits.");
+    internal static RiskVerdict Resize(ApprovedOrder order, string rule, string reason) => new(RiskOutcome.Resized, order, rule, reason);
     public static RiskVerdict Reject(string rule, string reason) => new(RiskOutcome.Rejected, null, rule, reason);
 }
 
@@ -23,7 +28,6 @@ public sealed record RiskVerdict(RiskOutcome Outcome, OrderIntent? Order, string
 /// </summary>
 public sealed class RiskGate
 {
-    private const int SizeDecimals = 8;
     private readonly RiskLimits _limits;
     private readonly TimeProvider _time;
 
@@ -37,7 +41,12 @@ public sealed class RiskGate
         _time = time ?? TimeProvider.System;
     }
 
-    public RiskVerdict Evaluate(OrderIntent intent, PortfolioSnapshot portfolio, MarketSnapshot market)
+    /// <summary>
+    /// Decides whether <paramref name="intent"/> may be sent. With <paramref name="pair"/>, also enforces the exchange's
+    /// rules: the pair must be active, size and price must sit on its steps (round before calling), resizes round down to
+    /// its base step, and the final order must meet its minimum and maximum sizes.
+    /// </summary>
+    public RiskVerdict Evaluate(OrderIntent intent, PortfolioSnapshot portfolio, MarketSnapshot market, PairInfo? pair = null)
     {
         ArgumentNullException.ThrowIfNull(intent);
         ArgumentNullException.ThrowIfNull(portfolio);
@@ -49,14 +58,23 @@ public sealed class RiskGate
         if (!_limits.AllowedSymbols.Contains(intent.Symbol))
             return RiskVerdict.Reject("symbol-allowlist", $"{intent.Symbol} is not in the allowed symbols.");
 
-        if (intent.BaseSize <= 0 || intent.LimitPrice <= 0)
-            return RiskVerdict.Reject("invalid-order", "Size and limit price must be positive.");
+        if (intent.BaseSize <= 0 || intent.LimitPrice <= 0 || string.IsNullOrWhiteSpace(intent.ClientOrderId))
+            return RiskVerdict.Reject("invalid-order", "Size and limit price must be positive and the client order ID set.");
+
+        if (pair is not null)
+        {
+            if (!string.Equals(pair.Symbol, intent.Symbol, StringComparison.Ordinal) || !pair.Active)
+                return RiskVerdict.Reject("pair-inactive", $"{intent.Symbol} is not tradable on the exchange.");
+            if (!IsMultiple(intent.LimitPrice, pair.QuoteStep) || !IsMultiple(intent.BaseSize, pair.BaseStep))
+                return RiskVerdict.Reject("step", $"Size must be a multiple of {pair.BaseStep} and price of {pair.QuoteStep}.");
+        }
 
         if (!string.Equals(market.Symbol, intent.Symbol, StringComparison.Ordinal) || market.ReferencePrice <= 0)
             return RiskVerdict.Reject("market-data", "No valid market data for this symbol.");
 
-        if (_time.GetUtcNow() - market.AsOf > HardCeilings.MaxMarketDataAge)
-            return RiskVerdict.Reject("stale-market-data", "Market data is too old to price this order.");
+        var age = _time.GetUtcNow() - market.AsOf;
+        if (age > HardCeilings.MaxMarketDataAge || age < TimeSpan.Zero)
+            return RiskVerdict.Reject("stale-market-data", "Market data is too old (or from the future) to price this order.");
 
         var deviation = Math.Abs(intent.LimitPrice - market.ReferencePrice) / market.ReferencePrice;
         if (deviation > _limits.MaxPriceDeviationFraction)
@@ -65,39 +83,76 @@ public sealed class RiskGate
         if (portfolio.OrdersInLastMinute >= _limits.MaxOrdersPerMinute)
             return RiskVerdict.Reject("order-rate", $"At most {_limits.MaxOrdersPerMinute} orders per minute.");
 
-        return intent.Side == OrderSide.Sell
-            ? EvaluateSell(intent, portfolio)
-            : EvaluateBuy(intent, portfolio);
+        var step = pair?.BaseStep ?? DefaultSizeStep;
+        var sized = intent.Side == OrderSide.Sell
+            ? SizeSell(intent, portfolio, step)
+            : SizeBuy(intent, portfolio, step);
+        if (sized.Order is null)
+            return RiskVerdict.Reject(sized.Rule, sized.Reason);
+
+        var order = sized.Order;
+        var (rule, reason, resized) = (sized.Rule, sized.Reason, sized.Resized);
+        if (pair is not null)
+        {
+            if (order.BaseSize > pair.MaxOrderSize)
+            {
+                order = order with { BaseSize = RoundDown(pair.MaxOrderSize, step) };
+                (rule, reason, resized) = ("exchange-max-size", $"Order reduced to the exchange maximum of {pair.MaxOrderSize}.", true);
+            }
+
+            if (order.BaseSize < pair.MinOrderSize || order.NotionalQuote < pair.MinOrderSizeQuote)
+            {
+                return RiskVerdict.Reject(
+                    "exchange-min-size",
+                    resized
+                        ? $"After {rule}, the order is below the exchange minimum ({pair.MinOrderSize} base, {pair.MinOrderSizeQuote} quote)."
+                        : $"The order is below the exchange minimum ({pair.MinOrderSize} base, {pair.MinOrderSizeQuote} quote).");
+            }
+        }
+
+        var approved = new ApprovedOrder(order, _time.GetUtcNow());
+        return resized ? RiskVerdict.Resize(approved, rule, reason) : RiskVerdict.Accept(approved);
     }
 
-    private RiskVerdict EvaluateSell(OrderIntent intent, PortfolioSnapshot portfolio)
+    private const decimal DefaultSizeStep = 0.00000001m;
+
+    private readonly record struct Sizing(OrderIntent? Order, bool Resized, string Rule, string Reason)
+    {
+        public static Sizing Keep(OrderIntent order) => new(order, false, "ok", "Within all limits.");
+        public static Sizing Shrink(OrderIntent order, string rule, string reason) => new(order, true, rule, reason);
+        public static Sizing No(string rule, string reason) => new(null, false, rule, reason);
+    }
+
+    private static Sizing SizeSell(OrderIntent intent, PortfolioSnapshot portfolio, decimal step)
     {
         var positionQuote = portfolio.PositionQuoteBySymbol.GetValueOrDefault(intent.Symbol);
         if (positionQuote <= 0)
-            return RiskVerdict.Reject("no-position", "Spot only: there is no position to sell.");
+            return Sizing.No("no-position", "Spot only: there is no position to sell.");
 
         if (intent.NotionalQuote <= positionQuote)
-            return RiskVerdict.Accept(intent);
+            return Sizing.Keep(intent);
 
-        var resized = intent with { BaseSize = RoundDown(positionQuote / intent.LimitPrice) };
+        var resized = intent with { BaseSize = RoundDown(positionQuote / intent.LimitPrice, step) };
         return resized.BaseSize <= 0
-            ? RiskVerdict.Reject("no-position", "The position is too small to sell at this price.")
-            : RiskVerdict.Resize(resized, "position-size", "Sell reduced to the current position size.");
+            ? Sizing.No("no-position", "The position is too small to sell at this price.")
+            : Sizing.Shrink(resized, "position-size", "Sell reduced to the current position size.");
     }
 
-    private RiskVerdict EvaluateBuy(OrderIntent intent, PortfolioSnapshot portfolio)
+    private Sizing SizeBuy(OrderIntent intent, PortfolioSnapshot portfolio, decimal step)
     {
         if (portfolio.PeakEquity > 0)
         {
             var drawdown = (portfolio.PeakEquity - portfolio.Equity) / portfolio.PeakEquity;
             if (drawdown >= _limits.MaxDrawdownFraction)
-                return RiskVerdict.Reject("drawdown-halt", $"Drawdown is {drawdown:P2}; new buys are halted until the owner resumes trading.");
+                return Sizing.No("drawdown-halt", $"Drawdown is {drawdown:P2}; new buys are halted until the owner resumes trading.");
         }
 
-        if (-portfolio.RealizedPnlToday >= _limits.MaxDailyLossQuote)
-            return RiskVerdict.Reject("daily-loss", "The daily loss limit is reached; new buys are halted until tomorrow (UTC).");
+        if (-portfolio.PnlToday >= _limits.MaxDailyLossQuote)
+            return Sizing.No("daily-loss", "The daily loss limit is reached; new buys are halted until tomorrow (UTC).");
 
-        var positionQuote = portfolio.PositionQuoteBySymbol.GetValueOrDefault(intent.Symbol);
+        // Buys already working count toward the position they will become.
+        var positionQuote = portfolio.PositionQuoteBySymbol.GetValueOrDefault(intent.Symbol)
+            + (portfolio.OpenBuyQuoteBySymbol?.GetValueOrDefault(intent.Symbol) ?? 0m);
         var room = new[]
         {
             ("max-order", _limits.MaxOrderQuote),
@@ -106,17 +161,18 @@ public sealed class RiskGate
         }.MinBy(r => r.Item2);
 
         if (room.Item2 <= 0)
-            return RiskVerdict.Reject(room.Item1, $"No room left under {room.Item1}.");
+            return Sizing.No(room.Item1, $"No room left under {room.Item1}.");
 
         if (intent.NotionalQuote <= room.Item2)
-            return RiskVerdict.Accept(intent);
+            return Sizing.Keep(intent);
 
-        var resized = intent with { BaseSize = RoundDown(room.Item2 / intent.LimitPrice) };
+        var resized = intent with { BaseSize = RoundDown(room.Item2 / intent.LimitPrice, step) };
         return resized.BaseSize <= 0
-            ? RiskVerdict.Reject(room.Item1, $"Remaining room under {room.Item1} is too small for one unit.")
-            : RiskVerdict.Resize(resized, room.Item1, $"Order reduced to {room.Item2:0.##} quote to stay within {room.Item1}.");
+            ? Sizing.No(room.Item1, $"Remaining room under {room.Item1} is too small for one unit.")
+            : Sizing.Shrink(resized, room.Item1, $"Order reduced to {room.Item2:0.##} quote to stay within {room.Item1}.");
     }
 
-    private static decimal RoundDown(decimal value) =>
-        Math.Round(value, SizeDecimals, MidpointRounding.ToZero);
+    private static decimal RoundDown(decimal value, decimal step) => Steps.Floor(value, step);
+
+    private static bool IsMultiple(decimal value, decimal step) => Steps.IsMultiple(value, step);
 }

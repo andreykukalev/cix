@@ -1,3 +1,5 @@
+using Cix.Domain.Risk;
+
 namespace Cix.Domain.Exchange;
 
 public sealed record Balance(string Currency, decimal Available, decimal Reserved, decimal Total);
@@ -91,9 +93,9 @@ public interface IExchangeClient : IMarketDataSource
 {
     Task<IReadOnlyList<Balance>> GetBalancesAsync(CancellationToken cancellationToken);
 
-    /// <summary>Places an order that has already passed the risk gate.</summary>
+    /// <summary>Places an order the risk gate approved. Nothing else can be passed: only the gate creates an <see cref="ApprovedOrder"/>.</summary>
     /// <exception cref="OrderPlacementUncertainException">The outcome is unknown; reconcile before retrying.</exception>
-    Task<PlacedOrder> PlaceLimitOrderAsync(OrderIntent approvedOrder, bool postOnly, CancellationToken cancellationToken);
+    Task<PlacedOrder> PlaceLimitOrderAsync(ApprovedOrder order, bool postOnly, CancellationToken cancellationToken);
 
     /// <summary>Returns the order, or null if the exchange doesn't (yet) know it.</summary>
     Task<ExchangeOrder?> GetOrderAsync(string venueOrderId, CancellationToken cancellationToken);

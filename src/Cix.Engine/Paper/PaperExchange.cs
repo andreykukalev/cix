@@ -1,6 +1,7 @@
 using System.Globalization;
 using Cix.Domain;
 using Cix.Domain.Exchange;
+using Cix.Domain.Risk;
 
 namespace Cix.Engine.Paper;
 
@@ -103,9 +104,10 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
     public Task<IReadOnlyList<Candle>> GetCandlesAsync(string symbol, int intervalMinutes, DateTimeOffset since, CancellationToken cancellationToken) =>
         _marketData.GetCandlesAsync(symbol, intervalMinutes, since, cancellationToken);
 
-    public async Task<PlacedOrder> PlaceLimitOrderAsync(OrderIntent approvedOrder, bool postOnly, CancellationToken cancellationToken)
+    public async Task<PlacedOrder> PlaceLimitOrderAsync(ApprovedOrder approvedOrder, bool postOnly, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(approvedOrder);
+        approvedOrder.Claim();
         ArgumentException.ThrowIfNullOrWhiteSpace(approvedOrder.ClientOrderId);
         var pairs = await EnsurePairsAsync(cancellationToken).ConfigureAwait(false);
 

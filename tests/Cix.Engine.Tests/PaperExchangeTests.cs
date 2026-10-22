@@ -1,5 +1,6 @@
 using Cix.Domain;
 using Cix.Domain.Exchange;
+using Cix.Domain.Risk;
 using Cix.Engine.Paper;
 
 namespace Cix.Engine.Tests;
@@ -23,9 +24,9 @@ public sealed class PaperExchangeTests
     private MarketQuote Quote(decimal bid, decimal bidSize, decimal ask, decimal askSize) =>
         new(Btc, bid, bidSize, ask, askSize, _time.GetUtcNow());
 
-    private static OrderIntent Buy(decimal size, decimal price, string id = "c-1") => new(Btc, OrderSide.Buy, size, price, id);
+    private static ApprovedOrder Buy(decimal size, decimal price, string id = "c-1") => new OrderIntent(Btc, OrderSide.Buy, size, price, id).Approved();
 
-    private static OrderIntent Sell(decimal size, decimal price, string id = "s-1") => new(Btc, OrderSide.Sell, size, price, id);
+    private static ApprovedOrder Sell(decimal size, decimal price, string id = "s-1") => new OrderIntent(Btc, OrderSide.Sell, size, price, id).Approved();
 
     private static async Task<Balance?> BalanceOf(PaperExchange paper, string currency) =>
         (await paper.GetBalancesAsync(CancellationToken.None)).SingleOrDefault(b => b.Currency == currency);
@@ -163,7 +164,7 @@ public sealed class PaperExchangeTests
         var paper = Create();
 
         var ex = await Assert.ThrowsAsync<ExchangeException>(() => paper.PlaceLimitOrderAsync(
-            new OrderIntent("DOGE-EUR", OrderSide.Buy, 10m, 0.20m, "d-1"), postOnly: false, CancellationToken.None));
+            new OrderIntent("DOGE-EUR", OrderSide.Buy, 10m, 0.20m, "d-1").Approved(), postOnly: false, CancellationToken.None));
 
         Assert.Equal("paper-unknown-symbol", ex.ErrorId);
     }

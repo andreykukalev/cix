@@ -65,7 +65,7 @@ public sealed class RevolutXClientTests
         var h = new ClientHarness();
         h.Handler.RespondFixture("order_created.json");
 
-        var placed = await h.Create().PlaceLimitOrderAsync(Order(), postOnly: true, CancellationToken.None);
+        var placed = await h.Create().PlaceLimitOrderAsync(Order().Approved(), postOnly: true, CancellationToken.None);
 
         const string expectedBody = "{\"client_order_id\":\"22222222-2222-4222-8222-222222222222\",\"symbol\":\"BTC-EUR\",\"side\":\"BUY\",\"order_configuration\":{\"limit\":{\"base_size\":\"0.00000172\",\"price\":\"58397.08\",\"execution_instructions\":[\"post_only\"]}}}";
         var request = Assert.Single(h.Handler.Requests);
@@ -207,7 +207,7 @@ public sealed class RevolutXClientTests
         h.Handler.Respond(HttpStatusCode.ServiceUnavailable);
 
         var ex = await Assert.ThrowsAsync<OrderPlacementUncertainException>(
-            () => h.Create().PlaceLimitOrderAsync(Order("c-uncertain"), postOnly: true, CancellationToken.None));
+            () => h.Create().PlaceLimitOrderAsync(Order("c-uncertain").Approved(), postOnly: true, CancellationToken.None));
 
         Assert.Equal("c-uncertain", ex.ClientOrderId);
         Assert.Single(h.Handler.Requests);
@@ -220,7 +220,7 @@ public sealed class RevolutXClientTests
         h.Handler.Throw(new TaskCanceledException("timed out"));
 
         await Assert.ThrowsAsync<OrderPlacementUncertainException>(
-            () => h.Create().PlaceLimitOrderAsync(Order(), postOnly: true, CancellationToken.None));
+            () => h.Create().PlaceLimitOrderAsync(Order().Approved(), postOnly: true, CancellationToken.None));
 
         Assert.Single(h.Handler.Requests);
     }
@@ -231,7 +231,7 @@ public sealed class RevolutXClientTests
         var h = new ClientHarness();
         h.Handler.Respond(HttpStatusCode.TooManyRequests, retryAfter: "200").RespondFixture("order_created.json");
 
-        var placed = await h.Create().PlaceLimitOrderAsync(Order(), postOnly: true, CancellationToken.None);
+        var placed = await h.Create().PlaceLimitOrderAsync(Order().Approved(), postOnly: true, CancellationToken.None);
 
         Assert.Equal("11111111-1111-4111-8111-111111111111", placed.VenueOrderId);
         Assert.Equal(2, h.Handler.Requests.Count);
@@ -245,7 +245,7 @@ public sealed class RevolutXClientTests
         h.Handler.RespondFixture("error_400.json", HttpStatusCode.BadRequest);
 
         var ex = await Assert.ThrowsAsync<ExchangeException>(
-            () => h.Create().PlaceLimitOrderAsync(Order(), postOnly: true, CancellationToken.None));
+            () => h.Create().PlaceLimitOrderAsync(Order().Approved(), postOnly: true, CancellationToken.None));
 
         Assert.IsNotType<OrderPlacementUncertainException>(ex);
         Assert.Equal(400, ex.StatusCode);
@@ -262,7 +262,7 @@ public sealed class RevolutXClientTests
         await cts.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => h.Create().PlaceLimitOrderAsync(Order(), postOnly: true, cts.Token));
+            () => h.Create().PlaceLimitOrderAsync(Order().Approved(), postOnly: true, cts.Token));
 
         Assert.Empty(h.Handler.Requests);
     }
@@ -279,7 +279,7 @@ public sealed class RevolutXClientTests
         });
 
         var ex = await Assert.ThrowsAsync<OrderPlacementUncertainException>(
-            () => h.Create().PlaceLimitOrderAsync(Order("c-mid-flight"), postOnly: true, cts.Token));
+            () => h.Create().PlaceLimitOrderAsync(Order("c-mid-flight").Approved(), postOnly: true, cts.Token));
 
         Assert.Equal("c-mid-flight", ex.ClientOrderId);
         Assert.IsAssignableFrom<OperationCanceledException>(ex.InnerException);
@@ -293,7 +293,7 @@ public sealed class RevolutXClientTests
         h.Handler.Respond(HttpStatusCode.OK, "{\"data\": {\"surprise\": 1}}");
 
         await Assert.ThrowsAsync<OrderPlacementUncertainException>(
-            () => h.Create().PlaceLimitOrderAsync(Order(), postOnly: true, CancellationToken.None));
+            () => h.Create().PlaceLimitOrderAsync(Order().Approved(), postOnly: true, CancellationToken.None));
     }
 
     [Fact]
