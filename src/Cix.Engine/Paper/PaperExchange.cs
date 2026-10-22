@@ -5,24 +5,29 @@ using Cix.Domain.Exchange;
 namespace Cix.Engine.Paper;
 
 /// <summary>
-/// A simulated Revolut X account for paper trading. Market data (pairs, candles) comes from the real exchange;
-/// orders, fills and balances are simulated from the quotes passed to <see cref="OnQuote"/>.
+/// A simulated Revolut X account for paper trading. Market data (pairs, candles) comes from an
+/// <see cref="IMarketDataSource"/>, which has no order methods, so nothing here can place a real order.
+/// Orders, fills and balances are simulated from the quotes passed to <see cref="OnQuote"/>. State is in memory;
+/// it is lost on restart until the journal and state store land (#6).
 /// </summary>
 /// <remarks>
 /// Fill model, deliberately conservative so paper results don't flatter a strategy:
 /// <list type="bullet">
 /// <item>An order that crosses the book when placed fills at the best opposite price, up to the size shown there,
-/// paying the taker fee. Any remainder keeps resting and fills as a taker on later quotes.</item>
+/// paying the taker fee. The size it takes is removed from the stored quote, so later orders can't reuse it.</item>
+/// <item>The remainder of a crossing order rests at its limit and fills there, still paying the taker fee, whenever
+/// a later quote reaches its limit. It never gets a better price than its limit.</item>
 /// <item>An order that rests without crossing fills at its limit price, with the maker fee, only once the market
 /// trades through it (best ask strictly below a buy, best bid strictly above a sell), up to the size shown.</item>
 /// <item>A post-only order that would cross is rejected.</item>
-/// <item>Funds are reserved at placement: quote currency for buys (including the worst-case taker fee), base for sells.</item>
-/// <item>Placing the same client order ID again returns the existing order and changes nothing.</item>
+/// <item>Funds are reserved at placement: quote currency for buys (full size at the limit plus the taker fee), base for sells.
+/// Fees round down to 8 decimals, so a fill never costs more than its reservation.</item>
+/// <item>Placing the same client order ID again returns the existing order; reusing it with different details is rejected.</item>
 /// </list>
 /// </remarks>
 public sealed class PaperExchange : IExchangeClient
 {
-    private readonly IExchangeClient _marketData;
+    private readonly IMarketDataSource _marketData;
     private readonly PaperOptions _options;
     private readonly TimeProvider _time;
     private readonly Lock _gate = new();
@@ -31,8 +36,9 @@ public sealed class PaperExchange : IExchangeClient
     private readonly Dictionary<string, PaperOrder> _byClientId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MarketQuote> _quotes = new(StringComparer.Ordinal);
     private IReadOnlyDictionary<string, PairInfo>? _pairs;
+    private DateTimeOffset _pairsLoadedAt;
 
-    public PaperExchange(IExchangeClient marketData, PaperOptions options, TimeProvider? time = null)
+    public PaperExchange(IMarketDataSource marketData, PaperOptions options, TimeProvider? time = null)
     {
         _marketData = marketData ?? throw new ArgumentNullException(nameof(marketData));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -52,26 +58,29 @@ public sealed class PaperExchange : IExchangeClient
     public void OnQuote(MarketQuote quote)
     {
         ArgumentNullException.ThrowIfNull(quote);
-        if (quote.Bid <= 0 || quote.Ask <= 0 || quote.Bid > quote.Ask)
-            throw new ArgumentException("A quote needs positive prices and bid <= ask.", nameof(quote));
+        if (quote.Bid <= 0 || quote.Ask <= 0 || quote.Bid > quote.Ask || quote.BidSize < 0 || quote.AskSize < 0)
+            throw new ArgumentException("A quote needs positive prices, non-negative sizes and bid <= ask.", nameof(quote));
 
         lock (_gate)
         {
             var symbol = Normalise(quote.Symbol);
-            _quotes[symbol] = quote with { Symbol = symbol };
-
-            if (_pairs is null || !_pairs.TryGetValue(symbol, out var pair))
-                return;
+            if (_quotes.TryGetValue(symbol, out var current) && current.AsOf > quote.AsOf)
+                return; // Out-of-order delivery: never let an older quote replace a newer one.
 
             var bidSize = quote.BidSize;
             var askSize = quote.AskSize;
-            foreach (var order in _byVenueId.Values.Where(o => o.Symbol == symbol && o.IsOpen).OrderBy(o => o.Sequence))
+            if (_pairs is not null && _pairs.TryGetValue(symbol, out var pair))
             {
-                if (order.Side == OrderSide.Buy)
-                    askSize -= TryFillResting(order, pair, quote.Ask, askSize);
-                else
-                    bidSize -= TryFillResting(order, pair, quote.Bid, bidSize);
+                foreach (var order in _byVenueId.Values.Where(o => o.Symbol == symbol && o.IsOpen).OrderBy(o => o.Sequence))
+                {
+                    if (order.Side == OrderSide.Buy)
+                        askSize -= TryFillResting(order, pair, quote.Ask, askSize);
+                    else
+                        bidSize -= TryFillResting(order, pair, quote.Bid, bidSize);
+                }
             }
+
+            _quotes[symbol] = quote with { Symbol = symbol, BidSize = bidSize, AskSize = askSize };
         }
     }
 
@@ -102,15 +111,19 @@ public sealed class PaperExchange : IExchangeClient
 
         lock (_gate)
         {
-            if (_byClientId.TryGetValue(approvedOrder.ClientOrderId, out var existing))
-                return new PlacedOrder(existing.VenueOrderId, existing.ClientOrderId);
-
             var symbol = Normalise(approvedOrder.Symbol);
-            if (!pairs.TryGetValue(symbol, out var pair) || !pair.Active)
-                throw Reject("paper-unknown-symbol", $"Symbol {symbol} is not tradable.");
-
             var size = approvedOrder.BaseSize;
             var price = approvedOrder.LimitPrice;
+
+            if (_byClientId.TryGetValue(approvedOrder.ClientOrderId, out var existing))
+            {
+                if (existing.Symbol != symbol || existing.Side != approvedOrder.Side || existing.Quantity != size || existing.LimitPrice != price)
+                    throw Reject("paper-duplicate-client-order-id", "This client order ID was already used for a different order.");
+                return new PlacedOrder(existing.VenueOrderId, existing.ClientOrderId);
+            }
+
+            if (!pairs.TryGetValue(symbol, out var pair) || !pair.Active)
+                throw Reject("paper-unknown-symbol", $"Symbol {symbol} is not tradable.");
             if (size <= 0 || price <= 0)
                 throw Reject("paper-invalid-order", "Size and price must be positive.");
             if (!IsMultiple(size, pair.BaseStep) || !IsMultiple(price, pair.QuoteStep))
@@ -118,10 +131,10 @@ public sealed class PaperExchange : IExchangeClient
             if (size < pair.MinOrderSize || size > pair.MaxOrderSize || size * price < pair.MinOrderSizeQuote)
                 throw Reject("paper-size", $"Order size is outside the limits for {symbol}.");
 
-            if (!_quotes.TryGetValue(symbol, out var quote) || _time.GetUtcNow() - quote.AsOf > _options.MaxQuoteAge)
+            var now = _time.GetUtcNow();
+            if (!_quotes.TryGetValue(symbol, out var quote) || now - quote.AsOf > _options.MaxQuoteAge)
                 throw Reject("paper-no-market-data", $"No fresh quote for {symbol}; the paper engine can't price the order.");
 
-            var now = _time.GetUtcNow();
             var order = new PaperOrder(
                 Guid.NewGuid().ToString(),
                 approvedOrder.ClientOrderId,
@@ -149,9 +162,13 @@ public sealed class PaperExchange : IExchangeClient
 
             if (crosses)
             {
-                var available = approvedOrder.Side == OrderSide.Buy ? quote.AskSize : quote.BidSize;
-                var touch = approvedOrder.Side == OrderSide.Buy ? quote.Ask : quote.Bid;
-                Fill(order, pair, Math.Min(order.Remaining, RoundDown(available, pair.BaseStep)), touch, isTaker: true);
+                var buy = approvedOrder.Side == OrderSide.Buy;
+                var shown = buy ? quote.AskSize : quote.BidSize;
+                var quantity = Math.Min(order.Remaining, RoundDown(shown, pair.BaseStep));
+                Fill(order, quantity, buy ? quote.Ask : quote.Bid, isTaker: true);
+
+                // The size just taken is gone from the book until a new quote arrives.
+                _quotes[symbol] = buy ? quote with { AskSize = shown - quantity } : quote with { BidSize = shown - quantity };
             }
 
             return new PlacedOrder(order.VenueOrderId, order.ClientOrderId);
@@ -200,16 +217,20 @@ public sealed class PaperExchange : IExchangeClient
 
     private async Task<IReadOnlyDictionary<string, PairInfo>> EnsurePairsAsync(CancellationToken cancellationToken)
     {
-        var cached = _pairs;
-        if (cached is not null)
-            return cached;
+        var now = _time.GetUtcNow();
+        lock (_gate)
+        {
+            if (_pairs is not null && now - _pairsLoadedAt < _options.PairsRefreshInterval)
+                return _pairs;
+        }
 
         var pairs = await _marketData.GetPairsAsync(cancellationToken).ConfigureAwait(false);
         var map = pairs.ToDictionary(p => Normalise(p.Symbol), StringComparer.Ordinal);
         lock (_gate)
         {
-            _pairs ??= map;
-            return _pairs;
+            _pairs = map;
+            _pairsLoadedAt = now;
+            return map;
         }
     }
 
@@ -219,45 +240,37 @@ public sealed class PaperExchange : IExchangeClient
         if (sizeAtTouch <= 0)
             return 0;
 
-        bool reached;
-        decimal fillPrice;
-        if (order.IsTaker)
-        {
-            // Remainder of a crossing order: fills whenever the book still crosses its limit.
-            reached = order.Side == OrderSide.Buy ? touch <= order.LimitPrice : touch >= order.LimitPrice;
-            fillPrice = touch;
-        }
-        else
-        {
-            // Resting maker order: needs the market to trade through it.
-            reached = order.Side == OrderSide.Buy ? touch < order.LimitPrice : touch > order.LimitPrice;
-            fillPrice = order.LimitPrice;
-        }
-
+        // A crossing remainder sits at the top of the book, so a quote at its limit reaches it.
+        // A resting maker order needs the market to trade through it. Either way it fills at its own limit.
+        var reached = order.IsTaker
+            ? (order.Side == OrderSide.Buy ? touch <= order.LimitPrice : touch >= order.LimitPrice)
+            : (order.Side == OrderSide.Buy ? touch < order.LimitPrice : touch > order.LimitPrice);
         if (!reached)
             return 0;
 
         var quantity = Math.Min(order.Remaining, RoundDown(sizeAtTouch, pair.BaseStep));
-        Fill(order, pair, quantity, fillPrice, order.IsTaker);
+        Fill(order, quantity, order.LimitPrice, order.IsTaker);
         return quantity;
     }
 
-    private void Fill(PaperOrder order, PairInfo pair, decimal quantity, decimal price, bool isTaker)
+    private void Fill(PaperOrder order, decimal quantity, decimal price, bool isTaker)
     {
         if (quantity <= 0)
             return;
 
         var notional = quantity * price;
-        var fee = Math.Round(notional * (isTaker ? _options.TakerFeeRate : _options.MakerFeeRate), 8, MidpointRounding.AwayFromZero);
+        var fee = Math.Round(notional * (isTaker ? _options.TakerFeeRate : _options.MakerFeeRate), 8, MidpointRounding.ToZero);
         var baseWallet = GetWallet(order.BaseCurrency);
         var quoteWallet = GetWallet(order.QuoteCurrency);
+        var completes = quantity == order.Remaining;
 
         if (order.Side == OrderSide.Buy)
         {
-            var reservedForQuantity = Math.Min(order.Reserved, BuyReservation(quantity, order.LimitPrice));
-            order.Reserved -= reservedForQuantity;
-            quoteWallet.Reserved -= reservedForQuantity;
-            quoteWallet.Available += reservedForQuantity - notional - fee;
+            // Exact share of the reservation; on the last fill, everything left. Never less than the cost.
+            var share = completes ? order.Reserved : Math.Min(order.Reserved, BuyReservation(quantity, order.LimitPrice));
+            order.Reserved -= share;
+            quoteWallet.Reserved -= share;
+            quoteWallet.Available += share - notional - fee;
             baseWallet.Available += quantity;
         }
         else
@@ -303,9 +316,9 @@ public sealed class PaperExchange : IExchangeClient
         order.Reserved = 0;
     }
 
-    // Reserves enough for the worst case: the full size at the limit price, paying the taker fee.
+    // Exact (unrounded) worst case: the full size at the limit price, paying the taker fee.
     private decimal BuyReservation(decimal quantity, decimal limitPrice) =>
-        Math.Round(quantity * limitPrice * (1 + _options.TakerFeeRate), 8, MidpointRounding.ToPositiveInfinity);
+        quantity * limitPrice * (1 + _options.TakerFeeRate);
 
     private void Register(PaperOrder order)
     {
@@ -371,11 +384,6 @@ public sealed class PaperExchange : IExchangeClient
 
         public decimal Remaining => Quantity - Filled;
 
-        private static string RawStatus(OrderStatus status) => status switch
-        {
-            OrderStatus.PartiallyFilled => "partially_filled",
-            _ => status.ToString().ToLowerInvariant(),
-        };
         public bool IsOpen => Status is OrderStatus.New or OrderStatus.PartiallyFilled;
 
         public ExchangeOrder ToExchangeOrder() => new(
@@ -393,5 +401,11 @@ public sealed class PaperExchange : IExchangeClient
             RawStatus(Status),
             CreatedAt,
             UpdatedAt);
+
+        private static string RawStatus(OrderStatus status) => status switch
+        {
+            OrderStatus.PartiallyFilled => "partially_filled",
+            _ => status.ToString().ToLowerInvariant(),
+        };
     }
 }

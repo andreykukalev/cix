@@ -75,14 +75,21 @@ public sealed class OrderPlacementUncertainException(string clientOrderId, Excep
     public string ClientOrderId { get; } = clientOrderId;
 }
 
-/// <summary>Exchange operations the engine needs. Implemented per venue and by the paper engine.</summary>
-public interface IExchangeClient
+/// <summary>
+/// Read-only market data. Has no order methods, so a component that only holds this interface
+/// (for example the paper engine) cannot place real orders.
+/// </summary>
+public interface IMarketDataSource
 {
-    Task<IReadOnlyList<Balance>> GetBalancesAsync(CancellationToken cancellationToken);
-
     Task<IReadOnlyList<PairInfo>> GetPairsAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyList<Candle>> GetCandlesAsync(string symbol, int intervalMinutes, DateTimeOffset since, CancellationToken cancellationToken);
+}
+
+/// <summary>Exchange operations the engine needs. Implemented per venue and by the paper engine.</summary>
+public interface IExchangeClient : IMarketDataSource
+{
+    Task<IReadOnlyList<Balance>> GetBalancesAsync(CancellationToken cancellationToken);
 
     /// <summary>Places an order that has already passed the risk gate.</summary>
     /// <exception cref="OrderPlacementUncertainException">The outcome is unknown; reconcile before retrying.</exception>

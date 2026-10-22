@@ -57,6 +57,7 @@ public sealed class PaperExchangeTests
         paper.OnQuote(Quote(bid: 58_990.00m, bidSize: 1m, ask: 59_000.00m, askSize: 1m));
         Assert.Equal(OrderStatus.New, (await OrderOf(paper, placed)).Status);
 
+        _time.Advance(TimeSpan.FromSeconds(1));
         paper.OnQuote(Quote(bid: 58_890.00m, bidSize: 1m, ask: 58_900.00m, askSize: 0.005m));
         var order = await OrderOf(paper, placed);
 
@@ -84,13 +85,16 @@ public sealed class PaperExchangeTests
         Assert.Equal(19.767937m, eur!.Available);
         Assert.Equal(60.104045m, eur.Reserved);
 
+        // The book moves below the limit, but the remainder rests at its limit and never gets a better price.
+        _time.Advance(TimeSpan.FromSeconds(1));
         paper.OnQuote(Quote(bid: 60_030.00m, bidSize: 1m, ask: 60_040.00m, askSize: 0.01m));
 
         var filled = await OrderOf(paper, placed);
         Assert.Equal(OrderStatus.Filled, filled.Status);
-        Assert.Equal(0.162054m, filled.TotalFee);
+        Assert.Equal(180.07m, filled.FilledAmountQuote);
+        Assert.Equal(0.162063m, filled.TotalFee);
         eur = await BalanceOf(paper, "EUR");
-        Assert.Equal(19.777946m, eur!.Available);
+        Assert.Equal(19.767937m, eur!.Available);
         Assert.Equal(0m, eur.Reserved);
         Assert.Equal(0.003m, (await BalanceOf(paper, "BTC"))!.Available);
     }
@@ -232,6 +236,115 @@ public sealed class PaperExchangeTests
         Assert.Single(await paper.GetOpenOrdersAsync("btc/eur", CancellationToken.None));
         Assert.Empty(await paper.GetOpenOrdersAsync("ETH-EUR", CancellationToken.None));
         Assert.Equal(Btc, (await paper.GetOpenOrdersAsync(null, CancellationToken.None))[0].Symbol);
+    }
+
+    [Fact]
+    public async Task SizeTakenAtPlacement_IsNotAvailableToTheNextOrder()
+    {
+        var paper = Create();
+
+        var first = await paper.PlaceLimitOrderAsync(Buy(0.002m, 60_050.00m, "a"), postOnly: false, CancellationToken.None);
+        var second = await paper.PlaceLimitOrderAsync(Buy(0.001m, 60_050.00m, "b"), postOnly: false, CancellationToken.None);
+
+        Assert.Equal(OrderStatus.Filled, (await OrderOf(paper, first)).Status);
+        var waiting = await OrderOf(paper, second);
+        Assert.Equal(OrderStatus.New, waiting.Status);
+        Assert.Equal(0m, waiting.FilledQuantity);
+    }
+
+    [Fact]
+    public async Task SameClientOrderId_WithDifferentDetails_IsRejected()
+    {
+        var paper = Create();
+        await paper.PlaceLimitOrderAsync(Buy(0.001m, 59_000.00m, "dup"), postOnly: false, CancellationToken.None);
+
+        var ex = await Assert.ThrowsAsync<ExchangeException>(
+            () => paper.PlaceLimitOrderAsync(Buy(0.002m, 59_000.00m, "dup"), postOnly: false, CancellationToken.None));
+
+        Assert.Equal("paper-duplicate-client-order-id", ex.ErrorId);
+    }
+
+    [Fact]
+    public async Task OlderQuote_ArrivingLate_IsIgnored()
+    {
+        var paper = Create();
+        var placed = await paper.PlaceLimitOrderAsync(Buy(0.001m, 59_000.00m), postOnly: false, CancellationToken.None);
+
+        paper.OnQuote(new MarketQuote(Btc, 57_990.00m, 1m, 58_000.00m, 1m, T0.AddSeconds(-30)));
+
+        Assert.Equal(OrderStatus.New, (await OrderOf(paper, placed)).Status);
+    }
+
+    [Fact]
+    public async Task RestingSell_FillsAtLimitWithMakerFee_WhenBidTradesThrough()
+    {
+        var paper = Create(eur: 0m, btc: 0.01m);
+        var placed = await paper.PlaceLimitOrderAsync(Sell(0.001m, 61_000.00m), postOnly: true, CancellationToken.None);
+        Assert.Equal(0.001m, (await BalanceOf(paper, "BTC"))!.Reserved);
+
+        _time.Advance(TimeSpan.FromSeconds(1));
+        paper.OnQuote(Quote(bid: 61_000.01m, bidSize: 1m, ask: 61_010.00m, askSize: 1m));
+
+        var order = await OrderOf(paper, placed);
+        Assert.Equal(OrderStatus.Filled, order.Status);
+        Assert.Equal(0m, order.TotalFee);
+        Assert.Equal(61m, (await BalanceOf(paper, "EUR"))!.Available);
+        var btc = await BalanceOf(paper, "BTC");
+        Assert.Equal(0.009m, btc!.Available);
+        Assert.Equal(0m, btc.Reserved);
+    }
+
+    [Fact]
+    public async Task CancelAfterPartialFill_ReleasesOnlyTheRemainder()
+    {
+        var paper = Create();
+        var placed = await paper.PlaceLimitOrderAsync(Buy(0.003m, 60_050.00m), postOnly: false, CancellationToken.None);
+
+        await paper.CancelOrderAsync(placed.VenueOrderId, CancellationToken.None);
+
+        var order = await OrderOf(paper, placed);
+        Assert.Equal(OrderStatus.Cancelled, order.Status);
+        Assert.Equal(0.002m, order.FilledQuantity);
+        var eur = await BalanceOf(paper, "EUR");
+        Assert.Equal(79.871982m, eur!.Available);
+        Assert.Equal(0m, eur.Reserved);
+    }
+
+    [Fact]
+    public async Task FullyReservedBalance_WithFractionalAmounts_NeverGoesNegative()
+    {
+        // Spike-sized order (0.00000172 BTC at 58,397.08) with exactly enough EUR, filled in two parts.
+        var paper = Create(eur: 0.10053337627984m);
+        _time.Advance(TimeSpan.FromSeconds(1));
+        paper.OnQuote(Quote(bid: 58_397.07m, bidSize: 1m, ask: 58_397.08m, askSize: 0.000001m));
+
+        var placed = await paper.PlaceLimitOrderAsync(Buy(0.00000172m, 58_397.08m), postOnly: false, CancellationToken.None);
+        _time.Advance(TimeSpan.FromSeconds(1));
+        paper.OnQuote(Quote(bid: 58_397.07m, bidSize: 1m, ask: 58_397.08m, askSize: 1m));
+
+        Assert.Equal(OrderStatus.Filled, (await OrderOf(paper, placed)).Status);
+        var eur = await BalanceOf(paper, "EUR");
+        Assert.True(eur is null || (eur.Available >= 0 && eur.Reserved == 0), $"EUR went negative: {eur}");
+    }
+
+    [Fact]
+    public async Task PairRules_AreReloadedAfterTheRefreshInterval()
+    {
+        var market = new FakeMarketData();
+        var options = new PaperOptions { PairsRefreshInterval = TimeSpan.FromHours(1) };
+        options.InitialBalances["EUR"] = 200m;
+        var paper = new PaperExchange(market, options, _time);
+        paper.OnQuote(Quote(bid: 60_000.00m, bidSize: 1m, ask: 60_010.00m, askSize: 1m));
+
+        await paper.PlaceLimitOrderAsync(Buy(0.001m, 59_000.00m, "a"), postOnly: false, CancellationToken.None);
+        await paper.PlaceLimitOrderAsync(Buy(0.001m, 59_000.00m, "b"), postOnly: false, CancellationToken.None);
+        Assert.Equal(1, market.PairCalls);
+
+        _time.Advance(TimeSpan.FromHours(2));
+        paper.OnQuote(Quote(bid: 60_000.00m, bidSize: 1m, ask: 60_010.00m, askSize: 1m));
+        await paper.PlaceLimitOrderAsync(Buy(0.001m, 59_000.00m, "c"), postOnly: false, CancellationToken.None);
+
+        Assert.Equal(2, market.PairCalls);
     }
 
     [Fact]

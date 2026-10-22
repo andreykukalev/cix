@@ -16,6 +16,9 @@ public sealed class RevolutXOptions
     /// <summary>PKCS#8 PEM of the Ed25519 private key.</summary>
     public string PrivateKeyPem { get; set; } = string.Empty;
 
+    /// <summary>Region for public market data, for example <c>EEA</c>. Empty means the exchange default.</summary>
+    public string? PublicRegion { get; set; } = "EEA";
+
     public int RequestsPerSecond { get; set; } = 100;
 
     public int RequestsPerMinute { get; set; } = 1_000;

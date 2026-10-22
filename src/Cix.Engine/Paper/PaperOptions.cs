@@ -16,4 +16,7 @@ public sealed class PaperOptions
 
     /// <summary>Oldest quote accepted when placing an order.</summary>
     public TimeSpan MaxQuoteAge { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>How long pair rules (steps, limits, active flag) are cached before reloading.</summary>
+    public TimeSpan PairsRefreshInterval { get; set; } = TimeSpan.FromHours(1);
 }

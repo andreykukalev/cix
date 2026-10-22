@@ -6,12 +6,17 @@ public enum TradingMode
     Live,
 }
 
-/// <summary>Reads <c>Trading:Mode</c>. Missing means Paper; anything other than Paper or Live stops startup.</summary>
+/// <summary>
+/// Reads <c>Trading:Mode</c>. Missing means Paper; anything other than Paper or Live stops startup.
+/// Live is also refused outside the Production environment, so a developer or agent machine can't trade real money
+/// even if the setting is changed there.
+/// </summary>
 public static class TradingModeResolver
 {
     public const string Key = "Trading:Mode";
+    public const string ProductionEnvironment = "Production";
 
-    public static TradingMode Resolve(IConfiguration configuration)
+    public static TradingMode Resolve(IConfiguration configuration, string environmentName)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         var value = configuration[Key];
@@ -19,11 +24,14 @@ public static class TradingModeResolver
         if (string.IsNullOrWhiteSpace(value) || string.Equals(value.Trim(), "Paper", StringComparison.OrdinalIgnoreCase))
             return TradingMode.Paper;
 
-        // Live must be spelled exactly: no case-insensitive or numeric matches for the mode that spends real money.
-        if (string.Equals(value.Trim(), "Live", StringComparison.Ordinal))
-            return TradingMode.Live;
+        // The mode that spends real money must be spelled exactly.
+        if (!string.Equals(value.Trim(), nameof(TradingMode.Live), StringComparison.Ordinal))
+            throw new InvalidOperationException($"{Key} must be 'Paper' or 'Live'.");
 
-        throw new InvalidOperationException($"{Key} must be 'Paper' or 'Live'.");
+        if (!string.Equals(environmentName, ProductionEnvironment, StringComparison.Ordinal))
+            throw new InvalidOperationException($"{Key} is Live but the environment is '{environmentName}'; Live runs only in {ProductionEnvironment}.");
+
+        return TradingMode.Live;
     }
 }
 
