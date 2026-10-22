@@ -1,5 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Cix.Domain\Cix.Domain.csproj" />
   </ItemGroup>
   <ItemGroup>
