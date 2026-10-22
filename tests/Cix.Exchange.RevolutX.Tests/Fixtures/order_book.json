@@ -1,13 +1,1 @@
-{
-  "data": {
-    "asks": [
-      { "aid": "BTC", "anm": "Bitcoin", "s": "SELL", "price": "72950.10", "quantity": "0.25000000", "count": 2 },
-      { "aid": "BTC", "anm": "Bitcoin", "s": "SELL", "price": "72941.50", "quantity": "0.01200000", "count": 1 }
-    ],
-    "bids": [
-      { "aid": "BTC", "anm": "Bitcoin", "s": "BUY", "price": "72930.00", "quantity": "0.50000000", "count": 3 },
-      { "aid": "BTC", "anm": "Bitcoin", "s": "BUY", "price": "72939.90", "quantity": "0.03000000", "count": 1 }
-    ]
-  },
-  "metadata": { "region": "EEA", "timestamp": 1792677504000 }
-}
+{"data":{"asks":[{"price":"72487.76","quantity":"0.03207415","count":1},{"price":"72491.50","quantity":"0.07521","count":1},{"price":"72495.53","quantity":"0.07541","count":1}],"bids":[{"price":"72474.68","quantity":"0.06147541","count":1},{"price":"72472.80","quantity":"0.07521","count":1},{"price":"72471.22","quantity":"0.00034496","count":1}]},"metadata":{"region":"EEA","timestamp":1792695115767}}

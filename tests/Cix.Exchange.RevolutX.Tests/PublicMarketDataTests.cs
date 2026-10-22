@@ -6,7 +6,7 @@ namespace Cix.Exchange.RevolutX.Tests;
 
 public sealed class PublicMarketDataTests
 {
-    private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeMilliseconds(1792677504427);
+    private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeMilliseconds(1792695116000); // just after the recorded order book
 
     private static (RevolutXPublicMarketData Client, FakeHandler Handler) Create()
     {
@@ -23,7 +23,7 @@ public sealed class PublicMarketDataTests
 
         var quote = await client.GetQuoteAsync("btc/eur", CancellationToken.None);
 
-        Assert.Equal(new MarketQuote("BTC-EUR", 72939.90m, 0.03m, 72941.50m, 0.012m, DateTimeOffset.FromUnixTimeMilliseconds(1792677504000)), quote);
+        Assert.Equal(new MarketQuote("BTC-EUR", 72474.68m, 0.06147541m, 72487.76m, 0.03207415m, DateTimeOffset.FromUnixTimeMilliseconds(1792695115767)), quote);
         var request = Assert.Single(handler.Requests);
         Assert.Equal("https://revx.revolut.com/api/2.0/public/order-book/BTC-EUR?limit=5&region=EEA", request.Uri.ToString());
         Assert.DoesNotContain(RevolutXAuth.ApiKeyHeader, request.Headers.Keys);
@@ -34,7 +34,7 @@ public sealed class PublicMarketDataTests
     public void ParseOrderBookTop_ExchangeClockAhead_UsesReceiveTime()
     {
         using var doc = JsonDocument.Parse(Fixture.Read("order_book.json"));
-        var receivedAt = DateTimeOffset.FromUnixTimeMilliseconds(1792677503000); // earlier than metadata.timestamp
+        var receivedAt = DateTimeOffset.FromUnixTimeMilliseconds(1792695115000); // earlier than metadata.timestamp
 
         var quote = RevolutXParser.ParseOrderBookTop(doc.RootElement, "BTC-EUR", receivedAt);
 
