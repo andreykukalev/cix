@@ -29,6 +29,20 @@ jobs:
       - name: Test
         run: dotnet test Cix.slnx --no-build --configuration Release --logger "trx;LogFilePrefix=results" --results-directory TestResults
 
+      # Failed tests as annotations, so they can be read through the API (check-run annotations) without log access.
+      - name: Report failed tests
+        if: failure()
+        shell: python
+        run: |
+          import glob, xml.etree.ElementTree as ET
+          ns = {"t": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
+          esc = lambda s: (s or "").replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for path in glob.glob("TestResults/**/*.trx", recursive=True):
+              for r in ET.parse(path).getroot().iterfind(".//t:UnitTestResult[@outcome='Failed']", ns):
+                  msg = r.findtext(".//t:ErrorInfo/t:Message", "", ns)
+                  trace = r.findtext(".//t:ErrorInfo/t:StackTrace", "", ns)
+                  print(f"::error title={esc(r.get('testName'))}::{esc((msg + chr(10) + trace)[:1500])}")
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
