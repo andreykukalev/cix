@@ -15,6 +15,9 @@
     <Using Include="Xunit" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Cix.Exchange.RevolutX\Cix.Exchange.RevolutX.csproj" />
   </ItemGroup>
 </Project>

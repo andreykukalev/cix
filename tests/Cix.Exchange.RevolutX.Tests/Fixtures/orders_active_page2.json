@@ -1,0 +1,3 @@
+{"data": [
+  {"id": "aaaaaaaa-0000-4000-8000-000000000002", "client_order_id": "c-2", "symbol": "ETH/EUR", "side": "sell", "type": "limit", "quantity": "0.5", "filled_quantity": "0.2", "leaves_quantity": "0.3", "price": "2500.00", "status": "partially_filled", "time_in_force": "gtc", "created_date": 1792677504427, "updated_date": 1792677600000}
+], "metadata": {"timestamp": 1792677504427}}
