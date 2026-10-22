@@ -24,8 +24,9 @@ internal static class RevolutXParser
     /// <summary>The pairs endpoint returns an object keyed by <c>BASE/QUOTE</c>; an array is accepted too.</summary>
     public static IReadOnlyList<PairInfo> ParsePairs(JsonElement root)
     {
-        IEnumerable<JsonElement> items = root.ValueKind == JsonValueKind.Object && !root.TryGetProperty("data", out _)
-            ? root.EnumerateObject().Select(p => p.Value)
+        var container = Data(root);
+        IEnumerable<JsonElement> items = container.ValueKind == JsonValueKind.Object
+            ? container.EnumerateObject().Select(p => p.Value)
             : Rows(root);
 
         return items
@@ -109,7 +110,7 @@ internal static class RevolutXParser
     {
         "BUY" => OrderSide.Buy,
         "SELL" => OrderSide.Sell,
-        _ => throw new FormatException($"Unknown order side '{side}'."),
+        _ => throw new FormatException($"Unknown order side '{Sanitize(side, 20)}'."),
     };
 
     public static OrderStatus ParseStatus(string status) => status.Trim().ToLowerInvariant() switch
@@ -122,17 +123,38 @@ internal static class RevolutXParser
         _ => OrderStatus.Unknown,
     };
 
+    /// <summary>Error text and ID from an error body, both sanitised: exchange text is untrusted input.</summary>
     public static (string? Message, string? ErrorId) ParseError(string body)
     {
         try
         {
             using var doc = JsonDocument.Parse(body);
-            return (OptStr(doc.RootElement, "message"), OptStr(doc.RootElement, "error_id"));
+            var message = OptStr(doc.RootElement, "message");
+            var errorId = OptStr(doc.RootElement, "error_id");
+            return (message is null ? null : Sanitize(message), errorId is null ? null : Sanitize(errorId, 64));
         }
         catch (JsonException)
         {
             return (null, null);
         }
+    }
+
+    /// <summary>
+    /// Makes exchange-supplied text safe to put in exception messages and logs: keeps letters, digits,
+    /// spaces and basic punctuation, drops everything else (control characters, markup, braces), and caps the length.
+    /// </summary>
+    public static string Sanitize(string text, int maxLength = 200)
+    {
+        var builder = new System.Text.StringBuilder(Math.Min(text.Length, maxLength));
+        foreach (var c in text)
+        {
+            if (builder.Length >= maxLength)
+                break;
+            if (char.IsLetterOrDigit(c) || c is ' ' or '.' or ',' or ':' or ';' or '-' or '_' or '\'' or '(' or ')' or '/' or '%')
+                builder.Append(c);
+        }
+
+        return builder.Length < text.Length && text.Length > maxLength ? builder.Append('…').ToString() : builder.ToString();
     }
 
     private static JsonElement Data(JsonElement root) =>
@@ -165,7 +187,7 @@ internal static class RevolutXParser
         return v.ValueKind switch
         {
             JsonValueKind.String when !string.IsNullOrWhiteSpace(v.GetString()) =>
-                decimal.Parse(v.GetString()!, NumberStyles.Number | NumberStyles.AllowExponent, CultureInfo.InvariantCulture),
+                decimal.Parse(v.GetString()!, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent, CultureInfo.InvariantCulture),
             JsonValueKind.Number => v.GetDecimal(),
             _ => null,
         };

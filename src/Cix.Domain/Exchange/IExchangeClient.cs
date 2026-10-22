@@ -46,25 +46,33 @@ public sealed record ExchangeOrder(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt)
 {
-    public bool IsOpen => Status is OrderStatus.New or OrderStatus.PartiallyFilled;
+    /// <summary>
+    /// True unless the order is known to be finished. An unrecognised status counts as open,
+    /// so the engine never forgets an order that may still be live.
+    /// </summary>
+    public bool IsOpen => Status is OrderStatus.New or OrderStatus.PartiallyFilled or OrderStatus.Unknown;
 }
 
-/// <summary>The exchange returned an error response.</summary>
-public class ExchangeException(string message, int? statusCode = null, string? errorId = null) : Exception(message)
+/// <summary>
+/// The exchange returned an error or an unexpected response. <see cref="Exception.Message"/> may contain
+/// sanitised exchange text; tools facing agents should map on <see cref="StatusCode"/> and <see cref="ErrorId"/> instead.
+/// </summary>
+public class ExchangeException(string message, int? statusCode = null, string? errorId = null, Exception? inner = null)
+    : Exception(message, inner)
 {
     public int? StatusCode { get; } = statusCode;
     public string? ErrorId { get; } = errorId;
 }
 
 /// <summary>
-/// An order submission may or may not have reached the exchange (timeout, connection drop or 5xx).
-/// Never resubmit blindly: reconcile by <see cref="ClientOrderId"/> first.
+/// An order submission may or may not have reached the exchange (timeout, connection drop, 5xx, caller
+/// cancellation after dispatch, or an unreadable success response). Never resubmit blindly: reconcile by
+/// <see cref="ClientOrderId"/> first.
 /// </summary>
 public sealed class OrderPlacementUncertainException(string clientOrderId, Exception? inner = null)
-    : ExchangeException($"Order placement outcome unknown for client order ID {clientOrderId}; reconcile before retrying.")
+    : ExchangeException($"Order placement outcome unknown for client order ID {clientOrderId}; reconcile before retrying.", null, null, inner)
 {
     public string ClientOrderId { get; } = clientOrderId;
-    public Exception? Cause { get; } = inner;
 }
 
 /// <summary>Exchange operations the engine needs. Implemented per venue and by the paper engine.</summary>

@@ -33,6 +33,13 @@ internal sealed class FakeHandler : HttpMessageHandler
         return this;
     }
 
+    /// <summary>Runs arbitrary behaviour when the request arrives (for example, cancelling mid-flight).</summary>
+    public FakeHandler OnSend(Func<HttpResponseMessage> behaviour)
+    {
+        _responses.Enqueue(behaviour);
+        return this;
+    }
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var headers = request.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value), StringComparer.OrdinalIgnoreCase);

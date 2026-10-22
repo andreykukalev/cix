@@ -29,14 +29,14 @@ internal sealed class SlidingWindowRateLimiter
         {
             _sent.RemoveAll(t => t <= now - Minute);
 
+            // Each push moves the slot strictly later, past one booked entry, so this terminates.
             var slot = now;
-            for (var i = 0; i < 4; i++)
+            for (var i = 0; i <= _sent.Count + 1; i++)
             {
-                var moved = false;
-                moved |= Push(ref slot, Second, _perSecond);
-                moved |= Push(ref slot, Minute, _perMinute);
-                if (!moved)
+                var next = Push(Push(slot, Second, _perSecond), Minute, _perMinute);
+                if (next == slot)
                     break;
+                slot = next;
             }
 
             // Keep the list sorted: a slot can be earlier than a reservation made for a later moment.
@@ -46,15 +46,17 @@ internal sealed class SlidingWindowRateLimiter
         }
     }
 
-    // If the window ending at `slot` is full, move `slot` to when its oldest entry expires.
-    private bool Push(ref DateTimeOffset slot, TimeSpan window, int limit)
+    // If the window ending at `slot` is full, returns when its oldest blocking entry expires; otherwise `slot`.
+    private DateTimeOffset Push(DateTimeOffset slot, TimeSpan window, int limit)
     {
         var from = slot - window;
-        var inWindow = _sent.Where(t => t > from && t <= slot).ToList();
-        if (inWindow.Count < limit)
-            return false;
+        var inWindow = new List<DateTimeOffset>();
+        foreach (var t in _sent)
+        {
+            if (t > from && t <= slot)
+                inWindow.Add(t);
+        }
 
-        slot = inWindow[inWindow.Count - limit] + window;
-        return true;
+        return inWindow.Count < limit ? slot : inWindow[inWindow.Count - limit] + window;
     }
 }

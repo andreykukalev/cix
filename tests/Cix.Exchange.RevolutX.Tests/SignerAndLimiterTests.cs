@@ -94,6 +94,16 @@ public sealed class SlidingWindowRateLimiterTests
     }
 
     [Fact]
+    public void Reserve_DeepQueue_NeverOverbooksAWindow()
+    {
+        var limiter = new SlidingWindowRateLimiter(perSecond: 1, perMinute: 100);
+
+        var waits = Enumerable.Range(0, 6).Select(_ => limiter.Reserve(T0).TotalSeconds).ToList();
+
+        Assert.Equal(new double[] { 0, 1, 2, 3, 4, 5 }, waits);
+    }
+
+    [Fact]
     public void Reserve_QueuedReservations_SpreadAcrossSeconds()
     {
         var limiter = new SlidingWindowRateLimiter(perSecond: 2, perMinute: 100);

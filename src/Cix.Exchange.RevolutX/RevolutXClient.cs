@@ -42,6 +42,8 @@ public sealed class RevolutXClient : IExchangeClient
     {
         _http = http ?? throw new ArgumentNullException(nameof(http));
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        if (options.BaseAddress is not { IsAbsoluteUri: true } || options.BaseAddress.Scheme != Uri.UriSchemeHttps)
+            throw new ArgumentException("RevolutX:BaseAddress must be an absolute https URL.", nameof(options));
         if (string.IsNullOrWhiteSpace(options.ApiKey))
             throw new ArgumentException("RevolutX:ApiKey is not configured.", nameof(options));
         if (options.MaxAttempts < 1)
@@ -78,6 +80,10 @@ public sealed class RevolutXClient : IExchangeClient
         return Parse(response, RevolutXParser.ParseCandles);
     }
 
+    /// <remarks>
+    /// The caller must already have rounded size and price to the pair's <see cref="PairInfo.BaseStep"/> and
+    /// <see cref="PairInfo.QuoteStep"/>; this client sends them unchanged.
+    /// </remarks>
     public async Task<PlacedOrder> PlaceLimitOrderAsync(OrderIntent approvedOrder, bool postOnly, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(approvedOrder);
@@ -89,7 +95,16 @@ public sealed class RevolutXClient : IExchangeClient
         var response = await SendAsync(HttpMethod.Post, "/api/1.0/orders", null, body, cancellationToken, approvedOrder.ClientOrderId)
             .ConfigureAwait(false);
         EnsureSuccess(response);
-        return Parse(response, RevolutXParser.ParsePlaced);
+
+        try
+        {
+            return Parse(response, RevolutXParser.ParsePlaced);
+        }
+        catch (ExchangeException ex)
+        {
+            // A 2xx means the exchange accepted something; if we can't read it, the order may exist.
+            throw new OrderPlacementUncertainException(approvedOrder.ClientOrderId, ex);
+        }
     }
 
     public async Task<ExchangeOrder?> GetOrderAsync(string venueOrderId, CancellationToken cancellationToken)
@@ -198,17 +213,33 @@ public sealed class RevolutXClient : IExchangeClient
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(_options.RequestTimeout);
 
+            // Before dispatch nothing has been sent, so plain cancellation is accurate.
+            cancellationToken.ThrowIfCancellationRequested();
+
             HttpResponseMessage response;
+            string text;
             try
             {
                 response = await _http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+                try
+                {
+                    text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+                }
+                catch
+                {
+                    response.Dispose();
+                    throw;
+                }
             }
-            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException && !cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (isOrderSubmission && ex is HttpRequestException or OperationCanceledException or IOException)
             {
-                if (isOrderSubmission)
-                    throw new OrderPlacementUncertainException(clientOrderId!, ex);
+                // After dispatch, any failure (including caller cancellation) leaves the order's fate unknown.
+                throw new OrderPlacementUncertainException(clientOrderId!, ex);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException && !cancellationToken.IsCancellationRequested)
+            {
                 if (attempt >= _options.MaxAttempts)
-                    throw new ExchangeException($"{method} {path} failed after {attempt} attempts: {ex.GetType().Name}.");
+                    throw new ExchangeException($"{method} {path} failed after {attempt} attempts: {ex.GetType().Name}.", inner: ex);
 
                 await _delay(Backoff(attempt), cancellationToken).ConfigureAwait(false);
                 continue;
@@ -216,7 +247,6 @@ public sealed class RevolutXClient : IExchangeClient
 
             using (response)
             {
-                var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 var status = response.StatusCode;
 
                 if (status == HttpStatusCode.TooManyRequests)
@@ -281,9 +311,13 @@ public sealed class RevolutXClient : IExchangeClient
             using var doc = JsonDocument.Parse(response.Body);
             return parse(doc.RootElement);
         }
-        catch (Exception ex) when (ex is JsonException or FormatException or InvalidOperationException)
+        catch (Exception ex) when (ex is JsonException or FormatException or InvalidOperationException
+                                       or OverflowException or ArgumentOutOfRangeException or KeyNotFoundException)
         {
-            throw new ExchangeException($"Unexpected Revolut X response shape: {ex.Message}", (int)response.Status);
+            throw new ExchangeException(
+                $"Unexpected Revolut X response shape: {RevolutXParser.Sanitize(ex.Message)}",
+                (int)response.Status,
+                inner: ex);
         }
     }
 
