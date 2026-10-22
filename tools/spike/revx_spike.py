@@ -128,17 +128,18 @@ def main() -> int:
         size = step_round(min_quote / price + Decimal(str(pair["base_step"])), Decimal(str(pair["base_step"])))
     print(f"  limit BUY {size} {base_ccy} at {price} {quote_ccy} (about {size * price:.2f} {quote_ccy}, 20% below market)")
 
-    available_quote = Decimal("0")
-    for b in balances if isinstance(balances, list) else []:
-        if b.get("currency") == quote_ccy:
-            available_quote = Decimal(str(b.get("available", "0")))
-    if available_quote < size * price:
-        print(f"  Not enough {quote_ccy}: available {available_quote}, needed {size * price:.2f}.")
-        print(f"  Move at least 1 {quote_ccy} into this account (or sell a little crypto to {quote_ccy}), then re-run.")
+    rows = balances.get("data", []) if isinstance(balances, dict) else balances or []
+    quote_row = next((b for b in rows if isinstance(b, dict) and b.get("currency") == quote_ccy), None)
+    available_quote = Decimal(str((quote_row or {}).get("available") or "0"))
+    needed = size * price
+    if available_quote < needed:
+        where = "no balance row" if quote_row is None else f"available {available_quote}"
+        print(f"  Not enough {quote_ccy}: {where}, need {needed:.2f} (short by {needed - available_quote:.2f}).")
+        print(f"  Move a little {quote_ccy} into this account (or sell some crypto to {quote_ccy}), then re-run.")
         return 1
 
     answer = input("  Type yes to place it (anything else skips): ").strip().lower()
-    if answer not in ("yes", "y"):
+    if answer != "yes":
         print(f"  Skipped (you typed {answer!r}).")
         return 0
 
