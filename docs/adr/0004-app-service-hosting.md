@@ -1,6 +1,6 @@
 # 0004. App Service B1 Linux for the live engine
 
-- Status: accepted
+- Status: superseded by 0005
 - Date: 2026-10-22
 
 ## Context
