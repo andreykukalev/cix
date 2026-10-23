@@ -3,6 +3,7 @@ using Cix.Domain.Exchange;
 using Cix.Domain.MarketData;
 using Cix.Domain.Risk;
 using Cix.Engine.MarketData;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cix.Engine.Tests;
@@ -309,6 +310,27 @@ public sealed class MarketDataPollerTests
         var options = new MarketDataOptions();
         Assert.Equal(43.4m, options.PlannedRequestsPerMinute(7)); // 6 quotes + 0.2 hourly-candle polls per symbol, no 1m candles
         options.Validate(7);
+    }
+
+    [Fact]
+    public void ShippedSettings_PollQuotesEveryTwentySeconds_AndFitFifteenSymbols()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (!File.Exists(Path.Combine(root.FullName, "Cix.slnx")))
+            root = root.Parent ?? throw new InvalidOperationException("Repository root not found.");
+        var config = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(root.FullName, "src", "Cix.Engine", "appsettings.json"))
+            .Build();
+        var options = new MarketDataOptions();
+        config.GetSection(MarketDataOptions.SectionName).Bind(options);
+        var universe = config.GetSection("Scanner:Universe").Get<string[]>()!;
+
+        Assert.Equal(TimeSpan.FromSeconds(20), options.QuoteInterval);
+        Assert.Equal(10, universe.Length);
+        Assert.Equal(38.4m, options.PlannedRequestsPerMinute(12)); // 3 quotes + 0.2 hourly-candle polls per symbol
+        options.Validate(universe.Length);
+        options.Validate(15);                                       // exactly 48, the budget
+        Assert.Throws<InvalidOperationException>(() => options.Validate(16));
     }
 
     [Fact]

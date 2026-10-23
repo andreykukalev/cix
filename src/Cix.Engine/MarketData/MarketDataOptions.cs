@@ -8,7 +8,7 @@ public sealed class MarketDataOptions
     /// <summary>Revolut X public endpoints allow 1 request per second; stay well below 60 a minute.</summary>
     public const int PublicRequestsPerMinute = 60;
 
-    /// <summary>Order-book quotes per symbol. 10 seconds keeps 7 symbols inside the budget (ADR-0006).</summary>
+    /// <summary>Order-book quotes per symbol. The code default of 10 seconds fits 7 symbols; appsettings.json sets 20 seconds, which fits 15 (ADR-0006).</summary>
     public TimeSpan QuoteInterval { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>How often to fetch new 1-minute candles, or null (the default) to skip them; no feature uses them yet.</summary>

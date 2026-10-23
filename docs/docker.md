@@ -80,12 +80,14 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
   - The default list is federalreserve.gov, bls.gov, bea.gov, ecb.europa.eu, tradingeconomics.com, reuters.com, apnews.com, cnbc.com, coindesk.com, theblock.co, decrypt.co, rekt.news, defillama.com, tokenomist.ai, status.solana.com and revolut.com.
   - To change it, set the whole list in `.env`, for example `ANALYST_WEB_DOMAINS=reuters.com,coindesk.com,federalreserve.gov`, then run `docker compose up -d analyst`.
 
-## Switching to strategy v2 (signal-driven)
+## Strategy versions (signal-driven v2 and v3)
 
-1. In `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Version": 2 }`.
+1. The default is v3. To change it, in `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Version": 2 }` (or 1).
 2. Run `docker compose restart engine trader`.
 
 The trader then calls Claude only when the scanner's signals change (checked every minute), plus a position review every 4 hours (`TRADER_HEARTBEAT_MINUTES` in `.env`). The engine log shows each scan's ranking and why each symbol did or didn't signal (`Scan: ... ranked [...] excluded [...]`). To go back, set the version to 1 and restart.
+
+Version 3 is v2 with wider scanner filters (more coins pass the volume, spread and cost checks); see `strategies\README.md`. It is the default. Each symbol in `AllowedSymbols` is polled, so the number of coins is limited by the market-data request budget (the `MarketData` section in `appsettings.json`): quotes every 20 seconds fit up to 15 symbols, and the engine refuses to start above that.
 
 ## Notes
 
