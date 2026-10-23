@@ -45,7 +45,7 @@ flowchart LR
 
 | Component | Kind | Responsibilities |
 | --- | --- | --- |
-| Market data | Deterministic | Order books (10 s) and hourly candles (5 min) for the tradable universe, within the public 1 request/s limit; 24h liquidity comes from the candles |
+| Market data | Deterministic | Order books (20 s) and hourly candles (5 min) for the tradable universe, within the public 1 request/s limit; 24h liquidity comes from the candles |
 | Features | Deterministic | Indicators and summaries served to agents as compact JSON |
 | Universe and scanner | Deterministic | Curated, exchange-validated symbol list; liquidity, spread and cost filters; volatility, momentum and volume-anomaly ranking; entry and exit signals with cost-aware sizing (ADR-0006) |
 | Market analyst | Claude agent | Every 6 h: market data plus news; records a regime view (risk-on, neutral, risk-off) and symbols to avoid. It expires and can only block new entries, never exits (ADR-0007) |
