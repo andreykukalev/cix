@@ -3,11 +3,17 @@ using Cix.Engine;
 using Cix.Engine.Execution;
 using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
+using Cix.Engine.Persistence;
 using Cix.Engine.Strategy;
 using Cix.Engine.Tools;
 using Cix.Exchange.RevolutX;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Secrets (operator key, Cosmos key, exchange keys) come from user secrets on this machine in every environment;
+// .NET would otherwise load them only in Development, and `dotnet run` defaults to Production. In Azure there is no
+// secrets file, so Key Vault and app settings apply.
+builder.Configuration.AddUserSecrets(typeof(Program).Assembly, optional: true);
 
 // Human-only file, copied next to the binary (see CLAUDE.md rule 3).
 builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "risk-limits.json"), optional: false, reloadOnChange: false);
@@ -50,8 +56,14 @@ builder.Services.AddCixToolServer(
     builder.Configuration.GetSection(JournalOptions.SectionName).Get<JournalOptions>() ?? new JournalOptions());
 builder.WebHost.ListenOnLoopback(builder.Configuration, toolServer);
 
+// Cosmos DB (emulator locally, Azure later) for the journal, engine state and paper account; off unless configured.
+builder.Services.AddCixCosmos(
+    builder.Configuration.GetSection(CosmosOptions.SectionName).Get<CosmosOptions>() ?? new CosmosOptions(),
+    mode);
+
 builder.Services.AddHostedService<HeartbeatService>();
 
 var app = builder.Build();
+await app.Services.InitializeCixPersistenceAsync(CancellationToken.None);
 app.UseCixToolServer();
-app.Run();
+await app.RunAsync();

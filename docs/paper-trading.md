@@ -12,10 +12,16 @@ The engine runs on your PC with simulated money and live Revolut X prices. A Cla
    ```
 2. Remove any test connection you added by hand: `claude mcp remove cix-test`. The trader's connection is in `tools/trader/mcp.json` and is used only by the run script, so ordinary Claude Code sessions in this repo don't get trading tools.
 3. Hooks need Git Bash (Claude Code's default on Windows), not WSL.
+4. Persistence (recommended): run the Cosmos DB emulator so the paper account, journal and engine state survive restarts. With Docker Desktop:
+   ```powershell
+   docker run --detach --name cosmos --restart unless-stopped -p 8081:8081 -p 1234:1234 mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest --protocol https
+   dotnet user-secrets set Cosmos:Enabled true --project src/Cix.Engine
+   ```
+   The engine creates the `cix` database on start. Browse it at http://localhost:1234. `--restart unless-stopped` brings the emulator back after a reboot; its data lives in the container, so don't remove the container. Without Cosmos, paper balances reset whenever the engine stops.
 
 ## Every session
 
-Terminal 1, the engine (keep it running; paper balances live in memory and reset when it stops):
+Terminal 1, the engine (with Cosmos enabled it resumes the same paper account after a restart):
 ```powershell
 dotnet run --project src/Cix.Engine
 ```

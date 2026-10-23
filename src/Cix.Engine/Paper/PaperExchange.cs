@@ -55,6 +55,67 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
         }
     }
 
+    /// <summary>The account as it stands: balances and every order, for persistence. Quotes are not kept (they go stale).</summary>
+    public PaperAccountState ExportState()
+    {
+        lock (_gate)
+        {
+            return new PaperAccountState(
+                _wallets.Where(w => w.Value.Available != 0 || w.Value.Reserved != 0)
+                    .ToDictionary(w => w.Key.ToUpperInvariant(), w => new PaperWalletState(w.Value.Available, w.Value.Reserved), StringComparer.Ordinal),
+                _byVenueId.Values.OrderBy(o => o.Sequence).Select(o => new PaperOrderState(
+                    o.VenueOrderId, o.ClientOrderId, o.Symbol, o.BaseCurrency, o.QuoteCurrency, o.Side, o.Quantity, o.LimitPrice,
+                    o.Sequence, o.CreatedAt, o.UpdatedAt, o.Status, o.IsTaker, o.Filled, o.FilledAmount, o.Fee, o.Reserved)).ToList());
+        }
+    }
+
+    /// <summary>
+    /// Replaces the account with a saved one (at startup, before any order or quote). The configured initial balances are
+    /// ignored: the saved account is the truth.
+    /// </summary>
+    public void RestoreState(PaperAccountState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        lock (_gate)
+        {
+            if (_byVenueId.Count > 0 || _quotes.Count > 0)
+                throw new InvalidOperationException("The paper account can only be restored before it is used.");
+
+            _wallets.Clear();
+            foreach (var (currency, wallet) in state.Wallets)
+            {
+                if (wallet.Available < 0 || wallet.Reserved < 0)
+                    throw new InvalidOperationException($"Saved paper balance for {currency} is negative.");
+                var w = GetWallet(currency);
+                w.Available = wallet.Available;
+                w.Reserved = wallet.Reserved;
+            }
+
+            foreach (var saved in state.Orders.OrderBy(o => o.Sequence))
+            {
+                var order = new PaperOrder(
+                    saved.VenueOrderId, saved.ClientOrderId, saved.Symbol, saved.BaseCurrency, saved.QuoteCurrency, saved.Side,
+                    saved.Quantity, saved.LimitPrice, saved.Sequence, saved.CreatedAt)
+                {
+                    UpdatedAt = saved.UpdatedAt,
+                    Status = saved.Status,
+                    IsTaker = saved.IsTaker,
+                    Filled = saved.Filled,
+                    FilledAmount = saved.FilledAmount,
+                    Fee = saved.Fee,
+                    Reserved = saved.Reserved,
+                };
+                Register(order);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Loads the pair rules now. Resting orders only fill once they are loaded, which otherwise happens on the first
+    /// placement; after a restore there may be resting orders long before the next placement.
+    /// </summary>
+    public Task WarmUpAsync(CancellationToken cancellationToken) => EnsurePairsAsync(cancellationToken);
+
     /// <summary>Feeds a new best bid/ask; resting orders on that symbol fill if the market reached them.</summary>
     public void OnQuote(MarketQuote quote)
     {
@@ -411,3 +472,27 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
         };
     }
 }
+
+/// <summary>A paper account saved for restarts. Amounts are decimals; the store writes them as strings.</summary>
+public sealed record PaperAccountState(IReadOnlyDictionary<string, PaperWalletState> Wallets, IReadOnlyList<PaperOrderState> Orders);
+
+public sealed record PaperWalletState(decimal Available, decimal Reserved);
+
+public sealed record PaperOrderState(
+    string VenueOrderId,
+    string ClientOrderId,
+    string Symbol,
+    string BaseCurrency,
+    string QuoteCurrency,
+    OrderSide Side,
+    decimal Quantity,
+    decimal LimitPrice,
+    int Sequence,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    OrderStatus Status,
+    bool IsTaker,
+    decimal Filled,
+    decimal FilledAmount,
+    decimal Fee,
+    decimal Reserved);

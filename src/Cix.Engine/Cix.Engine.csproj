@@ -5,6 +5,9 @@
   <ItemGroup>
     <!-- Official C# MCP SDK. 1.4.x matches the documented v1 API; 2.x is newer than its docs. -->
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.1" />
+    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.63.0" />
+    <!-- The Cosmos SDK checks for Newtonsoft.Json at build time even with a System.Text.Json serializer. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\config\risk-limits.json" Link="risk-limits.json" CopyToOutputDirectory="PreserveNewest" />
