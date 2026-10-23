@@ -47,6 +47,13 @@ Run `docker compose down -v` only if you want to wipe the paper account and jour
 - **Strategy, settings and risk limits:** mounted read-only from `strategies\`, `src\Cix.Engine\appsettings.json` and `config\risk-limits.json`. After changing them, run `docker compose restart engine trader`.
 - **Code changes:** need a rebuild with `docker compose up -d --build`.
 
+## Switching to strategy v2 (signal-driven)
+
+1. In `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Version": 2 }`.
+2. Run `docker compose restart engine trader`.
+
+The trader then calls Claude only when the scanner's signals change (checked every minute), plus a position review every 4 hours (`TRADER_HEARTBEAT_MINUTES` in `.env`). The engine log shows each scan's ranking and why each symbol did or didn't signal (`Scan: ... ranked [...] excluded [...]`). To go back, set the version to 1 and restart.
+
 ## Notes
 
 - When the engine restarts, the trader restarts too and runs a cycle straight away; after that it runs on its hourly cadence.

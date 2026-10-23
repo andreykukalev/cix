@@ -8,3 +8,11 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 - Pick the active spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration.
 
 `observer.v1.json` only reads; it checks the tool server works before a trading spec exists.
+
+`trend.v1.json` trades BTC-EUR and ETH-EUR from the hourly market view with rules the agent applies itself.
+
+`trend.v2.json` is signal-driven (ADR-0006).
+- The engine's scanner does the arithmetic across the universe: filters, ranking, risk-based size, stop and target. It reads its settings from `parameters.scanner`.
+- The trader acts only on `scan_market` signals and cites the signal in every order's rationale.
+- Size is capped by the top-level `orderQuote`, which the order-size hook also reads. Set it there only, never inside `scanner`.
+- Because v2 allows `scan_market`, the trader container runs only when the signals change, plus a review every 4 hours, instead of every hour. With no signals there is no Claude call.

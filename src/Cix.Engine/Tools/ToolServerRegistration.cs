@@ -71,12 +71,15 @@ public static class ToolServerRegistration
     /// Maps the MCP endpoint behind a guard: requests with an <c>Origin</c> header (any browser page) get 403, and posts must
     /// be JSON, so a web page can't drive the tools through the user's browser even though the server is on localhost.
     /// </summary>
+    public const string SignalsEndpoint = "/signals";
+
     public static WebApplication UseCixToolServer(this WebApplication app)
     {
         ArgumentNullException.ThrowIfNull(app);
         app.Use(async (context, next) =>
         {
-            if (context.Request.Path.StartsWithSegments(Endpoint, StringComparison.OrdinalIgnoreCase))
+            if (context.Request.Path.StartsWithSegments(Endpoint, StringComparison.OrdinalIgnoreCase)
+                || context.Request.Path.StartsWithSegments(SignalsEndpoint, StringComparison.OrdinalIgnoreCase))
             {
                 if (context.Request.Headers.Origin.Count > 0)
                 {
@@ -95,6 +98,23 @@ public static class ToolServerRegistration
             await next(context).ConfigureAwait(false);
         });
         app.MapMcp(Endpoint);
+        app.MapGet(SignalsEndpoint, (HttpContext http) =>
+        {
+            // Read-only and cheap: the latest background scan, no exchange call. The trader loop polls it to decide whether an
+            // agent run (an LLM call) is worth starting.
+            if (http.RequestServices.GetService<Scanning.MarketScanService>() is not { } scanner)
+                return Results.NotFound();
+            var latest = scanner.Latest;
+            return Results.Json(new
+            {
+                asOf = latest?.AsOf,
+                signalDriven = scanner.SignalDriven,
+                halted = scanner.Halted,
+                entries = latest?.Entries.Count ?? 0,
+                exits = latest?.Exits.Count ?? 0,
+                key = scanner.SignalKey,
+            });
+        });
         return app;
     }
 

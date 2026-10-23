@@ -7,12 +7,18 @@
 # CLAUDE_TOKEN_EXPIRES (YYYY-MM-DD, not a secret) records when a setup token expires: runs warn from 14 days before and
 # stop once it has passed.
 #
-# Settings (environment): TRADER_INTERVAL_MINUTES (60), TRADER_MAX_TURNS (30), TRADER_TIMEOUT_MINUTES (10),
-# TRADER_RUN_ONCE (0), CLAUDE_TOKEN_FILE, CLAUDE_TOKEN_EXPIRES.
+# When the active strategy uses the scanner (scan_market), runs are signal-driven: the loop polls the engine's /signals
+# (no LLM involved) and starts a run only when the scanner's signals change to something new, plus a slow heartbeat
+# that reviews positions. Otherwise it runs every TRADER_INTERVAL_MINUTES.
+#
+# Settings (environment): TRADER_INTERVAL_MINUTES (60), TRADER_HEARTBEAT_MINUTES (240), TRADER_POLL_SECONDS (60),
+# TRADER_MAX_TURNS (30), TRADER_TIMEOUT_MINUTES (10), TRADER_RUN_ONCE (0), CLAUDE_TOKEN_FILE, CLAUDE_TOKEN_EXPIRES.
 set -uo pipefail
 
 dir="${CLAUDE_PROJECT_DIR:-/cix}"
 interval="${TRADER_INTERVAL_MINUTES:-60}"
+heartbeat="${TRADER_HEARTBEAT_MINUTES:-240}"
+poll="${TRADER_POLL_SECONDS:-60}"
 max_turns="${TRADER_MAX_TURNS:-30}"
 timeout_minutes="${TRADER_TIMEOUT_MINUTES:-10}"
 token_file="${CLAUDE_TOKEN_FILE:-/run/secrets/claude_token}"
@@ -22,8 +28,8 @@ mkdir -p "$logs"
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M)" "$*"; }
 
-for n in "$interval" "$max_turns" "$timeout_minutes"; do
-  [[ "$n" =~ ^[1-9][0-9]*$ ]] || { say "TRADER_INTERVAL_MINUTES, TRADER_MAX_TURNS and TRADER_TIMEOUT_MINUTES must be positive whole numbers."; exit 1; }
+for n in "$interval" "$heartbeat" "$poll" "$max_turns" "$timeout_minutes"; do
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || { say "TRADER_* settings must be positive whole numbers."; exit 1; }
 done
 
 # Credentials: read once, exported only to this process tree; never echoed.
@@ -79,8 +85,14 @@ instructions="$(awk 'BEGIN{n=0} /^---[[:space:]]*$/{n++; next} n>=2' "$dir/.clau
 tools="mcp__cix__get_strategy_spec,mcp__cix__get_portfolio,mcp__cix__get_position_plans,mcp__cix__get_open_orders,mcp__cix__get_market_view,mcp__cix__get_features,mcp__cix__scan_market,mcp__cix__place_order,mcp__cix__cancel_order"
 denied="Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,WebSearch,Task,TodoWrite"
 
+# The engine's latest scan: prints "signalDriven key", or nothing if the engine can't be asked.
+signals() {
+  curl -fsS --max-time 10 "http://127.0.0.1:5077/signals" 2>/dev/null \
+    | jq -r '"\(.signalDriven) \(.key)"' 2>/dev/null
+}
+
 run_once() {
-  local run_id log
+  local run_id log why="${1:-scheduled}"
   run_id="run-$(date -u +%Y%m%d-%H%M%S)"
   log="$logs/$run_id.json"
   export CIX_RUN_ID="$run_id"
@@ -88,7 +100,7 @@ run_once() {
   load_credentials || return 0
   check_expiry || return 0
   wait_for_engine
-  say "$run_id starting ($auth)"
+  say "$run_id starting: $why ($auth)"
 
   (cd "$dir" && timeout "${timeout_minutes}m" claude -p 'Run one trading cycle of the active strategy now.' \
       --append-system-prompt "$instructions" \
@@ -127,15 +139,30 @@ if [[ "${TRADER_RUN_ONCE:-0}" == "1" ]]; then
   exit 0
 fi
 
-# Runs start on a fixed cadence, so a slow run doesn't push every later run back.
-next=$(date +%s)
+last_key=""
+next_run=$(date +%s)        # interval mode: the next scheduled run
+next_heartbeat=$(date +%s)  # signal mode: the next position review even without signals
 while true; do
-  run_once
-  next=$(( next + interval * 60 ))
-  wait=$(( next - $(date +%s) ))
-  if (( wait > 0 )); then
-    sleep "$wait"
-  else
-    next=$(date +%s) # a run overran the interval: start again from now rather than catching up with back-to-back runs
+  wait_for_engine
+  now=$(date +%s)
+  read -r driven key <<<"$(signals)"
+
+  if [[ "${driven:-}" == "true" ]]; then
+    if [[ -n "${key:-}" && "$key" != "$last_key" ]]; then
+      run_once "signals $key"
+      last_key="$key"
+      next_heartbeat=$(( $(date +%s) + heartbeat * 60 ))
+    elif (( now >= next_heartbeat )); then
+      run_once "heartbeat"
+      next_heartbeat=$(( $(date +%s) + heartbeat * 60 ))
+    fi
+    [[ -z "${key:-}" ]] && last_key=""   # signals cleared: the same signal reappearing later is new again
+  elif (( now >= next_run )); then
+    # Interval mode (a strategy without scan_market, or /signals unavailable). Fixed cadence, no catch-up bursts.
+    run_once "scheduled"
+    next_run=$(( next_run + interval * 60 ))
+    (( next_run <= $(date +%s) )) && next_run=$(( $(date +%s) + interval * 60 ))
   fi
+
+  sleep "$poll"
 done
