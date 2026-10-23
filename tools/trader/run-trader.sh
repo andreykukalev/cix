@@ -36,7 +36,7 @@ mkdir -p "$logs"
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M)" "$*"; }
 
-[[ "$model" =~ ^[a-z0-9][a-z0-9.-]{1,63}$ ]] || { say "TRADER_MODEL must be a model alias or name, like sonnet or claude-sonnet-5-5."; exit 1; }
+[[ "$model" =~ ^[a-z0-9][a-z0-9.-]{1,63}(\[1m\])?$ ]] || { say "TRADER_MODEL must be a lowercase model alias or name, like sonnet, claude-sonnet-5-5 or sonnet[1m]."; exit 1; }
 for n in "$interval" "$heartbeat" "$poll" "$min_gap" "$max_runs" "$max_turns" "$timeout_minutes"; do
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { say "TRADER_* settings must be positive whole numbers."; exit 1; }
 done
@@ -152,7 +152,7 @@ run_once() {
       say "Claude rejected the credentials ($auth). Renew them and restart the trader."
     fi
   fi
-  say "$run_id done. Model: $(jq -r '(.modelUsage // {}) | keys | join(", ")' "$log"), cost: $(jq -r '.total_cost_usd // "?"' "$log") USD, turns: $(jq -r '.num_turns // "?"' "$log")"
+  say "$run_id done. Models used: $(jq -r '(.modelUsage // {}) | keys | join(", ")' "$log"), cost: $(jq -r '.total_cost_usd // "?"' "$log") USD, turns: $(jq -r '.num_turns // "?"' "$log")"
   jq -r '.result // ""' "$log"
   [[ "$(jq -r '.is_error // false' "$log")" != "true" ]]
 }

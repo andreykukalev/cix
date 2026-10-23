@@ -20,7 +20,7 @@ param(
     [switch]$Once,
     [int]$IntervalMinutes = 60,
     [int]$MaxTurns = 30,
-    [ValidatePattern('^[a-z0-9][a-z0-9.-]{1,63}$')]
+    [ValidatePattern('(?-i)^[a-z0-9][a-z0-9.-]{1,63}(\[1m\])?$')]
     [string]$Model = 'sonnet',
     [int]$TimeoutMinutes = 10
 )
@@ -51,7 +51,7 @@ function Invoke-TraderRun {
     $runId = 'run-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
     $env:CIX_RUN_ID = $runId
     $log = Join-Path $logs "$runId.json"
-    Write-Host "[$(Get-Date -Format 'HH:mm')] $runId starting"
+    Write-Host "[$(Get-Date -Format 'HH:mm')] $runId starting (model $Model)"
 
     Push-Location $repo
     try {
@@ -82,7 +82,8 @@ function Invoke-TraderRun {
         if ($result.is_error) {
             Write-Warning "$runId ended with an error: $($result.subtype)"
         }
-        Write-Host "[$(Get-Date -Format 'HH:mm')] $runId done. Cost: $($result.total_cost_usd) USD, turns: $($result.num_turns)"
+        $models = if ($result.modelUsage) { ($result.modelUsage.PSObject.Properties.Name) -join ', ' } else { '?' }
+        Write-Host "[$(Get-Date -Format 'HH:mm')] $runId done. Models used: $models, cost: $($result.total_cost_usd) USD, turns: $($result.num_turns)"
         Write-Host $result.result
     }
     catch {
