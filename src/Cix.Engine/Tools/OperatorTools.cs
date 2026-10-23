@@ -7,12 +7,37 @@ namespace Cix.Engine.Tools;
 
 /// <summary>Tools for the owner to review what agents did. They need the operator key (<see cref="ToolServerOptions.OperatorKey"/>).</summary>
 [McpServerToolType]
-public sealed class OperatorTools(ToolCallContext context, IJournal journal)
+public sealed class OperatorTools(ToolCallContext context, IJournal journal, Execution.ExecutionService execution)
 {
+    [McpServerTool(Name = "pause_trading", Destructive = true, Idempotent = true)]
+    [Description("Operator only. Engages the kill switch: no new orders, all open orders cancelled. Stays engaged across restarts until resume_trading.")]
+    public async Task<string> PauseTrading(
+        [Description("Why, for the journal.")] string reason,
+        CancellationToken cancellationToken = default)
+    {
+        await context.RequireOperatorAsync("pause_trading", cancellationToken).ConfigureAwait(false);
+        var clean = new string((reason ?? string.Empty).Where(c => !char.IsControl(c)).ToArray()).Trim();
+        if (clean.Length == 0)
+            clean = "Paused by the owner.";
+
+        // Not cancellable once started: the switch must never end up engaged with orders left uncancelled.
+        var result = await execution.EngageKillSwitchAsync(clean, "owner", CancellationToken.None).ConfigureAwait(false);
+        return ToolJson.Of(new { halted = true, result.NewlyEngaged, result.Cancelled, result.NotCancelled });
+    }
+
+    [McpServerTool(Name = "resume_trading", Destructive = false, Idempotent = true)]
+    [Description("Operator only. Releases the kill switch. The risk gate's limits still apply, and automatic triggers can engage it again.")]
+    public async Task<string> ResumeTrading(CancellationToken cancellationToken = default)
+    {
+        await context.RequireOperatorAsync("resume_trading", cancellationToken).ConfigureAwait(false);
+        await execution.ReleaseKillSwitchAsync("owner").ConfigureAwait(false);
+        return ToolJson.Of(new { halted = false });
+    }
+
     public const int MaxEntries = 200;
 
     [McpServerTool(Name = "query_journal", ReadOnly = true)]
-    [Description("Operator only. Journal entries, newest first, filtered by UTC dates (yyyy-MM-dd), kind (tool-call, order, kill-switch), run ID or client order ID.")]
+    [Description("Operator only. Journal entries, newest first, filtered by UTC dates (yyyy-MM-dd), kind (tool-call, tool-denied, order, fill, order-closed, kill-switch), run ID, client order ID or spec.")]
     public async Task<string> QueryJournal(
         [Description("First UTC day, yyyy-MM-dd.")] string? from = null,
         [Description("Last UTC day, yyyy-MM-dd.")] string? to = null,

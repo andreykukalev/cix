@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -32,22 +33,24 @@ internal sealed class ToolRig
         ["get_strategy_spec", "get_market_view", "get_portfolio"],
         "test") { Hash = "abc123def456" };
 
-    public ToolRig(StrategySpec? spec = null, bool noSpec = false)
+    public ToolRig(StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m)
     {
-        Rig = new Rig();
+        Rig = new Rig(eur: eur);
         Http = new HttpContextAccessor { HttpContext = new DefaultHttpContext() };
         Specs = new FixedSpecs(noSpec ? null : spec ?? Observer);
-        Context = new ToolCallContext(Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time);
+        Context = new ToolCallContext(Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time, NullLogger<ToolCallContext>.Instance);
+        Orders = new OrderTools(Context, Rig.Execution, Rig.Limits);
         Features = new FeatureService(new InMemoryCandleStore(), Rig.State, new MarketDataOptions(), Rig.Time);
         Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits);
-        Operator = new OperatorTools(Context, Journal);
+        Operator = new OperatorTools(Context, Journal, Rig.Execution);
     }
 
     public Rig Rig { get; }
     public HttpContextAccessor Http { get; }
     public IStrategySpecStore Specs { get; }
-    public InMemoryJournal Journal { get; } = new();
+    public InMemoryJournal Journal => Rig.Journal;
     public ToolCallContext Context { get; }
+    public OrderTools Orders { get; }
     public FeatureService Features { get; }
     public AgentTools Agent { get; }
     public OperatorTools Operator { get; }
@@ -252,7 +255,11 @@ public sealed class McpEndToEndTests
         var journal = await owner.CallToolAsync("query_journal", new Dictionary<string, object?> { ["kind"] = "tool-call" });
 
         Assert.Equal(
-            new[] { "get_daily_summary", "get_features", "get_market_view", "get_open_orders", "get_portfolio", "get_strategy_spec", "query_journal" },
+            new[]
+            {
+                "cancel_order", "get_daily_summary", "get_features", "get_market_view", "get_open_orders", "get_portfolio",
+                "get_strategy_spec", "pause_trading", "place_order", "query_journal", "resume_trading",
+            },
             listed.Select(t => t.Name).Order(StringComparer.Ordinal));
         Assert.Contains("observer@v1#abc123def456", Text(spec), StringComparison.Ordinal);
         Assert.NotEqual(true, view.IsError);

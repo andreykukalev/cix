@@ -1,6 +1,7 @@
 using Cix.Domain;
 using Cix.Domain.Exchange;
 using Cix.Domain.Risk;
+using Cix.Engine.Journal;
 using Cix.Engine.MarketData;
 
 namespace Cix.Engine.Execution;
@@ -23,6 +24,14 @@ public enum ExecutionStatus
 /// <param name="Rule">The gate's rule, or the engine's reason code (for example <c>kill-switch</c>, <c>portfolio-unavailable</c>).</param>
 /// <param name="Order">What was approved and sent; null when rejected before approval.</param>
 public sealed record ExecutionResult(ExecutionStatus Status, string Rule, string Reason, ApprovedOrder? Order = null, PlacedOrder? Placed = null);
+
+public enum CancelOutcome
+{
+    Cancelled,
+    NotFound,
+    NotOwn,
+    Failed,
+}
 
 /// <summary>What engaging the kill switch did to open orders.</summary>
 public sealed record KillSwitchResult(bool NewlyEngaged, int Cancelled, IReadOnlyList<string> NotCancelled);
@@ -49,6 +58,7 @@ public sealed partial class ExecutionService
     private readonly KillSwitch _killSwitch;
     private readonly IEngineStateStore _store;
     private readonly SafetyOptions _safety;
+    private readonly IJournal? _journal;
     private readonly TimeProvider _time;
     private readonly ILogger<ExecutionService> _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -56,6 +66,11 @@ public sealed partial class ExecutionService
     private readonly Queue<DateTimeOffset> _sent = new();
     private readonly Dictionary<string, PendingPlacement> _pending = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedClientOrderIds = new(StringComparer.Ordinal);
+
+    /// <summary>Orders this process placed and hasn't yet seen finish; reconciliation journals their fills.</summary>
+    private readonly Dictionary<string, TrackedOrder> _tracked = new(StringComparer.Ordinal);
+
+    private sealed record TrackedOrder(OrderIntent Order, string VenueOrderId, int Lookups = 0);
     private int _consecutiveRejects;
     private int _streakTripped;
 
@@ -70,7 +85,8 @@ public sealed partial class ExecutionService
         TimeProvider time,
         ILogger<ExecutionService> logger,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        SafetyOptions? safety = null)
+        SafetyOptions? safety = null,
+        IJournal? journal = null)
     {
         _exchange = exchange;
         _gate = gate;
@@ -81,6 +97,7 @@ public sealed partial class ExecutionService
         _store = store;
         _safety = safety ?? new SafetyOptions();
         _safety.Validate();
+        _journal = journal;
         _time = time;
         _logger = logger;
         _delay = delay ?? ((d, ct) => Task.Delay(d, time, ct));
@@ -164,7 +181,8 @@ public sealed partial class ExecutionService
             var verdict = _gate.Evaluate(rounded, portfolio, _market.Snapshot(rounded.Symbol), pair);
             if (verdict.Order is not { } order)
             {
-                if (Interlocked.Increment(ref _consecutiveRejects) >= _safety.MaxConsecutiveRejects && verdict.Rule != "kill-switch")
+                if (verdict.Rule is not ("kill-switch" or "invalid-order")
+                    && Interlocked.Increment(ref _consecutiveRejects) >= _safety.MaxConsecutiveRejects)
                     Interlocked.Exchange(ref _streakTripped, 1);
                 LogRejected(_logger, intent.ClientOrderId ?? string.Empty, verdict.Rule, verdict.Reason);
                 return new ExecutionResult(ExecutionStatus.Rejected, verdict.Rule, verdict.Reason);
@@ -231,9 +249,63 @@ public sealed partial class ExecutionService
         return orders;
     }
 
-    /// <summary>Requests cancellation of one order. Cancelling never adds risk, so it needs no gate.</summary>
-    public Task<bool> CancelAsync(string venueOrderId, CancellationToken cancellationToken) =>
-        _exchange.CancelOrderAsync(venueOrderId, cancellationToken);
+    /// <summary>
+    /// Cancels one open order the engine placed. Cancelling never adds risk, so it needs no gate, but orders the engine
+    /// didn't place are left alone (reconciliation treats them as a reason to halt).
+    /// </summary>
+    public async Task<(CancelOutcome Outcome, string? ClientOrderId)> CancelOwnOrderAsync(string venueOrderId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(venueOrderId);
+        IReadOnlyList<ExchangeOrder> open;
+        try
+        {
+            // The cached listing: a looping agent can't use up the rate limit that kill-switch cancels need.
+            open = await GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ExchangeException)
+        {
+            return (CancelOutcome.Failed, null);
+        }
+
+        var order = open.FirstOrDefault(o => o.IsOpen && string.Equals(o.VenueOrderId, venueOrderId, StringComparison.Ordinal));
+        if (order is null)
+            return (CancelOutcome.NotFound, null);
+        bool ours;
+        lock (_pending)
+            ours = _usedClientOrderIds.Contains(order.ClientOrderId);
+        if (!ours)
+            return (CancelOutcome.NotOwn, null);
+
+        try
+        {
+            var cancelled = await _exchange.CancelOrderAsync(venueOrderId, cancellationToken).ConfigureAwait(false);
+            ClearCaches();
+            return (cancelled ? CancelOutcome.Cancelled : CancelOutcome.NotFound, order.ClientOrderId);
+        }
+        catch (ExchangeException)
+        {
+            return (CancelOutcome.Failed, order.ClientOrderId);
+        }
+    }
+
+    /// <summary>Appends to the journal if there is one. A journal failure is logged, never allowed to stop a safety action.</summary>
+    private async Task<bool> RecordAsync(string kind, string actor, string summary, IReadOnlyDictionary<string, string> data)
+    {
+        if (_journal is null)
+            return true;
+        try
+        {
+            await _journal.AppendAsync(
+                new JournalEntry(Guid.NewGuid().ToString("N"), _time.GetUtcNow(), kind, actor, null, null, summary, data),
+                CancellationToken.None).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogStateWriteFailed(_logger, "journal: " + ex.Message);
+            return false;
+        }
+    }
 
     /// <summary>
     /// Engages the kill switch (persisted first, so new orders stop at once), waits for any placement in flight,
@@ -270,6 +342,8 @@ public sealed partial class ExecutionService
             catch (ExchangeException ex)
             {
                 LogCancelFailed(_logger, "(listing open orders)", ex.Message);
+                if (newly)
+                    await RecordAsync("kill-switch", by, $"Engaged: {reason}", new Dictionary<string, string> { ["action"] = "engaged", ["reason"] = reason, ["cancelled"] = "unknown" }).ConfigureAwait(false);
                 return new KillSwitchResult(newly, 0, ["(open orders could not be listed)"]);
             }
 
@@ -301,7 +375,19 @@ public sealed partial class ExecutionService
                 }
             }
 
-            return new KillSwitchResult(newly, cancelled, notCancelled);
+            var result = new KillSwitchResult(newly, cancelled, notCancelled);
+            if (newly)
+            {
+                await RecordAsync("kill-switch", by, $"Engaged: {reason}", new Dictionary<string, string>
+                {
+                    ["action"] = "engaged",
+                    ["reason"] = reason,
+                    ["cancelled"] = cancelled.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["notCancelled"] = string.Join(",", notCancelled),
+                }).ConfigureAwait(false);
+            }
+
+            return result;
         }
         finally
         {
@@ -349,12 +435,15 @@ public sealed partial class ExecutionService
     }
 
     /// <summary>Owner only: resumes trading. Never exposed as an agent tool.</summary>
-    public void ReleaseKillSwitch(string by)
+    public async Task ReleaseKillSwitchAsync(string by)
     {
         by = Truncate(by);
         Interlocked.Exchange(ref _consecutiveRejects, 0); // a fresh start, not one rejection away from halting again
+        var wasEngaged = _killSwitch.IsEngaged;
         _killSwitch.Release(by);
         LogKillSwitchReleased(_logger, by);
+        if (wasEngaged)
+            await RecordAsync("kill-switch", by, "Released", new Dictionary<string, string> { ["action"] = "released" }).ConfigureAwait(false);
     }
 
     /// <summary>Size rounds down to the base step; price rounds to the passive side (buys down, sells up) of the quote step.</summary>
@@ -399,10 +488,19 @@ public sealed partial class ExecutionService
         try
         {
             var placed = await _exchange.PlaceLimitOrderAsync(order, postOnly, cancellationToken).ConfigureAwait(false);
+            if (postOnly && await IsRejectedAsync(placed, cancellationToken).ConfigureAwait(false))
+            {
+                // The exchange records a post-only order that would cross, then rejects it: nothing is working.
+                lock (_pending)
+                    _pending.Remove(order.ClientOrderId);
+                return new ExecutionResult(ExecutionStatus.Failed, "post-only-would-cross", "The order would have filled at once, so the post-only order was rejected.", order, placed);
+            }
+
             return Confirmed(order, verdict, placed, sentAt);
         }
         catch (OrderPlacementUncertainException)
         {
+            ClearCaches();
             var found = await FindByClientOrderIdAsync(order).ConfigureAwait(false);
             if (found is not null)
                 return Confirmed(order, verdict, found, sentAt);
@@ -418,6 +516,7 @@ public sealed partial class ExecutionService
         }
         catch (ExchangeException ex)
         {
+            ClearCaches();
             lock (_pending)
             {
                 _pending.Remove(order.ClientOrderId);
@@ -427,14 +526,39 @@ public sealed partial class ExecutionService
             ForgetKnown([order.ClientOrderId]);
 
             LogFailed(_logger, order.ToString(), ex.ErrorId ?? ex.StatusCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "error");
-            return new ExecutionResult(ExecutionStatus.Failed, ex.ErrorId ?? "exchange-error", "The exchange refused the order.", order);
+            return new ExecutionResult(ExecutionStatus.Failed, "exchange-refused", "The exchange refused the order.", order); // its own error text stays in the log
+        }
+    }
+
+    /// <summary>After any placement attempt, so a listing taken while it was in flight isn't served for the next 10 seconds.</summary>
+    private void ClearCaches()
+    {
+        _openOrdersCache = null;
+        _portfolioCache = null;
+    }
+
+    private async Task<bool> IsRejectedAsync(PlacedOrder placed, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var status = await _exchange.GetOrderAsync(placed.VenueOrderId, cancellationToken).ConfigureAwait(false);
+            return status?.Status == OrderStatus.Rejected;
+        }
+        catch (ExchangeException)
+        {
+            return false; // unknown: treat as working; reconciliation settles it
         }
     }
 
     private ExecutionResult Confirmed(ApprovedOrder order, RiskVerdict verdict, PlacedOrder placed, DateTimeOffset sentAt)
     {
+        ClearCaches();
         lock (_pending)
+        {
             _pending[order.ClientOrderId] = new PendingPlacement(order, sentAt, Uncertain: false, placed.VenueOrderId);
+            _tracked[order.ClientOrderId] = new TrackedOrder(order.ToIntent(), placed.VenueOrderId);
+        }
+
         LogPlaced(_logger, order.ToString(), placed.VenueOrderId);
         return new ExecutionResult(ExecutionStatus.Placed, verdict.Rule, verdict.Reason, order, placed);
     }

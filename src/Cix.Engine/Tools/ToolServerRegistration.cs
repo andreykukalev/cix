@@ -61,6 +61,7 @@ public static class ToolServerRegistration
         services.AddMcpServer()
             .WithHttpTransport(o => o.Stateless = true)
             .WithTools<AgentTools>()
+            .WithTools<OrderTools>()
             .WithTools<OperatorTools>();
         return services;
     }

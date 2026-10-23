@@ -44,7 +44,8 @@ public sealed partial class ToolCallContext(
     IStrategySpecStore specs,
     IJournal journal,
     ToolServerOptions options,
-    TimeProvider time)
+    TimeProvider time,
+    ILogger<ToolCallContext> logger)
 {
     /// <summary>Names that only the owner or the engine itself appear as in the journal; agents can't claim them.</summary>
     public static readonly IReadOnlySet<string> ReservedActors = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -111,18 +112,33 @@ public sealed partial class ToolCallContext(
     public Task JournalAsync(string tool, string summary, IReadOnlyDictionary<string, string>? data, CancellationToken cancellationToken)
     {
         var fields = new Dictionary<string, string>(data ?? new Dictionary<string, string>(), StringComparer.Ordinal) { ["tool"] = tool };
-        return journal.AppendAsync(
-            new JournalEntry(
-                Guid.NewGuid().ToString("N"),
-                time.GetUtcNow(),
-                "tool-call",
-                IsOperator ? "owner" : Agent,
-                RunId,
-                specs.Active?.Label,
-                summary,
-                fields),
-            cancellationToken);
+        return RecordAsync("tool-call", summary, fields, cancellationToken);
     }
+
+    /// <summary>
+    /// Records something that already happened (an order sent): never cancelled with the request and never thrown, so the
+    /// caller still gets the result and doesn't retry an order that exists. A failure is logged.
+    /// </summary>
+    public async Task RecordOutcomeAsync(string kind, string summary, IReadOnlyDictionary<string, string> data)
+    {
+        try
+        {
+            await RecordAsync(kind, summary, data, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogJournalFailed(logger, kind, ex.Message);
+        }
+    }
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Journal write failed for a {Kind} entry: {Detail}")]
+    private static partial void LogJournalFailed(ILogger logger, string kind, string detail);
+
+    /// <summary>Appends an entry of any kind as the current caller, with the active spec.</summary>
+    public Task RecordAsync(string kind, string summary, IReadOnlyDictionary<string, string> data, CancellationToken cancellationToken) =>
+        journal.AppendAsync(
+            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), kind, IsOperator ? "owner" : Agent, RunId, specs.Active?.Label, summary, data),
+            cancellationToken);
 
     /// <summary>Identity headers are free text from the caller: keep them short and plain.</summary>
     private string? Header(string name)
