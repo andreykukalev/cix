@@ -62,6 +62,7 @@ public static class ToolServerRegistration
             .WithHttpTransport(o => o.Stateless = true)
             .WithTools<AgentTools>()
             .WithTools<OrderTools>()
+            .WithTools<ScanTools>()
             .WithTools<OperatorTools>();
         return services;
     }

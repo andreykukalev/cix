@@ -65,6 +65,10 @@ public sealed class MarketDataPollerTests
     private const string Btc = "BTC-EUR";
     private static readonly DateTimeOffset Start = new(2026, 10, 22, 12, 0, 30, TimeSpan.Zero);
 
+    /// <summary>The v1 schedule (5-second quotes plus 1-minute candles): exercises both candle series and catch-up paging.</summary>
+    private static MarketDataOptions WithMinuteCandles() =>
+        new() { QuoteInterval = TimeSpan.FromSeconds(5), MinuteCandleInterval = TimeSpan.FromMinutes(1) };
+
     private sealed class Rig
     {
         public Rig(int pageSize = 100, MarketDataOptions? options = null, params IQuoteListener[] listeners)
@@ -72,7 +76,7 @@ public sealed class MarketDataPollerTests
             Time = new MutableTime(Start);
             Market = new SimulatedMarket(Time, pageSize);
             State = new MarketState(Time);
-            Options = options ?? new MarketDataOptions();
+            Options = options ?? WithMinuteCandles();
             Poller = new MarketDataPoller(Market, Market, Store, State, listeners, Options, ["btc/eur"], Time, NullLogger<MarketDataPoller>.Instance);
         }
 
@@ -287,7 +291,7 @@ public sealed class MarketDataPollerTests
     {
         var time = new MutableTime(Start);
         var market = new SimulatedMarket(time);
-        string[] symbols = ["BTC-EUR", "ETH-EUR", "SOL-EUR", "XRP-EUR"]; // 4 x 13.2 = 52.8 a minute > 48
+        string[] symbols = ["BTC-EUR", "ETH-EUR", "SOL-EUR", "XRP-EUR", "LINK-EUR", "AVAX-EUR", "SUI-EUR", "NEAR-EUR"]; // 8 x 6.2 = 49.6 a minute > 48
 
         Assert.Throws<InvalidOperationException>(() => new MarketDataPoller(
             market, market, new InMemoryCandleStore(), new MarketState(time), [], new MarketDataOptions(), symbols, time, NullLogger<MarketDataPoller>.Instance));
@@ -300,8 +304,29 @@ public sealed class MarketDataPollerTests
         Assert.Throws<InvalidOperationException>(() => new MarketDataOptions { MaxBudgetShare = (decimal)share }.Validate(1));
 
     [Fact]
-    public void Options_DefaultScheduleFitsThreeSymbols() =>
-        Assert.Equal(39.6m, new MarketDataOptions().PlannedRequestsPerMinute(3)); // 12 quotes + 1 + 0.2 per symbol
+    public void Options_DefaultScheduleFitsTheSevenSymbolUniverse()
+    {
+        var options = new MarketDataOptions();
+        Assert.Equal(43.4m, options.PlannedRequestsPerMinute(7)); // 6 quotes + 0.2 hourly-candle polls per symbol, no 1m candles
+        options.Validate(7);
+    }
+
+    [Fact]
+    public void Options_MinuteCandlesCountTowardsTheBudget() =>
+        Assert.Equal(39.6m, WithMinuteCandles().PlannedRequestsPerMinute(3)); // 12 quotes + 1 + 0.2 per symbol
+
+    [Fact]
+    public async Task DefaultSchedule_FetchesNoMinuteCandles_AndQuotesEveryTenSeconds()
+    {
+        var rig = new Rig(options: new MarketDataOptions());
+
+        await rig.RunFor(TimeSpan.FromMinutes(1));
+
+        Assert.Empty(rig.Store.Recent(Btc, 1, 10));
+        Assert.Equal(7 * 24, rig.Store.Recent(Btc, 60, 1000).Count);
+        Assert.DoesNotContain(rig.Market.Requests, r => r.Kind == "1m");
+        Assert.Equal(6, rig.Market.Requests.Count(r => r.Kind == "quote"));
+    }
 }
 
 public sealed class MarketStateAndStoreTests

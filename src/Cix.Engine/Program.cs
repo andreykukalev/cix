@@ -4,6 +4,7 @@ using Cix.Engine.Execution;
 using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
 using Cix.Engine.Persistence;
+using Cix.Engine.Scanning;
 using Cix.Engine.Strategy;
 using Cix.Engine.Tools;
 using Cix.Exchange.RevolutX;
@@ -31,10 +32,14 @@ builder.Services.AddCixExchange(
     builder.Configuration.GetSection(RevolutXOptions.SectionName).Get<RevolutXOptions>() ?? new RevolutXOptions(),
     builder.Configuration.GetSection(PaperOptions.SectionName).Get<PaperOptions>() ?? new PaperOptions());
 
-// Polls quotes and candles for the symbols the risk gate allows; fails startup if the schedule exceeds the rate limit.
+// The curated universe (ADR-0006): the scan covers it plus the risk allowlist; only allowlisted symbols are polled and tradable.
+var scanner = builder.Configuration.GetSection(ScannerOptions.SectionName).Get<ScannerOptions>() ?? new ScannerOptions();
+var universe = new MarketUniverse(scanner.EffectiveUniverse, limits.AllowedSymbols);
+
+// Polls quotes and candles for the allowlisted symbols; fails startup if the schedule exceeds the rate limit.
 builder.Services.AddCixMarketData(
     builder.Configuration.GetSection(MarketDataOptions.SectionName).Get<MarketDataOptions>() ?? new MarketDataOptions(),
-    limits.AllowedSymbols);
+    universe.Tradable);
 
 // The only order path: every placement goes through the risk gate (ApprovedOrder makes skipping it a compile error).
 builder.Services.AddCixExecution(
@@ -50,6 +55,9 @@ builder.Services.AddCixToolServer(
     builder.Configuration.GetSection(StrategyOptions.SectionName).Get<StrategyOptions>() ?? new StrategyOptions(),
     builder.Configuration.GetSection(JournalOptions.SectionName).Get<JournalOptions>() ?? new JournalOptions());
 builder.WebHost.ListenOnLoopback(builder.Configuration, toolServer);
+
+// Deterministic scans of the universe every few minutes; signals are journaled and served by scan_market. Never trades.
+builder.Services.AddCixScanner(scanner, universe);
 
 // Cosmos DB (emulator locally, Azure later) for the journal, engine state and paper account; off unless configured.
 builder.Services.AddCixCosmos(

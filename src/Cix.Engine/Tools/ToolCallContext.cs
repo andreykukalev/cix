@@ -50,7 +50,7 @@ public sealed partial class ToolCallContext(
     /// <summary>Names that only the owner or the engine itself appear as in the journal; agents can't claim them.</summary>
     public static readonly IReadOnlySet<string> ReservedActors = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "owner", "engine", "execution", "reconciler", "safety-monitor", "invalid",
+        "owner", "engine", "execution", "reconciler", "safety-monitor", "scanner", "invalid",
     };
 
     public string Agent
