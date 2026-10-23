@@ -58,6 +58,8 @@ wait_for_engine() {
 
 # Exit code for a run that didn't get to use Claude (no or expired credentials, usage or rate limit): such attempts don't
 # count toward run caps, and the loops retry them sooner.
+# Used by the scripts that source this file:
+# shellcheck disable=SC2034
 NOT_RUN=3
 
 # Succeeds if a failed run ($1: JSON log, $2: stderr) was refused for usage or rate limits (the plan's limit or API
