@@ -11,6 +11,9 @@ using Cix.Exchange.RevolutX;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Docker secrets (files under /run/secrets) for the few settings that are secrets; anything else there is ignored.
+builder.Configuration.AddCixSecretFiles(builder.Configuration["SecretsDirectory"] ?? SecretFiles.DefaultDirectory);
+
 // Human-only file, copied next to the binary (see CLAUDE.md rule 3).
 builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "risk-limits.json"), optional: false, reloadOnChange: false);
 

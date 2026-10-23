@@ -10,8 +10,8 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\..\config\risk-limits.json" Link="risk-limits.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\strategies\*.json" LinkBase="strategies" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\config\risk-limits.json" Link="risk-limits.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\..\strategies\*.json" LinkBase="strategies" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Cix.Engine.Tests" />

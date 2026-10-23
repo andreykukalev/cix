@@ -19,7 +19,10 @@ public sealed class CosmosOptions
 
     public string Database { get; set; } = "cix";
 
-    /// <summary>The local emulator: gateway mode and its self-signed certificate accepted, for a loopback endpoint only.</summary>
+    /// <summary>
+    /// The local emulator: gateway mode and its self-signed certificate accepted, for a loopback endpoint or a single-label
+    /// host such as the Docker Compose service name <c>cosmos</c> (resolvable only inside the Compose network). Never in Live.
+    /// </summary>
     public bool Emulator { get; set; }
 
     public void Validate()
@@ -28,12 +31,20 @@ public sealed class CosmosOptions
             return;
         if (!Uri.TryCreate(Endpoint, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
             throw new InvalidOperationException("Cosmos:Endpoint must be an absolute https URL.");
-        if (Emulator && !uri.IsLoopback)
-            throw new InvalidOperationException("Cosmos:Emulator is only allowed with a loopback endpoint (it accepts a self-signed certificate).");
+        if (Emulator && !IsLocalHost(uri))
+            throw new InvalidOperationException(
+                "Cosmos:Emulator is only allowed with a loopback endpoint or a Compose service name like https://cosmos:8081 (it accepts a self-signed certificate).");
         if (!Emulator && string.IsNullOrWhiteSpace(AccountKey))
             throw new InvalidOperationException("Cosmos:AccountKey is required (set it with dotnet user-secrets).");
         if (string.IsNullOrWhiteSpace(Database) || Database.Length > 64)
             throw new InvalidOperationException("Cosmos:Database must be a short name.");
+    }
+
+    /// <summary>Loopback, or a single-label DNS name (no dots, not an IP address): a container on the same Compose network.</summary>
+    public static bool IsLocalHost(Uri uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        return uri.IsLoopback || (uri.HostNameType == UriHostNameType.Dns && !uri.Host.Contains('.', StringComparison.Ordinal));
     }
 }
 

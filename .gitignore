@@ -22,3 +22,4 @@ secrets.json
 __pycache__/
 .venv/
 logs/
+secrets/

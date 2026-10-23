@@ -1,0 +1,63 @@
+# CIX on one machine: Cosmos DB emulator, engine (paper trading by default) and the trader loop.
+#   tools/setup-secrets.ps1     once: creates secrets/ (operator key, Claude credentials) and .env
+#   docker compose up -d --build
+# Everything restarts with Docker. Secrets are files in secrets/ (git-ignored), mounted under /run/secrets; none are
+# in the images or this file. Paper mode holds no Revolut X keys. ADR-0005.
+name: cix
+
+services:
+  cosmos:
+    image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest
+    command: ["--protocol", "https"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1234:1234"   # Data Explorer, this PC only
+      - "127.0.0.1:8081:8081"   # lets `dotnet run` use the same emulator
+    volumes:
+      - cosmos-data:/data
+
+  engine:
+    build:
+      context: .
+      dockerfile: docker/engine.Dockerfile
+    image: cix-engine
+    restart: unless-stopped
+    depends_on: [cosmos]
+    environment:
+      Cosmos__Enabled: "true"
+      Cosmos__Emulator: "true"
+      Cosmos__Endpoint: "https://cosmos:8081"
+    secrets:
+      - source: operator_key
+        target: ToolServer__OperatorKey
+    volumes:
+      # Owner-edited files, read-only inside: restart the engine after changing them.
+      - ./config/risk-limits.json:/app/risk-limits.json:ro
+      - ./strategies:/app/strategies:ro
+    # No ports: the tool server listens on 127.0.0.1 inside this container and only the trader shares that.
+
+  trader:
+    build:
+      context: .
+      dockerfile: docker/trader.Dockerfile
+    image: cix-trader
+    restart: unless-stopped
+    depends_on: [engine]
+    network_mode: "service:engine"   # reaches the tool server at 127.0.0.1:5077; nothing else can
+    environment:
+      TRADER_INTERVAL_MINUTES: "${TRADER_INTERVAL_MINUTES:-60}"
+      CLAUDE_TOKEN_EXPIRES: "${CLAUDE_TOKEN_EXPIRES:-}"
+    secrets:
+      - claude_token
+    volumes:
+      - ./strategies:/cix/strategies:ro
+      - ./logs/trader:/cix/logs/trader
+
+secrets:
+  operator_key:
+    file: ./secrets/operator_key
+  claude_token:
+    file: ./secrets/claude_token
+
+volumes:
+  cosmos-data:
