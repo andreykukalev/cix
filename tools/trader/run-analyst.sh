@@ -100,14 +100,19 @@ fi
 # Fixed cadence from start; a run that overruns doesn't cause catch-up runs. A run that couldn't use Claude is retried
 # after ANALYST_RETRY_MINUTES (the slot it missed is not made up twice).
 next=$(date +%s)
+retries=0
+max_retries=$(( interval * 60 / retry ))   # quick retries never exceed one interval's worth; then back to the normal slot
 while true; do
   run_once
   rc=$?
   now=$(date +%s)
-  if (( rc == NOT_RUN )); then
+  if (( rc == NOT_RUN && retries < max_retries )); then
+    retries=$(( retries + 1 ))
+    next=$now   # the next completed run starts a fresh cadence, so a long outage isn't followed by a second run
     sleep $(( retry * 60 ))
     continue
   fi
+  retries=0
   next=$(( next + interval * 3600 ))
-  if (( next > now )); then sleep $(( next - now )); else next=$now; fi
+  if (( next > now )); then sleep $(( next - now )); else next=$(( now + interval * 3600 )); sleep $(( interval * 3600 )); fi
 done

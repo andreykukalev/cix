@@ -75,6 +75,40 @@ public sealed class ProtectiveExitTests
         Assert.Equal(1, cancelled);
         var exit = Assert.Single(scan.Exits);
         Assert.Equal(("stop", 59_800m), (exit.Reason, exit.LimitPrice)); // re-priced at the new bid
+        Assert.Equal(1, await tools.Scanner.ApplyProtectiveExitsAsync(scan, CancellationToken.None));
+        var second = tools.Journal.Entries.Where(e => e.Data?.GetValueOrDefault("tool") == "protective-exit").Last();
+        static decimal D(string v) => decimal.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
+        Assert.Equal((0.04m, 59_800m), (D(second.Data!["requestedSize"]), D(second.Data["requestedPrice"]))); // the rest, at the new bid
+    }
+
+    [Fact]
+    public async Task Repricing_LeavesTheTradersOrders_AndYoungProtectiveSells_Alone()
+    {
+        var tools = await Holding(btc: 0.05m, stop: 61_000m, target: 70_000m);
+        await tools.Scanner.ApplyProtectiveExitsAsync(await tools.Scanner.ScanAsync(CancellationToken.None), CancellationToken.None);
+        await tools.Rig.Buy(0.0001m, 59_500m, "trader-buy"); // the trader's resting buy
+
+        tools.Rig.Time.Advance(TimeSpan.FromMinutes(2)); // the protective remainder is only 2 minutes old
+        Assert.Equal(0, await tools.Scanner.CancelStaleProtectiveExitsAsync(CancellationToken.None));
+
+        tools.Rig.Time.Advance(TimeSpan.FromMinutes(60)); // both are old now; only the engine's own sell is cancelled
+        tools.Rig.Quote(59_900m, 59_910m); // reaches neither resting order
+        Assert.Equal(1, await tools.Scanner.CancelStaleProtectiveExitsAsync(CancellationToken.None));
+        tools.Rig.Time.Advance(TimeSpan.FromSeconds(11));
+        var open = (await tools.Rig.Execution.GetOpenOrdersAsync(CancellationToken.None)).Where(o => o.IsOpen).ToList();
+        Assert.Equal("buy", Assert.Single(open).Side.ToString().ToLowerInvariant());
+    }
+
+    [Fact]
+    public async Task StopAndTargetExits_DontWakeTheTrader_WhenTheEngineHandlesThem()
+    {
+        var protectedRig = await Holding(btc: 0.001m, stop: 61_000m, target: 70_000m);
+        await protectedRig.Scanner.ScanAsync(CancellationToken.None);
+        var unprotected = await Holding(btc: 0.001m, stop: 61_000m, target: 70_000m, protectiveExits: false);
+        await unprotected.Scanner.ScanAsync(CancellationToken.None);
+
+        Assert.DoesNotContain("sell:", protectedRig.Scanner.SignalKey, StringComparison.Ordinal);
+        Assert.Equal("sell:BTC-EUR:stop", unprotected.Scanner.SignalKey);
     }
 
     [Fact]
@@ -99,5 +133,20 @@ public sealed class ProtectiveExitTests
         Assert.True(await service.ScanOnceAsync(CancellationToken.None));
 
         Assert.Contains(tools.Journal.Entries, e => e.Kind == "order" && e.Data!["tool"] == "protective-exit");
+    }
+
+    [Fact]
+    public async Task RefusedProtectiveSells_DontTripTheRejectStreak_ButAgentOrdersStillDo()
+    {
+        var tools = new ToolRig(btc: 0.001m);
+        var priceBand = new Domain.OrderIntent(Btc, Domain.OrderSide.Sell, 0.001m, 50_000m, "x"); // far outside the 1% band
+
+        for (var i = 0; i < 12; i++)
+            await tools.Rig.Execution.PlaceAsync(priceBand with { ClientOrderId = $"p-{i}" }, false, CancellationToken.None, countsTowardRejectStreak: false);
+        Assert.False(tools.Rig.KillSwitch.IsEngaged);
+
+        for (var i = 0; i < 10; i++)
+            await tools.Rig.Execution.PlaceAsync(priceBand with { ClientOrderId = $"a-{i}" }, false, CancellationToken.None);
+        Assert.True(tools.Rig.KillSwitch.IsEngaged);
     }
 }

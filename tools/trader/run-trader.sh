@@ -124,13 +124,15 @@ next_run=$(date +%s)        # interval mode: the next scheduled run
 last_run=0
 run_day=""
 runs_today=0
+refunds_today=0
+max_refunds=96   # at most one refunded attempt per 15 minutes
 capped_day=""
 
 # Every run goes through here: the daily cap applies to signal, heartbeat and scheduled runs alike.
 guarded_run() {
   local today
   today="$(date -u +%F)"
-  if [[ "$today" != "$run_day" ]]; then run_day="$today"; runs_today=0; fi
+  if [[ "$today" != "$run_day" ]]; then run_day="$today"; runs_today=0; refunds_today=0; fi
   if (( runs_today >= max_runs )); then
     if [[ "$capped_day" != "$today" ]]; then
       say "Daily cap of $max_runs runs reached; no more runs until 00:00 UTC (TRADER_MAX_RUNS_PER_DAY)."
@@ -142,7 +144,11 @@ guarded_run() {
   last_run=$(date +%s)
   run_once "$1"
   local rc=$?
-  (( rc == NOT_RUN )) && runs_today=$(( runs_today - 1 ))   # Claude wasn't used: don't spend the daily cap
+  # Claude wasn't used: don't spend the daily cap, up to a ceiling so a misjudged failure can't run unbounded.
+  if (( rc == NOT_RUN && refunds_today < max_refunds )); then
+    runs_today=$(( runs_today - 1 ))
+    refunds_today=$(( refunds_today + 1 ))
+  fi
   return "$rc"
 }
 

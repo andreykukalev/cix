@@ -67,7 +67,9 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
 
 - **Protective exits.** Usage limits, an outage or an expired token never leave a position unprotected.
   - The engine itself sells a position that reaches its stop-loss or take-profit, every 5 minutes, through the risk gate and with no Claude call.
-  - An unfilled sell is cancelled after 4 minutes and placed again at the new bid.
+  - An unfilled sell is re-priced at the next scan (within about 5 minutes) at the new bid.
+  - A sell the risk gate refuses is retried for that coin after 15 minutes, and refusals of these sells never trip the kill switch.
+  - The trader isn't started for stop or target exits, because the engine handles them.
   - Trend exits and all buys still need the trader.
   - You can turn this off with `Scanner:ProtectiveExits` in `appsettings.json`, but it is on by default.
 - **Recovery.**

@@ -124,7 +124,9 @@ public sealed partial class MarketScanService(
     /// A short, stable description of the latest scan's signals (for example <c>buy:SOL-EUR|sell:BTC-EUR:stop</c>), empty when
     /// there are none. The trader loop starts an agent run when it changes to something non-empty.
     /// </summary>
-    public string SignalKey => Latest is { } scan ? KeyOf(scan, StaleOrderSymbols) : string.Empty;
+    public string SignalKey => Latest is { } scan
+        ? KeyOf(options.ProtectiveExits ? scan with { Exits = scan.Exits.Where(x => !ProtectiveReasons.Contains(x.Reason)).ToList() } : scan, StaleOrderSymbols)
+        : string.Empty; // stop and target exits are the engine's own job when protective exits are on: no agent run for them
 
     /// <summary>Orders resting longer than this need a run to cancel them (the specs' 50-minute tidy rule).</summary>
     public static readonly TimeSpan StaleOrderAge = TimeSpan.FromMinutes(50);
@@ -237,7 +239,12 @@ public sealed partial class MarketScanService(
     /// <summary>An unfilled protective sell older than this is cancelled, so the next scan re-prices it at the current bid.</summary>
     public static readonly TimeSpan ProtectiveRepriceAfter = TimeSpan.FromMinutes(4);
 
+    /// <summary>After the gate refuses a protective sell for a symbol, wait this long before trying that symbol again.</summary>
+    public static readonly TimeSpan ProtectiveBackoff = TimeSpan.FromMinutes(15);
+
     private readonly HashSet<string> _protectiveOrderIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _protectiveBackoff = new(StringComparer.Ordinal);
+    private bool _protectiveRestored;
 
     /// <summary>
     /// Places a sell for every stop or target exit in <paramref name="scan"/>, through <see cref="ExecutionService"/> and so the
@@ -252,15 +259,31 @@ public sealed partial class MarketScanService(
         var placed = 0;
         foreach (var exit in scan.Exits.Where(x => ProtectiveReasons.Contains(x.Reason)))
         {
+            var now = time.GetUtcNow();
+            lock (_protectiveBackoff)
+            {
+                if (_protectiveBackoff.TryGetValue(exit.Symbol, out var until) && now < until)
+                    continue; // refused recently: don't hammer the gate or the journal every scan
+            }
+
             var clientOrderId = Guid.NewGuid().ToString();
             var result = await execution.PlaceAsync(
-                new OrderIntent(exit.Symbol, OrderSide.Sell, exit.BaseSize, exit.LimitPrice, clientOrderId), postOnly: false, cancellationToken)
-                .ConfigureAwait(false);
-            if (result.Status == ExecutionStatus.Placed)
+                new OrderIntent(exit.Symbol, OrderSide.Sell, exit.BaseSize, exit.LimitPrice, clientOrderId), postOnly: false, cancellationToken,
+                countsTowardRejectStreak: false).ConfigureAwait(false);
+            if (result.Status == ExecutionStatus.Rejected)
             {
-                placed++;
+                lock (_protectiveBackoff)
+                    _protectiveBackoff[exit.Symbol] = now + ProtectiveBackoff;
+            }
+            else
+            {
+                // Placed, or sent with an unknown outcome: track it either way so a resting sell gets re-priced.
+                if (result.Status == ExecutionStatus.Placed)
+                    placed++;
                 lock (_protectiveOrderIds)
                     _protectiveOrderIds.Add(clientOrderId);
+                lock (_protectiveBackoff)
+                    _protectiveBackoff.Remove(exit.Symbol);
             }
 
             var data = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -289,6 +312,9 @@ public sealed partial class MarketScanService(
     /// <summary>Cancels this engine's protective sells that have rested unfilled too long; the next scan sells again at the bid.</summary>
     public async Task<int> CancelStaleProtectiveExitsAsync(CancellationToken cancellationToken)
     {
+        if (!_protectiveRestored)
+            await RestoreProtectiveOrdersAsync(cancellationToken).ConfigureAwait(false);
+
         string[] ids;
         lock (_protectiveOrderIds)
             ids = [.. _protectiveOrderIds];
@@ -311,6 +337,24 @@ public sealed partial class MarketScanService(
         return cancelled;
     }
 
+    /// <summary>After a restart, picks up protective sells placed in the last day from the journal, so they are re-priced too.</summary>
+    private async Task RestoreProtectiveOrdersAsync(CancellationToken cancellationToken)
+    {
+        var since = DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime).AddDays(-1);
+        var orders = await journal.QueryAsync(new JournalQuery(From: since, Kind: "order", Limit: FileJournal.MaxQueryLimit), cancellationToken)
+            .ConfigureAwait(false);
+        lock (_protectiveOrderIds)
+        {
+            foreach (var entry in orders.Where(e => e.Data?.GetValueOrDefault("tool") == "protective-exit" && e.Data.GetValueOrDefault("status") != "rejected"))
+            {
+                if (entry.Data!.GetValueOrDefault("clientOrderId") is { Length: > 0 } id)
+                    _protectiveOrderIds.Add(id);
+            }
+        }
+
+        _protectiveRestored = true;
+    }
+
     private async Task AppendSafelyAsync(JournalEntry entry)
     {
         try
@@ -319,9 +363,12 @@ public sealed partial class MarketScanService(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            LogJournalFailed(logger, entry.Kind, ex.Message);
+            LogOrderJournalFailed(logger, entry.Kind, ex.Message);
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Journal write failed for a protective-exit {Kind} entry: {Detail}")]
+    private static partial void LogOrderJournalFailed(ILogger logger, string kind, string detail);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Protective {Reason} exit: sell {Size} {Symbol} at {Price}: {Status} ({Rule})")]
     private static partial void LogProtectiveExit(ILogger logger, string reason, string symbol, decimal size, decimal price, string status, string rule);
@@ -397,7 +444,15 @@ public sealed partial class MarketScanBackgroundService(
     {
         try
         {
-            await scanner.CancelStaleProtectiveExitsAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await scanner.CancelStaleProtectiveExitsAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                LogScanFailed(logger, ex.GetType().Name, "re-pricing protective sells: " + ex.Message); // the scan still runs
+            }
+
             var result = await scanner.ScanAsync(cancellationToken).ConfigureAwait(false);
             LogScanned(logger, result.Ranked.Count, result.Excluded.Count, result.Entries.Count, result.Exits.Count, Describe(result));
             await scanner.ApplyProtectiveExitsAsync(result, cancellationToken).ConfigureAwait(false);

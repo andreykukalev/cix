@@ -116,9 +116,13 @@ public sealed partial class ExecutionService
         }
     }
 
-    public async Task<ExecutionResult> PlaceAsync(OrderIntent intent, bool postOnly, CancellationToken cancellationToken)
+    /// <param name="countsTowardRejectStreak">
+    /// False for the engine's own protective sells: a sell never adds risk, and a sell the gate keeps refusing in a fast market
+    /// shouldn't halt everything. Agents' orders always count.
+    /// </param>
+    public async Task<ExecutionResult> PlaceAsync(OrderIntent intent, bool postOnly, CancellationToken cancellationToken, bool countsTowardRejectStreak = true)
     {
-        var result = await PlaceLockedAsync(intent, postOnly, cancellationToken).ConfigureAwait(false);
+        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, cancellationToken).ConfigureAwait(false);
 
         // Engaging takes the placement lock, so it runs after the placement released it.
         // Only a gate rejection made by this call can trip the streak (engine-side rejects never count).
@@ -133,7 +137,7 @@ public sealed partial class ExecutionService
         return result;
     }
 
-    private async Task<ExecutionResult> PlaceLockedAsync(OrderIntent intent, bool postOnly, CancellationToken cancellationToken)
+    private async Task<ExecutionResult> PlaceLockedAsync(OrderIntent intent, bool postOnly, bool countsTowardRejectStreak, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
         intent = intent with { Symbol = MarketDataPoller.NormaliseSymbol(intent.Symbol) };
@@ -181,7 +185,8 @@ public sealed partial class ExecutionService
             var verdict = _gate.Evaluate(rounded, portfolio, _market.Snapshot(rounded.Symbol), pair);
             if (verdict.Order is not { } order)
             {
-                if (verdict.Rule is not ("kill-switch" or "invalid-order")
+                if (countsTowardRejectStreak
+                    && verdict.Rule is not ("kill-switch" or "invalid-order")
                     && Interlocked.Increment(ref _consecutiveRejects) >= _safety.MaxConsecutiveRejects)
                     Interlocked.Exchange(ref _streakTripped, 1);
                 LogRejected(_logger, intent.ClientOrderId ?? string.Empty, verdict.Rule, verdict.Reason);

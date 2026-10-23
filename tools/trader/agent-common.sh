@@ -62,12 +62,17 @@ wait_for_engine() {
 # shellcheck disable=SC2034
 NOT_RUN=3
 
-# Succeeds if a failed run ($1: JSON log, $2: stderr) was refused for usage or rate limits (the plan's limit or API
-# throttling). A run that completed is never treated as limited, whatever its text says (news can mention "rate limits").
+# Succeeds if a run ($1: JSON log, $2: stderr) was refused for usage or rate limits before doing any work. Judged from the
+# structured result when there is one: an error that cost nothing and whose message names a limit. Text inside a run that
+# did work (news about "rate limits", a turn count of 429) never counts, so such a run can't escape the run caps.
+limit_pattern='usage limit|limit reached|rate[ _-]?limit|too many requests|api error: ?429|status:? ?429|overloaded'
 hit_usage_limit() {
-  if jq -e . "$1" >/dev/null 2>&1 && [[ "$(jq -r '.is_error // false' "$1")" != "true" ]]; then
-    return 1
+  if jq -e . "$1" >/dev/null 2>&1; then
+    [[ "$(jq -r '.is_error // false' "$1")" == "true" ]] || return 1
+    [[ "$(jq -r '(.total_cost_usd // 0) == 0' "$1")" == "true" ]] || return 1
+    jq -r '.result // ""' "$1" | grep -qiE "$limit_pattern"
+    return
   fi
-  cat "$1" "$2" 2>/dev/null | grep -qiE 'usage limit|limit reached|rate[ _-]?limit|too many requests|\b429\b|overloaded|resets? at'
+  grep -qiE "$limit_pattern" "$1" "$2" 2>/dev/null   # no JSON: the CLI stopped before the run (stderr or a plain message)
 }
 
