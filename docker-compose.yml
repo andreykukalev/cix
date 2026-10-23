@@ -29,6 +29,7 @@ services:
       Cosmos__Enabled: "true"
       Cosmos__Emulator: "true"
       Cosmos__Endpoint: "https://cosmos:8081"
+      Journal__Directory: "/home/app/journal"   # fallback file journal; with Cosmos enabled the journal lives in Cosmos
     secrets:
       - source: operator_key
         target: ToolServer__OperatorKey
