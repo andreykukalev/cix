@@ -63,6 +63,7 @@ public static class ToolServerRegistration
             .WithTools<AgentTools>()
             .WithTools<OrderTools>()
             .WithTools<ScanTools>()
+            .WithTools<AnalystTools>()
             .WithTools<OperatorTools>();
         return services;
     }

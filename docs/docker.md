@@ -33,6 +33,7 @@ cosmos  (emulator, data in a Docker volume)  ◄── engine (paper exchange, r
 docker compose up -d --build      # build and start everything (first build takes a few minutes)
 docker compose ps                 # what is running
 docker compose logs -f trader     # each run's report and cost
+docker compose logs -f analyst    # the market view every 6 hours
 docker compose logs -f engine     # scans, orders, safety events
 docker compose stop trader        # pause the agent (the engine keeps watching the market)
 docker compose down               # stop everything; the paper account stays in the cosmos-data volume
@@ -43,9 +44,24 @@ Run `docker compose down -v` only if you want to wipe the paper account and jour
 ## Where things are
 
 - **Journal, paper account, engine state:** in Cosmos. Browse them at http://localhost:1234 (database `cix`, container `journal`).
-- **Trader run output:** `logs\trader\run-*.json`.
+- **Agent run output:** `logs\trader\run-*.json` and `logs\analyst\analyst-*.json`.
 - **Strategy, settings and risk limits:** mounted read-only from `strategies\`, `src\Cix.Engine\appsettings.json` and `config\risk-limits.json`. After changing them, run `docker compose restart engine trader`.
 - **Code changes:** need a rebuild with `docker compose up -d --build`.
+
+## Market analyst
+
+The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`ANALYST_MODEL`).
+- **What it reads:** the market data and recent news (macro events, exchange incidents, token hacks and delistings).
+- **What it records:** a view of risk-on, neutral or risk-off, plus any symbols to avoid.
+- **Effect:**
+  - Risk-off stops new entries until the view expires (at most 12 hours), and avoided symbols get no new entry.
+  - Exits always run.
+  - It can never cause a trade. A failed run just means no view, which counts as neutral.
+- **See its reasoning:**
+  - `docker compose logs analyst` shows the run itself.
+  - The `market-view` entries in the journal (Data Explorer) show its summary and sources.
+  - The engine's scan lines show `risk-off (market view)` or `news` when it is in effect.
+- **Its rules:** `strategies/analyst.v1.json` (ADR-0007).
 
 ## Switching to strategy v2 (signal-driven)
 

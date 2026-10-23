@@ -1,4 +1,4 @@
-# CIX on one machine: Cosmos DB emulator, engine (paper trading by default) and the trader loop.
+# CIX on one machine: Cosmos DB emulator, engine (paper trading by default), the trader and the market analyst.
 #   tools/setup-secrets.ps1     once: creates secrets/ (operator key, Claude credentials) and .env
 #   docker compose up -d --build
 # Everything restarts with Docker. Secrets are files in secrets/ (git-ignored), mounted under /run/secrets; none are
@@ -64,6 +64,26 @@ services:
       - ./strategies:/cix/strategies:ro
       - ./src/Cix.Engine/appsettings.json:/cix/src/Cix.Engine/appsettings.json:ro   # same active strategy as the engine
       - ./logs/trader:/cix/logs/trader
+
+  analyst:
+    image: cix-trader                # same image as the trader, different loop and tools
+    build:
+      context: .
+      dockerfile: docker/trader.Dockerfile
+      args:
+        CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-latest}"
+    entrypoint: ["bash", "/cix/tools/trader/run-analyst.sh"]
+    restart: unless-stopped
+    depends_on: [engine]
+    network_mode: "service:engine"   # reaches the engine's analyst tools at 127.0.0.1:5077; has web access, no order tools
+    environment:
+      ANALYST_MODEL: "${ANALYST_MODEL:-opus}"
+      ANALYST_INTERVAL_HOURS: "${ANALYST_INTERVAL_HOURS:-6}"
+      CLAUDE_TOKEN_EXPIRES: "${CLAUDE_TOKEN_EXPIRES:-}"
+    secrets:
+      - claude_token
+    volumes:
+      - ./logs/analyst:/cix/logs/analyst
 
 secrets:
   operator_key:

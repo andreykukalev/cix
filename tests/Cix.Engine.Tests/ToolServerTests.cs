@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using Cix.Engine.Analysis;
 using Cix.Engine.Journal;
 using Cix.Engine.MarketData;
 using Cix.Engine.Scanning;
@@ -34,19 +35,30 @@ internal sealed class ToolRig
         ["get_strategy_spec", "get_market_view", "get_portfolio"],
         "test") { Hash = "abc123def456" };
 
-    public ToolRig(StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m)
+    public static readonly StrategySpec AnalystSpec = new(
+        "analyst", 1, SpecStatus.Paper, "Assess the market.",
+        new Dictionary<string, JsonElement>(),
+        ["get_analyst_brief", "record_market_view"],
+        "test") { Hash = "fedcba654321" };
+
+    public ToolRig(StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m, StrategySpec? analyst = null, bool noAnalyst = false)
     {
         Rig = new Rig(eur: eur, btc: btc);
         Http = new HttpContextAccessor { HttpContext = new DefaultHttpContext() };
         Specs = new FixedSpecs(noSpec ? null : spec ?? Observer);
-        Context = new ToolCallContext(Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time, NullLogger<ToolCallContext>.Instance);
+        AnalystSpecs = new FixedAnalystSpec(noAnalyst ? null : analyst ?? AnalystSpec);
+        Context = new ToolCallContext(
+            Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time, NullLogger<ToolCallContext>.Instance, AnalystSpecs);
+        Views = new MarketViewStore(Journal, Rig.Time, NullLogger<MarketViewStore>.Instance);
+        Universe = new MarketUniverse(ScannerOptions.DefaultUniverse, Rig.Limits.AllowedSymbols);
         Orders = new OrderTools(Context, Rig.Execution, Rig.Limits);
         Features = new FeatureService(Candles, Rig.State, new MarketDataOptions(), Rig.Time);
         Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits, Rig.Journal);
         Scanner = new MarketScanService(
-            new MarketUniverse(ScannerOptions.DefaultUniverse, Rig.Limits.AllowedSymbols), Features, Candles, Rig.Pairs, Rig.Execution,
-            Rig.KillSwitch, Journal, Specs, new ScannerOptions(), Rig.Time, NullLogger<MarketScanService>.Instance);
+            Universe, Features, Candles, Rig.Pairs, Rig.Execution,
+            Rig.KillSwitch, Journal, Specs, new ScannerOptions(), Rig.Time, NullLogger<MarketScanService>.Instance, Views);
         Scan = new ScanTools(Context, Scanner);
+        Analyst = new AnalystTools(Context, AnalystSpecs, Universe, Features, Scanner, Views, Rig.Time);
         Operator = new OperatorTools(Context, Journal, Rig.Execution);
     }
 
@@ -61,6 +73,10 @@ internal sealed class ToolRig
     public AgentTools Agent { get; }
     public MarketScanService Scanner { get; }
     public ScanTools Scan { get; }
+    public IAnalystSpecStore AnalystSpecs { get; }
+    public MarketViewStore Views { get; }
+    public MarketUniverse Universe { get; }
+    public AnalystTools Analyst { get; }
     public OperatorTools Operator { get; }
 
     public void Header(string name, string value) => Http.HttpContext!.Request.Headers[name] = value;
@@ -266,9 +282,9 @@ public sealed class McpEndToEndTests
         Assert.Equal(
             new[]
             {
-                "cancel_order", "get_daily_summary", "get_features", "get_market_view", "get_open_orders", "get_portfolio",
-                "get_position_plans", "get_strategy_spec", "pause_trading", "place_order", "query_journal", "resume_trading",
-                "scan_market",
+                "cancel_order", "get_analyst_brief", "get_daily_summary", "get_features", "get_market_view", "get_open_orders",
+                "get_portfolio", "get_position_plans", "get_strategy_spec", "pause_trading", "place_order", "query_journal",
+                "record_market_view", "resume_trading", "scan_market",
             },
             listed.Select(t => t.Name).Order(StringComparer.Ordinal));
         Assert.Contains("observer@v1#abc123def456", Text(spec), StringComparison.Ordinal);

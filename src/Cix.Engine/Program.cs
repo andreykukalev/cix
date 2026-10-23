@@ -1,5 +1,6 @@
 using Cix.Domain.Risk;
 using Cix.Engine;
+using Cix.Engine.Analysis;
 using Cix.Engine.Execution;
 using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
@@ -59,6 +60,13 @@ builder.Services.AddCixToolServer(
     builder.Configuration.GetSection(JournalOptions.SectionName).Get<JournalOptions>() ?? new JournalOptions());
 builder.WebHost.ListenOnLoopback(builder.Configuration, toolServer);
 
+// The market analyst's spec and its market view (risk-off or flagged symbols block new entries, never exits). #25.
+var strategyOptions = builder.Configuration.GetSection(StrategyOptions.SectionName).Get<StrategyOptions>() ?? new StrategyOptions();
+builder.Services.AddCixAnalyst(
+    builder.Configuration.GetSection(AnalystOptions.SectionName).Get<AnalystOptions>() ?? new AnalystOptions(),
+    strategyOptions,
+    mode);
+
 // Deterministic scans of the universe every few minutes; signals are journaled and served by scan_market. Never trades.
 builder.Services.AddCixScanner(scanner, universe);
 
@@ -72,5 +80,6 @@ builder.Services.AddHostedService<HeartbeatService>();
 var app = builder.Build();
 await app.Services.InitializeCixPersistenceAsync(CancellationToken.None);
 _ = app.Services.GetRequiredService<MarketScanService>().Parameters; // a bad strategy spec stops startup here
+await app.Services.GetRequiredService<MarketViewStore>().RestoreAsync(CancellationToken.None);
 app.UseCixToolServer();
 await app.RunAsync();

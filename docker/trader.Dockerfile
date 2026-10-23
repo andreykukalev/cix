@@ -1,4 +1,4 @@
-# CIX trader: the Claude Code CLI plus the run loop. It holds no trading keys and reaches the engine only at
+# CIX agents (trader and market analyst): the Claude Code CLI plus their run loops. It holds no trading keys and reaches the engine only at
 # 127.0.0.1 (it shares the engine's network namespace). Claude credentials arrive at run time as a secret file.
 FROM node:22-bookworm-slim
 
@@ -15,12 +15,12 @@ RUN apt-get update \
 WORKDIR /cix
 COPY .claude/settings.json .claude/settings.json
 COPY .claude/hooks/ .claude/hooks/
-COPY .claude/agents/trader.md .claude/agents/trader.md
+COPY .claude/agents/trader.md .claude/agents/analyst.md .claude/agents/
 COPY src/Cix.Engine/appsettings.json src/Cix.Engine/appsettings.json
 COPY strategies/ strategies/
 COPY tools/trader/ tools/trader/
 
-RUN mkdir -p /cix/logs/trader && chown -R node:node /cix/logs
+RUN mkdir -p /cix/logs/trader /cix/logs/analyst && chown -R node:node /cix/logs
 ENV DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     CLAUDE_PROJECT_DIR=/cix

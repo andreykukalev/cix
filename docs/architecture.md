@@ -48,7 +48,7 @@ flowchart LR
 | Market data | Deterministic | Order books (10 s) and hourly candles (5 min) for the tradable universe, within the public 1 request/s limit; 24h liquidity comes from the candles |
 | Features | Deterministic | Indicators and summaries served to agents as compact JSON |
 | Universe and scanner | Deterministic | Curated, exchange-validated symbol list; liquidity, spread and cost filters; volatility, momentum and volume-anomaly ranking; entry and exit signals with cost-aware sizing (ADR-0006) |
-| Market analyst | Claude agent | A few times a day: a short regime view (risk-on, neutral, risk-off) that expires |
+| Market analyst | Claude agent | Every 6 h: market data plus news; records a regime view (risk-on, neutral, risk-off) and symbols to avoid. It expires and can only block new entries, never exits (ADR-0007) |
 | Trader | Claude agent | Only when the scanner signals (plus a slow heartbeat): reads signals, positions and the spec; places and cancels orders through tools |
 | Daily reviewer | Claude agent | Reads the journal, writes a daily report, proposes a new spec version |
 | Strategy spec store | Versioned files, archived in Cosmos DB | Instructions, parameters (including scanner settings) and allowed tools; versions go draft → paper → live |

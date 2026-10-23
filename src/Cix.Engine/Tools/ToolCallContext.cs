@@ -45,7 +45,8 @@ public sealed partial class ToolCallContext(
     IJournal journal,
     ToolServerOptions options,
     TimeProvider time,
-    ILogger<ToolCallContext> logger)
+    ILogger<ToolCallContext> logger,
+    Analysis.IAnalystSpecStore? analystSpecs = null)
 {
     /// <summary>Names that only the owner or the engine itself appear as in the journal; agents can't claim them.</summary>
     public static readonly IReadOnlySet<string> ReservedActors = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -78,16 +79,18 @@ public sealed partial class ToolCallContext(
     }
 
     /// <summary>
-    /// Throws unless the active spec lets agents call <paramref name="tool"/>; a refusal is journaled first. The operator
-    /// may call any agent tool.
+    /// Throws unless the governing spec lets agents call <paramref name="tool"/>; a refusal is journaled first. Analyst tools
+    /// are governed by the analyst's spec, every other agent tool by the trading spec. The operator may call any agent tool.
     /// </summary>
     public async Task RequireAllowedAsync(string tool, CancellationToken cancellationToken)
     {
         if (IsOperator)
             return;
-        var reason = specs.Active is not { } spec
-            ? "No strategy spec is active, so agent tools are disabled."
-            : spec.Allows(tool) ? null : $"The active strategy spec ({spec.Label}) doesn't allow {tool}.";
+        var analyst = AnalystTools.Names.Contains(tool);
+        var governing = analyst ? analystSpecs?.Active : specs.Active;
+        var reason = governing is not { } spec
+            ? analyst ? "No analyst spec is configured, so analyst tools are disabled." : "No strategy spec is active, so agent tools are disabled."
+            : spec.Allows(tool) ? null : $"The active {(analyst ? "analyst" : "strategy")} spec ({spec.Label}) doesn't allow {tool}.";
         if (reason is null)
             return;
         await DenyAsync(tool, reason, cancellationToken).ConfigureAwait(false);
