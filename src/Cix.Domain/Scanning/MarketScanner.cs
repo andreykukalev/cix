@@ -173,9 +173,9 @@ public static class MarketScanner
 
             var f = input.Features;
             ranked.Add(new ScanRow(
-                input.Symbol, rank, Round(score, 3), f.Price!.Value, f.Trend, f.AtrFraction!.Value, f.Return1h, f.Return24h,
+                input.Symbol, rank, Math.Round(score, 3, MidpointRounding.AwayFromZero), f.Price!.Value, f.Trend, f.AtrFraction!.Value, f.Return1h, f.Return24h,
                 Math.Round(metrics.QuoteVolume24h, 0), Round(metrics.VolumeRatio, 2), f.SpreadFraction!.Value,
-                Round(metrics.RoundTripCost, 6)!.Value, noEntry));
+                Math.Round(metrics.RoundTripCost, 6, MidpointRounding.AwayFromZero), noEntry));
         }
 
         var inputsBySymbol = inputs.ToDictionary(i => i.Symbol, StringComparer.Ordinal);
