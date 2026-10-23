@@ -23,10 +23,10 @@ public sealed class CosmosJournal(CosmosDb db) : IJournal
         {
             await db.Journal.CreateItemAsync(new JournalDocument(entry.Id, day, entry), new PartitionKey(day), cancellationToken: cancellationToken).ConfigureAwait(false);
         }
-        catch (CosmosException ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && ex is not IOException)
         {
-            // Callers already treat IOException as "the journal couldn't be written".
-            throw new IOException($"Journal write failed ({(int)ex.StatusCode}).", ex);
+            // Callers treat IOException as "the journal couldn't be written"; timeouts and network errors included.
+            throw new IOException($"Journal write failed ({ex.GetType().Name}).", ex);
         }
     }
 
@@ -96,16 +96,18 @@ public sealed class CosmosEngineStateStore : IEngineStateStore
     private readonly Container _container;
     private readonly string _id;
     private readonly Lock _gate = new();
+    private string? _etag;
 
     public CosmosEngineStateStore(CosmosDb db, TradingMode mode, TimeProvider time)
     {
         ArgumentNullException.ThrowIfNull(db);
         _container = db.State;
         _id = $"{DocumentId}-{mode.ToString().ToLowerInvariant()}";
-        var saved = CosmosDb.ReadStateAsync<EngineState>(_container, _id, CancellationToken.None).GetAwaiter().GetResult();
+        var (saved, etag) = Read();
         if (saved is not null && saved.KillSwitch is null)
             throw new InvalidOperationException("The engine state document has no kill switch state; fix or remove it deliberately.");
 
+        _etag = etag;
         Current = saved ?? (mode == TradingMode.Live
             ? EngineState.Initial with { KillSwitch = new KillSwitchState(true, FileEngineStateStore.NewFileReason, "engine", time.GetUtcNow()) }
             : EngineState.Initial);
@@ -134,15 +136,42 @@ public sealed class CosmosEngineStateStore : IEngineStateStore
         }
     }
 
-    private void Write(EngineState state)
+    private (EngineState? State, string? ETag) Read()
     {
         try
         {
-            CosmosDb.WriteStateAsync(_container, _id, state, CancellationToken.None).GetAwaiter().GetResult();
+            var response = _container.ReadItemAsync<CosmosDb.StateDocument<EngineState>>(_id, new PartitionKey(_id)).GetAwaiter().GetResult();
+            return (response.Resource.Value, response.ETag);
         }
-        catch (CosmosException ex)
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            throw new IOException($"Engine state could not be saved ({(int)ex.StatusCode}).", ex);
+            return (null, null);
+        }
+    }
+
+    /// <summary>
+    /// Creates the document, or replaces it only if nobody else changed it since this store last read or wrote it, so a
+    /// second engine instance (or a stray edit) can't silently overwrite an engaged kill switch. Any failure surfaces as
+    /// IOException, which callers already handle.
+    /// </summary>
+    private void Write(EngineState state)
+    {
+        var document = new CosmosDb.StateDocument<EngineState>(_id, state);
+        try
+        {
+            var response = _etag is null
+                ? _container.CreateItemAsync(document, new PartitionKey(_id)).GetAwaiter().GetResult()
+                : _container.ReplaceItemAsync(document, _id, new PartitionKey(_id), new ItemRequestOptions { IfMatchEtag = _etag }).GetAwaiter().GetResult();
+            _etag = response.ETag;
+        }
+        catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
+        {
+            throw new IOException("Engine state was changed by something else; restart the engine to reload it.", ex);
+        }
+        catch (Exception ex) when (ex is not IOException)
+        {
+            // Includes SDK timeouts (an OperationCanceledException): no caller token is involved here.
+            throw new IOException($"Engine state could not be saved ({ex.GetType().Name}).", ex);
         }
     }
 }
@@ -192,10 +221,10 @@ public sealed class CosmosSpecArchive(CosmosDb db)
     public async Task<bool> ArchiveAsync(StrategySpec spec, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(spec);
-        var id = "spec:" + spec.Label;
+        var id = SpecId(spec.Label);
         try
         {
-            await db.State.CreateItemAsync(new CosmosDb.StateDocument<StrategySpec>(id, spec), new PartitionKey(id), cancellationToken: cancellationToken).ConfigureAwait(false);
+            await db.State.CreateItemAsync(new CosmosDb.StateDocument<ArchivedSpec>(id, new ArchivedSpec(spec.Label, spec.Hash, spec)), new PartitionKey(id), cancellationToken: cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
@@ -204,6 +233,15 @@ public sealed class CosmosSpecArchive(CosmosDb db)
         }
     }
 
-    public Task<StrategySpec?> GetAsync(string label, CancellationToken cancellationToken) =>
-        CosmosDb.ReadStateAsync<StrategySpec>(db.State, "spec:" + label, cancellationToken);
+    public async Task<StrategySpec?> GetAsync(string label, CancellationToken cancellationToken)
+    {
+        var archived = await CosmosDb.ReadStateAsync<ArchivedSpec>(db.State, SpecId(label), cancellationToken).ConfigureAwait(false);
+        return archived is null ? null : archived.Spec with { Hash = archived.Hash };
+    }
+
+    /// <summary>The hash isn't part of the spec's JSON, so it is stored beside it.</summary>
+    internal sealed record ArchivedSpec(string Label, string Hash, StrategySpec Spec);
+
+    /// <summary>Cosmos DB ids can't contain <c>/ \ ? #</c>: <c>trend@v1#abc</c> becomes <c>spec-trend@v1-abc</c>.</summary>
+    internal static string SpecId(string label) => "spec-" + label.Replace('#', '-').Replace('/', '-').Replace('\\', '-').Replace('?', '-');
 }

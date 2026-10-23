@@ -10,11 +10,6 @@ using Cix.Exchange.RevolutX;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Secrets (operator key, Cosmos key, exchange keys) come from user secrets on this machine in every environment;
-// .NET would otherwise load them only in Development, and `dotnet run` defaults to Production. In Azure there is no
-// secrets file, so Key Vault and app settings apply.
-builder.Configuration.AddUserSecrets(typeof(Program).Assembly, optional: true);
-
 // Human-only file, copied next to the binary (see CLAUDE.md rule 3).
 builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "risk-limits.json"), optional: false, reloadOnChange: false);
 

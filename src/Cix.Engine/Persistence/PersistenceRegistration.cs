@@ -93,6 +93,8 @@ public static class PersistenceRegistration
         options.Validate();
         if (!options.Enabled)
             return services;
+        if (mode == TradingMode.Live && options.Emulator)
+            throw new InvalidOperationException("Live trading can't use the Cosmos DB emulator: it doesn't authenticate, so anything on the machine could change the engine state.");
 
         services.AddSingleton(options);
         services.AddSingleton(sp => new CosmosDb(options));

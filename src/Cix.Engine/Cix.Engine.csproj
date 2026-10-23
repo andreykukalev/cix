@@ -14,6 +14,9 @@
     <None Include="..\..\strategies\*.json" LinkBase="strategies" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Cix.Engine.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Cix.Domain\Cix.Domain.csproj" />
     <ProjectReference Include="..\Cix.Exchange.RevolutX\Cix.Exchange.RevolutX.csproj" />
   </ItemGroup>

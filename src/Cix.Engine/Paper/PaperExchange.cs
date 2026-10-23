@@ -55,6 +55,9 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
         }
     }
 
+    /// <summary>Finished orders kept when saving; older ones are dropped so the saved account stays small.</summary>
+    public const int MaxSavedFinishedOrders = 500;
+
     /// <summary>The account as it stands: balances and every order, for persistence. Quotes are not kept (they go stale).</summary>
     public PaperAccountState ExportState()
     {
@@ -63,7 +66,10 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
             return new PaperAccountState(
                 _wallets.Where(w => w.Value.Available != 0 || w.Value.Reserved != 0)
                     .ToDictionary(w => w.Key.ToUpperInvariant(), w => new PaperWalletState(w.Value.Available, w.Value.Reserved), StringComparer.Ordinal),
-                _byVenueId.Values.OrderBy(o => o.Sequence).Select(o => new PaperOrderState(
+                // Open orders plus the most recent finished ones: enough for lookups and idempotency, bounded in size.
+                _byVenueId.Values.Where(o => o.IsOpen)
+                    .Concat(_byVenueId.Values.Where(o => !o.IsOpen).OrderByDescending(o => o.Sequence).Take(MaxSavedFinishedOrders))
+                    .OrderBy(o => o.Sequence).Select(o => new PaperOrderState(
                     o.VenueOrderId, o.ClientOrderId, o.Symbol, o.BaseCurrency, o.QuoteCurrency, o.Side, o.Quantity, o.LimitPrice,
                     o.Sequence, o.CreatedAt, o.UpdatedAt, o.Status, o.IsTaker, o.Filled, o.FilledAmount, o.Fee, o.Reserved)).ToList());
         }
@@ -91,8 +97,16 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
                 w.Reserved = wallet.Reserved;
             }
 
+            if (state.Orders.Select(o => o.VenueOrderId).Distinct().Count() != state.Orders.Count
+                || state.Orders.Select(o => o.ClientOrderId).Distinct().Count() != state.Orders.Count)
+                throw new InvalidOperationException("Saved paper orders have duplicate IDs.");
+
             foreach (var saved in state.Orders.OrderBy(o => o.Sequence))
             {
+                if (saved.Quantity <= 0 || saved.LimitPrice <= 0 || saved.Filled < 0 || saved.Filled > saved.Quantity
+                    || saved.FilledAmount < 0 || saved.Fee < 0 || saved.Reserved < 0)
+                    throw new InvalidOperationException($"Saved paper order {saved.VenueOrderId} is inconsistent.");
+
                 var order = new PaperOrder(
                     saved.VenueOrderId, saved.ClientOrderId, saved.Symbol, saved.BaseCurrency, saved.QuoteCurrency, saved.Side,
                     saved.Quantity, saved.LimitPrice, saved.Sequence, saved.CreatedAt)
@@ -207,7 +221,7 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
                 approvedOrder.Side,
                 size,
                 price,
-                _byVenueId.Count,
+                _byVenueId.Count == 0 ? 0 : _byVenueId.Values.Max(o => o.Sequence) + 1, // unique even after a pruned restore
                 now);
 
             var crosses = approvedOrder.Side == OrderSide.Buy ? price >= quote.Ask : price <= quote.Bid;

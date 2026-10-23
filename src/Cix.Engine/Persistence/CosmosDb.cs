@@ -58,6 +58,8 @@ public sealed class CosmosDb : IDisposable
         var clientOptions = new CosmosClientOptions
         {
             ApplicationName = "cix-engine",
+            RequestTimeout = TimeSpan.FromSeconds(10), // a stuck database must not hold the engine for long
+            MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromSeconds(2),
             Serializer = new SystemTextJsonCosmosSerializer(Json),
         };
         if (options.Emulator)
@@ -99,8 +101,8 @@ public sealed class CosmosDb : IDisposable
         await database.CreateContainerIfNotExistsAsync(new ContainerProperties(StateContainer, "/id"), cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>For tests: removes the whole database.</summary>
-    public Task DeleteDatabaseAsync(CancellationToken cancellationToken) =>
+    /// <summary>For tests only: removes the whole database.</summary>
+    internal Task DeleteDatabaseAsync(CancellationToken cancellationToken) =>
         _client.GetDatabase(_database).DeleteAsync(cancellationToken: cancellationToken);
 
     public void Dispose() => _client.Dispose();

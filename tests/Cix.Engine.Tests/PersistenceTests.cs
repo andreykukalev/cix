@@ -50,6 +50,22 @@ public sealed class PaperAccountPersistenceTests
     }
 
     [Fact]
+    public void Restore_RefusesAnInconsistentAccount()
+    {
+        var time = new MutableTime(T0);
+        var order = new PaperOrderState("v1", "c1", "BTC-EUR", "BTC", "EUR", OrderSide.Buy, 0.001m, 60_000m, 0,
+            T0, T0, OrderStatus.PartiallyFilled, false, 0.002m, 120m, 0m, 0m); // filled more than its size
+
+        Assert.Throws<InvalidOperationException>(() => Paper(time).RestoreState(
+            new PaperAccountState(new Dictionary<string, PaperWalletState>(), [order])));
+    }
+
+    [Fact]
+    public void LiveTrading_RefusesTheEmulator() =>
+        Assert.Throws<InvalidOperationException>(() => new Microsoft.Extensions.DependencyInjection.ServiceCollection().AddCixCosmos(
+            new CosmosOptions { Enabled = true, Emulator = true }, TradingMode.Live));
+
+    [Fact]
     public void Restore_IsRefusedOnceTheAccountIsInUse()
     {
         var time = new MutableTime(T0);
@@ -217,6 +233,7 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
 
         Assert.True(await archive.ArchiveAsync(spec, CancellationToken.None));
         Assert.False(await archive.ArchiveAsync(spec with { Instructions = "changed" }, CancellationToken.None));
-        Assert.Equal("original", (await archive.GetAsync(spec.Label, CancellationToken.None))!.Instructions);
+        var archived = (await archive.GetAsync(spec.Label, CancellationToken.None))!;
+        Assert.Equal(("original", "trend@v1#abc123def456"), (archived.Instructions, archived.Label));
     }
 }
