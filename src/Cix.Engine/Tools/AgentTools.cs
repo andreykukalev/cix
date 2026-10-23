@@ -126,7 +126,7 @@ public sealed class AgentTools(
     }
 
     [McpServerTool(Name = "get_position_plans", ReadOnly = true)]
-    [Description("For each symbol you hold: position value, the fill price of the latest buy, and the stopLoss and takeProfit recorded with it. Check these at the start of every run: stops are not watched between runs.")]
+    [Description("For each symbol you hold enough of to sell: position value, sellableBaseSize (sell exactly this to exit), the fill price of the latest buy, and the stopLoss and takeProfit recorded with it. Check these at the start of every run: stops are not watched between runs.")]
     public async Task<string> GetPositionPlans(CancellationToken cancellationToken)
     {
         await context.RequireAllowedAsync("get_position_plans", cancellationToken).ConfigureAwait(false);
@@ -134,7 +134,9 @@ public sealed class AgentTools(
         if (valued is not { } portfolio)
             throw new McpException("The portfolio can't be valued right now; try again shortly.");
 
-        var held = portfolio.Snapshot.PositionQuoteBySymbol.Where(p => p.Value > 0).Select(p => p.Key).ToHashSet(StringComparer.Ordinal);
+        // Positions worth selling only: dust below the exchange minimum can't be sold and isn't a position to manage.
+        var sellable = portfolio.Snapshot.SellableBaseBySymbol ?? new Dictionary<string, decimal>();
+        var held = sellable.Keys.ToHashSet(StringComparer.Ordinal);
         var from = DateOnly.FromDateTime(portfolio.At.UtcDateTime).AddDays(-PlanLookbackDays);
         var fills = held.Count == 0 ? [] : await journal.QueryAsync(new JournalQuery(From: from, Kind: "fill", Limit: FileJournal.MaxQueryLimit), cancellationToken).ConfigureAwait(false);
         var orders = held.Count == 0 ? [] : await journal.QueryAsync(new JournalQuery(From: from, Kind: "order", Limit: FileJournal.MaxQueryLimit), cancellationToken).ConfigureAwait(false);
@@ -149,11 +151,12 @@ public sealed class AgentTools(
             {
                 symbol,
                 positionQuote = portfolio.Snapshot.PositionQuoteBySymbol[symbol],
+                sellableBaseSize = sellable[symbol],
                 entryPrice = Number(fill?.Data?.GetValueOrDefault("averagePrice")),
                 filledAt = fill?.At,
                 stopLoss = Number(order?.Data?.GetValueOrDefault("stopLoss")),
                 takeProfit = Number(order?.Data?.GetValueOrDefault("takeProfit")),
-                note = fill is null ? "No buy for this position in the journal (bought before it, or outside the engine): manage it with care." : null,
+                note = fill is null ? "No completed buy in the journal for this position (bought earlier, outside the engine, or a buy still partly filled): no stop or target recorded." : null,
             };
         }).ToList();
 

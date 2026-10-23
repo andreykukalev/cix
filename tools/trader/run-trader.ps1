@@ -3,7 +3,9 @@
   Runs the CIX trader agent against the local engine: once, or every hour.
 
 .DESCRIPTION
-  Each run is one headless Claude Code session (claude -p) that can use only the cix tools, with a cap on turns.
+  Each run is one headless Claude Code session (claude -p) that can use only the cix tools (everything else is denied),
+  with caps on turns and wall-clock time. The trading connection lives in tools/trader/mcp.json, not .mcp.json, so other
+  Claude Code sessions in this repo don't get trading tools.
   The run ID goes to the engine in the X-Cix-Run header, so the journal groups each run's tool calls and orders.
   Output, including Claude's reported cost, is saved under logs\trader\.
 
@@ -17,7 +19,8 @@
 param(
     [switch]$Once,
     [int]$IntervalMinutes = 60,
-    [int]$MaxTurns = 30
+    [int]$MaxTurns = 30,
+    [int]$TimeoutMinutes = 10
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +31,13 @@ New-Item -ItemType Directory -Force -Path $logs | Out-Null
 # The trader's standing instructions: the body of .claude/agents/trader.md, without its front matter.
 $agentFile = Get-Content (Join-Path $repo '.claude\agents\trader.md') -Raw
 $instructions = ($agentFile -split "(?m)^---\s*$", 3)[2].Trim()
+# Windows PowerShell 5.1 doesn't escape quotes in native arguments: keep the prompt one safe argument.
+$instructions = ($instructions -replace '"', "'") -replace "`r?`n", ' '
+$mcpConfig = Join-Path $repo 'tools\trader\mcp.json'
+
+# Everything except the cix agent tools is denied, so the trader can't read files, run commands or browse.
+$denied = 'Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,WebSearch,Task,TodoWrite'
+
 
 $tools = @(
     'mcp__cix__get_strategy_spec', 'mcp__cix__get_portfolio', 'mcp__cix__get_position_plans',
@@ -36,21 +46,39 @@ $tools = @(
 ) -join ','
 
 function Invoke-TraderRun {
-    $runId = 'run-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmm')
+    $runId = 'run-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
     $env:CIX_RUN_ID = $runId
     $log = Join-Path $logs "$runId.json"
     Write-Host "[$(Get-Date -Format 'HH:mm')] $runId starting"
 
     Push-Location $repo
     try {
-        # Only the cix tools are allowed; anything else is refused in headless mode.
-        claude -p 'Run one trading cycle of the active strategy now.' `
-            --append-system-prompt $instructions `
-            --mcp-config .mcp.json --strict-mcp-config `
-            --allowedTools $tools `
-            --max-turns $MaxTurns `
-            --output-format json | Out-File -FilePath $log -Encoding utf8
-        $result = Get-Content $log -Raw | ConvertFrom-Json
+        # A job, so a hung run is stopped after TimeoutMinutes instead of blocking the next one.
+        $job = Start-Job -ScriptBlock {
+            param($dir, $instructions, $mcpConfig, $tools, $denied, $maxTurns, $runId)
+            Set-Location $dir
+            $env:CIX_RUN_ID = $runId
+            [Console]::OutputEncoding = [Text.Encoding]::UTF8
+            claude -p 'Run one trading cycle of the active strategy now.' `
+                --append-system-prompt $instructions `
+                --mcp-config $mcpConfig --strict-mcp-config `
+                --allowedTools $tools --disallowedTools $denied `
+                --max-turns $maxTurns `
+                --output-format json
+        } -ArgumentList $repo, $instructions, $mcpConfig, $tools, $denied, $MaxTurns, $runId
+
+        if (-not (Wait-Job $job -Timeout ($TimeoutMinutes * 60))) {
+            Stop-Job $job
+            Write-Warning "$runId stopped after $TimeoutMinutes minutes."
+        }
+
+        $output = Receive-Job $job
+        Remove-Job $job -Force
+        $output | Out-File -FilePath $log -Encoding utf8
+        $result = ($output -join "`n") | ConvertFrom-Json
+        if ($result.is_error) {
+            Write-Warning "$runId ended with an error: $($result.subtype)"
+        }
         Write-Host "[$(Get-Date -Format 'HH:mm')] $runId done. Cost: $($result.total_cost_usd) USD, turns: $($result.num_turns)"
         Write-Host $result.result
     }
@@ -67,7 +95,11 @@ if ($Once) {
     return
 }
 
+# Runs start on a fixed cadence, so a slow run doesn't push every later run back.
+$next = Get-Date
 while ($true) {
     Invoke-TraderRun
-    Start-Sleep -Seconds ($IntervalMinutes * 60)
+    $next = $next.AddMinutes($IntervalMinutes)
+    $wait = ($next - (Get-Date)).TotalSeconds
+    if ($wait -gt 0) { Start-Sleep -Seconds ([int]$wait) }
 }

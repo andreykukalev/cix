@@ -206,7 +206,23 @@ public sealed class OrderToolTests
 
         Assert.Equal("BTC-EUR", plan.GetProperty("symbol").GetString());
         Assert.Equal(60_010m, plan.GetProperty("entryPrice").GetDecimal());
+        Assert.Equal(0.0005m, plan.GetProperty("sellableBaseSize").GetDecimal());
         Assert.Equal((59_000m, 62_000m), (plan.GetProperty("stopLoss").GetDecimal(), plan.GetProperty("takeProfit").GetDecimal()));
+    }
+
+    [Fact]
+    public async Task Dust_IsNotAPosition_AndAHoldingWithoutABuyGetsANote()
+    {
+        var dust = new ToolRig(ToolRig.Observer with { AllowedTools = ["get_position_plans"] }, btc: 0.000001m); // 0.06 EUR
+        var held = new ToolRig(ToolRig.Observer with { AllowedTools = ["get_position_plans"] }, btc: 0.001m);
+
+        var none = await dust.Agent.GetPositionPlans(CancellationToken.None);
+        var plan = Parse(await held.Agent.GetPositionPlans(CancellationToken.None))[0];
+
+        Assert.Equal("[]", none);
+        Assert.Equal(0.001m, plan.GetProperty("sellableBaseSize").GetDecimal());
+        Assert.False(plan.TryGetProperty("stopLoss", out _));
+        Assert.Contains("no stop", plan.GetProperty("note").GetString(), StringComparison.Ordinal);
     }
 
     [Fact]

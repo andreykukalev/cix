@@ -33,9 +33,9 @@ internal sealed class ToolRig
         ["get_strategy_spec", "get_market_view", "get_portfolio"],
         "test") { Hash = "abc123def456" };
 
-    public ToolRig(StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m)
+    public ToolRig(StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m)
     {
-        Rig = new Rig(eur: eur);
+        Rig = new Rig(eur: eur, btc: btc);
         Http = new HttpContextAccessor { HttpContext = new DefaultHttpContext() };
         Specs = new FixedSpecs(noSpec ? null : spec ?? Observer);
         Context = new ToolCallContext(Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time, NullLogger<ToolCallContext>.Instance);
