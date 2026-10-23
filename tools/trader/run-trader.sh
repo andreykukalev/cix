@@ -16,6 +16,7 @@
 #
 # Settings (environment): TRADER_INTERVAL_MINUTES (60), TRADER_HEARTBEAT_MINUTES (240), TRADER_POLL_SECONDS (60),
 # TRADER_MIN_GAP_MINUTES (15), TRADER_MAX_RUNS_PER_DAY (30), TRADER_MAX_TURNS (30), TRADER_TIMEOUT_MINUTES (10),
+# TRADER_MODEL (sonnet; an alias like opus, sonnet or haiku, or a full model name),
 # TRADER_RUN_ONCE (0), CLAUDE_TOKEN_FILE, CLAUDE_TOKEN_EXPIRES.
 set -uo pipefail
 
@@ -26,6 +27,7 @@ poll="${TRADER_POLL_SECONDS:-60}"
 min_gap="${TRADER_MIN_GAP_MINUTES:-15}"
 max_runs="${TRADER_MAX_RUNS_PER_DAY:-30}"
 max_turns="${TRADER_MAX_TURNS:-30}"
+model="${TRADER_MODEL:-sonnet}"
 timeout_minutes="${TRADER_TIMEOUT_MINUTES:-10}"
 token_file="${CLAUDE_TOKEN_FILE:-/run/secrets/claude_token}"
 expires="${CLAUDE_TOKEN_EXPIRES:-}"
@@ -34,6 +36,7 @@ mkdir -p "$logs"
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M)" "$*"; }
 
+[[ "$model" =~ ^[a-z0-9][a-z0-9.-]{1,63}(\[1m\])?$ ]] || { say "TRADER_MODEL must be a lowercase model alias or name, like sonnet, claude-sonnet-5-5 or sonnet[1m]."; exit 1; }
 for n in "$interval" "$heartbeat" "$poll" "$min_gap" "$max_runs" "$max_turns" "$timeout_minutes"; do
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { say "TRADER_* settings must be positive whole numbers."; exit 1; }
 done
@@ -118,12 +121,13 @@ run_once() {
   load_credentials || return 1
   check_expiry || return 1
   wait_for_engine
-  say "$run_id starting: $why ($auth)"
+  say "$run_id starting: $why ($auth, model $model)"
 
   (cd "$dir" && timeout "${timeout_minutes}m" claude -p 'Run one trading cycle of the active strategy now.' \
       --append-system-prompt "$instructions" \
       --mcp-config "$dir/tools/trader/mcp.json" --strict-mcp-config \
       --allowedTools "$tools" --disallowedTools "$denied" \
+      --model "$model" \
       --max-turns "$max_turns" \
       --output-format json) > "$log" 2> "$logs/$run_id.err"
   local code=$?
@@ -148,7 +152,7 @@ run_once() {
       say "Claude rejected the credentials ($auth). Renew them and restart the trader."
     fi
   fi
-  say "$run_id done. Cost: $(jq -r '.total_cost_usd // "?"' "$log") USD, turns: $(jq -r '.num_turns // "?"' "$log")"
+  say "$run_id done. Models used: $(jq -r '(.modelUsage // {}) | keys | join(", ")' "$log"), cost: $(jq -r '.total_cost_usd // "?"' "$log") USD, turns: $(jq -r '.num_turns // "?"' "$log")"
   jq -r '.result // ""' "$log"
   [[ "$(jq -r '.is_error // false' "$log")" != "true" ]]
 }
