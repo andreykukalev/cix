@@ -63,6 +63,21 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
   - The engine's scan lines show `risk-off (market view)` or `news` when it is in effect.
 - **Its rules:** `strategies/analyst.v1.json` (ADR-0007).
 
+## When Claude isn't available
+
+- **Protective exits.** Usage limits, an outage or an expired token never leave a position unprotected.
+  - The engine itself sells a position that reaches its stop-loss or take-profit, every 5 minutes, through the risk gate and with no Claude call.
+  - An unfilled sell is cancelled after 4 minutes and placed again at the new bid.
+  - Trend exits and all buys still need the trader.
+  - You can turn this off with `Scanner:ProtectiveExits` in `appsettings.json`, but it is on by default.
+- **Recovery.**
+  - When a trader attempt fails because of a usage or rate limit, the signal stays pending and is retried every 15 minutes. Such attempts don't count toward the 30-a-day cap.
+  - The analyst retries every 30 minutes (`ANALYST_RETRY_MINUTES`) until it gets through. Meanwhile its old view expires to neutral.
+  - Both pick up again by themselves once the limit resets.
+- **News sites.** The analyst can search anything but can open full pages only from `ANALYST_WEB_DOMAINS` (subdomains included). Claude Code refuses fetches elsewhere.
+  - The default list is federalreserve.gov, bls.gov, bea.gov, ecb.europa.eu, tradingeconomics.com, reuters.com, apnews.com, cnbc.com, coindesk.com, theblock.co, decrypt.co, rekt.news, defillama.com, tokenomist.ai, status.solana.com and revolut.com.
+  - To change it, set the whole list in `.env`, for example `ANALYST_WEB_DOMAINS=reuters.com,coindesk.com,federalreserve.gov`, then run `docker compose up -d analyst`.
+
 ## Switching to strategy v2 (signal-driven)
 
 1. In `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Version": 2 }`.

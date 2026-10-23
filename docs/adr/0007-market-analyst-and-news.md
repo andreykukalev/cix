@@ -38,6 +38,7 @@ A third agent, the **market analyst**, runs every 6 hours in its own container (
 
 7. **Residual risks.**
    - A planted source found on every run could renew risk-off indefinitely. The cost is missed entries, never losses, since exits continue. After 24 hours of unbroken risk-off the engine logs a warning on every renewal.
+   - The analyst can fetch pages only from a whitelist of sites (`ANALYST_WEB_DOMAINS`), enforced by Claude Code's permission rules (#33). Search snippets can still come from anywhere.
    - The brief leaves out holdings, so a page can't trick the analyst into sending them to a URL via WebFetch.
    - Agent text in the journal (analyst summaries, trader rationales) is data. Owner sessions that read it must not act on instructions inside it.
 

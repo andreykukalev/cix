@@ -71,8 +71,8 @@ run_once() {
   log="$logs/$run_id.json"
   export CIX_RUN_ID="$run_id"
 
-  load_credentials || return 1
-  check_expiry || return 1
+  load_credentials || return "$NOT_RUN"
+  check_expiry || return "$NOT_RUN"
   wait_for_engine
   say "$run_id starting: $why ($auth, model $model)"
 
@@ -89,6 +89,10 @@ run_once() {
   if (( code == 124 )); then
     say "$run_id stopped after $timeout_minutes minutes."
     return 1
+  fi
+  if hit_usage_limit "$log" "$logs/$run_id.err"; then
+    say "$run_id: Claude usage or rate limit reached; the signal stays pending and is retried after the gap (this attempt doesn't count toward the daily cap)."
+    return "$NOT_RUN"
   fi
   if ! jq -e . "$log" >/dev/null 2>&1; then
     if cat "$log" "$logs/$run_id.err" 2>/dev/null | grep -qiE 'invalid api key|authentication_error|unauthori[sz]ed|oauth token (has )?expired|401'; then
@@ -137,6 +141,9 @@ guarded_run() {
   runs_today=$(( runs_today + 1 ))
   last_run=$(date +%s)
   run_once "$1"
+  local rc=$?
+  (( rc == NOT_RUN )) && runs_today=$(( runs_today - 1 ))   # Claude wasn't used: don't spend the daily cap
+  return "$rc"
 }
 
 next_heartbeat=0   # set once the engine has scanned, so the first run sees real signals

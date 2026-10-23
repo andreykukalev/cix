@@ -42,7 +42,7 @@ internal sealed class ToolRig
         ["get_analyst_brief", "record_market_view"],
         "test") { Hash = "fedcba654321" };
 
-    public ToolRig(StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m, StrategySpec? analyst = null, bool noAnalyst = false)
+    public ToolRig(StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m, StrategySpec? analyst = null, bool noAnalyst = false, bool protectiveExits = true)
     {
         Rig = new Rig(eur: eur, btc: btc);
         Http = new HttpContextAccessor { HttpContext = new DefaultHttpContext() };
@@ -57,7 +57,7 @@ internal sealed class ToolRig
         Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits, Rig.Journal);
         Scanner = new MarketScanService(
             Universe, Features, Candles, Rig.Pairs, Rig.Execution,
-            Rig.KillSwitch, Journal, Specs, new ScannerOptions(), Rig.Time, NullLogger<MarketScanService>.Instance, Views);
+            Rig.KillSwitch, Journal, Specs, new ScannerOptions { ProtectiveExits = protectiveExits }, Rig.Time, NullLogger<MarketScanService>.Instance, Views);
         Scan = new ScanTools(Context, Scanner);
         Analyst = new AnalystTools(Context, AnalystSpecs, Universe, Features, Scanner, Views, Rig.Time);
         Operator = new OperatorTools(Context, Journal, Rig.Execution);

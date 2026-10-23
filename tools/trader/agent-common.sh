@@ -55,3 +55,17 @@ wait_for_engine() {
   say "The engine's tool server isn't reachable at 127.0.0.1:5077 after 5 minutes; exiting so Docker restarts the $agent_name."
   exit 1
 }
+
+# Exit code for a run that didn't get to use Claude (no or expired credentials, usage or rate limit): such attempts don't
+# count toward run caps, and the loops retry them sooner.
+NOT_RUN=3
+
+# Succeeds if a failed run ($1: JSON log, $2: stderr) was refused for usage or rate limits (the plan's limit or API
+# throttling). A run that completed is never treated as limited, whatever its text says (news can mention "rate limits").
+hit_usage_limit() {
+  if jq -e . "$1" >/dev/null 2>&1 && [[ "$(jq -r '.is_error // false' "$1")" != "true" ]]; then
+    return 1
+  fi
+  cat "$1" "$2" 2>/dev/null | grep -qiE 'usage limit|limit reached|rate[ _-]?limit|too many requests|\b429\b|overloaded|resets? at'
+}
+
