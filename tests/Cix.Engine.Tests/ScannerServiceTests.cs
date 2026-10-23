@@ -33,13 +33,13 @@ public sealed class ScannerServiceTests
     }
 
     [Fact]
-    public void Universe_IsTheCandidatesInTheRiskAllowlist()
+    public void Universe_ScansCandidatesAndTheAllowlist_ButPollsAndTradesOnlyTheAllowlist()
     {
         var universe = new MarketUniverse(["sol/eur", "BTC-EUR", "ETH-EUR"], new HashSet<string> { "BTC-EUR", "DOGE-EUR", "SOL-EUR" });
 
-        Assert.Equal(new[] { "BTC-EUR", "ETH-EUR", "SOL-EUR" }, universe.Candidates);
-        Assert.Equal(new[] { "BTC-EUR", "SOL-EUR" }, universe.Tradable); // DOGE is allowed but not curated: never polled
-        Assert.Throws<InvalidOperationException>(() => new MarketUniverse(["ETH-EUR"], new HashSet<string> { "BTC-EUR" }));
+        Assert.Equal(new[] { "BTC-EUR", "DOGE-EUR", "ETH-EUR", "SOL-EUR" }, universe.Candidates);
+        Assert.Equal(new[] { "BTC-EUR", "DOGE-EUR", "SOL-EUR" }, universe.Tradable); // the safety monitor expects quotes for all of them
+        Assert.False(universe.IsTradable("ETH-EUR"));
     }
 
     [Fact]
@@ -131,6 +131,19 @@ public sealed class ScannerServiceTests
         var tools = new ToolRig(); // the observer spec doesn't list scan_market
 
         await Assert.ThrowsAsync<McpException>(() => tools.Scan.ScanMarket(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ScanMarketTool_WhenThePortfolioCantBeRead_GivesAGenericError()
+    {
+        var tools = Uptrend();
+        tools.Rig.Exchange.FailReads = true;
+
+        var ex = await Assert.ThrowsAsync<McpException>(() => tools.Scan.ScanMarket(CancellationToken.None));
+
+        Assert.Equal("The market can't be scanned right now; try again shortly.", ex.Message);
+        var background = new MarketScanBackgroundService(tools.Scanner, new ScannerOptions(), tools.Rig.Time, NullLogger<MarketScanBackgroundService>.Instance);
+        Assert.False(await background.ScanOnceAsync(CancellationToken.None));
     }
 
     [Fact]

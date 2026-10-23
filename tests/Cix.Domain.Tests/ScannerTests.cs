@@ -9,6 +9,8 @@ public sealed class ScannerTests
     private static readonly DateTimeOffset Now = new(2026, 10, 23, 12, 0, 30, TimeSpan.Zero);
     private static readonly ScannerParameters Defaults = new();
 
+    private static decimal D(string value) => decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
+
     private static PairInfo Pair(string symbol, bool active = true, decimal minQuote = 1m) =>
         new(symbol, symbol[..symbol.IndexOf('-', StringComparison.Ordinal)], "EUR", 0.0001m, 0.01m, 0.0001m, 1000m, minQuote, active);
 
@@ -167,13 +169,13 @@ public sealed class ScannerTests
     }
 
     [Theory]
-    [InlineData(Trend.Flat, 99.8, 0.002, "trend flat")]
-    [InlineData(Trend.Down, 99.8, 0.002, "trend down")]
-    [InlineData(Trend.Up, 98.5, 0.002, "extended: 1 ATR above EMA20")]   // (100 - 98.5) / 1.5
-    [InlineData(Trend.Up, 99.8, -0.001, "last hour falling")]
-    public void NoEntry_WithoutAnUptrendPullback(Trend trend, double ema20, double return1h, string why)
+    [InlineData(Trend.Flat, "99.8", "0.002", "trend flat")]
+    [InlineData(Trend.Down, "99.8", "0.002", "trend down")]
+    [InlineData(Trend.Up, "98.5", "0.002", "extended: 1 ATR above EMA20")]   // (100 - 98.5) / 1.5
+    [InlineData(Trend.Up, "99.8", "-0.001", "last hour falling")]
+    public void NoEntry_WithoutAnUptrendPullback(Trend trend, string ema20, string return1h, string why)
     {
-        var result = Scan([Input(Features(trend: trend, ema20: (decimal)ema20, return1h: (decimal)return1h))]);
+        var result = Scan([Input(Features(trend: trend, ema20: D(ema20), return1h: D(return1h)))]);
 
         Assert.Empty(result.Entries);
         Assert.Equal(why, Assert.Single(result.Ranked).NoEntryReason);
@@ -199,15 +201,15 @@ public sealed class ScannerTests
     }
 
     [Theory]
-    [InlineData(97.5, 97.5, 110, Trend.Up, "stop")]
-    [InlineData(110, 97, 110, Trend.Up, "target")]
-    [InlineData(100, 97, 110, Trend.Down, "trend-down")]
-    [InlineData(100, 97, 110, Trend.Up, null)]
-    public void HeldPositions_ExitOnStopTargetOrDowntrend(double bid, double stop, double target, Trend trend, string? reason)
+    [InlineData("97.5", "97.5", "110", Trend.Up, "stop")]
+    [InlineData("110", "97", "110", Trend.Up, "target")]
+    [InlineData("100", "97", "110", Trend.Down, "trend-down")]
+    [InlineData("100", "97", "110", Trend.Up, null)]
+    public void HeldPositions_ExitOnStopTargetOrDowntrend(string bid, string stop, string target, Trend trend, string? reason)
     {
-        var held = new HeldPosition("SOL-EUR", 0.05m, (decimal)stop, (decimal)target);
+        var held = new HeldPosition("SOL-EUR", 0.05m, D(stop), D(target));
 
-        var result = Scan([Input(Features(trend: trend, bid: (decimal)bid))], held: [held]);
+        var result = Scan([Input(Features(trend: trend, bid: D(bid)))], held: [held]);
 
         if (reason is null)
         {
@@ -216,7 +218,17 @@ public sealed class ScannerTests
         }
 
         var exit = Assert.Single(result.Exits);
-        Assert.Equal(("SOL-EUR", 0.05m, (decimal)bid, reason), (exit.Symbol, exit.BaseSize, exit.LimitPrice, exit.Reason));
+        Assert.Equal(("SOL-EUR", 0.05m, D(bid), reason), (exit.Symbol, exit.BaseSize, exit.LimitPrice, exit.Reason));
+    }
+
+    [Fact]
+    public void HeldPosition_WithAnOpenOrder_GetsNoExitSignal()
+    {
+        var held = new HeldPosition("SOL-EUR", 0.05m, 98m, 110m);
+
+        var result = Scan([Input(Features(bid: 97m), openOrder: true)], held: [held]); // e.g. a resting sell already
+
+        Assert.Empty(result.Exits);
     }
 
     [Fact]

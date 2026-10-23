@@ -39,8 +39,9 @@ public sealed class ScannerOptions
 }
 
 /// <summary>
-/// The curated universe and what can actually be traded: universe symbols in the risk allowlist. Market data is polled for
-/// <see cref="Tradable"/> only; the exchange's active pairs are checked at every scan.
+/// What the scanner considers and what can be traded. Every symbol in the owner's risk allowlist is polled and tradable (the
+/// safety monitor expects fresh quotes for all of them); the scan covers the curated universe plus the allowlist, and universe
+/// symbols outside the allowlist show as not allowed. The exchange's active pairs are checked at every scan.
 /// </summary>
 public sealed class MarketUniverse
 {
@@ -48,12 +49,8 @@ public sealed class MarketUniverse
     {
         ArgumentNullException.ThrowIfNull(universe);
         ArgumentNullException.ThrowIfNull(allowlist);
-        Candidates = MarketDataPoller.NormaliseSymbols(universe);
-        var allowed = MarketDataPoller.NormaliseSymbols(allowlist).ToHashSet(StringComparer.Ordinal);
-        Tradable = Candidates.Where(allowed.Contains).ToList();
-        if (Tradable.Count == 0)
-            throw new InvalidOperationException(
-                $"No universe symbol is in the risk allowlist. Universe: {string.Join(", ", Candidates)}; allowed: {string.Join(", ", allowed.Order(StringComparer.Ordinal))}.");
+        Tradable = MarketDataPoller.NormaliseSymbols(allowlist);
+        Candidates = MarketDataPoller.NormaliseSymbols(universe.Concat(Tradable));
     }
 
     public IReadOnlyList<string> Candidates { get; }

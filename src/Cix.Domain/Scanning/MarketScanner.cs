@@ -104,7 +104,7 @@ public sealed record EntrySignal(
     decimal RiskQuote,
     string Reason);
 
-/// <summary>A suggested exit: sell the whole sellable size with a limit at the bid.</summary>
+/// <summary>A suggested exit: sell the whole sellable size with a limit at the bid. None while the symbol has an open order.</summary>
 public sealed record ExitSignal(string Symbol, decimal BaseSize, decimal LimitPrice, string Reason, string Detail);
 
 public sealed record ScanResult(
@@ -180,7 +180,7 @@ public static class MarketScanner
 
         var inputsBySymbol = inputs.ToDictionary(i => i.Symbol, StringComparer.Ordinal);
         var exits = held.OrderBy(h => h.Symbol, StringComparer.Ordinal)
-            .Select(h => Exit(h, inputsBySymbol.GetValueOrDefault(h.Symbol)?.Features))
+            .Select(h => inputsBySymbol.GetValueOrDefault(h.Symbol) is { HasOpenOrder: false } input ? Exit(h, input.Features) : null)
             .OfType<ExitSignal>()
             .ToList();
 
@@ -214,6 +214,7 @@ public static class MarketScanner
         if (last24.Count < p.MinHourlyCandles24h)
             return (null, Out("insufficient-history", Inv($"Only {last24.Count} hourly candles in the last 24h.")));
 
+        // Assumes candle volume is in the base currency (BTC for BTC-EUR); to be confirmed by the API spike (ADR-0006).
         var quoteVolume = last24.Sum(c => c.Volume * c.Close);
         var averageVolume = last24.Average(c => c.Volume);
         decimal? volumeRatio = averageVolume > 0 ? newest!.Volume / averageVolume : null;
