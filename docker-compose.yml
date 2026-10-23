@@ -79,6 +79,8 @@ services:
     environment:
       ANALYST_MODEL: "${ANALYST_MODEL:-opus}"
       ANALYST_INTERVAL_HOURS: "${ANALYST_INTERVAL_HOURS:-6}"
+      ANALYST_RETRY_MINUTES: "${ANALYST_RETRY_MINUTES:-30}"
+      ANALYST_WEB_DOMAINS: "${ANALYST_WEB_DOMAINS:-}"         # empty: the default list in run-analyst.sh
       CLAUDE_TOKEN_EXPIRES: "${CLAUDE_TOKEN_EXPIRES:-}"
     secrets:
       - claude_token

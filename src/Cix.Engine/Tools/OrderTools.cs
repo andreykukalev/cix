@@ -26,6 +26,9 @@ public sealed class OrderTools(
     public const int MinRationale = 10;
     public const int MaxRationale = 1_000;
 
+    /// <summary>Least distance between a buy's limit price and its stop or target.</summary>
+    public const decimal MinExitDistance = 0.005m;
+
     [McpServerTool(Name = "place_order", Destructive = false, Idempotent = false)]
     [Description("Places a limit order. The engine rounds it to the exchange's steps and the risk gate may accept, resize or reject it; the result says which and why. Explain the decision in rationale: it goes into the journal the owner reviews.")]
     public async Task<string> PlaceOrder(
@@ -35,8 +38,8 @@ public sealed class OrderTools(
         [Description("Limit price in the quote currency.")] decimal limitPrice,
         [Description("Why this order, in 10 to 1000 characters.")] string rationale,
         [Description("true to only add liquidity: if it would fill at once it is rejected instead.")] bool postOnly = false,
-        [Description("Buys only: the stop-loss price you plan to exit at, below the limit price. Recorded and returned by get_position_plans; the engine doesn't place it.")] decimal? stopLoss = null,
-        [Description("Buys only: the take-profit price, above the limit price. Recorded like stopLoss.")] decimal? takeProfit = null,
+        [Description("Buys only: the stop-loss price, at least 0.5% below the limit price. Recorded and returned by get_position_plans; the engine sells the position itself when the bid reaches it.")] decimal? stopLoss = null,
+        [Description("Buys only: the take-profit price, at least 0.5% above the limit price. The engine sells at it like at the stop.")] decimal? takeProfit = null,
         CancellationToken cancellationToken = default)
     {
         await context.RequireAllowedAsync("place_order", cancellationToken).ConfigureAwait(false);
@@ -52,10 +55,11 @@ public sealed class OrderTools(
         var why = Rationale(rationale);
         if (orderSide == OrderSide.Sell && (stopLoss is not null || takeProfit is not null))
             throw new McpException("stopLoss and takeProfit apply to buys only.");
-        if (stopLoss is { } sl && (sl <= 0 || sl >= limitPrice))
-            throw new McpException("stopLoss must be positive and below limitPrice.");
-        if (takeProfit is { } tp && (tp <= limitPrice || tp > MaxPrice))
-            throw new McpException("takeProfit must be above limitPrice.");
+        // The engine sells at these levels by itself (protective exits), so they must be a real distance from the entry.
+        if (stopLoss is { } sl && (sl <= 0 || sl > limitPrice * (1 - MinExitDistance)))
+            throw new McpException($"stopLoss must be positive and at least {MinExitDistance:P1} below limitPrice.");
+        if (takeProfit is { } tp && (tp < limitPrice * (1 + MinExitDistance) || tp > MaxPrice))
+            throw new McpException($"takeProfit must be at least {MinExitDistance:P1} above limitPrice.");
 
         // The market view (ADR-0007) holds new buys, not only scanner signals. Sells always pass. Fixed wording: the
         // analyst's own text never reaches the trader.

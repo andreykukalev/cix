@@ -55,3 +55,24 @@ wait_for_engine() {
   say "The engine's tool server isn't reachable at 127.0.0.1:5077 after 5 minutes; exiting so Docker restarts the $agent_name."
   exit 1
 }
+
+# Exit code for a run that didn't get to use Claude (no or expired credentials, usage or rate limit): such attempts don't
+# count toward run caps, and the loops retry them sooner.
+# Used by the scripts that source this file:
+# shellcheck disable=SC2034
+NOT_RUN=3
+
+# Succeeds if a run ($1: JSON log, $2: stderr) was refused for usage or rate limits before doing any work. Judged from the
+# structured result when there is one: an error that cost nothing and whose message names a limit. Text inside a run that
+# did work (news about "rate limits", a turn count of 429) never counts, so such a run can't escape the run caps.
+limit_pattern='usage limit|limit reached|rate[ _-]?limit|too many requests|api error: ?429|status:? ?429|overloaded'
+hit_usage_limit() {
+  if jq -e . "$1" >/dev/null 2>&1; then
+    [[ "$(jq -r '.is_error // false' "$1")" == "true" ]] || return 1
+    [[ "$(jq -r '(.total_cost_usd // 0) == 0' "$1")" == "true" ]] || return 1
+    jq -r '.result // ""' "$1" | grep -qiE "$limit_pattern"
+    return
+  fi
+  grep -qiE "$limit_pattern" "$1" "$2" 2>/dev/null   # no JSON: the CLI stopped before the run (stderr or a plain message)
+}
+

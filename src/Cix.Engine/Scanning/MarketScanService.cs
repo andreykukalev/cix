@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using Cix.Domain;
 using Cix.Domain.Exchange;
 using Cix.Domain.Scanning;
 using Cix.Engine.Execution;
@@ -25,6 +26,12 @@ public sealed class ScannerOptions
     public TimeSpan Interval { get; set; } = TimeSpan.FromMinutes(5);
 
     public ScannerParameters Parameters { get; set; } = new();
+
+    /// <summary>
+    /// When true (the default), the engine itself sells positions that reach their stop-loss or take-profit, through the risk
+    /// gate, without waiting for an agent run. Trend exits stay with the trader.
+    /// </summary>
+    public bool ProtectiveExits { get; set; } = true;
 
     public IReadOnlyList<string> EffectiveUniverse =>
         MarketDataPoller.NormaliseSymbols(Universe is { Count: > 0 } ? Universe : DefaultUniverse);
@@ -117,7 +124,9 @@ public sealed partial class MarketScanService(
     /// A short, stable description of the latest scan's signals (for example <c>buy:SOL-EUR|sell:BTC-EUR:stop</c>), empty when
     /// there are none. The trader loop starts an agent run when it changes to something non-empty.
     /// </summary>
-    public string SignalKey => Latest is { } scan ? KeyOf(scan, StaleOrderSymbols) : string.Empty;
+    public string SignalKey => Latest is { } scan
+        ? KeyOf(options.ProtectiveExits ? scan with { Exits = scan.Exits.Where(x => !ProtectiveReasons.Contains(x.Reason)).ToList() } : scan, StaleOrderSymbols)
+        : string.Empty; // stop and target exits are the engine's own job when protective exits are on: no agent run for them
 
     /// <summary>Orders resting longer than this need a run to cancel them (the specs' 50-minute tidy rule).</summary>
     public static readonly TimeSpan StaleOrderAge = TimeSpan.FromMinutes(50);
@@ -224,6 +233,146 @@ public sealed partial class MarketScanService(
         return MarketScanner.Scan(inputs, held, Parameters, now, allowEntries: !Halted, view: views?.Current);
     }
 
+    /// <summary>Exit reasons the engine acts on by itself: price levels set when the position was bought, no judgement needed.</summary>
+    public static readonly IReadOnlySet<string> ProtectiveReasons = new HashSet<string>(StringComparer.Ordinal) { "stop", "target" };
+
+    /// <summary>An unfilled protective sell older than this is cancelled, so the next scan re-prices it at the current bid.</summary>
+    public static readonly TimeSpan ProtectiveRepriceAfter = TimeSpan.FromMinutes(4);
+
+    /// <summary>After the gate refuses a protective sell for a symbol, wait this long before trying that symbol again.</summary>
+    public static readonly TimeSpan ProtectiveBackoff = TimeSpan.FromMinutes(15);
+
+    private readonly HashSet<string> _protectiveOrderIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _protectiveBackoff = new(StringComparer.Ordinal);
+    private bool _protectiveRestored;
+
+    /// <summary>
+    /// Places a sell for every stop or target exit in <paramref name="scan"/>, through <see cref="ExecutionService"/> and so the
+    /// risk gate. Positions stay protected while agents can't run (usage limit, outage, expired token). Returns the orders placed.
+    /// </summary>
+    public async Task<int> ApplyProtectiveExitsAsync(ScanResult scan, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(scan);
+        if (!options.ProtectiveExits || Halted)
+            return 0;
+
+        var placed = 0;
+        foreach (var exit in scan.Exits.Where(x => ProtectiveReasons.Contains(x.Reason)))
+        {
+            var now = time.GetUtcNow();
+            lock (_protectiveBackoff)
+            {
+                if (_protectiveBackoff.TryGetValue(exit.Symbol, out var until) && now < until)
+                    continue; // refused recently: don't hammer the gate or the journal every scan
+            }
+
+            var clientOrderId = Guid.NewGuid().ToString();
+            var result = await execution.PlaceAsync(
+                new OrderIntent(exit.Symbol, OrderSide.Sell, exit.BaseSize, exit.LimitPrice, clientOrderId), postOnly: false, cancellationToken,
+                countsTowardRejectStreak: false).ConfigureAwait(false);
+            if (result.Status == ExecutionStatus.Rejected)
+            {
+                lock (_protectiveBackoff)
+                    _protectiveBackoff[exit.Symbol] = now + ProtectiveBackoff;
+            }
+            else
+            {
+                // Placed, or sent with an unknown outcome: track it either way so a resting sell gets re-priced.
+                if (result.Status == ExecutionStatus.Placed)
+                    placed++;
+                lock (_protectiveOrderIds)
+                    _protectiveOrderIds.Add(clientOrderId);
+                lock (_protectiveBackoff)
+                    _protectiveBackoff.Remove(exit.Symbol);
+            }
+
+            var data = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tool"] = "protective-exit",
+                ["clientOrderId"] = clientOrderId,
+                ["symbol"] = exit.Symbol,
+                ["side"] = "sell",
+                ["requestedSize"] = exit.BaseSize.ToString(CultureInfo.InvariantCulture),
+                ["requestedPrice"] = exit.LimitPrice.ToString(CultureInfo.InvariantCulture),
+                ["status"] = result.Status.ToString().ToLowerInvariant(),
+                ["rule"] = result.Rule,
+                ["reason"] = result.Reason,
+                ["rationale"] = $"protective exit {exit.Symbol} {exit.Reason}: {exit.Detail}",
+            };
+            await AppendSafelyAsync(new JournalEntry(
+                Guid.NewGuid().ToString("N"), time.GetUtcNow(), "order", "engine", null, specs.Active?.Label,
+                Inv($"protective {exit.Reason} sell {exit.BaseSize} {exit.Symbol} @ {exit.LimitPrice}: {result.Status} ({result.Rule})"), data))
+                .ConfigureAwait(false);
+            LogProtectiveExit(logger, exit.Reason, exit.Symbol, exit.BaseSize, exit.LimitPrice, result.Status.ToString(), result.Rule);
+        }
+
+        return placed;
+    }
+
+    /// <summary>Cancels this engine's protective sells that have rested unfilled too long; the next scan sells again at the bid.</summary>
+    public async Task<int> CancelStaleProtectiveExitsAsync(CancellationToken cancellationToken)
+    {
+        if (!_protectiveRestored)
+            await RestoreProtectiveOrdersAsync(cancellationToken).ConfigureAwait(false);
+
+        string[] ids;
+        lock (_protectiveOrderIds)
+            ids = [.. _protectiveOrderIds];
+        if (ids.Length == 0)
+            return 0;
+
+        var now = time.GetUtcNow();
+        var open = await execution.GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
+        var openIds = open.Where(o => o.IsOpen).Select(o => o.ClientOrderId).ToHashSet(StringComparer.Ordinal);
+        var cancelled = 0;
+        foreach (var order in open.Where(o => o.IsOpen && ids.Contains(o.ClientOrderId) && now - o.CreatedAt >= ProtectiveRepriceAfter))
+        {
+            var (outcome, _) = await execution.CancelOwnOrderAsync(order.VenueOrderId, cancellationToken).ConfigureAwait(false);
+            if (outcome == CancelOutcome.Cancelled)
+                cancelled++;
+        }
+
+        lock (_protectiveOrderIds)
+            _protectiveOrderIds.RemoveWhere(id => !openIds.Contains(id)); // filled or gone: stop tracking
+        return cancelled;
+    }
+
+    /// <summary>After a restart, picks up protective sells placed in the last day from the journal, so they are re-priced too.</summary>
+    private async Task RestoreProtectiveOrdersAsync(CancellationToken cancellationToken)
+    {
+        var since = DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime).AddDays(-1);
+        var orders = await journal.QueryAsync(new JournalQuery(From: since, Kind: "order", Limit: FileJournal.MaxQueryLimit), cancellationToken)
+            .ConfigureAwait(false);
+        lock (_protectiveOrderIds)
+        {
+            foreach (var entry in orders.Where(e => e.Data?.GetValueOrDefault("tool") == "protective-exit" && e.Data.GetValueOrDefault("status") != "rejected"))
+            {
+                if (entry.Data!.GetValueOrDefault("clientOrderId") is { Length: > 0 } id)
+                    _protectiveOrderIds.Add(id);
+            }
+        }
+
+        _protectiveRestored = true;
+    }
+
+    private async Task AppendSafelyAsync(JournalEntry entry)
+    {
+        try
+        {
+            await journal.AppendAsync(entry, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogOrderJournalFailed(logger, entry.Kind, ex.Message);
+        }
+    }
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Journal write failed for a protective-exit {Kind} entry: {Detail}")]
+    private static partial void LogOrderJournalFailed(ILogger logger, string kind, string detail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Protective {Reason} exit: sell {Size} {Symbol} at {Price}: {Status} ({Rule})")]
+    private static partial void LogProtectiveExit(ILogger logger, string reason, string symbol, decimal size, decimal price, string status, string rule);
+
     /// <summary>One journal entry per signal when it first appears, so reports can compare signals taken and not taken.</summary>
     private async Task RecordNewSignalsAsync(ScanResult result)
     {
@@ -295,8 +444,18 @@ public sealed partial class MarketScanBackgroundService(
     {
         try
         {
+            try
+            {
+                await scanner.CancelStaleProtectiveExitsAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                LogScanFailed(logger, ex.GetType().Name, "re-pricing protective sells: " + ex.Message); // the scan still runs
+            }
+
             var result = await scanner.ScanAsync(cancellationToken).ConfigureAwait(false);
             LogScanned(logger, result.Ranked.Count, result.Excluded.Count, result.Entries.Count, result.Exits.Count, Describe(result));
+            await scanner.ApplyProtectiveExitsAsync(result, cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
