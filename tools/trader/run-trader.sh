@@ -91,10 +91,22 @@ instructions="$(awk 'BEGIN{n=0} /^---[[:space:]]*$/{n++; next} n>=2' "$dir/.clau
 tools="mcp__cix__get_strategy_spec,mcp__cix__get_portfolio,mcp__cix__get_position_plans,mcp__cix__get_open_orders,mcp__cix__get_market_view,mcp__cix__get_features,mcp__cix__scan_market,mcp__cix__place_order,mcp__cix__cancel_order"
 denied="Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,WebSearch,Task,TodoWrite"
 
-# The engine's latest scan: prints "signalDriven key", or nothing if the engine can't be asked.
+# The engine's latest scan: prints "signalDriven scanned key" (scanned is "yes" once the engine has scanned), or nothing
+# if the engine can't be asked.
 signals() {
   curl -fsS --max-time 10 "http://127.0.0.1:5077/signals" 2>/dev/null \
-    | jq -r '"\(.signalDriven) \(.key)"' 2>/dev/null
+    | jq -r '"\(.signalDriven) \(if .asOf == null then "no" else "yes" end) \(.key)"' 2>/dev/null
+}
+
+# Succeeds if $1 (a signal key like "buy:SOL-EUR|sell:BTC-EUR:stop") holds an item that $2 doesn't.
+has_new_signal() {
+  local item
+  local -a items
+  IFS='|' read -ra items <<<"$1"
+  for item in "${items[@]}"; do
+    [[ -n "$item" && "|$2|" != *"|$item|"* ]] && return 0
+  done
+  return 1
 }
 
 run_once() {
@@ -103,8 +115,8 @@ run_once() {
   log="$logs/$run_id.json"
   export CIX_RUN_ID="$run_id"
 
-  load_credentials || return 0
-  check_expiry || return 0
+  load_credentials || return 1
+  check_expiry || return 1
   wait_for_engine
   say "$run_id starting: $why ($auth)"
 
@@ -119,7 +131,7 @@ run_once() {
 
   if (( code == 124 )); then
     say "$run_id stopped after $timeout_minutes minutes."
-    return 0
+    return 1
   fi
   if ! jq -e . "$log" >/dev/null 2>&1; then
     if cat "$log" "$logs/$run_id.err" 2>/dev/null | grep -qiE 'invalid api key|authentication_error|unauthori[sz]ed|oauth token (has )?expired|401'; then
@@ -127,7 +139,7 @@ run_once() {
     else
       say "$run_id failed (exit $code); see logs/trader/$run_id.json and .err."
     fi
-    return 0
+    return 1
   fi
 
   if [[ "$(jq -r '.is_error // false' "$log")" == "true" ]]; then
@@ -138,6 +150,7 @@ run_once() {
   fi
   say "$run_id done. Cost: $(jq -r '.total_cost_usd // "?"' "$log") USD, turns: $(jq -r '.num_turns // "?"' "$log")"
   jq -r '.result // ""' "$log"
+  [[ "$(jq -r '.is_error // false' "$log")" != "true" ]]
 }
 
 if [[ "${TRADER_RUN_ONCE:-0}" == "1" ]]; then
@@ -147,7 +160,6 @@ fi
 
 last_key=""
 next_run=$(date +%s)        # interval mode: the next scheduled run
-next_heartbeat=$(date +%s)  # signal mode: the next position review even without signals
 last_run=0
 run_day=""
 runs_today=0
@@ -168,33 +180,43 @@ guarded_run() {
   runs_today=$(( runs_today + 1 ))
   last_run=$(date +%s)
   run_once "$1"
-  return 0
 }
 
+next_heartbeat=0   # set once the engine has scanned, so the first run sees real signals
 while true; do
   wait_for_engine
   now=$(date +%s)
-  read -r driven key <<<"$(signals)"
+  read -r driven scanned key <<<"$(signals)"
 
   if [[ "${driven:-}" == "true" ]]; then
-    next_run=$(( now + interval * 60 ))   # if /signals later fails, interval mode doesn't fire at once
-    if [[ -n "${key:-}" && "$key" != "$last_key" ]]; then
-      # New signals. Within the minimum gap, wait (they still count as new at the next poll after the gap).
+    next_run=$(( now + interval * 60 ))
+    if [[ "${scanned:-}" != "yes" ]]; then
+      sleep "$poll"; continue   # the engine hasn't scanned yet
+    fi
+    (( next_heartbeat == 0 )) && next_heartbeat=$now
+    if [[ -n "${key:-}" ]] && has_new_signal "$key" "$last_key"; then
+      # Something new (not just one of the previous signals going away). Within the minimum gap, wait: it is still new
+      # at the next poll after the gap. A failed run leaves it unhandled, so it is retried after the gap.
       if (( now - last_run >= min_gap * 60 )) && guarded_run "signals $key"; then
         last_key="$key"
         next_heartbeat=$(( $(date +%s) + heartbeat * 60 ))
       fi
-    elif (( now >= next_heartbeat )); then
-      guarded_run "heartbeat" || true
-      next_heartbeat=$(( $(date +%s) + heartbeat * 60 ))
+    else
+      last_key="${key:-}"   # only removals: remember the smaller set, so a removed signal coming back counts as new
+      if (( now >= next_heartbeat )); then
+        guarded_run "heartbeat" || true
+        next_heartbeat=$(( $(date +%s) + heartbeat * 60 ))
+      fi
     fi
-    [[ -z "${key:-}" ]] && last_key=""   # signals cleared: the same signal reappearing later is new again (gap still applies)
-  elif (( now >= next_run )); then
-    # Interval mode (a strategy without scan_market, or /signals unavailable). Fixed cadence, no catch-up bursts.
-    guarded_run "scheduled" || true
-    next_run=$(( next_run + interval * 60 ))
-    (( next_run <= $(date +%s) )) && next_run=$(( $(date +%s) + interval * 60 ))
+  elif [[ "${driven:-}" == "false" ]]; then
+    if (( now >= next_run )); then
+      # Interval mode: the strategy doesn't use the scanner. Fixed cadence, no catch-up bursts.
+      guarded_run "scheduled" || true
+      next_run=$(( next_run + interval * 60 ))
+      (( next_run <= $(date +%s) )) && next_run=$(( $(date +%s) + interval * 60 ))
+    fi
   fi
+  # No answer from /signals (engine restarting): neither mode runs; wait_for_engine handles long outages.
 
   sleep "$poll"
 done

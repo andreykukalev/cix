@@ -94,7 +94,7 @@ public sealed partial class MarketScanService(
 
     /// <summary>
     /// The scanner settings in force: the active spec's <c>scanner</c> parameters (with its <c>orderQuote</c>), or configuration
-    /// when the spec has none. Resolved once per spec, so a bad spec fails every scan loudly instead of trading on defaults.
+    /// when the spec has none. Program reads this at startup, so a bad spec stops the engine instead of trading on defaults.
     /// </summary>
     public ScannerParameters Parameters
     {
@@ -142,7 +142,11 @@ public sealed partial class MarketScanService(
         UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow, // a typo fails loudly
     };
 
-    /// <summary>Scanner settings from a spec's <c>scanner</c> object and top-level <c>orderQuote</c>; <paramref name="fallback"/> otherwise.</summary>
+    /// <summary>
+    /// Scanner settings from a spec's <c>scanner</c> object, which replaces configuration entirely (unlisted values take the
+    /// code defaults, so a spec version alone says what ran), plus its top-level <c>orderQuote</c>. Without a <c>scanner</c>
+    /// object, <paramref name="fallback"/> (configuration) applies.
+    /// </summary>
     public static ScannerParameters FromSpec(StrategySpec? spec, ScannerParameters fallback)
     {
         ArgumentNullException.ThrowIfNull(fallback);
@@ -154,7 +158,7 @@ public sealed partial class MarketScanService(
         {
             if (scanner.ValueKind != JsonValueKind.Object)
                 throw new InvalidOperationException($"{spec.Label}: parameters.scanner must be an object.");
-            if (scanner.TryGetProperty("orderQuote", out _) || scanner.TryGetProperty("OrderQuote", out _))
+            if (scanner.EnumerateObject().Any(p => string.Equals(p.Name, "orderQuote", StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException($"{spec.Label}: set orderQuote once, at the top of parameters, not inside scanner.");
             try
             {

@@ -53,6 +53,9 @@ services:
     environment:
       TRADER_INTERVAL_MINUTES: "${TRADER_INTERVAL_MINUTES:-60}"     # strategies without scan_market
       TRADER_HEARTBEAT_MINUTES: "${TRADER_HEARTBEAT_MINUTES:-240}"  # signal-driven strategies: review even without signals
+      TRADER_MIN_GAP_MINUTES: "${TRADER_MIN_GAP_MINUTES:-15}"
+      TRADER_MAX_RUNS_PER_DAY: "${TRADER_MAX_RUNS_PER_DAY:-30}"
+      TRADER_POLL_SECONDS: "${TRADER_POLL_SECONDS:-60}"
       CLAUDE_TOKEN_EXPIRES: "${CLAUDE_TOKEN_EXPIRES:-}"
     secrets:
       - claude_token

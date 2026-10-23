@@ -51,13 +51,17 @@ public sealed class StrategyV2Tests
     [Fact]
     public void SpecScannerValues_OverrideDefaults_AndOrderQuoteComesFromTheTop()
     {
-        var parameters = MarketScanService.FromSpec(Spec("""{ "orderQuote": 3, "scanner": { "stopAtr": 2, "maxEntrySignals": 1 } }"""), new ScannerParameters());
+        var configured = new ScannerParameters { MaxSpreadFraction = 0.003m };
+
+        var parameters = MarketScanService.FromSpec(Spec("""{ "orderQuote": 3, "scanner": { "stopAtr": 2, "maxEntrySignals": 1 } }"""), configured);
 
         Assert.Equal((3m, 2m, 1), (parameters.OrderQuote, parameters.StopAtr, parameters.MaxEntrySignals));
+        Assert.Equal(0.002m, parameters.MaxSpreadFraction); // the spec replaces configuration: unlisted values are code defaults
     }
 
     [Theory]
     [InlineData("""{ "scanner": { "orderQuote": 50 } }""")]          // a second orderQuote the order-size hook wouldn't see
+    [InlineData("""{ "scanner": { "ORDERQUOTE": 50 } }""")]
     [InlineData("""{ "scanner": { "stopAtrr": 2 } }""")]             // typo
     [InlineData("""{ "scanner": { "stopAtr": -1 } }""")]             // fails validation
     [InlineData("""{ "scanner": [] }""")]
