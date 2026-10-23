@@ -3,6 +3,7 @@ using Cix.Engine;
 using Cix.Engine.Execution;
 using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
+using Cix.Engine.Persistence;
 using Cix.Engine.Strategy;
 using Cix.Engine.Tools;
 using Cix.Exchange.RevolutX;
@@ -50,8 +51,14 @@ builder.Services.AddCixToolServer(
     builder.Configuration.GetSection(JournalOptions.SectionName).Get<JournalOptions>() ?? new JournalOptions());
 builder.WebHost.ListenOnLoopback(builder.Configuration, toolServer);
 
+// Cosmos DB (emulator locally, Azure later) for the journal, engine state and paper account; off unless configured.
+builder.Services.AddCixCosmos(
+    builder.Configuration.GetSection(CosmosOptions.SectionName).Get<CosmosOptions>() ?? new CosmosOptions(),
+    mode);
+
 builder.Services.AddHostedService<HeartbeatService>();
 
 var app = builder.Build();
+await app.Services.InitializeCixPersistenceAsync(CancellationToken.None);
 app.UseCixToolServer();
-app.Run();
+await app.RunAsync();

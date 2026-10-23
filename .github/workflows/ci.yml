@@ -13,6 +13,17 @@ permissions:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    services:
+      # Cosmos DB emulator for the persistence tests (they skip themselves when it isn't configured).
+      cosmos:
+        image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest
+        ports:
+          - 8081:8081
+          - 8080:8080
+        env:
+          PROTOCOL: https
+    env:
+      CIX_COSMOS_EMULATOR: https://localhost:8081
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +36,14 @@ jobs:
 
       - name: Build
         run: dotnet build Cix.slnx --no-restore --configuration Release
+
+      - name: Wait for the Cosmos DB emulator
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/ready > /dev/null; then echo "ready"; exit 0; fi
+            sleep 2
+          done
+          echo "::warning::Cosmos DB emulator not ready; persistence tests will fail"
 
       - name: Test
         run: dotnet test Cix.slnx --no-build --configuration Release --logger "trx;LogFilePrefix=results" --results-directory TestResults
