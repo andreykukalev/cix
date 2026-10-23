@@ -45,12 +45,13 @@ flowchart LR
 
 | Component | Kind | Responsibilities |
 | --- | --- | --- |
-| Market data | Deterministic | Polls candles, tickers and the order book over REST; stores closed candles |
+| Market data | Deterministic | Tickers for all pairs (1/min), order books (10 s) and hourly candles (5 min) for the universe, within the public 1 request/s limit |
 | Features | Deterministic | Indicators and summaries served to agents as compact JSON |
-| Market analyst | Claude agent | Every 30 min: regime, risk-off flag, watchlist; each view expires |
-| Trader | Claude agent | Hourly and on alerts: reads features, the analyst's view, positions and the spec; places and cancels orders through tools |
+| Universe and scanner | Deterministic | Curated, exchange-validated symbol list; liquidity, spread and cost filters; volatility, momentum and volume-anomaly ranking; entry and exit signals with cost-aware sizing (ADR-0006) |
+| Market analyst | Claude agent | A few times a day: a short regime view (risk-on, neutral, risk-off) that expires |
+| Trader | Claude agent | Only when the scanner signals (plus a slow heartbeat): reads signals, positions and the spec; places and cancels orders through tools |
 | Daily reviewer | Claude agent | Reads the journal, writes a daily report, proposes a new spec version |
-| Strategy spec store | Cosmos DB documents | Instructions, parameters and allowed tools; versions go draft → paper → live |
+| Strategy spec store | Versioned files, archived in Cosmos DB | Instructions, parameters (including scanner settings) and allowed tools; versions go draft → paper → live |
 | Risk gate | Deterministic, final authority | Allocation cap, drawdown halt, per-order and daily-loss caps, order rate, price band, symbol allowlist, kill switch |
 | Order execution | Deterministic | Idempotent client order IDs, pair filters (step sizes, min size), partial fills, retries |
 | Paper execution | Deterministic | Simulates fills from live Revolut X prices and fees; the default until go-live |
@@ -81,14 +82,14 @@ flowchart LR
 
 | Phase | Where | Approx. USD per month |
 | --- | --- | --- |
-| Prototype | Claude Code on your machine as the agents; engine and tool server locally; Cosmos DB serverless | 1–5 plus Claude usage |
-| Live | App Service B1 Linux (engine and tool server); Container Apps Jobs (agents); Cosmos DB serverless; Key Vault; Azure Monitor | about 25 plus Claude through Foundry |
+| Prototype | Docker Compose on your machine: Cosmos DB emulator, engine, agent containers running Claude Code (ADR-0005) | Claude usage only |
+| Live | Azure Container Apps (engine always on, agents as scheduled jobs); Cosmos DB serverless; Key Vault; Azure Monitor | to be priced at deployment, within the budget |
 
 Budget: $150 a month including Claude through Microsoft Foundry. Set an Azure budget alert at $130.
 
 ## Milestones
 
-1. **M1, paper trading prototype:** Revolut X client, market data, paper execution, risk gate, journal, spec store, MCP tool server, Claude Code as the agents.
+1. **M1, paper trading prototype:** Revolut X client, market data, paper execution, risk gate, journal, spec store, MCP tool server, Claude Code as the agents; Docker Compose; curated multi-asset universe with a deterministic scanner.
 2. **M2, hosted agents:** Agent Framework runtime with Claude in Foundry, scheduled jobs, agent evals that replay past markets, a journal dashboard.
-3. **M3, live with a small allocation:** App Service deployment, Key Vault, alerts, tight drawdown halt.
+3. **M3, live with a small allocation:** Container Apps deployment, Key Vault, alerts, tight drawdown halt.
 4. **M4, review loop:** daily reviewer, spec promotion workflow, comparison against a buy-and-hold baseline.
