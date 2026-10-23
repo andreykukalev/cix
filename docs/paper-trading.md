@@ -1,5 +1,7 @@
 # Paper trading locally
 
+> The simplest way to run everything is Docker Compose: see [docker.md](docker.md). The steps below run the engine and trader directly with `dotnet run` and PowerShell, which is handy while developing.
+
 The engine runs on your PC with simulated money and live Revolut X prices. A Claude Code agent trades through the engine's tools once an hour, following the active strategy (`strategies/trend.v1.json`). Nothing here can touch your real account: paper mode holds no trading keys.
 
 ## Once

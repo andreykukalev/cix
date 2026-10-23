@@ -1,0 +1,16 @@
+.git
+**/bin
+**/obj
+**/TestResults
+logs
+secrets
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+**/secrets.json
+.claude/settings.local.json
+.vs
+.idea

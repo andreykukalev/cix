@@ -69,6 +69,40 @@ jobs:
           name: test-results
           path: TestResults
 
+  # The Compose images build, and the engine starts in its container against the emulator (paper, no exchange keys).
+  containers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint the trader loop
+        run: shellcheck tools/trader/run-trader.sh
+
+      - name: Placeholder secrets (built at run time, never committed)
+        run: |
+          mkdir -p secrets logs/trader
+          head -c 32 /dev/urandom | base64 > secrets/operator_key
+          printf 'not-a-real-token' > secrets/claude_token
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Engine starts in Compose
+        run: |
+          docker compose up -d cosmos engine
+          for i in $(seq 1 60); do
+            out="$(docker compose logs engine 2>&1 || true)"
+            if grep -q "Application started" <<<"$out"; then echo "engine running"; exit 0; fi
+            sleep 5
+          done
+          docker compose ps
+          docker compose logs engine | tail -60 | sed 's/^/::error::/'
+          exit 1
+
+      - name: Stop
+        if: always()
+        run: docker compose down -v
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:

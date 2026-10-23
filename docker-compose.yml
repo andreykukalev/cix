@@ -1,0 +1,70 @@
+# CIX on one machine: Cosmos DB emulator, engine (paper trading by default) and the trader loop.
+#   tools/setup-secrets.ps1     once: creates secrets/ (operator key, Claude credentials) and .env
+#   docker compose up -d --build
+# Everything restarts with Docker. Secrets are files in secrets/ (git-ignored), mounted under /run/secrets; none are
+# in the images or this file. Paper mode holds no Revolut X keys. ADR-0005.
+name: cix
+
+services:
+  cosmos:
+    image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest
+    command: ["--protocol", "https"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1234:1234"   # Data Explorer, this PC only. The emulator itself (8081) isn't published: it has no auth.
+    volumes:
+      - cosmos-data:/data
+
+  engine:
+    build:
+      context: .
+      dockerfile: docker/engine.Dockerfile
+    image: cix-engine
+    restart: unless-stopped
+    depends_on: [cosmos]
+    environment:
+      # Not Production: the engine refuses Live outside Production, so this stack can only paper trade.
+      ASPNETCORE_ENVIRONMENT: "Compose"
+      Trading__Mode: "Paper"
+      Cosmos__Enabled: "true"
+      Cosmos__Emulator: "true"
+      Cosmos__Endpoint: "https://cosmos:8081"
+      Journal__Directory: "/home/app/journal"   # fallback file journal; with Cosmos enabled the journal lives in Cosmos
+    secrets:
+      - source: operator_key
+        target: ToolServer__OperatorKey
+    volumes:
+      # Owner-edited files, read-only inside: restart the engine after changing them.
+      - ./config/risk-limits.json:/app/risk-limits.json:ro
+      - ./strategies:/app/strategies:ro
+      - ./src/Cix.Engine/appsettings.json:/app/appsettings.json:ro
+    # No ports, ever: the tool server listens on 127.0.0.1 inside this container and only the trader shares that.
+
+  trader:
+    build:
+      context: .
+      dockerfile: docker/trader.Dockerfile
+      args:
+        CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-latest}"   # pin in .env, e.g. CLAUDE_CODE_VERSION=2.1.0
+    image: cix-trader
+    restart: unless-stopped
+    depends_on: [engine]
+    network_mode: "service:engine"   # reaches the tool server at 127.0.0.1:5077; nothing else can
+    environment:
+      TRADER_INTERVAL_MINUTES: "${TRADER_INTERVAL_MINUTES:-60}"
+      CLAUDE_TOKEN_EXPIRES: "${CLAUDE_TOKEN_EXPIRES:-}"
+    secrets:
+      - claude_token
+    volumes:
+      - ./strategies:/cix/strategies:ro
+      - ./src/Cix.Engine/appsettings.json:/cix/src/Cix.Engine/appsettings.json:ro   # same active strategy as the engine
+      - ./logs/trader:/cix/logs/trader
+
+secrets:
+  operator_key:
+    file: ./secrets/operator_key
+  claude_token:
+    file: ./secrets/claude_token
+
+volumes:
+  cosmos-data:

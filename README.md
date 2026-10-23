@@ -9,14 +9,21 @@ Claude agents trade an allocated budget on [Revolut X](https://revolut.com/revol
 - **Engine** (`src/Cix.Engine`): market data, paper and live execution, portfolio, decision journal.
 - **Risk gate** (`src/Cix.Domain/Risk`): the final authority on every order; hard ceilings in code.
 - **Revolut X client** (`src/Cix.Exchange.RevolutX`): signed REST calls.
-- **Tool server** (coming in M1): the MCP server agents use; the only path to the exchange.
+- **Tool server** (`src/Cix.Engine/Tools`): the MCP server agents use; the only path to the exchange.
 - **Agents**: Claude Code during the prototype; hosted on Azure later.
 
 Details: [`docs/architecture.md`](docs/architecture.md) and the ADRs in [`docs/adr`](docs/adr).
 
 ## Getting started
 
-Requires the .NET 10 SDK.
+To run paper trading (Cosmos DB emulator, engine and trader in Docker, restarted automatically):
+
+```powershell
+.\tools\setup-secrets.ps1
+docker compose up -d --build
+```
+
+See [`docs/docker.md`](docs/docker.md). To develop, you need the .NET 10 SDK:
 
 ```bash
 dotnet build Cix.slnx

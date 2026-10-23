@@ -19,7 +19,10 @@ public sealed class CosmosOptions
 
     public string Database { get; set; } = "cix";
 
-    /// <summary>The local emulator: gateway mode and its self-signed certificate accepted, for a loopback endpoint only.</summary>
+    /// <summary>
+    /// The local emulator: gateway mode and its self-signed certificate accepted, for a loopback endpoint or the Docker Compose
+    /// service <see cref="ComposeHost"/> only. Never in Live.
+    /// </summary>
     public bool Emulator { get; set; }
 
     public void Validate()
@@ -28,12 +31,23 @@ public sealed class CosmosOptions
             return;
         if (!Uri.TryCreate(Endpoint, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
             throw new InvalidOperationException("Cosmos:Endpoint must be an absolute https URL.");
-        if (Emulator && !uri.IsLoopback)
-            throw new InvalidOperationException("Cosmos:Emulator is only allowed with a loopback endpoint (it accepts a self-signed certificate).");
+        if (Emulator && !IsLocalHost(uri))
+            throw new InvalidOperationException(
+                "Cosmos:Emulator is only allowed with a loopback endpoint or the Compose service https://cosmos:8081 (it accepts a self-signed certificate).");
         if (!Emulator && string.IsNullOrWhiteSpace(AccountKey))
             throw new InvalidOperationException("Cosmos:AccountKey is required (set it with dotnet user-secrets).");
         if (string.IsNullOrWhiteSpace(Database) || Database.Length > 64)
             throw new InvalidOperationException("Cosmos:Database must be a short name.");
+    }
+
+    /// <summary>The emulator's service name in docker-compose.yml.</summary>
+    public const string ComposeHost = "cosmos";
+
+    /// <summary>Loopback, or exactly the Compose emulator service (any other name could resolve elsewhere via DNS suffixes).</summary>
+    public static bool IsLocalHost(Uri uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        return uri.IsLoopback || string.Equals(uri.Host, ComposeHost, StringComparison.OrdinalIgnoreCase);
     }
 }
 
@@ -68,7 +82,7 @@ public sealed class CosmosDb : IDisposable
             clientOptions.LimitToEndpoint = true;
             clientOptions.HttpClientFactory = () => new HttpClient(new HttpClientHandler
             {
-                // The emulator's certificate is self-signed; Validate() allows this for loopback endpoints only.
+                // The emulator's certificate is self-signed; Validate() allows this for loopback or the Compose emulator only.
                 ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
             });
         }

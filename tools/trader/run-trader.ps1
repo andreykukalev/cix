@@ -41,7 +41,7 @@ $denied = 'Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,Web
 
 $tools = @(
     'mcp__cix__get_strategy_spec', 'mcp__cix__get_portfolio', 'mcp__cix__get_position_plans',
-    'mcp__cix__get_open_orders', 'mcp__cix__get_market_view', 'mcp__cix__get_features',
+    'mcp__cix__get_open_orders', 'mcp__cix__get_market_view', 'mcp__cix__get_features', 'mcp__cix__scan_market',
     'mcp__cix__place_order', 'mcp__cix__cancel_order'
 ) -join ','
 
