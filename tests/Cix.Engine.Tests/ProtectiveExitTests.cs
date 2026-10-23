@@ -84,9 +84,13 @@ public sealed class ProtectiveExitTests
     [Fact]
     public async Task Repricing_LeavesTheTradersOrders_AndYoungProtectiveSells_Alone()
     {
-        var tools = await Holding(btc: 0.05m, stop: 61_000m, target: 70_000m);
+        // A small position (within the per-symbol cap, so the trader may still buy) against a thin bid: the sell fills half.
+        var tools = await Holding(btc: 0.001m, stop: 61_000m, target: 70_000m);
+        var thin = new Domain.Exchange.MarketQuote(Btc, 60_000m, 0.0005m, 60_010m, 0.01m, tools.Rig.Time.GetUtcNow());
+        tools.Rig.State.Update(thin);
+        tools.Rig.Paper.OnQuote(thin);
         await tools.Scanner.ApplyProtectiveExitsAsync(await tools.Scanner.ScanAsync(CancellationToken.None), CancellationToken.None);
-        await tools.Rig.Buy(0.0001m, 59_500m, "trader-buy"); // the trader's resting buy
+        Assert.Equal(Execution.ExecutionStatus.Placed, (await tools.Rig.Buy(0.0001m, 59_500m, "trader-buy")).Status); // the trader's resting buy
 
         tools.Rig.Time.Advance(TimeSpan.FromMinutes(2)); // the protective remainder is only 2 minutes old
         Assert.Equal(0, await tools.Scanner.CancelStaleProtectiveExitsAsync(CancellationToken.None));
