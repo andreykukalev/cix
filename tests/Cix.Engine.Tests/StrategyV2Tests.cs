@@ -37,6 +37,21 @@ public sealed class StrategyV2Tests
     }
 
     [Fact]
+    public void TrendV3_IsV2WithOnlyThreeWiderFilters()
+    {
+        var v2 = FileStrategySpecStore.Load(SpecPath(2), "trend", 2, TradingMode.Paper);
+        var v3 = FileStrategySpecStore.Load(SpecPath(3), "trend", 3, TradingMode.Paper);
+
+        Assert.Equal(SpecStatus.Paper, v3.Status);
+        Assert.Equal(v2.Instructions, v3.Instructions);
+        Assert.Equal(v2.AllowedTools, v3.AllowedTools);
+        Assert.Equal(
+            MarketScanService.FromSpec(v2, new ScannerParameters()) with { MinQuoteVolume24h = 20_000m, MaxSpreadFraction = 0.004m, MinAtrToCostRatio = 1.5m },
+            MarketScanService.FromSpec(v3, new ScannerParameters()));
+        Assert.Throws<InvalidOperationException>(() => FileStrategySpecStore.Load(SpecPath(3), "trend", 3, TradingMode.Live));
+    }
+
+    [Fact]
     public void TrendV1_HasNoScannerSection_SoConfigurationApplies()
     {
         var spec = FileStrategySpecStore.Load(SpecPath(1), "trend", 1, TradingMode.Paper);

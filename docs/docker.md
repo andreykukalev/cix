@@ -87,6 +87,8 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
 
 The trader then calls Claude only when the scanner's signals change (checked every minute), plus a position review every 4 hours (`TRADER_HEARTBEAT_MINUTES` in `.env`). The engine log shows each scan's ranking and why each symbol did or didn't signal (`Scan: ... ranked [...] excluded [...]`). To go back, set the version to 1 and restart.
 
+Version 3 is v2 with wider scanner filters (more coins pass the volume, spread and cost checks); see `strategies\README.md`. To use it, set `"Version": 3` the same way. Each symbol in `AllowedSymbols` is polled, so the number of coins is limited by the market-data request budget (`MarketData:QuoteInterval`).
+
 ## Notes
 
 - The trader uses **Sonnet** by default. Its work is mostly following the scanner's signals, and Sonnet does that fast and within your plan's limits. To change it, set `TRADER_MODEL=opus` (or `haiku`, or a full model name) in `.env`, then run `docker compose up -d trader`. Each run's log line lists the models used; Claude Code may also call a small model for side tasks.
