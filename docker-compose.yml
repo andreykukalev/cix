@@ -11,8 +11,7 @@ services:
     command: ["--protocol", "https"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:1234:1234"   # Data Explorer, this PC only
-      - "127.0.0.1:8081:8081"   # lets `dotnet run` use the same emulator
+      - "127.0.0.1:1234:1234"   # Data Explorer, this PC only. The emulator itself (8081) isn't published: it has no auth.
     volumes:
       - cosmos-data:/data
 
@@ -24,6 +23,9 @@ services:
     restart: unless-stopped
     depends_on: [cosmos]
     environment:
+      # Not Production: the engine refuses Live outside Production, so this stack can only paper trade.
+      ASPNETCORE_ENVIRONMENT: "Compose"
+      Trading__Mode: "Paper"
       Cosmos__Enabled: "true"
       Cosmos__Emulator: "true"
       Cosmos__Endpoint: "https://cosmos:8081"
@@ -34,12 +36,15 @@ services:
       # Owner-edited files, read-only inside: restart the engine after changing them.
       - ./config/risk-limits.json:/app/risk-limits.json:ro
       - ./strategies:/app/strategies:ro
-    # No ports: the tool server listens on 127.0.0.1 inside this container and only the trader shares that.
+      - ./src/Cix.Engine/appsettings.json:/app/appsettings.json:ro
+    # No ports, ever: the tool server listens on 127.0.0.1 inside this container and only the trader shares that.
 
   trader:
     build:
       context: .
       dockerfile: docker/trader.Dockerfile
+      args:
+        CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-latest}"   # pin in .env, e.g. CLAUDE_CODE_VERSION=2.1.0
     image: cix-trader
     restart: unless-stopped
     depends_on: [engine]
@@ -51,6 +56,7 @@ services:
       - claude_token
     volumes:
       - ./strategies:/cix/strategies:ro
+      - ./src/Cix.Engine/appsettings.json:/cix/src/Cix.Engine/appsettings.json:ro   # same active strategy as the engine
       - ./logs/trader:/cix/logs/trader
 
 secrets:

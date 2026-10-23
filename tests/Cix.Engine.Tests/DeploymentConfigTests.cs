@@ -43,6 +43,7 @@ public sealed class DeploymentConfigTests
     [InlineData("https://localhost:8081", true)]
     [InlineData("https://127.0.0.1:8081", true)]
     [InlineData("https://cosmos:8081", true)]           // the Compose service
+    [InlineData("https://othername:8081", false)]          // a single-label name could resolve via DNS suffixes
     [InlineData("https://cosmos.example.com:8081", false)]
     [InlineData("https://10.0.0.5:8081", false)]
     public void EmulatorEndpoint_MustBeLocal(string endpoint, bool allowed)

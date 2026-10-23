@@ -20,8 +20,8 @@ public sealed class CosmosOptions
     public string Database { get; set; } = "cix";
 
     /// <summary>
-    /// The local emulator: gateway mode and its self-signed certificate accepted, for a loopback endpoint or a single-label
-    /// host such as the Docker Compose service name <c>cosmos</c> (resolvable only inside the Compose network). Never in Live.
+    /// The local emulator: gateway mode and its self-signed certificate accepted, for a loopback endpoint or the Docker Compose
+    /// service <see cref="ComposeHost"/> only. Never in Live.
     /// </summary>
     public bool Emulator { get; set; }
 
@@ -33,18 +33,21 @@ public sealed class CosmosOptions
             throw new InvalidOperationException("Cosmos:Endpoint must be an absolute https URL.");
         if (Emulator && !IsLocalHost(uri))
             throw new InvalidOperationException(
-                "Cosmos:Emulator is only allowed with a loopback endpoint or a Compose service name like https://cosmos:8081 (it accepts a self-signed certificate).");
+                "Cosmos:Emulator is only allowed with a loopback endpoint or the Compose service https://cosmos:8081 (it accepts a self-signed certificate).");
         if (!Emulator && string.IsNullOrWhiteSpace(AccountKey))
             throw new InvalidOperationException("Cosmos:AccountKey is required (set it with dotnet user-secrets).");
         if (string.IsNullOrWhiteSpace(Database) || Database.Length > 64)
             throw new InvalidOperationException("Cosmos:Database must be a short name.");
     }
 
-    /// <summary>Loopback, or a single-label DNS name (no dots, not an IP address): a container on the same Compose network.</summary>
+    /// <summary>The emulator's service name in docker-compose.yml.</summary>
+    public const string ComposeHost = "cosmos";
+
+    /// <summary>Loopback, or exactly the Compose emulator service (any other name could resolve elsewhere via DNS suffixes).</summary>
     public static bool IsLocalHost(Uri uri)
     {
         ArgumentNullException.ThrowIfNull(uri);
-        return uri.IsLoopback || (uri.HostNameType == UriHostNameType.Dns && !uri.Host.Contains('.', StringComparison.Ordinal));
+        return uri.IsLoopback || string.Equals(uri.Host, ComposeHost, StringComparison.OrdinalIgnoreCase);
     }
 }
 

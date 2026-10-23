@@ -42,8 +42,8 @@ Run `docker compose down -v` only if you want to wipe the paper account and jour
 
 - **Journal, paper account, engine state:** in Cosmos. Browse them at http://localhost:1234 (database `cix`, container `journal`).
 - **Trader run output:** `logs\trader\run-*.json`.
-- **Strategy and risk limits:** mounted read-only from `strategies\` and `config\risk-limits.json`. After changing them, run `docker compose restart engine trader`.
-- **Code or appsettings changes:** need a rebuild with `docker compose up -d --build`.
+- **Strategy, settings and risk limits:** mounted read-only from `strategies\`, `src\Cix.Engine\appsettings.json` and `config\risk-limits.json`. After changing them, run `docker compose restart engine trader`.
+- **Code changes:** need a rebuild with `docker compose up -d --build`.
 
 ## Claude token expiry
 
@@ -62,6 +62,9 @@ docker compose restart trader
 ## Security notes
 
 - The tool server is never published. Only the trader, which shares the engine's network namespace, can reach it.
-- Cosmos ports are published to `127.0.0.1` only. The emulator doesn't check keys, so never publish them more widely. Live trading refuses to run against the emulator.
+- Only the Data Explorer (port 1234) is published, and only to `127.0.0.1`. The emulator's own port isn't published, because it doesn't check keys.
+- This stack can only paper trade. The engine runs in a non-Production environment, which is where it refuses Live, and Live also refuses the emulator.
+- Owner tools (pause, resume, journal queries) aren't reachable from Windows. Never publish port 5077 to "fix" that. To pause, run `docker compose stop trader`; to review, use the Data Explorer and the logs.
+- The trader image installs the latest Claude Code unless you pin a version: add `CLAUDE_CODE_VERSION=x.y.z` to `.env` (check yours with `claude --version`) and rebuild.
 - The engine reads only `ToolServer__OperatorKey` and `Cosmos__AccountKey` from `/run/secrets`. Any other file there is ignored, so a stray file can't switch to live trading or change a limit.
 - The trader image contains no keys. It can use only the `cix` tools (file, shell and web tools are denied), and the order-size hook still applies.

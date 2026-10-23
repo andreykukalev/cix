@@ -8,7 +8,7 @@
   - claude_token: a long-lived token from `claude setup-token` (recommended, uses your Claude subscription) or an
     Anthropic API key (sk-ant-api..., billed per use). Typed in hidden; never printed.
   - .env: CLAUDE_TOKEN_EXPIRES (not a secret) so the trader warns 14 days before a setup token expires.
-  secrets\ and .env are git-ignored and readable only by you. Nothing here is sent anywhere.
+  secrets\ is git-ignored and readable only by you; .env is git-ignored and holds no secret. Nothing here is sent anywhere.
 
 .EXAMPLE
   .\tools\setup-secrets.ps1            # first time
@@ -24,6 +24,8 @@ $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..')
 $secrets = Join-Path $repo 'secrets'
 New-Item -ItemType Directory -Force -Path $secrets | Out-Null
+# Restrict the folder first, so files created in it never inherit wider access.
+icacls $secrets /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $repo 'logs\trader') | Out-Null
 
 function Write-Secret([string]$name, [string]$value) {
@@ -58,7 +60,9 @@ if ($Claude -or -not (Test-Path $claudePath)) {
     Write-Host "  Recommended: run 'claude setup-token' in another terminal and paste the token it prints (valid one year)."
     Write-Host "  Alternative: an Anthropic API key from console.anthropic.com (sk-ant-api...)."
     $secure = Read-Host "Paste the token or key (hidden)" -AsSecureString
-    $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
     $plain = $plain.Trim()
     if ($plain -notmatch '^sk-ant-[A-Za-z0-9_-]+$') {
         throw "That doesn't look like a Claude setup token or API key (expected sk-ant-...). Nothing was saved."
