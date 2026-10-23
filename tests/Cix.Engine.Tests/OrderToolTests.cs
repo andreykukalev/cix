@@ -157,7 +157,7 @@ public sealed class OrderToolTests
     {
         var tools = Trader();
 
-        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 60_010m, Why, postOnly: true, CancellationToken.None));
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 60_010m, Why, postOnly: true, cancellationToken: CancellationToken.None));
 
         Assert.Equal(("failed", "post-only-would-cross"), (result.GetProperty("status").GetString(), result.GetProperty("rule").GetString()));
         Assert.Empty(await tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None));
