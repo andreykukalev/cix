@@ -133,6 +133,15 @@ public sealed class ScannerTests
     }
 
     [Fact]
+    public void FlatMarket_WithZeroAtr_IsExcluded_NotADivideByZero()
+    {
+        var result = Scan([Input(Features(atrFraction: 0m))]);
+
+        Assert.Equal("insufficient-history", Assert.Single(result.Excluded).Reason);
+        Assert.Throws<InvalidOperationException>((Defaults with { MinAtrToCostRatio = 0m }).Validate);
+    }
+
+    [Fact]
     public void Ranking_PrefersStrongerRiskAdjustedMomentum_AndHonoursTheSignalLimit()
     {
         var result = Scan(

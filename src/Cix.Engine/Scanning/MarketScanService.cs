@@ -155,7 +155,7 @@ public sealed partial class MarketScanService(
                     new JournalEntry(Guid.NewGuid().ToString("N"), result.AsOf, SignalKind, Actor, null, spec, summary, data),
                     CancellationToken.None).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 LogJournalFailed(logger, key, ex.Message);
                 current.Remove(key); // try again at the next scan

@@ -35,6 +35,9 @@ builder.Services.AddCixExchange(
 // The curated universe (ADR-0006): only symbols also in the risk allowlist are polled and tradable.
 var scanner = builder.Configuration.GetSection(ScannerOptions.SectionName).Get<ScannerOptions>() ?? new ScannerOptions();
 var universe = new MarketUniverse(scanner.EffectiveUniverse, limits.AllowedSymbols);
+var unpolled = MarketDataPoller.NormaliseSymbols(limits.AllowedSymbols).Except(universe.Tradable).ToList();
+if (unpolled.Count > 0)
+    Console.WriteLine($"Allowed but not in Scanner:Universe, so not polled or tradable: {string.Join(", ", unpolled)}");
 
 // Polls quotes and candles for the tradable universe; fails startup if the schedule exceeds the rate limit.
 builder.Services.AddCixMarketData(

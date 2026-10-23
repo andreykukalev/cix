@@ -50,7 +50,7 @@ public sealed record ScannerParameters
 
     public void Validate()
     {
-        if (MinQuoteVolume24h < 0 || MaxSpreadFraction <= 0 || MaxAtrFraction <= 0 || MinAtrToCostRatio < 0)
+        if (MinQuoteVolume24h < 0 || MaxSpreadFraction <= 0 || MaxAtrFraction <= 0 || MinAtrToCostRatio <= 0)
             throw new InvalidOperationException("Scanner filters must be positive.");
         if (TakerFeeRate < 0 || SlippageFraction < 0 || TakerFeeRate >= 0.1m || SlippageFraction >= 0.1m)
             throw new InvalidOperationException("Scanner fee and slippage must be between 0 and 0.1.");
@@ -206,7 +206,7 @@ public static class MarketScanner
             return (null, Out("inactive", "The exchange has suspended trading in this pair."));
         if (f.IsStale)
             return (null, Out("stale", "Market data is stale."));
-        if (f.Price is not > 0 || f.AtrFraction is null || f.SpreadFraction is null || f.Ema20 is null || f.Atr14 is null)
+        if (f.Price is not > 0 || f.AtrFraction is not > 0 || f.Atr14 is not > 0 || f.SpreadFraction is null || f.Ema20 is null)
             return (null, Out("insufficient-history", "Not enough candles yet for EMA, ATR or spread."));
 
         var newest = input.Hourly.Count > 0 ? input.Hourly[^1] : null;
@@ -269,6 +269,8 @@ public static class MarketScanner
 
         // Loss per unit if stopped: the stop distance plus round-trip costs on the entry value.
         var lossPerUnit = (entry - stop) + (m.RoundTripCost * entry);
+        if (lossPerUnit <= 0)
+            return (null, "no stop distance");
         var size = Math.Min(p.RiskPerTradeQuote / lossPerUnit, p.OrderQuote / entry);
         size = FloorToStep(size, pair.BaseStep > 0 ? pair.BaseStep : 0.00000001m);
         var quote = size * entry;
