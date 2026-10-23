@@ -13,7 +13,12 @@ namespace Cix.Engine.Tools;
 /// the tool only validates arguments, assigns the client order ID and records the agent's rationale in the journal.
 /// </summary>
 [McpServerToolType]
-public sealed class OrderTools(ToolCallContext context, ExecutionService execution, RiskLimits limits)
+public sealed class OrderTools(
+    ToolCallContext context,
+    ExecutionService execution,
+    RiskLimits limits,
+    Analysis.MarketViewStore? views = null,
+    TimeProvider? time = null)
 {
     public const decimal MinValue = 0.00000001m;
     public const decimal MaxBaseSize = 1_000_000m;
@@ -51,6 +56,17 @@ public sealed class OrderTools(ToolCallContext context, ExecutionService executi
             throw new McpException("stopLoss must be positive and below limitPrice.");
         if (takeProfit is { } tp && (tp <= limitPrice || tp > MaxPrice))
             throw new McpException("takeProfit must be above limitPrice.");
+
+        // The market view (ADR-0007) holds new buys, not only scanner signals. Sells always pass. Fixed wording: the
+        // analyst's own text never reaches the trader.
+        var now = (time ?? TimeProvider.System).GetUtcNow();
+        if (orderSide == OrderSide.Buy && views?.Current is { } view)
+        {
+            if (view.BlocksEntries(now))
+                throw new McpException($"New buys are paused by the market view (risk-off) until {view.ValidUntil:yyyy-MM-dd HH:mm} UTC. Sells are allowed.");
+            if (view.FlagFor(normalised, now) is { } flag)
+                throw new McpException($"{normalised} is on the market view's avoid list until {flag.Until:yyyy-MM-dd HH:mm} UTC. Sells are allowed.");
+        }
 
         // The engine names the order, so an agent can't collide with or impersonate another order's ID.
         var clientOrderId = Guid.NewGuid().ToString();

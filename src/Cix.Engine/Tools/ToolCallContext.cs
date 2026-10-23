@@ -45,13 +45,17 @@ public sealed partial class ToolCallContext(
     IJournal journal,
     ToolServerOptions options,
     TimeProvider time,
-    ILogger<ToolCallContext> logger)
+    ILogger<ToolCallContext> logger,
+    Analysis.IAnalystSpecStore? analystSpecs = null)
 {
     /// <summary>Names that only the owner or the engine itself appear as in the journal; agents can't claim them.</summary>
     public static readonly IReadOnlySet<string> ReservedActors = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "owner", "engine", "execution", "reconciler", "safety-monitor", "scanner", "invalid",
     };
+
+    /// <summary>The <c>X-Cix-Agent</c> value the analyst's MCP configuration sends.</summary>
+    public const string AnalystAgent = "analyst";
 
     public string Agent
     {
@@ -78,16 +82,23 @@ public sealed partial class ToolCallContext(
     }
 
     /// <summary>
-    /// Throws unless the active spec lets agents call <paramref name="tool"/>; a refusal is journaled first. The operator
-    /// may call any agent tool.
+    /// Throws unless the governing spec lets agents call <paramref name="tool"/>; a refusal is journaled first. Analyst tools
+    /// are governed by the analyst's spec, every other agent tool by the trading spec. The operator may call any agent tool.
     /// </summary>
     public async Task RequireAllowedAsync(string tool, CancellationToken cancellationToken)
     {
         if (IsOperator)
             return;
-        var reason = specs.Active is not { } spec
-            ? "No strategy spec is active, so agent tools are disabled."
-            : spec.Allows(tool) ? null : $"The active strategy spec ({spec.Label}) doesn't allow {tool}.";
+        var analyst = AnalystTools.Names.Contains(tool);
+        var governing = analyst ? analystSpecs?.Active : specs.Active;
+        var isAnalyst = string.Equals(Agent, AnalystAgent, StringComparison.Ordinal);
+        // Each agent keeps to its own tools, whatever its client allows: the analyst (which reads the web) never reaches
+        // trading tools, and no other agent records market views.
+        var reason = analyst != isAnalyst
+            ? analyst ? $"{tool} is for the market analyst only." : $"The market analyst can't use {tool}."
+            : governing is not { } spec
+            ? analyst ? "No analyst spec is configured, so analyst tools are disabled." : "No strategy spec is active, so agent tools are disabled."
+            : spec.Allows(tool) ? null : $"The active {(analyst ? "analyst" : "strategy")} spec ({spec.Label}) doesn't allow {tool}.";
         if (reason is null)
             return;
         await DenyAsync(tool, reason, cancellationToken).ConfigureAwait(false);
@@ -103,9 +114,13 @@ public sealed partial class ToolCallContext(
         throw new McpException(reason);
     }
 
+    /// <summary>The label of the spec that governs <paramref name="tool"/>: the analyst's for analyst tools, else the trading spec's.</summary>
+    private string? LabelFor(string? tool) =>
+        tool is not null && AnalystTools.Names.Contains(tool) ? analystSpecs?.Active?.Label : specs.Active?.Label;
+
     private Task DenyAsync(string tool, string reason, CancellationToken cancellationToken) =>
         journal.AppendAsync(
-            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), "tool-denied", Agent, RunId, specs.Active?.Label, reason,
+            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), "tool-denied", Agent, RunId, LabelFor(tool), reason,
                 new Dictionary<string, string>(StringComparer.Ordinal) { ["tool"] = tool }),
             cancellationToken);
 
@@ -137,7 +152,7 @@ public sealed partial class ToolCallContext(
     /// <summary>Appends an entry of any kind as the current caller, with the active spec.</summary>
     public Task RecordAsync(string kind, string summary, IReadOnlyDictionary<string, string> data, CancellationToken cancellationToken) =>
         journal.AppendAsync(
-            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), kind, IsOperator ? "owner" : Agent, RunId, specs.Active?.Label, summary, data),
+            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), kind, IsOperator ? "owner" : Agent, RunId, LabelFor(data.GetValueOrDefault("tool")), summary, data),
             cancellationToken);
 
     /// <summary>Identity headers are free text from the caller: keep them short and plain.</summary>

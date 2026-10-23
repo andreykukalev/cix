@@ -76,7 +76,8 @@ public sealed partial class MarketScanService(
     IStrategySpecStore specs,
     ScannerOptions options,
     TimeProvider time,
-    ILogger<MarketScanService> logger)
+    ILogger<MarketScanService> logger,
+    Analysis.MarketViewStore? views = null)
 {
     public const string SignalKind = "scan-signal";
     public const string Actor = "scanner";
@@ -220,7 +221,7 @@ public sealed partial class MarketScanService(
         }
 
         var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit)).ToList();
-        return MarketScanner.Scan(inputs, held, Parameters, time.GetUtcNow(), allowEntries: !Halted);
+        return MarketScanner.Scan(inputs, held, Parameters, now, allowEntries: !Halted, view: views?.Current);
     }
 
     /// <summary>One journal entry per signal when it first appears, so reports can compare signals taken and not taken.</summary>

@@ -33,6 +33,7 @@ function Restrict([string]$path, [string]$rights) {
 # Restrict the folder first, so files created in it never inherit wider access.
 Restrict $secrets '(OI)(CI)F'
 New-Item -ItemType Directory -Force -Path (Join-Path $repo 'logs\trader') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $repo 'logs\analyst') | Out-Null
 
 function Write-Secret([string]$name, [string]$value) {
     $path = Join-Path $secrets $name

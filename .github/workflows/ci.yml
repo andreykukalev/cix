@@ -75,12 +75,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Lint the trader loop
-        run: shellcheck tools/trader/run-trader.sh
+      - name: Lint the agent loops
+        run: shellcheck -x tools/trader/run-trader.sh tools/trader/run-analyst.sh tools/trader/agent-common.sh
 
       - name: Placeholder secrets (built at run time, never committed)
         run: |
-          mkdir -p secrets logs/trader
+          mkdir -p secrets logs/trader logs/analyst
           head -c 32 /dev/urandom | base64 > secrets/operator_key
           printf 'not-a-real-token' > secrets/claude_token
 

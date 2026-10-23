@@ -280,4 +280,45 @@ public sealed class ScannerTests
         Assert.Throws<InvalidOperationException>(bad.Validate);
         Defaults.Validate();
     }
+
+    private static MarketView View(MarketRegime regime, int validHours = 6, params string[] avoid) =>
+        new(regime, Now.AddMinutes(-5), Now.AddHours(validHours), avoid.Select(a => new SymbolFlag(a, Now.AddHours(validHours))).ToList());
+
+    [Fact]
+    public void RiskOff_BlocksEntries_ButNeverExits()
+    {
+        var held = new HeldPosition("ETH-EUR", 0.05m, 98m, 110m);
+
+        var result = MarketScanner.Scan(
+            [Input(), Input(Features("ETH-EUR", bid: 97m))], [held], Defaults, Now, view: View(MarketRegime.RiskOff));
+
+        Assert.Empty(result.Entries);
+        Assert.Equal("risk-off (market view)", result.Ranked.Single(r => r.Symbol == "SOL-EUR").NoEntryReason);
+        Assert.Equal("stop", Assert.Single(result.Exits).Reason);
+    }
+
+    [Theory]
+    [InlineData(MarketRegime.Neutral, 6)]
+    [InlineData(MarketRegime.RiskOn, 6)]
+    [InlineData(MarketRegime.RiskOff, -1)] // expired
+    public void NeutralRiskOnOrExpiredViews_NeverBlockEntries(MarketRegime regime, int validHours)
+    {
+        var result = MarketScanner.Scan([Input()], [], Defaults, Now, view: View(regime, validHours));
+
+        Assert.Single(result.Entries);
+    }
+
+    [Fact]
+    public void FlaggedSymbol_GetsNoEntry_ButStillExits_AndTheFlagExpiresWithTheView()
+    {
+        var held = new HeldPosition("SOL-EUR", 0.05m, 98m, 110m);
+
+        var flagged = MarketScanner.Scan([Input(Features(bid: 97m))], [held], Defaults, Now, view: View(MarketRegime.Neutral, 6, "SOL-EUR"));
+        var expired = MarketScanner.Scan([Input()], [], Defaults, Now, view: View(MarketRegime.Neutral, -1, "SOL-EUR"));
+
+        Assert.Equal("news", Assert.Single(flagged.Excluded).Reason);
+        Assert.Empty(flagged.Entries);
+        Assert.Equal("stop", Assert.Single(flagged.Exits).Reason);
+        Assert.Single(expired.Entries);
+    }
 }

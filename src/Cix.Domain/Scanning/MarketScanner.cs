@@ -129,7 +129,8 @@ public static class MarketScanner
         IReadOnlyList<HeldPosition> held,
         ScannerParameters parameters,
         DateTimeOffset now,
-        bool allowEntries = true)
+        bool allowEntries = true,
+        MarketView? view = null)
     {
         ArgumentNullException.ThrowIfNull(inputs);
         ArgumentNullException.ThrowIfNull(held);
@@ -141,6 +142,13 @@ public static class MarketScanner
 
         foreach (var input in inputs.OrderBy(i => i.Symbol, StringComparer.Ordinal))
         {
+            // A symbol the analyst flagged gets no entry; its exits still come from the held positions below.
+            if (input.Allowed && view?.FlagFor(input.Symbol, now) is { } flag)
+            {
+                excluded.Add(new ScanExclusion(input.Symbol, "news", Inv($"Flagged by the market analyst until {flag.Until:yyyy-MM-dd HH:mm} UTC.")));
+                continue;
+            }
+
             var (metrics, exclusion) = Evaluate(input, parameters);
             if (exclusion is not null)
                 excluded.Add(exclusion);
@@ -157,6 +165,8 @@ public static class MarketScanner
             string? noEntry;
             if (!allowEntries)
                 noEntry = "trading halted";
+            else if (view?.BlocksEntries(now) == true)
+                noEntry = "risk-off (market view)";
             else if (heldBySymbol.ContainsKey(input.Symbol))
                 noEntry = "already held";
             else if (input.HasOpenOrder)

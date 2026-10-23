@@ -38,7 +38,7 @@ $instructions = ($instructions -replace '"', "'") -replace "`r?`n", ' '
 $mcpConfig = Join-Path $repo 'tools\trader\mcp.json'
 
 # Everything except the cix agent tools is denied, so the trader can't read files, run commands or browse.
-$denied = 'Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,WebSearch,Task,TodoWrite'
+$denied = 'Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,WebSearch,Task,TodoWrite,mcp__cix__get_analyst_brief,mcp__cix__record_market_view'
 
 
 $tools = @(
