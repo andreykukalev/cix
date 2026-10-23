@@ -67,12 +67,13 @@ public static class ToolServerRegistration
         return services;
     }
 
+    /// <summary>Read-only summary of the latest scan, polled by the trader loop.</summary>
+    public const string SignalsEndpoint = "/signals";
+
     /// <summary>
     /// Maps the MCP endpoint behind a guard: requests with an <c>Origin</c> header (any browser page) get 403, and posts must
     /// be JSON, so a web page can't drive the tools through the user's browser even though the server is on localhost.
     /// </summary>
-    public const string SignalsEndpoint = "/signals";
-
     public static WebApplication UseCixToolServer(this WebApplication app)
     {
         ArgumentNullException.ThrowIfNull(app);
@@ -112,6 +113,7 @@ public static class ToolServerRegistration
                 halted = scanner.Halted,
                 entries = latest?.Entries.Count ?? 0,
                 exits = latest?.Exits.Count ?? 0,
+                staleOrders = scanner.StaleOrderSymbols.Count,
                 key = scanner.SignalKey,
             });
         });

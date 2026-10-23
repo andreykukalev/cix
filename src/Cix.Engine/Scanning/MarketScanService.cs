@@ -116,13 +116,23 @@ public sealed partial class MarketScanService(
     /// A short, stable description of the latest scan's signals (for example <c>buy:SOL-EUR|sell:BTC-EUR:stop</c>), empty when
     /// there are none. The trader loop starts an agent run when it changes to something non-empty.
     /// </summary>
-    public string SignalKey => Latest is { } scan ? KeyOf(scan) : string.Empty;
+    public string SignalKey => Latest is { } scan ? KeyOf(scan, StaleOrderSymbols) : string.Empty;
 
-    public static string KeyOf(ScanResult scan)
+    /// <summary>Orders resting longer than this need a run to cancel them (the specs' 50-minute tidy rule).</summary>
+    public static readonly TimeSpan StaleOrderAge = TimeSpan.FromMinutes(50);
+
+    /// <summary>
+    /// Symbols with an open order older than <see cref="StaleOrderAge"/> at the latest scan. They count as signals, so an exit
+    /// hidden behind an unfilled order, or a forgotten buy, gets a run within the hour rather than at the next heartbeat.
+    /// </summary>
+    public IReadOnlySet<string> StaleOrderSymbols { get; private set; } = new HashSet<string>(StringComparer.Ordinal);
+
+    public static string KeyOf(ScanResult scan, IEnumerable<string>? staleOrderSymbols = null)
     {
         ArgumentNullException.ThrowIfNull(scan);
         return string.Join('|', scan.Exits.Select(x => $"sell:{x.Symbol}:{x.Reason}")
             .Concat(scan.Entries.Select(e => $"buy:{e.Symbol}"))
+            .Concat((staleOrderSymbols ?? []).Select(s => $"stale-order:{s}"))
             .Order(StringComparer.Ordinal));
     }
 
@@ -192,6 +202,9 @@ public sealed partial class MarketScanService(
             ?? throw new InvalidOperationException("The portfolio can't be valued right now.");
         var open = await execution.GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
         var withOpenOrder = open.Where(o => o.IsOpen).Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol)).ToHashSet(StringComparer.Ordinal);
+        var now = time.GetUtcNow();
+        StaleOrderSymbols = open.Where(o => o.IsOpen && now - o.CreatedAt > StaleOrderAge)
+            .Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol)).ToHashSet(StringComparer.Ordinal);
 
         var inputs = new List<ScanInput>();
         foreach (var symbol in universe.Candidates)

@@ -11,14 +11,20 @@
 # (no LLM involved) and starts a run only when the scanner's signals change to something new, plus a slow heartbeat
 # that reviews positions. Otherwise it runs every TRADER_INTERVAL_MINUTES.
 #
+# Signal-triggered runs are rate-limited: at least TRADER_MIN_GAP_MINUTES apart, and at most TRADER_MAX_RUNS_PER_DAY runs
+# of any kind per UTC day (then the loop waits for the next day and says so).
+#
 # Settings (environment): TRADER_INTERVAL_MINUTES (60), TRADER_HEARTBEAT_MINUTES (240), TRADER_POLL_SECONDS (60),
-# TRADER_MAX_TURNS (30), TRADER_TIMEOUT_MINUTES (10), TRADER_RUN_ONCE (0), CLAUDE_TOKEN_FILE, CLAUDE_TOKEN_EXPIRES.
+# TRADER_MIN_GAP_MINUTES (15), TRADER_MAX_RUNS_PER_DAY (30), TRADER_MAX_TURNS (30), TRADER_TIMEOUT_MINUTES (10),
+# TRADER_RUN_ONCE (0), CLAUDE_TOKEN_FILE, CLAUDE_TOKEN_EXPIRES.
 set -uo pipefail
 
 dir="${CLAUDE_PROJECT_DIR:-/cix}"
 interval="${TRADER_INTERVAL_MINUTES:-60}"
 heartbeat="${TRADER_HEARTBEAT_MINUTES:-240}"
 poll="${TRADER_POLL_SECONDS:-60}"
+min_gap="${TRADER_MIN_GAP_MINUTES:-15}"
+max_runs="${TRADER_MAX_RUNS_PER_DAY:-30}"
 max_turns="${TRADER_MAX_TURNS:-30}"
 timeout_minutes="${TRADER_TIMEOUT_MINUTES:-10}"
 token_file="${CLAUDE_TOKEN_FILE:-/run/secrets/claude_token}"
@@ -28,7 +34,7 @@ mkdir -p "$logs"
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M)" "$*"; }
 
-for n in "$interval" "$heartbeat" "$poll" "$max_turns" "$timeout_minutes"; do
+for n in "$interval" "$heartbeat" "$poll" "$min_gap" "$max_runs" "$max_turns" "$timeout_minutes"; do
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { say "TRADER_* settings must be positive whole numbers."; exit 1; }
 done
 
@@ -142,24 +148,50 @@ fi
 last_key=""
 next_run=$(date +%s)        # interval mode: the next scheduled run
 next_heartbeat=$(date +%s)  # signal mode: the next position review even without signals
+last_run=0
+run_day=""
+runs_today=0
+capped_day=""
+
+# Every run goes through here: the daily cap applies to signal, heartbeat and scheduled runs alike.
+guarded_run() {
+  local today
+  today="$(date -u +%F)"
+  if [[ "$today" != "$run_day" ]]; then run_day="$today"; runs_today=0; fi
+  if (( runs_today >= max_runs )); then
+    if [[ "$capped_day" != "$today" ]]; then
+      say "Daily cap of $max_runs runs reached; no more runs until 00:00 UTC (TRADER_MAX_RUNS_PER_DAY)."
+      capped_day="$today"
+    fi
+    return 1
+  fi
+  runs_today=$(( runs_today + 1 ))
+  last_run=$(date +%s)
+  run_once "$1"
+  return 0
+}
+
 while true; do
   wait_for_engine
   now=$(date +%s)
   read -r driven key <<<"$(signals)"
 
   if [[ "${driven:-}" == "true" ]]; then
+    next_run=$(( now + interval * 60 ))   # if /signals later fails, interval mode doesn't fire at once
     if [[ -n "${key:-}" && "$key" != "$last_key" ]]; then
-      run_once "signals $key"
-      last_key="$key"
-      next_heartbeat=$(( $(date +%s) + heartbeat * 60 ))
+      # New signals. Within the minimum gap, wait (they still count as new at the next poll after the gap).
+      if (( now - last_run >= min_gap * 60 )) && guarded_run "signals $key"; then
+        last_key="$key"
+        next_heartbeat=$(( $(date +%s) + heartbeat * 60 ))
+      fi
     elif (( now >= next_heartbeat )); then
-      run_once "heartbeat"
+      guarded_run "heartbeat" || true
       next_heartbeat=$(( $(date +%s) + heartbeat * 60 ))
     fi
-    [[ -z "${key:-}" ]] && last_key=""   # signals cleared: the same signal reappearing later is new again
+    [[ -z "${key:-}" ]] && last_key=""   # signals cleared: the same signal reappearing later is new again (gap still applies)
   elif (( now >= next_run )); then
     # Interval mode (a strategy without scan_market, or /signals unavailable). Fixed cadence, no catch-up bursts.
-    run_once "scheduled"
+    guarded_run "scheduled" || true
     next_run=$(( next_run + interval * 60 ))
     (( next_run <= $(date +%s) )) && next_run=$(( $(date +%s) + interval * 60 ))
   fi

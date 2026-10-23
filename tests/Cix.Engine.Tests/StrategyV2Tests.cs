@@ -75,6 +75,25 @@ public sealed class StrategyV2Tests
 
         Assert.Equal("buy:ETH-EUR|buy:SOL-EUR|sell:BTC-EUR:stop", MarketScanService.KeyOf(scan));
         Assert.Equal(string.Empty, MarketScanService.KeyOf(scan with { Entries = [], Exits = [] }));
+        Assert.Equal("stale-order:SOL-EUR", MarketScanService.KeyOf(scan with { Entries = [], Exits = [] }, ["SOL-EUR"]));
+    }
+
+    [Fact]
+    public async Task AnOrderRestingOverFiftyMinutes_CountsAsASignal_SoTheTraderGetsARun()
+    {
+        var tools = new ToolRig(ToolRig.Observer with { AllowedTools = ["scan_market"] });
+        var placed = await tools.Rig.Buy(0.0001m, 59_500m); // below the ask: rests unfilled
+        Assert.NotNull(placed);
+
+        await tools.Scanner.ScanAsync(CancellationToken.None);
+        Assert.Empty(tools.Scanner.StaleOrderSymbols); // fresh order: not yet a reason to run
+
+        tools.Rig.Time.Advance(TimeSpan.FromMinutes(51));
+        tools.Rig.Quote(60_000m, 60_010m);
+        await tools.Scanner.ScanAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { Rig.Btc }, tools.Scanner.StaleOrderSymbols.ToArray());
+        Assert.Equal("stale-order:BTC-EUR", tools.Scanner.SignalKey);
     }
 
     [Fact]
