@@ -1,0 +1,28 @@
+{
+  "name": "trend",
+  "version": 1,
+  "status": "paper",
+  "createdBy": "owner (Andrei Kukalev), drafted with Claude",
+  "instructions": "You trade a small paper allocation on BTC-EUR and ETH-EUR, on hourly data, following these rules exactly. All numbers come from the parameters.\n\n1. Read get_strategy_spec, get_portfolio, get_position_plans, get_open_orders and get_market_view. If trading is halted, a symbol's data isStale, or a tool fails, do nothing for that symbol and say why.\n2. Manage what you hold first. For each position in get_position_plans: sell the whole position with a limit order at the current bid if (a) the bid is at or below stopLoss, (b) the bid is at or above takeProfit, or (c) the trend has turned down (trend = down). Otherwise hold. A position with no plan: sell it if the trend is down, otherwise hold and say so.\n3. Cancel any of your open buy orders older than one run that have not filled.\n4. Look for at most maxNewPositionsPerRun new entry across all symbols, only for a symbol you do not already hold or have an open order on. Enter only if ALL hold: trend = up (EMA20 above EMA50); price is no more than entryMaxAboveEma20Atr x ATR above EMA20 (a pullback, not a chase); return1h >= 0 (the pullback is turning); spreadFraction <= maxSpreadFraction; dailyLossStop not reached (pnlToday > -dailyLossStopQuote). Being in an uptrend alone is not a reason to buy.\n5. Size: orderQuote of quote currency, i.e. baseSize = orderQuote / ask, rounded down. Buy with a limit at the current ask. Set stopLoss = entry - stopAtr x ATR (R = stopAtr x ATR in price) and takeProfit = entry + rewardRisk x R. Always pass stopLoss and takeProfit with a buy.\n6. Give every order a rationale with the numbers that triggered it (trend, distance from EMA20 in ATR, return1h, stop, target).\n7. If the risk gate rejects or resizes an order, accept its decision: do not retry with other numbers in the same run.\n8. End with a short report: what you did per symbol and why, or why you did nothing.\n\nStops are checked only when you run (hourly), so a fast move can exit below the stop. Keep sizes small; that is the point of this version.",
+  "parameters": {
+    "symbols": ["BTC-EUR", "ETH-EUR"],
+    "timeframe": "1h",
+    "orderQuote": 5,
+    "maxNewPositionsPerRun": 1,
+    "entryMaxAboveEma20Atr": 0.5,
+    "stopAtr": 1.5,
+    "rewardRisk": 2,
+    "maxSpreadFraction": 0.002,
+    "dailyLossStopQuote": 5
+  },
+  "allowedTools": [
+    "get_strategy_spec",
+    "get_portfolio",
+    "get_position_plans",
+    "get_open_orders",
+    "get_market_view",
+    "get_features",
+    "place_order",
+    "cancel_order"
+  ]
+}

@@ -10,7 +10,7 @@ public sealed class OrderToolTests
     private const string Why = "Trend up, spread tight; small starter position.";
 
     private static ToolRig Trader() =>
-        new(ToolRig.Observer with { Name = "trader", AllowedTools = ["get_open_orders", "place_order", "cancel_order"] });
+        new(ToolRig.Observer with { Name = "trader", AllowedTools = ["get_open_orders", "get_position_plans", "place_order", "cancel_order"] });
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
 
@@ -193,6 +193,53 @@ public sealed class OrderToolTests
         var clientOrderId = placed.GetProperty("clientOrderId").GetString();
         Assert.Equal(clientOrderId, Assert.Single(tools.Journal.Entries, e => e.Kind == "order" && e.Data!["tool"] == "cancel_order").Data!["clientOrderId"]);
         Assert.Equal(clientOrderId, Assert.Single(tools.Journal.Entries, e => e.Kind == "order-closed").Data!["clientOrderId"]);
+    }
+
+    [Fact]
+    public async Task StopAndTarget_AreRecorded_AndReturnedForTheHeldPosition()
+    {
+        var tools = Trader();
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 60_010m, Why, stopLoss: 59_000m, takeProfit: 62_000m, cancellationToken: CancellationToken.None); // fills at once
+        await tools.Rig.Execution.ReconcileAsync(CancellationToken.None); // journals the fill
+
+        var plan = Parse(await tools.Agent.GetPositionPlans(CancellationToken.None))[0];
+
+        Assert.Equal("BTC-EUR", plan.GetProperty("symbol").GetString());
+        Assert.Equal(60_010m, plan.GetProperty("entryPrice").GetDecimal());
+        Assert.Equal((59_000m, 62_000m), (plan.GetProperty("stopLoss").GetDecimal(), plan.GetProperty("takeProfit").GetDecimal()));
+    }
+
+    [Fact]
+    public async Task NoPositions_NoPlans()
+    {
+        var tools = Trader();
+
+        Assert.Equal("[]", await tools.Agent.GetPositionPlans(CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("buy", "60000", null)]      // stop at the limit price
+    [InlineData("buy", null, "59000")]      // target below the limit price
+    [InlineData("sell", "59000", null)]     // stops are for buys
+    public async Task InconsistentStopOrTarget_IsRefused(string side, string? stop, string? target)
+    {
+        var tools = Trader();
+
+        await Assert.ThrowsAsync<McpException>(() => tools.Orders.PlaceOrder(
+            "BTC-EUR", side, 0.0001m, 60_000m, Why,
+            stopLoss: stop is null ? null : Dec(stop), takeProfit: target is null ? null : Dec(target), cancellationToken: CancellationToken.None));
+    }
+
+    [Fact]
+    public void TrendV1_LoadsForPaper_AndAllowsOnlyAgentTools()
+    {
+        var spec = Strategy.FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", "trend.v1.json"), "trend", 1, TradingMode.Paper);
+
+        Assert.Equal(5, spec.Parameters["orderQuote"].GetDecimal());
+        Assert.Contains("place_order", spec.AllowedTools);
+        Assert.DoesNotContain(spec.AllowedTools, t => t is "pause_trading" or "resume_trading" or "query_journal");
+        Assert.Throws<InvalidOperationException>(() => Strategy.FileStrategySpecStore.Load(
+            Path.Combine(AppContext.BaseDirectory, "strategies", "trend.v1.json"), "trend", 1, TradingMode.Live));
     }
 
     [Fact]

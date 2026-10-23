@@ -41,7 +41,7 @@ internal sealed class ToolRig
         Context = new ToolCallContext(Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time, NullLogger<ToolCallContext>.Instance);
         Orders = new OrderTools(Context, Rig.Execution, Rig.Limits);
         Features = new FeatureService(new InMemoryCandleStore(), Rig.State, new MarketDataOptions(), Rig.Time);
-        Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits);
+        Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits, Rig.Journal);
         Operator = new OperatorTools(Context, Journal, Rig.Execution);
     }
 
@@ -258,7 +258,7 @@ public sealed class McpEndToEndTests
             new[]
             {
                 "cancel_order", "get_daily_summary", "get_features", "get_market_view", "get_open_orders", "get_portfolio",
-                "get_strategy_spec", "pause_trading", "place_order", "query_journal", "resume_trading",
+                "get_position_plans", "get_strategy_spec", "pause_trading", "place_order", "query_journal", "resume_trading",
             },
             listed.Select(t => t.Name).Order(StringComparer.Ordinal));
         Assert.Contains("observer@v1#abc123def456", Text(spec), StringComparison.Ordinal);

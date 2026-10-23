@@ -30,6 +30,8 @@ public sealed class OrderTools(ToolCallContext context, ExecutionService executi
         [Description("Limit price in the quote currency.")] decimal limitPrice,
         [Description("Why this order, in 10 to 1000 characters.")] string rationale,
         [Description("true to only add liquidity: if it would fill at once it is rejected instead.")] bool postOnly = false,
+        [Description("Buys only: the stop-loss price you plan to exit at, below the limit price. Recorded and returned by get_position_plans; the engine doesn't place it.")] decimal? stopLoss = null,
+        [Description("Buys only: the take-profit price, above the limit price. Recorded like stopLoss.")] decimal? takeProfit = null,
         CancellationToken cancellationToken = default)
     {
         await context.RequireAllowedAsync("place_order", cancellationToken).ConfigureAwait(false);
@@ -43,6 +45,12 @@ public sealed class OrderTools(ToolCallContext context, ExecutionService executi
         if (baseSize is < MinValue or > MaxBaseSize || limitPrice is < MinValue or > MaxPrice)
             throw new McpException($"baseSize must be between {MinValue} and {MaxBaseSize}, and limitPrice between {MinValue} and {MaxPrice}.");
         var why = Rationale(rationale);
+        if (orderSide == OrderSide.Sell && (stopLoss is not null || takeProfit is not null))
+            throw new McpException("stopLoss and takeProfit apply to buys only.");
+        if (stopLoss is { } sl && (sl <= 0 || sl >= limitPrice))
+            throw new McpException("stopLoss must be positive and below limitPrice.");
+        if (takeProfit is { } tp && (tp <= limitPrice || tp > MaxPrice))
+            throw new McpException("takeProfit must be above limitPrice.");
 
         // The engine names the order, so an agent can't collide with or impersonate another order's ID.
         var clientOrderId = Guid.NewGuid().ToString();
@@ -64,6 +72,10 @@ public sealed class OrderTools(ToolCallContext context, ExecutionService executi
             ["reason"] = result.Reason,
             ["rationale"] = why,
         };
+        if (stopLoss is { } stop)
+            data["stopLoss"] = stop.ToString(inv);
+        if (takeProfit is { } target)
+            data["takeProfit"] = target.ToString(inv);
         if (result.Order is { } approved)
         {
             data["approvedSize"] = approved.BaseSize.ToString(inv);
