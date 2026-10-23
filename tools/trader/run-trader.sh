@@ -95,18 +95,19 @@ run_once() {
       --mcp-config "$dir/tools/trader/mcp.json" --strict-mcp-config \
       --allowedTools "$tools" --disallowedTools "$denied" \
       --max-turns "$max_turns" \
-      --output-format json) > "$log" 2>&1
+      --output-format json) > "$log" 2> "$logs/$run_id.err"
   local code=$?
+  [[ -s "$logs/$run_id.err" ]] || rm -f "$logs/$run_id.err"
 
   if (( code == 124 )); then
     say "$run_id stopped after $timeout_minutes minutes."
     return 0
   fi
   if ! jq -e . "$log" >/dev/null 2>&1; then
-    if grep -qiE 'invalid api key|authentication|unauthori[sz]ed|401|oauth|expired' "$log"; then
+    if cat "$log" "$logs/$run_id.err" 2>/dev/null | grep -qiE 'invalid api key|authentication_error|unauthori[sz]ed|oauth token (has )?expired|401'; then
       say "$run_id: Claude rejected the credentials ($auth). Renew with 'claude setup-token' (or a new API key), run tools/setup-secrets.ps1 -Claude, and restart the trader."
     else
-      say "$run_id failed (exit $code); see logs/trader/$run_id.json."
+      say "$run_id failed (exit $code); see logs/trader/$run_id.json and .err."
     fi
     return 0
   fi
@@ -132,5 +133,9 @@ while true; do
   run_once
   next=$(( next + interval * 60 ))
   wait=$(( next - $(date +%s) ))
-  (( wait > 0 )) && sleep "$wait"
+  if (( wait > 0 )); then
+    sleep "$wait"
+  else
+    next=$(date +%s) # a run overran the interval: start again from now rather than catching up with back-to-back runs
+  fi
 done

@@ -24,15 +24,21 @@ $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..')
 $secrets = Join-Path $repo 'secrets'
 New-Item -ItemType Directory -Force -Path $secrets | Out-Null
+# Grant by SID: works for local, Microsoft, Entra and domain accounts alike.
+$me = "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+function Restrict([string]$path, [string]$rights) {
+    icacls $path /inheritance:r /grant:r "${me}:$rights" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to $path (icacls exit $LASTEXITCODE)." }
+}
 # Restrict the folder first, so files created in it never inherit wider access.
-icacls $secrets /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+Restrict $secrets '(OI)(CI)F'
 New-Item -ItemType Directory -Force -Path (Join-Path $repo 'logs\trader') | Out-Null
 
 function Write-Secret([string]$name, [string]$value) {
     $path = Join-Path $secrets $name
     [IO.File]::WriteAllText($path, $value, (New-Object Text.UTF8Encoding($false)))
     # Only the current user may read it (Docker Desktop reads it as you).
-    icacls $path /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+    Restrict $path '(R,W)'
 }
 
 function Set-EnvValue([string]$key, [string]$value) {
@@ -68,21 +74,22 @@ if ($Claude -or -not (Test-Path $claudePath)) {
         throw "That doesn't look like a Claude setup token or API key (expected sk-ant-...). Nothing was saved."
     }
     $isApiKey = $plain -like 'sk-ant-api*'
-    Write-Secret 'claude_token' $plain
-    $plain = $null
-
-    if ($isApiKey) {
-        Set-EnvValue 'CLAUDE_TOKEN_EXPIRES' ''
-        Write-Host "API key saved to secrets\claude_token."
-    }
-    else {
-        $default = (Get-Date).AddDays(365).ToString('yyyy-MM-dd')
+    $expires = ''
+    if (-not $isApiKey) {
+        $default = (Get-Date).AddDays(365).ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
         $answer = Read-Host "Token expiry date [$default]"
         $expires = if ([string]::IsNullOrWhiteSpace($answer)) { $default } else { $answer.Trim() }
-        [void][DateTime]::ParseExact($expires, 'yyyy-MM-dd', $null)
-        Set-EnvValue 'CLAUDE_TOKEN_EXPIRES' $expires
-        Write-Host "Setup token saved to secrets\claude_token; expiry $expires recorded in .env."
+        $parsed = [DateTime]::MinValue
+        if (-not [DateTime]::TryParseExact($expires, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+            throw "Expiry must be a date like $default. Nothing was saved."
+        }
     }
+
+    Write-Secret 'claude_token' $plain
+    $plain = $null
+    Set-EnvValue 'CLAUDE_TOKEN_EXPIRES' $expires
+    if ($isApiKey) { Write-Host "API key saved to secrets\claude_token." }
+    else { Write-Host "Setup token saved to secrets\claude_token; expiry $expires recorded in .env." }
 }
 
 Write-Host ""

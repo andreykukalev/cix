@@ -91,7 +91,8 @@ jobs:
         run: |
           docker compose up -d cosmos engine
           for i in $(seq 1 60); do
-            if docker compose logs engine 2>&1 | grep -q "Application started"; then echo "engine running"; exit 0; fi
+            out="$(docker compose logs engine 2>&1 || true)"
+            if grep -q "Application started" <<<"$out"; then echo "engine running"; exit 0; fi
             sleep 5
           done
           docker compose ps

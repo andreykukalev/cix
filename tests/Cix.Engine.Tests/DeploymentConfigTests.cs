@@ -12,7 +12,7 @@ public sealed class DeploymentConfigTests
         try
         {
             var key = new string('k', 32); // built at runtime: not a secret
-            File.WriteAllText(Path.Combine(dir, "ToolServer__OperatorKey"), key + "\n");
+            File.WriteAllText(Path.Combine(dir, "ToolServer__OperatorKey"), key + Environment.NewLine);
             File.WriteAllText(Path.Combine(dir, "Trading__Mode"), "Live");
             File.WriteAllText(Path.Combine(dir, "Risk__MaxOrderQuote"), "100000");
 

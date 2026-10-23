@@ -82,7 +82,7 @@ public sealed class CosmosDb : IDisposable
             clientOptions.LimitToEndpoint = true;
             clientOptions.HttpClientFactory = () => new HttpClient(new HttpClientHandler
             {
-                // The emulator's certificate is self-signed; Validate() allows this for loopback endpoints only.
+                // The emulator's certificate is self-signed; Validate() allows this for loopback or the Compose emulator only.
                 ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
             });
         }

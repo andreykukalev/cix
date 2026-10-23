@@ -16,14 +16,16 @@ cosmos  (emulator, data in a Docker volume)  ◄── engine (paper exchange, r
 2. Get Claude credentials for the trader. Choose one:
    - **Setup token (recommended).** Install Claude Code on Windows, run `claude setup-token`, and sign in. It prints a token that lasts a year and uses your Claude subscription.
    - **API key.** Create one at console.anthropic.com. It is billed per use.
-3. In the repo folder, run:
+3. If you followed the older guide and started an emulator with `docker run --name cosmos ...`, remove it first: `docker rm -f cosmos`. Compose uses its own emulator and volume, so the paper account starts fresh.
+4. In the repo folder, run:
    ```powershell
    .\tools\setup-secrets.ps1
    ```
+   If PowerShell blocks scripts, use `powershell -ExecutionPolicy Bypass -File .\tools\setup-secrets.ps1`.
    - It creates `secrets\operator_key` (random) and `secrets\claude_token` (you paste the token; nothing is shown).
    - It writes the token's expiry date to `.env`.
-   - All three files are git-ignored and readable only by you.
-4. Choose what can be traded by editing `config\risk-limits.json` → `AllowedSymbols`. Only you edit this file (see paper-trading.md).
+   - All three files are git-ignored. The two secret files are readable only by you; `.env` holds no secret.
+5. Choose what can be traded by editing `config\risk-limits.json` → `AllowedSymbols`. Only you edit this file (see paper-trading.md).
 
 ## Start and stop
 
@@ -44,6 +46,11 @@ Run `docker compose down -v` only if you want to wipe the paper account and jour
 - **Trader run output:** `logs\trader\run-*.json`.
 - **Strategy, settings and risk limits:** mounted read-only from `strategies\`, `src\Cix.Engine\appsettings.json` and `config\risk-limits.json`. After changing them, run `docker compose restart engine trader`.
 - **Code changes:** need a rebuild with `docker compose up -d --build`.
+
+## Notes
+
+- When the engine restarts, the trader restarts too and runs a cycle straight away; after that it runs on its hourly cadence.
+- On a Linux host, create `logs/trader` before the first start (the setup script does this on Windows), or Docker creates it owned by root and the trader can't write logs.
 
 ## Claude token expiry
 

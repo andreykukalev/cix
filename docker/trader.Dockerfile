@@ -5,7 +5,7 @@ FROM node:22-bookworm-slim
 # Pin with --build-arg CLAUDE_CODE_VERSION=x.y.z for reproducible images.
 ARG CLAUDE_CODE_VERSION=latest
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates curl jq \
+    && apt-get install -y --no-install-recommends ca-certificates jq \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
