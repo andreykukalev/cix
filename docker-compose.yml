@@ -51,6 +51,7 @@ services:
     depends_on: [engine]
     network_mode: "service:engine"   # reaches the tool server at 127.0.0.1:5077; nothing else can
     environment:
+      TRADER_MODEL: "${TRADER_MODEL:-sonnet}"                       # opus, sonnet, haiku or a full model name
       TRADER_INTERVAL_MINUTES: "${TRADER_INTERVAL_MINUTES:-60}"     # strategies without scan_market
       TRADER_HEARTBEAT_MINUTES: "${TRADER_HEARTBEAT_MINUTES:-240}"  # signal-driven strategies: review even without signals
       TRADER_MIN_GAP_MINUTES: "${TRADER_MIN_GAP_MINUTES:-15}"

@@ -32,7 +32,7 @@ dotnet run --project src/Cix.Engine
 
 Terminal 2, the trader:
 ```powershell
-.\tools\trader\run-trader.ps1 -Once                 # one run now
+.\tools\trader\run-trader.ps1 -Once                 # one run now (Sonnet by default; -Model opus to change)
 .\tools\trader\run-trader.ps1 -IntervalMinutes 60   # every hour until you stop it (Ctrl+C)
 ```
 Each run prints the agent's report and its cost, and saves the full output in `logs\trader\`.

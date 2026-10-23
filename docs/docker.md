@@ -56,6 +56,8 @@ The trader then calls Claude only when the scanner's signals change (checked eve
 
 ## Notes
 
+- The trader uses **Sonnet** by default. Its work is mostly following the scanner's signals, and Sonnet does that fast and within your plan's limits. To change it, set `TRADER_MODEL=opus` (or `haiku`, or a full model name) in `.env`, then run `docker compose up -d trader`. Each run's log line shows the model actually used.
+
 - When the engine restarts, the trader restarts too. With v1 it runs a cycle straight away and then hourly. With v2 it waits for the engine's first scan, runs a review, and then runs on new signals.
 - v2 runs are limited: at least 15 minutes apart for signals and at most 30 a day (`TRADER_MIN_GAP_MINUTES`, `TRADER_MAX_RUNS_PER_DAY` in `.env`). Signals are checked every `TRADER_POLL_SECONDS` (60).
 - On a Linux host, create `logs/trader` before the first start (the setup script does this on Windows), or Docker creates it owned by root and the trader can't write logs.

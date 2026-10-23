@@ -20,6 +20,8 @@ param(
     [switch]$Once,
     [int]$IntervalMinutes = 60,
     [int]$MaxTurns = 30,
+    [ValidatePattern('^[a-z0-9][a-z0-9.-]{1,63}$')]
+    [string]$Model = 'sonnet',
     [int]$TimeoutMinutes = 10
 )
 
@@ -55,7 +57,7 @@ function Invoke-TraderRun {
     try {
         # A job, so a hung run is stopped after TimeoutMinutes instead of blocking the next one.
         $job = Start-Job -ScriptBlock {
-            param($dir, $instructions, $mcpConfig, $tools, $denied, $maxTurns, $runId)
+            param($dir, $instructions, $mcpConfig, $tools, $denied, $maxTurns, $runId, $model)
             Set-Location $dir
             $env:CIX_RUN_ID = $runId
             [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -63,9 +65,10 @@ function Invoke-TraderRun {
                 --append-system-prompt $instructions `
                 --mcp-config $mcpConfig --strict-mcp-config `
                 --allowedTools $tools --disallowedTools $denied `
+                --model $model `
                 --max-turns $maxTurns `
                 --output-format json
-        } -ArgumentList $repo, $instructions, $mcpConfig, $tools, $denied, $MaxTurns, $runId
+        } -ArgumentList $repo, $instructions, $mcpConfig, $tools, $denied, $MaxTurns, $runId, $Model
 
         if (-not (Wait-Job $job -Timeout ($TimeoutMinutes * 60))) {
             Stop-Job $job
