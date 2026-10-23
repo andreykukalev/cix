@@ -56,7 +56,7 @@ public sealed class AnalystTools(
             scan = scan is null ? null : new
             {
                 scan.AsOf,
-                ranked = scan.Ranked.Select(r => new { r.Symbol, r.Rank, r.Score, r.Trend, r.Return24h, r.AtrFraction, r.NoEntryReason }),
+                ranked = scan.Ranked.Select(r => new { r.Symbol, r.Rank, r.Score, r.Trend, r.Return24h, r.AtrFraction }), // no holdings
                 excluded = scan.Excluded.Select(e => new { e.Symbol, e.Reason }),
                 entries = scan.Entries.Count,
                 exits = scan.Exits.Count,
@@ -85,7 +85,9 @@ public sealed class AnalystTools(
             throw new McpException("regime must be risk-on, neutral or risk-off.");
         if (validHours is < 1 or > MaxValidHours)
             throw new McpException($"validHours must be 1 to {MaxValidHours}.");
-        var cleanSummary = new string((summary ?? string.Empty).Where(c => !char.IsControl(c)).ToArray()).Trim();
+        // Control and format characters (bidi overrides, zero-width) removed: the text is from the web and the owner reads it.
+        var cleanSummary = new string((summary ?? string.Empty)
+            .Where(c => !char.IsControl(c) && char.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.Format).ToArray()).Trim();
         if (cleanSummary.Length is < 20 or > 1000)
             throw new McpException("summary must be 20 to 1000 characters.");
         var cleanSources = (sources ?? []).Select(s => s?.Trim() ?? string.Empty).ToList();
@@ -112,6 +114,7 @@ public sealed class AnalystTools(
         var entry = new JournalEntry(
             Guid.NewGuid().ToString("N"), now, MarketViewStore.Kind, context.Agent, context.RunId, spec.Label, cleanSummary, data);
         await views.RecordAsync(view, entry, cancellationToken).ConfigureAwait(false);
+        var riskOffFor = views.RiskOffDuration(now);
 
         return ToolJson.Of(new
         {
@@ -119,6 +122,7 @@ public sealed class AnalystTools(
             regime = MarketViewStore.RegimeName(parsed),
             validUntil = until,
             avoid,
+            riskOffHours = riskOffFor is { } d ? Math.Round(d.TotalHours, 1) : (double?)null,
             effect = parsed == MarketRegime.RiskOff
                 ? "No new entries until validUntil; exits continue."
                 : avoid.Count > 0 ? "No new entries in the avoided symbols until validUntil." : "No restriction.",

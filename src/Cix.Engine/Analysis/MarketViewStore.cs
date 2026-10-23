@@ -21,14 +21,19 @@ public interface IAnalystSpecStore
     StrategySpec? Active { get; }
 }
 
-public sealed class FileAnalystSpecStore(AnalystOptions options, StrategyOptions strategy, TradingMode mode) : IAnalystSpecStore
+/// <summary>
+/// Loads the analyst's spec. It is checked as a paper spec in every mode: the analyst has no order tools, so its spec needn't
+/// be promoted to live for the engine to run live (drafts still never run).
+/// </summary>
+public sealed class FileAnalystSpecStore(AnalystOptions options, StrategyOptions strategy) : IAnalystSpecStore
 {
-    public StrategySpec? Active { get; } = Load(options, strategy, mode);
+    public StrategySpec? Active { get; } = Load(options, strategy);
 
-    private static StrategySpec? Load(AnalystOptions options, StrategyOptions strategy, TradingMode mode) =>
+    private static StrategySpec? Load(AnalystOptions options, StrategyOptions strategy) =>
         string.IsNullOrWhiteSpace(options.Name) || options.Version is null
             ? null
-            : new FileStrategySpecStore(new StrategyOptions { Directory = strategy.Directory, Name = options.Name, Version = options.Version }, mode).Active;
+            : new FileStrategySpecStore(
+                new StrategyOptions { Directory = strategy.Directory, Name = options.Name, Version = options.Version }, TradingMode.Paper).Active;
 }
 
 public sealed class FixedAnalystSpec(StrategySpec? spec) : IAnalystSpecStore
@@ -44,7 +49,11 @@ public sealed partial class MarketViewStore(IJournal journal, TimeProvider time,
 {
     public const string Kind = "market-view";
 
+    /// <summary>After this long in risk-off without a break, every new risk-off view logs a warning for the owner.</summary>
+    public static readonly TimeSpan LongRiskOff = TimeSpan.FromHours(24);
+
     private volatile MarketView? _current;
+    private DateTimeOffset? _riskOffSince;
 
     /// <summary>The latest view, active or not. Callers check <see cref="MarketView.IsActive"/>.</summary>
     public MarketView? Current => _current;
@@ -55,8 +64,22 @@ public sealed partial class MarketViewStore(IJournal journal, TimeProvider time,
         ArgumentNullException.ThrowIfNull(view);
         ArgumentNullException.ThrowIfNull(entry);
         await journal.AppendAsync(entry, cancellationToken).ConfigureAwait(false);
+
+        // Track unbroken risk-off: a source planted where the analyst looks could renew it run after run.
+        var previous = _current;
+        if (view.Regime != MarketRegime.RiskOff)
+            _riskOffSince = null;
+        else if (previous is null || !previous.BlocksEntries(view.RecordedAt) || _riskOffSince is null)
+            _riskOffSince = view.RecordedAt;
         _current = view;
+
+        if (RiskOffDuration(view.RecordedAt) is { } span && span >= LongRiskOff)
+            LogLongRiskOff(logger, Math.Round(span.TotalHours, 1));
     }
+
+    /// <summary>How long risk-off has held without a break, or null when the current view isn't risk-off.</summary>
+    public TimeSpan? RiskOffDuration(DateTimeOffset now) =>
+        _current?.BlocksEntries(now) == true && _riskOffSince is { } since ? now - since : null;
 
     /// <summary>Restores the newest journaled view if it is still active. Anything unreadable is ignored: no view is neutral.</summary>
     public async Task RestoreAsync(CancellationToken cancellationToken)
@@ -67,7 +90,10 @@ public sealed partial class MarketViewStore(IJournal journal, TimeProvider time,
             var latest = await journal.QueryAsync(
                 new JournalQuery(From: DateOnly.FromDateTime(now.UtcDateTime).AddDays(-1), Kind: Kind, Limit: 1), cancellationToken).ConfigureAwait(false);
             if (latest.Count == 1 && Parse(latest[0]) is { } view && view.IsActive(now))
+            {
                 _current = view;
+                _riskOffSince = view.Regime == MarketRegime.RiskOff ? view.RecordedAt : null;
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -120,6 +146,9 @@ public sealed partial class MarketViewStore(IJournal journal, TimeProvider time,
         }
     }
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Risk-off has blocked new entries for {Hours} hours without a break. Check the analyst's sources in the journal (market-view entries).")]
+    private static partial void LogLongRiskOff(ILogger logger, double hours);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Couldn't restore the market view from the journal: {Detail}")]
     private static partial void LogRestoreFailed(ILogger logger, string detail);
 }
@@ -127,10 +156,10 @@ public sealed partial class MarketViewStore(IJournal journal, TimeProvider time,
 public static class AnalystRegistration
 {
     /// <summary>Registers the analyst's spec (optional) and the market view store.</summary>
-    public static IServiceCollection AddCixAnalyst(this IServiceCollection services, AnalystOptions options, StrategyOptions strategy, TradingMode mode)
+    public static IServiceCollection AddCixAnalyst(this IServiceCollection services, AnalystOptions options, StrategyOptions strategy)
     {
         ArgumentNullException.ThrowIfNull(services);
-        services.AddSingleton<IAnalystSpecStore>(new FileAnalystSpecStore(options, strategy, mode));
+        services.AddSingleton<IAnalystSpecStore>(new FileAnalystSpecStore(options, strategy));
         services.AddSingleton<MarketViewStore>();
         return services;
     }

@@ -98,6 +98,8 @@ public sealed class MarketAnalystTests
         // A trading spec that lists record_market_view still doesn't grant it: only the analyst spec does.
         var noAnalyst = new ToolRig(ToolRig.Observer with { AllowedTools = ["record_market_view", "get_analyst_brief"] }, noAnalyst: true);
         var briefOnly = new ToolRig(analyst: ToolRig.AnalystSpec with { AllowedTools = ["get_analyst_brief"] });
+        noAnalyst.Header(ToolServerOptions.AgentHeader, "analyst");
+        briefOnly.Header(ToolServerOptions.AgentHeader, "analyst");
 
         await Assert.ThrowsAsync<McpException>(() => noAnalyst.Analyst.RecordMarketView("risk-off", "A reasonable summary of the market.", Sources, cancellationToken: CancellationToken.None));
         await Assert.ThrowsAsync<McpException>(() => noAnalyst.Analyst.GetAnalystBrief(CancellationToken.None));
@@ -109,6 +111,63 @@ public sealed class MarketAnalystTests
         var analystOnly = new ToolRig(noSpec: true);
         await Assert.ThrowsAsync<McpException>(() => analystOnly.Orders.PlaceOrder(
             "BTC-EUR", "buy", 0.0001m, 60_000m, "an analyst trying to trade", cancellationToken: CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task EachAgent_KeepsToItsOwnTools_WhateverItsClientAllows()
+    {
+        var spec = ToolRig.Observer with { AllowedTools = ["place_order", "get_portfolio", "scan_market"] };
+
+        var analyst = new ToolRig(spec);
+        analyst.Header(ToolServerOptions.AgentHeader, "analyst");
+        var ex = await Assert.ThrowsAsync<McpException>(() => analyst.Orders.PlaceOrder(
+            "BTC-EUR", "buy", 0.0001m, 60_000m, "injected text asking for a buy", cancellationToken: CancellationToken.None));
+        Assert.Contains("market analyst can't use place_order", ex.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<McpException>(() => analyst.Agent.GetPortfolio(CancellationToken.None));
+
+        foreach (var who in new[] { "trader", null })
+        {
+            var other = new ToolRig(spec);
+            if (who is not null)
+                other.Header(ToolServerOptions.AgentHeader, who);
+            var refused = await Assert.ThrowsAsync<McpException>(() => other.Analyst.RecordMarketView(
+                "risk-off", "A reasonable summary of the market.", Sources, cancellationToken: CancellationToken.None));
+            Assert.Contains("for the market analyst only", refused.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task RiskOff_HoldsNewBuysAtTheOrderTool_ButSellsPass()
+    {
+        var tools = new ToolRig(ToolRig.Observer with { AllowedTools = ["place_order"] }, btc: 0.001m);
+        tools.Header(ToolServerOptions.AgentHeader, "analyst");
+        await tools.Analyst.RecordMarketView("risk-off", "Major stablecoin depeg under way.", Sources, avoidSymbols: ["BTC-EUR"], cancellationToken: CancellationToken.None);
+        tools.Header(ToolServerOptions.AgentHeader, "trader");
+
+        var buy = await Assert.ThrowsAsync<McpException>(() => tools.Orders.PlaceOrder(
+            "BTC-EUR", "buy", 0.0001m, 60_010m, "signal entry BTC-EUR", cancellationToken: CancellationToken.None));
+        var sell = await tools.Orders.PlaceOrder("BTC-EUR", "sell", 0.001m, 60_000m, "signal exit BTC-EUR stop", cancellationToken: CancellationToken.None);
+
+        Assert.Contains("paused by the market view (risk-off)", buy.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("stablecoin", buy.Message, StringComparison.Ordinal);
+        Assert.False(string.IsNullOrEmpty(sell));
+    }
+
+    [Fact]
+    public async Task UnbrokenRiskOff_IsMeasuredAcrossRenewals()
+    {
+        var tools = Analyst();
+        for (var hour = 0; hour <= 24; hour += 8)
+        {
+            await tools.Analyst.RecordMarketView("risk-off", "Renewed: exchange outage continues.", Sources, validHours: 12, cancellationToken: CancellationToken.None);
+            tools.Rig.Time.Advance(TimeSpan.FromHours(8));
+        }
+
+        tools.Rig.Time.Advance(TimeSpan.FromHours(-8)); // back to the last recording
+        Assert.Equal(TimeSpan.FromHours(24), tools.Views.RiskOffDuration(tools.Rig.Time.GetUtcNow()));
+
+        await tools.Analyst.RecordMarketView("neutral", "Outage resolved, markets calm.", Sources, cancellationToken: CancellationToken.None);
+        Assert.Null(tools.Views.RiskOffDuration(tools.Rig.Time.GetUtcNow()));
     }
 
     [Fact]

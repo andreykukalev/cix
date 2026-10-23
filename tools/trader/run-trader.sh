@@ -45,7 +45,7 @@ done
 
 instructions="$(awk 'BEGIN{n=0} /^---[[:space:]]*$/{n++; next} n>=2' "$dir/.claude/agents/trader.md")"
 tools="mcp__cix__get_strategy_spec,mcp__cix__get_portfolio,mcp__cix__get_position_plans,mcp__cix__get_open_orders,mcp__cix__get_market_view,mcp__cix__get_features,mcp__cix__scan_market,mcp__cix__place_order,mcp__cix__cancel_order"
-denied="Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,WebSearch,Task,TodoWrite"
+denied="Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,WebSearch,Task,TodoWrite,mcp__cix__get_analyst_brief,mcp__cix__record_market_view"
 
 # The engine's latest scan: prints "signalDriven scanned key" (scanned is "yes" once the engine has scanned), or nothing
 # if the engine can't be asked.

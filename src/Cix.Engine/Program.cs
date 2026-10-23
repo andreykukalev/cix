@@ -64,8 +64,7 @@ builder.WebHost.ListenOnLoopback(builder.Configuration, toolServer);
 var strategyOptions = builder.Configuration.GetSection(StrategyOptions.SectionName).Get<StrategyOptions>() ?? new StrategyOptions();
 builder.Services.AddCixAnalyst(
     builder.Configuration.GetSection(AnalystOptions.SectionName).Get<AnalystOptions>() ?? new AnalystOptions(),
-    strategyOptions,
-    mode);
+    strategyOptions);
 
 // Deterministic scans of the universe every few minutes; signals are journaled and served by scan_market. Never trades.
 builder.Services.AddCixScanner(scanner, universe);

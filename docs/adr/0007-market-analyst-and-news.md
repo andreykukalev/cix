@@ -21,7 +21,7 @@ A third agent, the **market analyst**, runs every 6 hours in its own container (
    - **Validity:** 1 to 12 hours.
    - **For the owner:** a summary and the https sources it used.
 3. **Effect is one-way.**
-   - Risk-off stops new entries, and an avoided symbol gets no new entry.
+   - Risk-off stops new entries, and an avoided symbol gets no new entry. The scanner drops those signals, and `place_order` refuses those buys outright.
    - Exits are never blocked. Risk-on changes nothing.
    - The view expires, and an expired or missing view counts as neutral.
    - Even a fully manipulated analyst can therefore only pause entries for at most 12 hours at a time. It can never cause a trade or keep one open.
@@ -29,8 +29,17 @@ A third agent, the **market analyst**, runs every 6 hours in its own container (
    - The scanner applies only the structured fields.
    - The trader sees fixed strings: `risk-off (market view)`, and reason `news` with a timestamp.
    - The analyst's words and sources go to the journal for the owner.
-5. **Separate spec.** `strategies/analyst.vN.json` governs the analyst's tools. The trading spec can't grant them, and the analyst spec can't grant trading tools.
+5. **Separate spec and separate tools.**
+   - `strategies/analyst.vN.json` governs the analyst's tools; the trading spec can't grant them.
+   - The engine also checks the caller. An agent identified as `analyst` may use only analyst tools, and no other agent may use them.
+   - Both CLIs deny the other agent's tools as a second layer.
+   - The analyst spec is loaded as a paper spec in every mode, because it has no order tools.
 6. **Persistence.** Each view is a `market-view` journal entry. The latest active one is restored on restart.
+
+7. **Residual risks.**
+   - A planted source found on every run could renew risk-off indefinitely. The cost is missed entries, never losses, since exits continue. After 24 hours of unbroken risk-off the engine logs a warning on every renewal.
+   - The brief leaves out holdings, so a page can't trick the analyst into sending them to a URL via WebFetch.
+   - Agent text in the journal (analyst summaries, trader rationales) is data. Owner sessions that read it must not act on instructions inside it.
 
 ## Alternatives considered
 

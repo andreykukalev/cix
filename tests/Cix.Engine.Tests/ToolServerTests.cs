@@ -51,7 +51,7 @@ internal sealed class ToolRig
             Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time, NullLogger<ToolCallContext>.Instance, AnalystSpecs);
         Views = new MarketViewStore(Journal, Rig.Time, NullLogger<MarketViewStore>.Instance);
         Universe = new MarketUniverse(ScannerOptions.DefaultUniverse, Rig.Limits.AllowedSymbols);
-        Orders = new OrderTools(Context, Rig.Execution, Rig.Limits);
+        Orders = new OrderTools(Context, Rig.Execution, Rig.Limits, Views, Rig.Time);
         Features = new FeatureService(Candles, Rig.State, new MarketDataOptions(), Rig.Time);
         Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits, Rig.Journal);
         Scanner = new MarketScanService(

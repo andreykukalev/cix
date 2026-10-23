@@ -54,6 +54,9 @@ public sealed partial class ToolCallContext(
         "owner", "engine", "execution", "reconciler", "safety-monitor", "scanner", "invalid",
     };
 
+    /// <summary>The <c>X-Cix-Agent</c> value the analyst's MCP configuration sends.</summary>
+    public const string AnalystAgent = "analyst";
+
     public string Agent
     {
         get
@@ -88,7 +91,12 @@ public sealed partial class ToolCallContext(
             return;
         var analyst = AnalystTools.Names.Contains(tool);
         var governing = analyst ? analystSpecs?.Active : specs.Active;
-        var reason = governing is not { } spec
+        var isAnalyst = string.Equals(Agent, AnalystAgent, StringComparison.Ordinal);
+        // Each agent keeps to its own tools, whatever its client allows: the analyst (which reads the web) never reaches
+        // trading tools, and no other agent records market views.
+        var reason = analyst != isAnalyst
+            ? analyst ? $"{tool} is for the market analyst only." : $"The market analyst can't use {tool}."
+            : governing is not { } spec
             ? analyst ? "No analyst spec is configured, so analyst tools are disabled." : "No strategy spec is active, so agent tools are disabled."
             : spec.Allows(tool) ? null : $"The active {(analyst ? "analyst" : "strategy")} spec ({spec.Label}) doesn't allow {tool}.";
         if (reason is null)
