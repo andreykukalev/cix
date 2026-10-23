@@ -35,6 +35,15 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-live-mode.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__cix__place_order",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-order-size.sh\""
+          }
+        ]
       }
     ]
   }

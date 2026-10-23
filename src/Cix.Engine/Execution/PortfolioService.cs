@@ -72,6 +72,7 @@ public sealed class PortfolioService(
 
         var now = time.GetUtcNow();
         var positions = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var sellable = new Dictionary<string, decimal>(StringComparer.Ordinal);
         foreach (var pair in symbolPairs)
         {
             var held = TotalOf(balances, pair.Base);
@@ -86,6 +87,12 @@ public sealed class PortfolioService(
                 throw new PortfolioUnavailableException($"{pair.Base} is held but {pair.Symbol} has no fresh price.");
 
             positions[pair.Symbol] = held * quote.Mid;
+
+            // What can actually be sold: free (not reserved by an open sell) and at least the exchange minimum.
+            var free = balances.Where(b => string.Equals(b.Currency, pair.Base, StringComparison.OrdinalIgnoreCase)).Sum(b => b.Available);
+            var size = Steps.Floor(free, pair.BaseStep);
+            if (size >= pair.MinOrderSize && size * quote.Bid >= pair.MinOrderSizeQuote)
+                sellable[pair.Symbol] = size;
         }
 
         var allowed = symbolPairs.Select(p => p.Symbol).ToHashSet(StringComparer.Ordinal);
@@ -124,7 +131,8 @@ public sealed class PortfolioService(
             PositionQuoteBySymbol: positions,
             OrdersInLastMinute: ordersInLastMinute,
             KillSwitchEngaged: killSwitch.IsEngaged,
-            OpenBuyQuoteBySymbol: buysBySymbol);
+            OpenBuyQuoteBySymbol: buysBySymbol,
+            SellableBaseBySymbol: sellable);
     }
 
     /// <summary>
