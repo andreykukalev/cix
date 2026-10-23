@@ -47,9 +47,17 @@ Run `docker compose down -v` only if you want to wipe the paper account and jour
 - **Strategy, settings and risk limits:** mounted read-only from `strategies\`, `src\Cix.Engine\appsettings.json` and `config\risk-limits.json`. After changing them, run `docker compose restart engine trader`.
 - **Code changes:** need a rebuild with `docker compose up -d --build`.
 
+## Switching to strategy v2 (signal-driven)
+
+1. In `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Version": 2 }`.
+2. Run `docker compose restart engine trader`.
+
+The trader then calls Claude only when the scanner's signals change (checked every minute), plus a position review every 4 hours (`TRADER_HEARTBEAT_MINUTES` in `.env`). The engine log shows each scan's ranking and why each symbol did or didn't signal (`Scan: ... ranked [...] excluded [...]`). To go back, set the version to 1 and restart.
+
 ## Notes
 
-- When the engine restarts, the trader restarts too and runs a cycle straight away; after that it runs on its hourly cadence.
+- When the engine restarts, the trader restarts too. With v1 it runs a cycle straight away and then hourly. With v2 it waits for the engine's first scan, runs a review, and then runs on new signals.
+- v2 runs are limited: at least 15 minutes apart for signals and at most 30 a day (`TRADER_MIN_GAP_MINUTES`, `TRADER_MAX_RUNS_PER_DAY` in `.env`). Signals are checked every `TRADER_POLL_SECONDS` (60).
 - On a Linux host, create `logs/trader` before the first start (the setup script does this on Windows), or Docker creates it owned by root and the trader can't write logs.
 
 ## Claude token expiry

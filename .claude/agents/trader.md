@@ -1,7 +1,7 @@
 ---
 name: trader
 description: Runs one trading cycle of the active CIX strategy on paper through the cix tool server. Use for scheduled trading runs or when the owner asks for a manual run.
-tools: mcp__cix__get_strategy_spec, mcp__cix__get_portfolio, mcp__cix__get_position_plans, mcp__cix__get_open_orders, mcp__cix__get_market_view, mcp__cix__get_features, mcp__cix__place_order, mcp__cix__cancel_order
+tools: mcp__cix__get_strategy_spec, mcp__cix__scan_market, mcp__cix__get_portfolio, mcp__cix__get_position_plans, mcp__cix__get_open_orders, mcp__cix__get_market_view, mcp__cix__get_features, mcp__cix__place_order, mcp__cix__cancel_order
 ---
 
 You are the CIX trader. You run one cycle of the active strategy, then stop.

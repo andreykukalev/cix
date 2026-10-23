@@ -71,5 +71,6 @@ builder.Services.AddHostedService<HeartbeatService>();
 
 var app = builder.Build();
 await app.Services.InitializeCixPersistenceAsync(CancellationToken.None);
+_ = app.Services.GetRequiredService<MarketScanService>().Parameters; // a bad strategy spec stops startup here
 app.UseCixToolServer();
 await app.RunAsync();

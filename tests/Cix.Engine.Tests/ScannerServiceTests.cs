@@ -14,7 +14,7 @@ public sealed class ScannerServiceTests
     /// high/low ±300 (ATR 600, 1% of price), 1 BTC each (1.44M EUR a day). Slope +20 gives EMA20 59,810 over EMA50 59,510: an
     /// uptrend with the 60,005 mid 0.325 ATR above EMA20. Slope -20 gives a downtrend.
     /// </summary>
-    private static void SeedHourly(ToolRig tools, decimal slope)
+    internal static void SeedHourly(ToolRig tools, decimal slope)
     {
         var newest = Rig.T0 - TimeSpan.FromHours(1);
         var candles = Enumerable.Range(0, 60).Select(i =>

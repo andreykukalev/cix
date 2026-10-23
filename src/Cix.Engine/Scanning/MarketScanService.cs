@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Cix.Domain.Exchange;
 using Cix.Domain.Scanning;
 using Cix.Engine.Execution;
@@ -88,6 +89,100 @@ public sealed partial class MarketScanService(
 
     public bool Halted => killSwitch.State.Engaged;
 
+    /// <summary>True when the active spec lets agents call scan_market: the trader then runs on signals, not on a timer.</summary>
+    public bool SignalDriven => specs.Active?.Allows("scan_market") ?? false;
+
+    /// <summary>
+    /// The scanner settings in force: the active spec's <c>scanner</c> parameters (with its <c>orderQuote</c>), or configuration
+    /// when the spec has none. Program reads this at startup, so a bad spec stops the engine instead of trading on defaults.
+    /// </summary>
+    public ScannerParameters Parameters
+    {
+        get
+        {
+            var spec = specs.Active;
+            var cached = _parameters;
+            if (cached is not null && cached.Value.Label == spec?.Label)
+                return cached.Value.Parameters;
+            var resolved = FromSpec(spec, options.Parameters);
+            _parameters = (spec?.Label, resolved);
+            return resolved;
+        }
+    }
+
+    private (string? Label, ScannerParameters Parameters)? _parameters;
+
+    /// <summary>
+    /// A short, stable description of the latest scan's signals (for example <c>buy:SOL-EUR|sell:BTC-EUR:stop</c>), empty when
+    /// there are none. The trader loop starts an agent run when it changes to something non-empty.
+    /// </summary>
+    public string SignalKey => Latest is { } scan ? KeyOf(scan, StaleOrderSymbols) : string.Empty;
+
+    /// <summary>Orders resting longer than this need a run to cancel them (the specs' 50-minute tidy rule).</summary>
+    public static readonly TimeSpan StaleOrderAge = TimeSpan.FromMinutes(50);
+
+    /// <summary>
+    /// Symbols with an open order older than <see cref="StaleOrderAge"/> at the latest scan. They count as signals, so an exit
+    /// hidden behind an unfilled order, or a forgotten buy, gets a run within the hour rather than at the next heartbeat.
+    /// </summary>
+    public IReadOnlySet<string> StaleOrderSymbols { get; private set; } = new HashSet<string>(StringComparer.Ordinal);
+
+    public static string KeyOf(ScanResult scan, IEnumerable<string>? staleOrderSymbols = null)
+    {
+        ArgumentNullException.ThrowIfNull(scan);
+        return string.Join('|', scan.Exits.Select(x => $"sell:{x.Symbol}:{x.Reason}")
+            .Concat(scan.Entries.Select(e => $"buy:{e.Symbol}"))
+            .Concat((staleOrderSymbols ?? []).Select(s => $"stale-order:{s}"))
+            .Order(StringComparer.Ordinal));
+    }
+
+    private static readonly JsonSerializerOptions SpecJson = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow, // a typo fails loudly
+    };
+
+    /// <summary>
+    /// Scanner settings from a spec's <c>scanner</c> object, which replaces configuration entirely (unlisted values take the
+    /// code defaults, so a spec version alone says what ran), plus its top-level <c>orderQuote</c>. Without a <c>scanner</c>
+    /// object, <paramref name="fallback"/> (configuration) applies.
+    /// </summary>
+    public static ScannerParameters FromSpec(StrategySpec? spec, ScannerParameters fallback)
+    {
+        ArgumentNullException.ThrowIfNull(fallback);
+        if (spec is null)
+            return fallback;
+
+        var result = fallback;
+        if (spec.Parameters.TryGetValue("scanner", out var scanner))
+        {
+            if (scanner.ValueKind != JsonValueKind.Object)
+                throw new InvalidOperationException($"{spec.Label}: parameters.scanner must be an object.");
+            if (scanner.EnumerateObject().Any(p => string.Equals(p.Name, "orderQuote", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"{spec.Label}: set orderQuote once, at the top of parameters, not inside scanner.");
+            try
+            {
+                result = scanner.Deserialize<ScannerParameters>(SpecJson)
+                    ?? throw new InvalidOperationException($"{spec.Label}: parameters.scanner is empty.");
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException($"{spec.Label}: parameters.scanner is not valid ({ex.Message}).", ex);
+            }
+        }
+
+        // One orderQuote per spec: the scanner's size cap and the order-size hook read the same number.
+        if (spec.Parameters.TryGetValue("orderQuote", out var orderQuote))
+        {
+            if (orderQuote.ValueKind != JsonValueKind.Number || !orderQuote.TryGetDecimal(out var quote))
+                throw new InvalidOperationException($"{spec.Label}: parameters.orderQuote must be a number.");
+            result = result with { OrderQuote = quote };
+        }
+
+        result.Validate();
+        return result;
+    }
+
     /// <summary>Scans now and journals signals that weren't in the previous scan.</summary>
     public async Task<ScanResult> ScanAsync(CancellationToken cancellationToken)
     {
@@ -111,6 +206,9 @@ public sealed partial class MarketScanService(
             ?? throw new InvalidOperationException("The portfolio can't be valued right now.");
         var open = await execution.GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
         var withOpenOrder = open.Where(o => o.IsOpen).Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol)).ToHashSet(StringComparer.Ordinal);
+        var now = time.GetUtcNow();
+        StaleOrderSymbols = open.Where(o => o.IsOpen && now - o.CreatedAt > StaleOrderAge)
+            .Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol)).ToHashSet(StringComparer.Ordinal);
 
         var inputs = new List<ScanInput>();
         foreach (var symbol in universe.Candidates)
@@ -122,7 +220,7 @@ public sealed partial class MarketScanService(
         }
 
         var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit)).ToList();
-        return MarketScanner.Scan(inputs, held, options.Parameters, time.GetUtcNow(), allowEntries: !Halted);
+        return MarketScanner.Scan(inputs, held, Parameters, time.GetUtcNow(), allowEntries: !Halted);
     }
 
     /// <summary>One journal entry per signal when it first appears, so reports can compare signals taken and not taken.</summary>
@@ -197,7 +295,7 @@ public sealed partial class MarketScanBackgroundService(
         try
         {
             var result = await scanner.ScanAsync(cancellationToken).ConfigureAwait(false);
-            LogScanned(logger, result.Ranked.Count, result.Excluded.Count, result.Entries.Count, result.Exits.Count);
+            LogScanned(logger, result.Ranked.Count, result.Excluded.Count, result.Entries.Count, result.Exits.Count, Describe(result));
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -209,13 +307,27 @@ public sealed partial class MarketScanBackgroundService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // First scan after a minute (time for quotes and candles to load), then every interval.
+        await Task.Delay(TimeSpan.FromMinutes(1), time, stoppingToken).ConfigureAwait(false);
+        await ScanOnceAsync(stoppingToken).ConfigureAwait(false);
         using var timer = new PeriodicTimer(options.Interval, time);
         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
             await ScanOnceAsync(stoppingToken).ConfigureAwait(false);
     }
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Scan: {Ranked} ranked, {Excluded} excluded, {Entries} entry and {Exits} exit signals")]
-    private static partial void LogScanned(ILogger logger, int ranked, int excluded, int entries, int exits);
+    /// <summary>One line an owner can read in the logs: why each symbol did or didn't produce a signal.</summary>
+    public static string Describe(ScanResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        var ranked = result.Ranked.Select(r => string.Create(CultureInfo.InvariantCulture,
+            $"#{r.Rank} {r.Symbol} {r.Score:0.##} ({r.NoEntryReason ?? "signal"})"));
+        var excluded = result.Excluded.Select(e => $"{e.Symbol} {e.Reason}");
+        var exits = result.Exits.Select(x => $"{x.Symbol} {x.Reason}");
+        return $"ranked [{string.Join("; ", ranked)}] excluded [{string.Join("; ", excluded)}] exits [{string.Join("; ", exits)}]";
+    }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Scan: {Ranked} ranked, {Excluded} excluded, {Entries} entry and {Exits} exit signals: {Detail}")]
+    private static partial void LogScanned(ILogger logger, int ranked, int excluded, int entries, int exits, string detail);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Scan failed ({Error}): {Detail}")]
     private static partial void LogScanFailed(ILogger logger, string error, string detail);
