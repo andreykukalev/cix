@@ -3,7 +3,7 @@ using Cix.Domain.Exchange;
 namespace Cix.Engine.MarketData;
 
 /// <summary>
-/// Decides what is due and fetches it: quotes for every symbol, then new closed 1-minute and 1-hour candles.
+/// Decides what is due and fetches it: quotes for every symbol, then new closed 1-hour candles (and 1-minute candles when enabled).
 /// Deterministic given the clock, so tests drive it with <see cref="PollOnceAsync"/>; <see cref="MarketDataService"/>
 /// calls it every second. Failures are logged and retried at the next interval; they never stop the loop.
 /// </summary>
@@ -66,14 +66,16 @@ public sealed partial class MarketDataPoller
         }
 
         var next = _symbols
-            .SelectMany(symbol => new[] { (Symbol: symbol, Kind: "1m"), (Symbol: symbol, Kind: "1h") })
+            .SelectMany(symbol => _options.MinuteCandleInterval is null
+                ? new[] { (Symbol: symbol, Kind: "1h") }
+                : new[] { (Symbol: symbol, Kind: "1m"), (Symbol: symbol, Kind: "1h") })
             .Select(t => (t.Symbol, t.Kind, Due: DueSince(t.Symbol, t.Kind)))
             .Where(t => t.Due is not null)
             .OrderBy(t => t.Due)
             .FirstOrDefault();
 
-        if (next.Kind == "1m")
-            await RunAsync(next.Symbol, "1m", _options.MinuteCandleInterval, () => PollCandlesAsync(next.Symbol, MinuteInterval, _options.MinuteLookback, cancellationToken)).ConfigureAwait(false);
+        if (next.Kind == "1m" && _options.MinuteCandleInterval is { } minuteInterval)
+            await RunAsync(next.Symbol, "1m", minuteInterval, () => PollCandlesAsync(next.Symbol, MinuteInterval, _options.MinuteLookback, cancellationToken)).ConfigureAwait(false);
         else if (next.Kind == "1h")
             await RunAsync(next.Symbol, "1h", _options.HourCandleInterval, () => PollCandlesAsync(next.Symbol, HourInterval, _options.HourLookback, cancellationToken)).ConfigureAwait(false);
 

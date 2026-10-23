@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Cix.Engine.Journal;
 
 /// <summary>
-/// One record in the decision journal. Kinds used so far: <c>tool-call</c>, <c>order</c>, <c>kill-switch</c>.
+/// One record in the decision journal. Kinds include <c>tool-call</c>, <c>tool-denied</c>, <c>order</c>, <c>fill</c>, <c>kill-switch</c> and <c>scan-signal</c>.
 /// <see cref="Data"/> holds kind-specific fields as strings, so the journal never depends on engine types.
 /// </summary>
 /// <param name="Actor">Who acted: an agent name, <c>owner</c>, or an engine component such as <c>safety-monitor</c>.</param>

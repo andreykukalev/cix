@@ -23,7 +23,7 @@ public sealed class AgentTools(
     IJournal journal)
 {
     /// <summary>How far back get_position_plans looks for the buy behind a position.</summary>
-    public const int PlanLookbackDays = 30;
+    public const int PlanLookbackDays = PositionPlans.LookbackDays;
 
     [McpServerTool(Name = "get_market_view", ReadOnly = true)]
     [Description("Compact features for every tradable symbol: price, spread, trend, volatility, returns and 24h range. Ratios are fractions (0.05 = 5%). Check isStale before acting.")]
@@ -130,40 +130,22 @@ public sealed class AgentTools(
     public async Task<string> GetPositionPlans(CancellationToken cancellationToken)
     {
         await context.RequireAllowedAsync("get_position_plans", cancellationToken).ConfigureAwait(false);
-        var valued = await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false);
-        if (valued is not { } portfolio)
-            throw new McpException("The portfolio can't be valued right now; try again shortly.");
+        var loaded = await PositionPlans.LoadAsync(execution, journal, cancellationToken).ConfigureAwait(false)
+            ?? throw new McpException("The portfolio can't be valued right now; try again shortly.");
 
-        // Positions worth selling only: dust below the exchange minimum can't be sold and isn't a position to manage.
-        var sellable = portfolio.Snapshot.SellableBaseBySymbol ?? new Dictionary<string, decimal>();
-        var held = sellable.Keys.ToHashSet(StringComparer.Ordinal);
-        var from = DateOnly.FromDateTime(portfolio.At.UtcDateTime).AddDays(-PlanLookbackDays);
-        var fills = held.Count == 0 ? [] : await journal.QueryAsync(new JournalQuery(From: from, Kind: "fill", Limit: FileJournal.MaxQueryLimit), cancellationToken).ConfigureAwait(false);
-        var orders = held.Count == 0 ? [] : await journal.QueryAsync(new JournalQuery(From: from, Kind: "order", Limit: FileJournal.MaxQueryLimit), cancellationToken).ConfigureAwait(false);
-
-        var plans = held.Order(StringComparer.Ordinal).Select(symbol =>
+        var plans = loaded.Select(p => new
         {
-            // Newest first: the latest buy fill for this symbol is the position's entry.
-            var fill = fills.FirstOrDefault(f => f.Data?.GetValueOrDefault("symbol") == symbol && f.Data?.GetValueOrDefault("side") == "buy");
-            var clientOrderId = fill?.Data?.GetValueOrDefault("clientOrderId");
-            var order = clientOrderId is null ? null : orders.FirstOrDefault(o => o.Data?.GetValueOrDefault("clientOrderId") == clientOrderId && o.Data?.GetValueOrDefault("tool") == "place_order");
-            return new
-            {
-                symbol,
-                positionQuote = portfolio.Snapshot.PositionQuoteBySymbol[symbol],
-                sellableBaseSize = sellable[symbol],
-                entryPrice = Number(fill?.Data?.GetValueOrDefault("averagePrice")),
-                filledAt = fill?.At,
-                stopLoss = Number(order?.Data?.GetValueOrDefault("stopLoss")),
-                takeProfit = Number(order?.Data?.GetValueOrDefault("takeProfit")),
-                note = fill is null ? "No completed buy in the journal for this position (bought earlier, outside the engine, or a buy still partly filled): no stop or target recorded." : null,
-            };
+            symbol = p.Symbol,
+            positionQuote = p.PositionQuote,
+            sellableBaseSize = p.SellableBaseSize,
+            entryPrice = p.EntryPrice,
+            filledAt = p.FilledAt,
+            stopLoss = p.StopLoss,
+            takeProfit = p.TakeProfit,
+            note = p.HasEntry ? null : "No completed buy in the journal for this position (bought earlier, outside the engine, or a buy still partly filled): no stop or target recorded.",
         }).ToList();
 
         await context.JournalAsync("get_position_plans", $"{plans.Count} positions", null, cancellationToken).ConfigureAwait(false);
         return ToolJson.Of(plans);
     }
-
-    private static decimal? Number(string? value) =>
-        decimal.TryParse(value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : null;
 }

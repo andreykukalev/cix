@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using Cix.Engine.Journal;
 using Cix.Engine.MarketData;
+using Cix.Engine.Scanning;
 using Cix.Engine.Strategy;
 using Cix.Engine.Tools;
 using Microsoft.AspNetCore.Builder;
@@ -40,8 +41,12 @@ internal sealed class ToolRig
         Specs = new FixedSpecs(noSpec ? null : spec ?? Observer);
         Context = new ToolCallContext(Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time, NullLogger<ToolCallContext>.Instance);
         Orders = new OrderTools(Context, Rig.Execution, Rig.Limits);
-        Features = new FeatureService(new InMemoryCandleStore(), Rig.State, new MarketDataOptions(), Rig.Time);
+        Features = new FeatureService(Candles, Rig.State, new MarketDataOptions(), Rig.Time);
         Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits, Rig.Journal);
+        Scanner = new MarketScanService(
+            new MarketUniverse(ScannerOptions.DefaultUniverse, Rig.Limits.AllowedSymbols), Features, Candles, Rig.Pairs, Rig.Execution,
+            Rig.KillSwitch, Journal, Specs, new ScannerOptions(), Rig.Time, NullLogger<MarketScanService>.Instance);
+        Scan = new ScanTools(Context, Scanner);
         Operator = new OperatorTools(Context, Journal, Rig.Execution);
     }
 
@@ -51,8 +56,11 @@ internal sealed class ToolRig
     public InMemoryJournal Journal => Rig.Journal;
     public ToolCallContext Context { get; }
     public OrderTools Orders { get; }
+    public InMemoryCandleStore Candles { get; } = new();
     public FeatureService Features { get; }
     public AgentTools Agent { get; }
+    public MarketScanService Scanner { get; }
+    public ScanTools Scan { get; }
     public OperatorTools Operator { get; }
 
     public void Header(string name, string value) => Http.HttpContext!.Request.Headers[name] = value;
@@ -238,6 +246,7 @@ public sealed class McpEndToEndTests
         builder.Services.AddSingleton(tools.Rig.Execution);
         builder.Services.AddSingleton(tools.Rig.KillSwitch);
         builder.Services.AddSingleton(Rig.Limits);
+        builder.Services.AddSingleton(tools.Scanner);
         builder.Services.AddCixToolServer(new ToolServerOptions { OperatorKey = ToolRig.OperatorKey }, tools.Specs, tools.Journal);
         await using var app = builder.Build();
         app.UseCixToolServer();
@@ -259,6 +268,7 @@ public sealed class McpEndToEndTests
             {
                 "cancel_order", "get_daily_summary", "get_features", "get_market_view", "get_open_orders", "get_portfolio",
                 "get_position_plans", "get_strategy_spec", "pause_trading", "place_order", "query_journal", "resume_trading",
+                "scan_market",
             },
             listed.Select(t => t.Name).Order(StringComparer.Ordinal));
         Assert.Contains("observer@v1#abc123def456", Text(spec), StringComparison.Ordinal);

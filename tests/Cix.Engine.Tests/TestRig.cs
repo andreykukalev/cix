@@ -42,7 +42,8 @@ internal sealed class Rig
         State = new MarketState(Time);
         Store = store ?? new InMemoryEngineStateStore();
         KillSwitch = new KillSwitch(Store, Time);
-        var pairs = new PairCatalog(pairSource ?? new FakeMarketData(), Time);
+        Pairs = new PairCatalog(pairSource ?? new FakeMarketData(), Time);
+        var pairs = Pairs;
         Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, Limits, Time);
         Execution = new ExecutionService(
             Exchange, new RiskGate(Limits, Time), Portfolio, State, pairs, KillSwitch, Store, Time,
@@ -61,6 +62,7 @@ internal sealed class Rig
     public FlakyExchange Exchange { get; }
     public IEngineStateStore Store { get; }
     public KillSwitch KillSwitch { get; }
+    public PairCatalog Pairs { get; }
     public PortfolioService Portfolio { get; }
     public ExecutionService Execution { get; }
     public SafetyMonitor Monitor { get; }

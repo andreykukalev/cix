@@ -19,6 +19,8 @@ The engine runs on your PC with simulated money and live Revolut X prices. A Cla
    ```
    The engine creates the `cix` database on start. Browse it at http://localhost:1234. `--restart unless-stopped` brings the emulator back after a reboot; its data lives in the container, so don't remove the container. Without Cosmos, paper balances reset whenever the engine stops.
 
+5. Choose what can be traded. The engine considers a curated universe (`Scanner:Universe` in `src/Cix.Engine/appsettings.json`: BTC, ETH, SOL, LINK, AVAX, SUI, NEAR against EUR) but trades only the symbols that are also in `config/risk-limits.json` → `AllowedSymbols`, which only you edit. To trade the whole universe, list all seven there. Symbols the exchange doesn't list or has suspended are skipped at every scan.
+
 ## Every session
 
 Terminal 1, the engine (with Cosmos enabled it resumes the same paper account after a restart):
@@ -32,6 +34,10 @@ Terminal 2, the trader:
 .\tools\trader\run-trader.ps1 -IntervalMinutes 60   # every hour until you stop it (Ctrl+C)
 ```
 Each run prints the agent's report and its cost, and saves the full output in `logs\trader\`.
+
+## Scanner
+
+Every 5 minutes the engine scans the tradable universe with fixed arithmetic, no AI: it drops symbols with thin volume, a wide spread, wild volatility, or hourly moves too small to pay the fees and spread; ranks the rest by momentum adjusted for volatility and cost; suggests sized buys for uptrend pullbacks (stop 1.5 ATR, target 2R, about €1 at risk and at most €5 per order); and flags held positions at their stop, target or in a downtrend. New signals go to the journal as `scan-signal` entries. Agents read the same scan with the `scan_market` tool when their strategy spec allows it. Signals are suggestions: the risk gate still decides every order.
 
 ## Reviewing
 

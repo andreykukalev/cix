@@ -8,10 +8,11 @@ public sealed class MarketDataOptions
     /// <summary>Revolut X public endpoints allow 1 request per second; stay well below 60 a minute.</summary>
     public const int PublicRequestsPerMinute = 60;
 
-    public TimeSpan QuoteInterval { get; set; } = TimeSpan.FromSeconds(5);
+    /// <summary>Order-book quotes per symbol. 10 seconds keeps 7 symbols inside the budget (ADR-0006).</summary>
+    public TimeSpan QuoteInterval { get; set; } = TimeSpan.FromSeconds(10);
 
-    /// <summary>How often to fetch new 1-minute candles.</summary>
-    public TimeSpan MinuteCandleInterval { get; set; } = TimeSpan.FromMinutes(1);
+    /// <summary>How often to fetch new 1-minute candles, or null (the default) to skip them; no feature uses them yet.</summary>
+    public TimeSpan? MinuteCandleInterval { get; set; }
 
     /// <summary>How often to fetch new 1-hour candles.</summary>
     public TimeSpan HourCandleInterval { get; set; } = TimeSpan.FromMinutes(5);
@@ -33,7 +34,7 @@ public sealed class MarketDataOptions
 
     /// <summary>Planned steady-state requests per minute for <paramref name="symbolCount"/> symbols.</summary>
     public decimal PlannedRequestsPerMinute(int symbolCount) =>
-        symbolCount * (PerMinute(QuoteInterval) + PerMinute(MinuteCandleInterval) + PerMinute(HourCandleInterval));
+        symbolCount * (PerMinute(QuoteInterval) + (MinuteCandleInterval is { } minute ? PerMinute(minute) : 0m) + PerMinute(HourCandleInterval));
 
     /// <summary>Throws if the schedule would exceed the public rate-limit budget.</summary>
     public void Validate(int symbolCount)
