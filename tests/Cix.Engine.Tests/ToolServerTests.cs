@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using Cix.Domain.Scanning;
 using Cix.Engine.Analysis;
 using Cix.Engine.Journal;
 using Cix.Engine.MarketData;
@@ -250,6 +251,42 @@ public sealed class McpEndToEndTests
         }));
 
     private static string Text(CallToolResult result) => Assert.IsType<TextContentBlock>(result.Content[0]).Text;
+
+    [Fact]
+    public async Task Analyst_RecordsAView_OverRealHttp_WithArrayAndDefaultParameters()
+    {
+        var tools = new ToolRig();
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddSingleton<TimeProvider>(tools.Rig.Time);
+        builder.Services.AddSingleton(tools.Features);
+        builder.Services.AddSingleton(tools.Scanner);
+        builder.Services.AddSingleton(tools.Universe);
+        builder.Services.AddSingleton(tools.Views);
+        builder.Services.AddSingleton(tools.AnalystSpecs);
+        builder.Services.AddCixToolServer(new ToolServerOptions { OperatorKey = ToolRig.OperatorKey }, tools.Specs, tools.Journal);
+        await using var app = builder.Build();
+        app.UseCixToolServer();
+        await app.StartAsync();
+        var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
+
+        await using var analyst = await ConnectAsync(address, new() { [ToolServerOptions.AgentHeader] = "analyst", [ToolServerOptions.RunHeader] = "analyst-1" });
+        var recorded = await analyst.CallToolAsync("record_market_view", new Dictionary<string, object?>
+        {
+            ["regime"] = "risk-off",
+            ["summary"] = "Exchange outage reported by several outlets.",
+            ["sources"] = new[] { "https://example.com/a", "https://example.org/b" },
+            ["avoidSymbols"] = new[] { "BTC-EUR" },
+        });
+
+        Assert.NotEqual(true, recorded.IsError);
+        var view = tools.Views.Current!;
+        Assert.Equal(MarketRegime.RiskOff, view.Regime);
+        Assert.Equal(TimeSpan.FromHours(6), view.ValidUntil - view.RecordedAt); // validHours defaulted
+        var entry = Assert.Single(tools.Journal.Entries, e => e.Kind == MarketViewStore.Kind);
+        Assert.Equal(("analyst-1", "analyst@v1#fedcba654321"), (entry.RunId, entry.SpecVersion));
+        await app.StopAsync();
+    }
 
     [Fact]
     public async Task Agents_AndTheOperator_OverRealHttp()

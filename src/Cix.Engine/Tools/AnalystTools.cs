@@ -74,7 +74,7 @@ public sealed class AnalystTools(
     public async Task<string> RecordMarketView(
         [Description("risk-on, neutral or risk-off.")] string regime,
         [Description("Your reasoning in 20 to 1000 characters, for the owner's review.")] string summary,
-        [Description("https links you relied on (1 to 10).")] string[] sources,
+        [Description("https links you relied on (up to 10; at least one for risk-off or avoidSymbols).")] string[] sources,
         [Description("Hours the view stays in force, 1 to 12.")] int validHours = 6,
         [Description("Symbols from the brief's `symbols` to keep out of new entries, for example after a hack or before a large unlock.")] string[]? avoidSymbols = null,
         CancellationToken cancellationToken = default)
@@ -91,16 +91,18 @@ public sealed class AnalystTools(
         if (cleanSummary.Length is < 20 or > 1000)
             throw new McpException("summary must be 20 to 1000 characters.");
         var cleanSources = (sources ?? []).Select(s => s?.Trim() ?? string.Empty).ToList();
-        if (cleanSources.Count is < 1 or > MaxSources
+        // A cautionary view (risk-off or an avoided symbol) needs evidence; neutral or risk-on may have none (research failed).
+        var minSources = parsed == MarketRegime.RiskOff || (avoidSymbols?.Length ?? 0) > 0 ? 1 : 0;
+        if (cleanSources.Count < minSources || cleanSources.Count > MaxSources
             || cleanSources.Any(s => s.Length > 300 || !Uri.TryCreate(s, UriKind.Absolute, out var u) || u.Scheme != Uri.UriSchemeHttps))
-            throw new McpException($"sources must be 1 to {MaxSources} https links of at most 300 characters.");
+            throw new McpException($"sources must be up to {MaxSources} https links of at most 300 characters, and at least one for risk-off or avoidSymbols.");
 
         var avoid = new List<string>();
         foreach (var raw in avoidSymbols ?? [])
         {
             var symbol = MarketDataPoller.NormaliseSymbol(raw ?? string.Empty);
             if (!universe.IsTradable(symbol))
-                throw new McpException($"{symbol} isn't a symbol from the brief; allowed: {string.Join(", ", universe.Tradable)}.");
+                throw new McpException($"avoidSymbols may hold only symbols from the brief: {string.Join(", ", universe.Tradable)}."); // input not echoed
             if (!avoid.Contains(symbol, StringComparer.Ordinal))
                 avoid.Add(symbol);
         }

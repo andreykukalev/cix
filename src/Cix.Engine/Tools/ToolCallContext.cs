@@ -114,9 +114,13 @@ public sealed partial class ToolCallContext(
         throw new McpException(reason);
     }
 
+    /// <summary>The label of the spec that governs <paramref name="tool"/>: the analyst's for analyst tools, else the trading spec's.</summary>
+    private string? LabelFor(string? tool) =>
+        tool is not null && AnalystTools.Names.Contains(tool) ? analystSpecs?.Active?.Label : specs.Active?.Label;
+
     private Task DenyAsync(string tool, string reason, CancellationToken cancellationToken) =>
         journal.AppendAsync(
-            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), "tool-denied", Agent, RunId, specs.Active?.Label, reason,
+            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), "tool-denied", Agent, RunId, LabelFor(tool), reason,
                 new Dictionary<string, string>(StringComparer.Ordinal) { ["tool"] = tool }),
             cancellationToken);
 
@@ -148,7 +152,7 @@ public sealed partial class ToolCallContext(
     /// <summary>Appends an entry of any kind as the current caller, with the active spec.</summary>
     public Task RecordAsync(string kind, string summary, IReadOnlyDictionary<string, string> data, CancellationToken cancellationToken) =>
         journal.AppendAsync(
-            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), kind, IsOperator ? "owner" : Agent, RunId, specs.Active?.Label, summary, data),
+            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), kind, IsOperator ? "owner" : Agent, RunId, LabelFor(data.GetValueOrDefault("tool")), summary, data),
             cancellationToken);
 
     /// <summary>Identity headers are free text from the caller: keep them short and plain.</summary>

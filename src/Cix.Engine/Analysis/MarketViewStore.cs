@@ -95,9 +95,9 @@ public sealed partial class MarketViewStore(IJournal journal, TimeProvider time,
                 _riskOffSince = view.Regime == MarketRegime.RiskOff ? view.RecordedAt : null;
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            LogRestoreFailed(logger, ex.Message);
+            LogRestoreFailed(logger, ex.GetType().Name); // starting without a view is safe: no view is neutral
         }
     }
 
