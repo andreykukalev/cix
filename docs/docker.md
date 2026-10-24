@@ -82,7 +82,7 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
 
 ## Strategy versions (signal-driven v2 and v3)
 
-1. The default is v3. To change it, in `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Version": 2 }` (or 1).
+1. The default is v4 (v3 with a lower cost ratio, so BTC qualifies). To change it, in `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Version": 2 }` (or 1).
 2. Run `docker compose restart engine trader`.
 
 The trader then calls Claude only when the scanner's signals change (checked every minute), plus a position review every 4 hours (`TRADER_HEARTBEAT_MINUTES` in `.env`). The engine log shows each scan's ranking and why each symbol did or didn't signal (`Scan: ... ranked [...] excluded [...]`). To go back, set the version to 1 and restart.

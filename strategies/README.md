@@ -5,7 +5,7 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 - One file per version: `<name>.v<N>.json`. Never edit a version that has run. Copy it to `v<N+1>` and change the copy, so the journal's record of what ran stays true. Each journal entry carries `name@vN#hash`; the hash shows if a file was edited anyway.
 - `status`: `draft` (never runs), `paper` (paper trading only), `live` (paper or live). Only the owner sets `live`; the `protect-live-mode` hook stops agents from writing it.
 - `allowedTools`: the tool server refuses any agent tool not listed here, except `get_strategy_spec`, which every agent may read to learn its own rules.
-- v3 is the default. Pick the active spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration.
+- v4 is the default. Pick the active spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration.
 
 `observer.v1.json` only reads; it checks the tool server works before a trading spec exists.
 
@@ -22,3 +22,5 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 - `maxSpreadFraction` 0.002 → 0.004. The cost filter still counts the spread, so a wide-spread coin must also be volatile enough to pass it.
 - `minAtrToCostRatio` 2 → 1.5. Admits calmer coins, with a thinner margin over fees.
 - Wider filters rank more coins; they don't create entries. A buy still needs an uptrend and a pullback.
+
+`trend.v4.json` is v3 with `minAtrToCostRatio` 1.5 → 1, so a coin qualifies when its typical hourly move covers one round trip of costs. This lets BTC-EUR in (its hourly ATR is about 1.3× costs). Trades on calm coins have a thinner margin over fees.
