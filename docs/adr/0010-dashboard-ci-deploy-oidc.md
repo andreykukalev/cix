@@ -35,7 +35,7 @@ No secret in GitHub. CI signs in to Azure with GitHub OIDC as a dedicated identi
 ## Consequences
 
 - **Anyone who can change `main` is trusted.** That means anyone who can push or merge to `main`, or start a workflow on it. Such a person can publish the dashboard, and so read the shared read-only key through it.
-  - This includes the Claude coding agents. They merge pull requests at the owner's request and could push to `main` directly. Only CLAUDE.md's rules stop them, not GitHub.
+  - This includes the Claude coding agents. Their GitHub access could merge pull requests or push to `main` directly (in this repository they have merged at the owner's request). Only CLAUDE.md's rules stop them, not GitHub.
   - GitHub Pro with branch protection would make that a technical limit.
 - **Actions pinned by tag.** The actions are pinned by tag, not by commit SHA, because SHAs couldn't be looked up where this was built (follow-up #62).
 - **Owner setup.** The owner runs the setup script once and sets four repository variables.

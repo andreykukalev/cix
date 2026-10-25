@@ -84,7 +84,9 @@ $field = { param($o, $n) if ($o -and $o.PSObject.Properties[$n]) { @($o.$n) } el
 $groupId = "/subscriptions/$($account.id)/resourceGroups/$($settings.resourceGroup)"
 $me = (Invoke-CixAz @('ad', 'signed-in-user', 'show', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson).id
 
-$app = @(Invoke-CixAz @('ad', 'app', 'list', '--display-name', $identityName, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+# --display-name matches by prefix: keep exact names only.
+$app = @(Invoke-CixAz @('ad', 'app', 'list', '--display-name', $identityName, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+    Where-Object { $_.PSObject.Properties['displayName'] -and $_.displayName -ceq $identityName })
 if ($app.Count -gt 1) { throw "More than one app registration is named $identityName; remove the extras first." }
 $app = if ($app.Count -eq 1) { $app[0] } else { $null }
 $sp = $null
@@ -126,7 +128,7 @@ if ($app) {
   # It may trust GitHub Actions on main of this repository, and nothing else.
   $credentials = @(Invoke-CixAz @('ad', 'app', 'federated-credential', 'list', '--id', $app.appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
   $others = @($credentials | Where-Object {
-      $_.subject -ne $subject -or $_.issuer -ne 'https://token.actions.githubusercontent.com' -or
+      $_.subject -cne $subject -or $_.issuer -ne 'https://token.actions.githubusercontent.com' -or
       (@(& $field $_ 'audiences') -join ',') -ne 'api://AzureADTokenExchange' })
   if ($others.Count -gt 0) {
     throw "$identityName also trusts $(($others | ForEach-Object { "$($_.subject) (issuer $($_.issuer))" }) -join ', '). Remove those in the Azure portal (App registrations, Certificates & secrets) first: only main of $Repository may deploy."
@@ -197,7 +199,7 @@ else {
 }
 
 Write-CixStep 'Federated credential (GitHub Actions, main only)'
-if (@($credentials | Where-Object { $_.subject -eq $subject }).Count -eq 1) { Write-CixInfo "Already trusts $subject." }
+if (@($credentials | Where-Object { $_.subject -ceq $subject }).Count -eq 1) { Write-CixInfo "Already trusts $subject." }
 else {
   Confirm-Step "Let GitHub Actions on main of $Repository sign in as ${identityName}?"
   $file = Write-CixTempJson ([ordered]@{

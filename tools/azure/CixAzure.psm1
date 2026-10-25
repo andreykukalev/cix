@@ -117,13 +117,23 @@ function Assert-CixCommand {
 function Invoke-CixNative {
   <#
     Runs a native command. Windows PowerShell 5.1 can turn each stderr line into a terminating error when $ErrorActionPreference
-    is Stop (always when redirected, and in the ISE), and az and npm write warnings there; so the call runs with Continue, and
-    callers check $LASTEXITCODE.
+    is Stop (always when redirected, and in the ISE), and az, gh and npm write warnings there; so the call runs with Continue,
+    and callers check $LASTEXITCODE. The preference is relaxed in the caller's scope, because a script block from a script
+    runs in that script's scope, not this module's (setting it here alone would not reach it).
   #>
+  [CmdletBinding()]
   param([Parameter(Mandatory)][scriptblock]$Command)
+  $callerVariables = $PSCmdlet.SessionState.PSVariable
+  $saved = $callerVariables.GetValue('ErrorActionPreference')
   $ErrorActionPreference = 'Continue'
-  $global:LASTEXITCODE = -1 # a command that never started (not on PATH, broken shim) counts as failed, not as the last success
-  & $Command
+  $callerVariables.Set('ErrorActionPreference', 'Continue')
+  try {
+    $global:LASTEXITCODE = -1 # a command that never started (not on PATH, broken shim) counts as failed, not as the last success
+    & $Command
+  }
+  finally {
+    $callerVariables.Set('ErrorActionPreference', $saved)
+  }
 }
 
 function Invoke-CixAz {

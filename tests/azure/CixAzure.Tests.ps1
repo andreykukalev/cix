@@ -273,7 +273,16 @@ try {
     Assert-CixAzureCli 6>$null
   }
 
-  Check 'az missing from PATH is a failure, not a stale success' {
+  Check 'Invoke-CixNative relaxes stderr handling for script blocks from scripts too, and restores it' {
+  # A script block from this script runs in this script's scope (not the module's): what 5.1 does with stderr depends on it.
+  $ErrorActionPreference = 'Stop'
+  $out = Invoke-CixNative { & az fail now 2>&1 }
+  if ($LASTEXITCODE -ne 3) { throw "exit code $LASTEXITCODE" }
+  if (-not (($out | ForEach-Object { "$_" }) -join ' ').Contains('boom')) { throw 'stderr not captured' }
+  Expect $ErrorActionPreference 'Stop' 'restored preference'
+}
+
+Check 'az missing from PATH is a failure, not a stale success' {
     $env:PATH = Join-Path ([IO.Path]::GetTempPath()) 'cix-no-such-dir'
     $global:LASTEXITCODE = 0
     $failed = $false
@@ -419,7 +428,7 @@ Check 'provision.ps1 full run (-Yes) with no shared account: creates it, then CI
 $site = '{"id":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev","name":"stapp-cix-dev"}'
 $cleanApp = @{
   'staticwebapp show'           = $site
-  'ad app list'                 = '[{"appId":"11111111-1111-1111-1111-111111111111"}]'
+  'ad app list'                 = '[{"appId":"11111111-1111-1111-1111-111111111111","displayName":"cix-dashboard-deploy-dev"},{"appId":"33333333-3333-3333-3333-333333333333","displayName":"cix-dashboard-deploy-devtest"}]'
   'ad app show'                 = '{"appId":"11111111-1111-1111-1111-111111111111","passwordCredentials":[],"keyCredentials":[]}'
   'ad signed-in-user'           = '{"id":"me"}'
   'ad app owner'                = '[{"id":"me"}]'
