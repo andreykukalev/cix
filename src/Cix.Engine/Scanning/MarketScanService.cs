@@ -269,7 +269,7 @@ public sealed partial class MarketScanService(
             var clientOrderId = Guid.NewGuid().ToString();
             var result = await execution.PlaceAsync(
                 new OrderIntent(exit.Symbol, OrderSide.Sell, exit.BaseSize, exit.LimitPrice, clientOrderId), postOnly: false, cancellationToken,
-                countsTowardRejectStreak: false).ConfigureAwait(false);
+                countsTowardRejectStreak: false, context: new OrderContext("protective-exit", Strategy: specs.Active?.Label)).ConfigureAwait(false);
             if (result.Status == ExecutionStatus.Rejected)
             {
                 lock (_protectiveBackoff)
@@ -300,7 +300,7 @@ public sealed partial class MarketScanService(
                 ["rationale"] = $"protective exit {exit.Symbol} {exit.Reason}: {exit.Detail}",
             };
             await AppendSafelyAsync(new JournalEntry(
-                Guid.NewGuid().ToString("N"), time.GetUtcNow(), "order", "engine", null, specs.Active?.Label,
+                JournalIds.New(time.GetUtcNow(), "order"), time.GetUtcNow(), "order", "engine", null, specs.Active?.Label,
                 Inv($"protective {exit.Reason} sell {exit.BaseSize} {exit.Symbol} @ {exit.LimitPrice}: {result.Status} ({result.Rule})"), data))
                 .ConfigureAwait(false);
             LogProtectiveExit(logger, exit.Reason, exit.Symbol, exit.BaseSize, exit.LimitPrice, result.Status.ToString(), result.Rule);
@@ -397,7 +397,7 @@ public sealed partial class MarketScanService(
             try
             {
                 await journal.AppendAsync(
-                    new JournalEntry(Guid.NewGuid().ToString("N"), result.AsOf, SignalKind, Actor, null, spec, summary, data),
+                    new JournalEntry(JournalIds.New(result.AsOf, SignalKind), result.AsOf, SignalKind, Actor, null, spec, summary, data),
                     CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

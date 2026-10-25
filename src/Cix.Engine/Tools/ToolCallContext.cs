@@ -120,7 +120,7 @@ public sealed partial class ToolCallContext(
 
     private Task DenyAsync(string tool, string reason, CancellationToken cancellationToken) =>
         journal.AppendAsync(
-            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), "tool-denied", Agent, RunId, LabelFor(tool), reason,
+            new JournalEntry(JournalIds.New(time.GetUtcNow(), "tool-denied"), time.GetUtcNow(), "tool-denied", Agent, RunId, LabelFor(tool), reason,
                 new Dictionary<string, string>(StringComparer.Ordinal) { ["tool"] = tool }),
             cancellationToken);
 
@@ -152,7 +152,7 @@ public sealed partial class ToolCallContext(
     /// <summary>Appends an entry of any kind as the current caller, with the active spec.</summary>
     public Task RecordAsync(string kind, string summary, IReadOnlyDictionary<string, string> data, CancellationToken cancellationToken) =>
         journal.AppendAsync(
-            new JournalEntry(Guid.NewGuid().ToString("N"), time.GetUtcNow(), kind, IsOperator ? "owner" : Agent, RunId, LabelFor(data.GetValueOrDefault("tool")), summary, data),
+            new JournalEntry(JournalIds.New(time.GetUtcNow(), kind), time.GetUtcNow(), kind, IsOperator ? "owner" : Agent, RunId, LabelFor(data.GetValueOrDefault("tool")), summary, data),
             cancellationToken);
 
     /// <summary>Identity headers are free text from the caller: keep them short and plain.</summary>

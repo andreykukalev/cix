@@ -75,7 +75,8 @@ public sealed class OrderTools(
         // The engine names the order, so an agent can't collide with or impersonate another order's ID.
         var clientOrderId = Guid.NewGuid().ToString();
         var result = await execution.PlaceAsync(
-            new OrderIntent(normalised, orderSide, baseSize, limitPrice, clientOrderId), postOnly, cancellationToken).ConfigureAwait(false);
+            new OrderIntent(normalised, orderSide, baseSize, limitPrice, clientOrderId), postOnly, cancellationToken,
+            context: new OrderContext("place_order", stopLoss, takeProfit, context.RunId, context.Spec?.Label)).ConfigureAwait(false);
 
         var inv = CultureInfo.InvariantCulture;
         var data = new Dictionary<string, string>

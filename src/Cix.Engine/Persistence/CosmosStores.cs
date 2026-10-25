@@ -35,7 +35,7 @@ public sealed class CosmosJournal(CosmosDb db) : IJournal
         ArgumentNullException.ThrowIfNull(query);
         var limit = Math.Clamp(query.Limit, 1, FileJournal.MaxQueryLimit);
 
-        // Day, kind and run filter in the database; the data-field filters (client order ID, spec) after reading.
+        // Day, kind, run and client order ID filter in the database; the spec prefix after reading.
         var sql = "SELECT * FROM c WHERE 1 = 1";
         var parameters = new List<(string, object)>();
         if (query.From is { } from)
@@ -60,6 +60,12 @@ public sealed class CosmosJournal(CosmosDb db) : IJournal
         {
             sql += " AND c.entry.runId = @runId";
             parameters.Add(("@runId", query.RunId));
+        }
+
+        if (query.ClientOrderId is not null)
+        {
+            sql += " AND c.entry.data.clientOrderId = @clientOrderId";
+            parameters.Add(("@clientOrderId", query.ClientOrderId));
         }
 
         var definition = new QueryDefinition(sql);
@@ -92,8 +98,11 @@ public sealed class CosmosJournal(CosmosDb db) : IJournal
 public sealed class CosmosEngineStateStore : IEngineStateStore
 {
     public const string DocumentId = "engine-state";
+    public const string About =
+        "The engine's operational state: kill switch, loss baselines, holdings at the last reconciliation, orders sent and not yet finished, and position plans (stop and target by symbol).";
 
     private readonly Container _container;
+    private readonly TimeProvider _time;
     private readonly string _id;
     private readonly Lock _gate = new();
     private string? _etag;
@@ -101,7 +110,9 @@ public sealed class CosmosEngineStateStore : IEngineStateStore
     public CosmosEngineStateStore(CosmosDb db, TradingMode mode, TimeProvider time)
     {
         ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(time);
         _container = db.State;
+        _time = time;
         _id = $"{DocumentId}-{mode.ToString().ToLowerInvariant()}";
         var (saved, etag) = Read();
         if (saved is not null && saved.KillSwitch is null)
@@ -156,7 +167,7 @@ public sealed class CosmosEngineStateStore : IEngineStateStore
     /// </summary>
     private void Write(EngineState state)
     {
-        var document = new CosmosDb.StateDocument<EngineState>(_id, state);
+        var document = new CosmosDb.StateDocument<EngineState>(_id, state, DocumentId, About, _time.GetUtcNow());
         try
         {
             var response = _etag is null
@@ -187,12 +198,14 @@ public interface IPaperAccountStore
 public sealed class CosmosPaperAccountStore(CosmosDb db) : IPaperAccountStore
 {
     public const string DocumentId = "paper-account";
+    public const string About =
+        "The simulated Revolut X account for paper trading: balances (available and reserved) and its orders (open ones and the latest finished).";
 
     public Task<PaperAccountState?> LoadAsync(CancellationToken cancellationToken) =>
         CosmosDb.ReadStateAsync<PaperAccountState>(db.State, DocumentId, cancellationToken);
 
     public Task SaveAsync(PaperAccountState state, CancellationToken cancellationToken) =>
-        CosmosDb.WriteStateAsync(db.State, DocumentId, state, cancellationToken);
+        CosmosDb.WriteStateAsync(db.State, DocumentId, state, DocumentId, About, cancellationToken);
 }
 
 /// <summary>For tests.</summary>
@@ -224,7 +237,10 @@ public sealed class CosmosSpecArchive(CosmosDb db)
         var id = SpecId(spec.Label);
         try
         {
-            await db.State.CreateItemAsync(new CosmosDb.StateDocument<ArchivedSpec>(id, new ArchivedSpec(spec.Label, spec.Hash, spec)), new PartitionKey(id), cancellationToken: cancellationToken).ConfigureAwait(false);
+            var document = new CosmosDb.StateDocument<ArchivedSpec>(
+                id, new ArchivedSpec(spec.Label, spec.Hash, spec), "strategy-spec",
+                "An immutable copy of a strategy spec version that ran; journal entries name it in specVersion.", DateTimeOffset.UtcNow);
+            await db.State.CreateItemAsync(document, new PartitionKey(id), cancellationToken: cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict)

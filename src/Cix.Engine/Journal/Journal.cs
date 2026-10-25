@@ -20,6 +20,21 @@ public sealed record JournalEntry(
     string Summary,
     IReadOnlyDictionary<string, string>? Data = null);
 
+/// <summary>
+/// Journal entry IDs that read in order and say what they are: <c>20261025-124650-order-3f2a9c1b04de</c> (UTC time, kind, random
+/// suffix). The suffix keeps them unique; links between records use the IDs in <see cref="JournalEntry.Data"/> (clientOrderId,
+/// orderId) and <see cref="JournalEntry.RunId"/>.
+/// </summary>
+public static class JournalIds
+{
+    public static string New(DateTimeOffset at, string kind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        var safeKind = new string(kind.Select(c => char.IsAsciiLetterOrDigit(c) || c == '-' ? char.ToLowerInvariant(c) : '-').ToArray());
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{at.UtcDateTime:yyyyMMdd-HHmmss}-{safeKind}-{Guid.NewGuid():N}")[..^20];
+    }
+}
+
 /// <summary>Filters for <see cref="IJournal.QueryAsync"/>; all optional. Dates are UTC days, inclusive.</summary>
 public sealed record JournalQuery(
     DateOnly? From = null,

@@ -142,7 +142,9 @@ public sealed class AgentTools(
             filledAt = p.FilledAt,
             stopLoss = p.StopLoss,
             takeProfit = p.TakeProfit,
-            note = p.HasEntry ? null : "No completed buy in the journal for this position (bought earlier, outside the engine, or a buy still partly filled): no stop or target recorded.",
+            note = p.StopLoss is null && p.TakeProfit is null
+                ? "This position has no stop or target recorded (bought without one, earlier, or outside the engine)."
+                : null,
         }).ToList();
 
         await context.JournalAsync("get_position_plans", $"{plans.Count} positions", null, cancellationToken).ConfigureAwait(false);

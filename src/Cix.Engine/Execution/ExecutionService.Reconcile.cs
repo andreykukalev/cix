@@ -57,6 +57,7 @@ public sealed partial class ExecutionService
             var dropped = 0;
             HashSet<string> pendingIds;
             var missedPastTimeout = new HashSet<string>(StringComparer.Ordinal);
+            var droppedIds = new List<string>();
             lock (_pending)
             {
                 foreach (var p in _pending.Values.Where(p => p.Uncertain).ToList())
@@ -76,6 +77,7 @@ public sealed partial class ExecutionService
                         if (_uncertainMissedOnce.Contains(id))
                         {
                             _pending.Remove(id);
+                            droppedIds.Add(id);
                             dropped++;
                             LogUncertainDropped(_logger, p.Order.ToString());
                         }
@@ -90,6 +92,8 @@ public sealed partial class ExecutionService
             }
 
             _uncertainMissedOnce = missedPastTimeout;
+            foreach (var id in droppedIds)
+                TryUpdateState(s => s.WithEntryAbandoned(id)); // never arrived: its plan (or pending levels) go with it
 
             var known = _store.Current.Known.ToHashSet(StringComparer.Ordinal);
             var unknown = open
@@ -100,7 +104,10 @@ public sealed partial class ExecutionService
             // order sent just before a restart has time to be listed before it could be mistaken for someone else's.
             var missing = known.Where(id => !openIds.Contains(id) && !pendingIds.Contains(id)).ToHashSet(StringComparer.Ordinal);
             var missingSince = missing.ToDictionary(id => id, id => _missingSince.GetValueOrDefault(id, now), StringComparer.Ordinal);
-            var forget = missingSince.Where(m => m.Value < now && now - m.Value >= _safety.ReconcileInterval).Select(m => m.Key).ToList();
+            HashSet<string> stillTracked;
+            lock (_pending)
+                stillTracked = _tracked.Keys.ToHashSet(StringComparer.Ordinal); // kept until their fill is journaled, with its details
+            var forget = missingSince.Where(m => m.Value < now && now - m.Value >= _safety.ReconcileInterval && !stillTracked.Contains(m.Key)).Select(m => m.Key).ToList();
             ForgetKnown(forget);
             foreach (var id in forget)
                 missingSince.Remove(id);
@@ -109,6 +116,10 @@ public sealed partial class ExecutionService
             AdoptKnownOpenOrders(open, known);
             openForFills = openIds;
 
+            // Orders whose placement outcome was unknown (or sent just before a restart) get their exchange ID once listed.
+            foreach (var listed in open.Where(o => o.IsOpen && _store.Current.SentOrders.Any(s => s.ClientOrderId == o.ClientOrderId && s.VenueOrderId is null)))
+                TryUpdateState(s => s.WithVenueOrderId(listed.ClientOrderId, listed.VenueOrderId));
+
             var holdings = balances
                 .GroupBy(b => b.Currency.ToUpperInvariant())
                 .ToDictionary(g => g.Key, g => g.Sum(b => b.Total), StringComparer.OrdinalIgnoreCase);
@@ -116,6 +127,7 @@ public sealed partial class ExecutionService
                 .Where(o => o.IsOpen && (known.Contains(o.ClientOrderId) || pendingIds.Contains(o.ClientOrderId)))
                 .Sum(o => o.Quantity * (o.Price ?? 0m));
             var (unexplained, allowance) = await CheckHoldingsAsync(holdings, engineOrdersNotional, cancellationToken).ConfigureAwait(false);
+            await PrunePositionPlansAsync(holdings, openIds, pendingIds, now, cancellationToken).ConfigureAwait(false);
 
             string? reason = null;
             if (unknown.Count > 0)
@@ -202,6 +214,50 @@ public sealed partial class ExecutionService
         }
     }
 
+    /// <summary>
+    /// Removes plans whose position is gone: less than the exchange minimum held, its entry buy no longer working, and old enough
+    /// that the buy can't still be on its way. The holdings decide, so a plan survives any restart while its position exists.
+    /// </summary>
+    private async Task PrunePositionPlansAsync(
+        Dictionary<string, decimal> holdings, HashSet<string> openIds, HashSet<string> pendingIds, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var gone = new List<string>();
+        foreach (var plan in _store.Current.Plans.Values)
+        {
+            if (openIds.Contains(plan.EntryClientOrderId) || pendingIds.Contains(plan.EntryClientOrderId) || now - plan.Since < PendingWindow
+                || (plan.PendingClientOrderId is { } further && (openIds.Contains(further) || pendingIds.Contains(further))))
+                continue;
+            PairInfo? pair;
+            try
+            {
+                pair = await _pairs.GetAsync(plan.Symbol, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
+            {
+                return; // can't tell what is sellable now: keep every plan
+            }
+
+            var held = pair is null ? 0m : holdings.GetValueOrDefault(pair.Base);
+            if (pair is null || held <= 0m || held < pair.MinOrderSize)
+                gone.Add(plan.Symbol);
+        }
+
+        if (gone.Count > 0)
+            TryUpdateState(s => s.WithoutPlans(gone));
+    }
+
+    /// <summary>How far back a finished order's journal entries are looked for, so a restart never journals a fill twice.</summary>
+    public const int FillLookbackDays = 7;
+
+    private async Task<bool> AlreadyJournaledAsync(string clientOrderId, CancellationToken cancellationToken)
+    {
+        if (_journal is null)
+            return false;
+        var from = DateOnly.FromDateTime(_time.GetUtcNow().UtcDateTime).AddDays(-FillLookbackDays);
+        var entries = await _journal.QueryAsync(new Journal.JournalQuery(From: from, ClientOrderId: clientOrderId, Limit: 50), cancellationToken).ConfigureAwait(false);
+        return entries.Any(e => e.Kind is "fill" or "order-closed");
+    }
+
     private async Task JournalFinishedOrdersAsync(HashSet<string> openIds, CancellationToken cancellationToken)
     {
         List<(string ClientOrderId, TrackedOrder Tracked)> candidates;
@@ -241,11 +297,21 @@ public sealed partial class ExecutionService
 
             var inv = System.Globalization.CultureInfo.InvariantCulture;
             var average = order.FilledQuantity > 0 ? order.FilledAmountQuote / order.FilledQuantity : 0m;
-            var recorded = await RecordAsync(
-                order.FilledQuantity > 0 ? "fill" : "order-closed",
-                "engine",
-                $"{intent.Side} {order.FilledQuantity.ToString(inv)} of {intent.BaseSize.ToString(inv)} {intent.Symbol} ({order.Status})",
-                new Dictionary<string, string>
+            var sent = _store.Current.SentOrders.FirstOrDefault(o => o.ClientOrderId == clientOrderId);
+            var recorded = false;
+            try
+            {
+                // An order rebuilt after a restart may have had its fill journaled before it: journal how it ended once only.
+                if (tracked.Restored)
+                    recorded = await AlreadyJournaledAsync(clientOrderId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                LogStateWriteFailed(_logger, "journal read: " + ex.GetType().Name);
+                continue; // try again next time rather than risk a duplicate
+            }
+
+            var data = new Dictionary<string, string>
                 {
                     ["clientOrderId"] = clientOrderId,
                     ["orderId"] = venueOrderId,
@@ -259,11 +325,33 @@ public sealed partial class ExecutionService
                     ["fee"] = order.TotalFee.ToString(inv),
                     ["feeCurrency"] = order.FeeCurrency ?? string.Empty,
                     ["status"] = order.Status.ToString().ToLowerInvariant(),
-                }).ConfigureAwait(false);
+                };
+            if (sent is not null)
+            {
+                data["source"] = sent.Source;
+                if (sent.StopLoss is { } stop)
+                    data["stopLoss"] = stop.ToString(inv);
+                if (sent.TakeProfit is { } target)
+                    data["takeProfit"] = target.ToString(inv);
+            }
+
+            recorded = recorded || await RecordAsync(
+                order.FilledQuantity > 0 ? "fill" : "order-closed",
+                "engine",
+                $"{intent.Side} {order.FilledQuantity.ToString(inv)} of {intent.BaseSize.ToString(inv)} {intent.Symbol} ({order.Status})",
+                data,
+                sent?.RunId,
+                sent?.Strategy).ConfigureAwait(false);
             if (recorded)
             {
                 lock (_pending)
                     _tracked.Remove(clientOrderId); // only once written: a failed write is retried next time
+                if (intent.Side == OrderSide.Buy)
+                {
+                    TryUpdateState(s => order.FilledQuantity > 0
+                        ? s.WithEntryFilled(intent.Symbol, clientOrderId, Math.Round(average, 8), _time.GetUtcNow())
+                        : s.WithEntryAbandoned(clientOrderId));
+                }
             }
         }
     }

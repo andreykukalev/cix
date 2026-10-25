@@ -25,8 +25,10 @@ internal sealed class Rig
         IMarketDataSource? pairSource = null,
         SafetyOptions? safety = null,
         PaperExchange? paper = null,
-        MutableTime? time = null)
+        MutableTime? time = null,
+        InMemoryJournal? journal = null)
     {
+        Journal = journal ?? new InMemoryJournal();
         Time = time ?? new MutableTime(T0);
         Safety = safety ?? new SafetyOptions();
         if (paper is null)
@@ -55,7 +57,7 @@ internal sealed class Rig
     public static RiskLimits Limits { get; } = new(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, new HashSet<string> { Btc });
 
     public MutableTime Time { get; }
-    public InMemoryJournal Journal { get; } = new();
+    public InMemoryJournal Journal { get; }
     public SafetyOptions Safety { get; }
     public MarketState State { get; }
     public PaperExchange Paper { get; }
@@ -67,9 +69,9 @@ internal sealed class Rig
     public ExecutionService Execution { get; }
     public SafetyMonitor Monitor { get; }
 
-    /// <summary>A new process on the same exchange and clock, with the state reloaded by <paramref name="reload"/>.</summary>
+    /// <summary>A new process on the same exchange, clock and journal, with the state reloaded by <paramref name="reload"/>.</summary>
     public Rig Restart(Func<IEngineStateStore> reload) =>
-        new(store: reload(), safety: Safety, paper: Paper, time: Time);
+        new(store: reload(), safety: Safety, paper: Paper, time: Time, journal: Journal);
 
     /// <summary>A fresh quote at the current time, to both the engine's market state and the paper exchange.</summary>
     public void Quote(decimal bid, decimal ask)

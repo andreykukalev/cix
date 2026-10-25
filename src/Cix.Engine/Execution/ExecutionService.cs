@@ -33,6 +33,13 @@ public enum CancelOutcome
     Failed,
 }
 
+/// <summary>
+/// Why an order is sent and the plan that goes with it. Kept in the engine state while the order works (so a restart keeps
+/// it) and copied into the journal's fill entry.
+/// </summary>
+/// <param name="Source"><c>place_order</c>, <c>protective-exit</c> or <c>engine</c>.</param>
+public sealed record OrderContext(string Source, decimal? StopLoss = null, decimal? TakeProfit = null, string? RunId = null, string? Strategy = null);
+
 /// <summary>What engaging the kill switch did to open orders.</summary>
 public sealed record KillSwitchResult(bool NewlyEngaged, int Cancelled, IReadOnlyList<string> NotCancelled);
 
@@ -70,7 +77,8 @@ public sealed partial class ExecutionService
     /// <summary>Orders this process placed and hasn't yet seen finish; reconciliation journals their fills.</summary>
     private readonly Dictionary<string, TrackedOrder> _tracked = new(StringComparer.Ordinal);
 
-    private sealed record TrackedOrder(OrderIntent Order, string VenueOrderId, int Lookups = 0);
+    /// <param name="Restored">Rebuilt from the engine state after a restart: its fill may already be journaled.</param>
+    private sealed record TrackedOrder(OrderIntent Order, string VenueOrderId, int Lookups = 0, bool Restored = false);
     private int _consecutiveRejects;
     private int _streakTripped;
 
@@ -102,9 +110,20 @@ public sealed partial class ExecutionService
         _logger = logger;
         _delay = delay ?? ((d, ct) => Task.Delay(d, time, ct));
 
-        // After a restart, orders sent before it are still ours: their IDs can't be reused and aren't "unknown".
+        // After a restart, orders sent before it are still ours: their IDs can't be reused and aren't "unknown". Those the
+        // exchange confirmed are tracked again, so a fill that happened while the engine was down is still journaled.
         _usedClientOrderIds.UnionWith(store.Current.Known);
+        foreach (var sent in store.Current.SentOrders.Where(o => o.VenueOrderId is not null))
+            _tracked[sent.ClientOrderId] = new TrackedOrder(ToIntent(sent), sent.VenueOrderId!, Restored: true);
     }
+
+    /// <summary>Position plans (stop and target by symbol) from the engine state.</summary>
+    public IReadOnlyDictionary<string, PositionPlanState> PositionPlanStates => _store.Current.Plans;
+
+    private static OrderIntent ToIntent(SentOrder o) =>
+        new(o.Symbol, o.Side == "sell" ? OrderSide.Sell : OrderSide.Buy, o.Size, o.LimitPrice, o.ClientOrderId);
+
+    private static string SideName(OrderSide side) => side == OrderSide.Sell ? "sell" : "buy";
 
     /// <summary>Orders sent whose outcome is unknown; they block reuse of their client order ID until reconciled.</summary>
     public IReadOnlyList<PendingPlacement> Unresolved
@@ -120,9 +139,11 @@ public sealed partial class ExecutionService
     /// False for the engine's own protective sells: a sell never adds risk, and a sell the gate keeps refusing in a fast market
     /// shouldn't halt everything. Agents' orders always count.
     /// </param>
-    public async Task<ExecutionResult> PlaceAsync(OrderIntent intent, bool postOnly, CancellationToken cancellationToken, bool countsTowardRejectStreak = true)
+    /// <param name="context">Why the order is sent and its stop and target, kept with it (see <see cref="OrderContext"/>).</param>
+    public async Task<ExecutionResult> PlaceAsync(
+        OrderIntent intent, bool postOnly, CancellationToken cancellationToken, bool countsTowardRejectStreak = true, OrderContext? context = null)
     {
-        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, cancellationToken).ConfigureAwait(false);
+        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, context, cancellationToken).ConfigureAwait(false);
 
         // Engaging takes the placement lock, so it runs after the placement released it.
         // Only a gate rejection made by this call can trip the streak (engine-side rejects never count).
@@ -137,7 +158,8 @@ public sealed partial class ExecutionService
         return result;
     }
 
-    private async Task<ExecutionResult> PlaceLockedAsync(OrderIntent intent, bool postOnly, bool countsTowardRejectStreak, CancellationToken cancellationToken)
+    private async Task<ExecutionResult> PlaceLockedAsync(
+        OrderIntent intent, bool postOnly, bool countsTowardRejectStreak, OrderContext? context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
         intent = intent with { Symbol = MarketDataPoller.NormaliseSymbol(intent.Symbol) };
@@ -193,7 +215,9 @@ public sealed partial class ExecutionService
                 return new ExecutionResult(ExecutionStatus.Rejected, verdict.Rule, verdict.Reason);
             }
 
-            return await SendAsync(order, verdict, postOnly, cancellationToken).ConfigureAwait(false);
+            // Whether the symbol is still held decides if an open position plan applies to this order (see EngineState.WithSent).
+            var holdsPosition = portfolio.PositionQuoteBySymbol.GetValueOrDefault(rounded.Symbol) >= Math.Max(pair.MinOrderSizeQuote, 0.00000001m);
+            return await SendAsync(order, verdict, postOnly, context, holdsPosition, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -294,14 +318,15 @@ public sealed partial class ExecutionService
     }
 
     /// <summary>Appends to the journal if there is one. A journal failure is logged, never allowed to stop a safety action.</summary>
-    private async Task<bool> RecordAsync(string kind, string actor, string summary, IReadOnlyDictionary<string, string> data)
+    private async Task<bool> RecordAsync(string kind, string actor, string summary, IReadOnlyDictionary<string, string> data, string? runId = null, string? spec = null)
     {
         if (_journal is null)
             return true;
         try
         {
+            var now = _time.GetUtcNow();
             await _journal.AppendAsync(
-                new JournalEntry(Guid.NewGuid().ToString("N"), _time.GetUtcNow(), kind, actor, null, null, summary, data),
+                new JournalEntry(JournalIds.New(now, kind), now, kind, actor, runId, spec, summary, data),
                 CancellationToken.None).ConfigureAwait(false);
             return true;
         }
@@ -461,18 +486,21 @@ public sealed partial class ExecutionService
         return intent with { BaseSize = size, LimitPrice = price };
     }
 
-    private async Task<ExecutionResult> SendAsync(ApprovedOrder order, RiskVerdict verdict, bool postOnly, CancellationToken cancellationToken)
+    private async Task<ExecutionResult> SendAsync(
+        ApprovedOrder order, RiskVerdict verdict, bool postOnly, OrderContext? context, bool holdsPosition, CancellationToken cancellationToken)
     {
         // The kill switch may have engaged while the portfolio was being read; it flips before taking the lock.
         if (_killSwitch.IsEngaged)
             return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
-        // Record the ID before sending: if the engine dies mid-send, the order is still recognised as ours after a restart.
+        // Record the order and its plan before sending: if the engine dies mid-send, the order is still recognised as ours
+        // after a restart, and the position it opens still has its stop and target.
+        var sent = new SentOrder(
+            order.ClientOrderId, order.Symbol, SideName(order.Side), order.BaseSize, order.LimitPrice, _time.GetUtcNow(),
+            context?.Source ?? "engine", StopLoss: context?.StopLoss, TakeProfit: context?.TakeProfit, RunId: context?.RunId, Strategy: context?.Strategy);
         try
         {
-            _store.Update(s => s.Known.Contains(order.ClientOrderId, StringComparer.Ordinal)
-                ? s
-                : s with { KnownClientOrderIds = [.. s.Known, order.ClientOrderId] });
+            _store.Update(s => s.WithSent(sent, holdsPosition));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -498,6 +526,7 @@ public sealed partial class ExecutionService
                 // The exchange records a post-only order that would cross, then rejects it: nothing is working.
                 lock (_pending)
                     _pending.Remove(order.ClientOrderId);
+                TryUpdateState(s => s.WithEntryAbandoned(order.ClientOrderId));
                 return new ExecutionResult(ExecutionStatus.Failed, "post-only-would-cross", "The order would have filled at once, so the post-only order was rejected.", order, placed);
             }
 
@@ -529,6 +558,7 @@ public sealed partial class ExecutionService
             }
 
             ForgetKnown([order.ClientOrderId]);
+            TryUpdateState(s => s.WithEntryAbandoned(order.ClientOrderId));
 
             LogFailed(_logger, order.ToString(), ex.ErrorId ?? ex.StatusCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "error");
             return new ExecutionResult(ExecutionStatus.Failed, "exchange-refused", "The exchange refused the order.", order); // its own error text stays in the log
@@ -564,6 +594,7 @@ public sealed partial class ExecutionService
             _tracked[order.ClientOrderId] = new TrackedOrder(order.ToIntent(), placed.VenueOrderId);
         }
 
+        TryUpdateState(s => s.WithVenueOrderId(order.ClientOrderId, placed.VenueOrderId));
         LogPlaced(_logger, order.ToString(), placed.VenueOrderId);
         return new ExecutionResult(ExecutionStatus.Placed, verdict.Rule, verdict.Reason, order, placed);
     }
@@ -618,13 +649,16 @@ public sealed partial class ExecutionService
     /// <summary>Drops finished orders from the persisted known set. A failed write only leaves extra IDs, which is safe.</summary>
     private void ForgetKnown(IReadOnlyCollection<string> clientOrderIds)
     {
-        if (clientOrderIds.Count == 0)
-            return;
+        if (clientOrderIds.Count > 0)
+            TryUpdateState(s => s.WithoutOrders(clientOrderIds));
+    }
+
+    /// <summary>Bookkeeping updates to the engine state: a failure is logged, and the next reconciliation repairs it.</summary>
+    private void TryUpdateState(Func<EngineState, EngineState> change)
+    {
         try
         {
-            _store.Update(s => s.Known.Any(clientOrderIds.Contains)
-                ? s with { KnownClientOrderIds = s.Known.Where(id => !clientOrderIds.Contains(id)).ToList() }
-                : s);
+            _store.Update(change);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

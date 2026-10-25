@@ -114,7 +114,7 @@ public sealed class AnalystTools(
         var data = MarketViewStore.ToData(view, cleanSources);
         data["analystSpec"] = spec.Label;
         var entry = new JournalEntry(
-            Guid.NewGuid().ToString("N"), now, MarketViewStore.Kind, context.Agent, context.RunId, spec.Label, cleanSummary, data);
+            JournalIds.New(now, MarketViewStore.Kind), now, MarketViewStore.Kind, context.Agent, context.RunId, spec.Label, cleanSummary, data);
         await views.RecordAsync(view, entry, cancellationToken).ConfigureAwait(false);
         var riskOffFor = views.RiskOffDuration(now);
 
