@@ -48,6 +48,10 @@ Run `docker compose down -v` only if you want to wipe the paper account and jour
 - **Strategy, settings and risk limits:** mounted read-only from `strategies\`, `src\Cix.Engine\appsettings.json` and `config\risk-limits.json`. After changing them, run `docker compose restart engine trader`.
 - **Code changes:** need a rebuild with `docker compose up -d --build`.
 
+## Database in Azure
+
+To keep the journal and state in Azure Cosmos DB (free tier) instead of the local emulator, and to get a read-only dashboard, see [azure.md](azure.md). The engine and agents still run here; only the database moves, using `docker-compose.azure.yml`.
+
 ## Market analyst
 
 The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`ANALYST_MODEL`).

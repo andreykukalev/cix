@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>CIX Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◆</span>
+      <h1>CIX</h1>
+      <span id="mode-badge" class="badge">paper</span>
+    </div>
+    <div class="controls">
+      <div class="segmented" role="group" aria-label="Trading mode">
+        <button type="button" data-mode="paper" aria-pressed="true">Paper</button>
+        <button type="button" data-mode="live" aria-pressed="false">Live</button>
+      </div>
+      <button type="button" id="refresh" class="ghost" title="Refresh now">Refresh</button>
+      <span id="updated" class="muted small" aria-live="polite">Loading…</span>
+    </div>
+  </header>
+
+  <main>
+    <p id="banner" class="banner" hidden></p>
+
+    <section class="tiles" aria-label="Status">
+      <article class="tile" id="tile-engine"><h2>Engine</h2><p class="value">–</p><p class="sub">–</p></article>
+      <article class="tile" id="tile-trading"><h2>Trading</h2><p class="value">–</p><p class="sub">–</p></article>
+      <article class="tile" id="tile-view"><h2>Market view</h2><p class="value">–</p><p class="sub">–</p></article>
+      <article class="tile" id="tile-data"><h2>Market data</h2><p class="value">–</p><p class="sub">–</p></article>
+      <article class="tile" id="tile-sync"><h2>Last sync</h2><p class="value">–</p><p class="sub">–</p></article>
+    </section>
+
+    <section class="panel" aria-labelledby="h-portfolio">
+      <div class="panel-head"><h2 id="h-portfolio">Portfolio</h2><span id="valued-at" class="muted small"></span></div>
+      <div class="figures" id="figures"></div>
+      <div class="split">
+        <div>
+          <h3>Holdings</h3>
+          <table id="holdings"><thead><tr><th>Coin</th><th class="num">Value</th><th>Plan</th><th>Stop set</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div>
+          <h3>Balances <span class="muted small">(paper account)</span></h3>
+          <table id="balances"><thead><tr><th>Currency</th><th class="num">Available</th><th class="num">Reserved</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-cycle">
+      <div class="panel-head"><h2 id="h-cycle">Trading cycle</h2></div>
+      <div class="figures" id="cycle"></div>
+      <div class="split">
+        <div>
+          <h3>Orders in flight</h3>
+          <table id="orders"><thead><tr><th>Sent</th><th>Coin</th><th>Side</th><th class="num">Size</th><th>Source</th><th>Order</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div>
+          <h3>Agents</h3>
+          <table id="agents"><thead><tr><th>Agent</th><th>Last run</th><th>Last activity</th><th class="num">Runs today</th><th class="num">Calls</th><th class="num">Orders</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-trades">
+      <div class="panel-head"><h2 id="h-trades">Executed trades</h2><span class="muted small">last 48 hours</span></div>
+      <table id="trades"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Avg price</th><th class="num">Fee</th><th>By</th><th>Order</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="panel" aria-labelledby="h-decisions">
+      <div class="panel-head"><h2 id="h-decisions">Decisions</h2><span class="muted small">orders placed, refused or cancelled, with the agent's reasoning</span></div>
+      <table id="decisions"><thead><tr><th>Time</th><th>By</th><th>Action</th><th>Coin</th><th>Side</th><th class="num">Size</th><th>Status</th><th>Why</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="panel" aria-labelledby="h-problems">
+      <div class="panel-head"><h2 id="h-problems">Errors and safety events</h2></div>
+      <table id="problems"><thead><tr><th>Time</th><th>Source</th><th>Kind</th><th>What happened</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="panel" aria-labelledby="h-activity">
+      <div class="panel-head">
+        <h2 id="h-activity">Journal activity</h2>
+        <form id="journal-filter" class="inline">
+          <label>Day <input type="date" id="journal-day"></label>
+          <label>Kind
+            <select id="journal-kind">
+              <option value="">all</option>
+              <option>order</option><option>fill</option><option>order-closed</option><option>tool-call</option>
+              <option>tool-denied</option><option>kill-switch</option><option>scan-signal</option><option>market-view</option>
+            </select>
+          </label>
+          <button type="submit" class="ghost">Show</button>
+          <button type="button" id="journal-recent" class="ghost">Recent</button>
+        </form>
+      </div>
+      <table id="activity"><thead><tr><th>Time</th><th>Kind</th><th>Actor</th><th>Run</th><th>Summary</th><th>Entry</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="panel" aria-labelledby="h-state">
+      <div class="panel-head"><h2 id="h-state">State documents</h2><span class="muted small">what the engine knows now (see docs/persistence.md)</span></div>
+      <table id="state"><thead><tr><th>Document</th><th>Type</th><th>Updated</th><th>What it is</th></tr></thead><tbody></tbody></table>
+    </section>
+  </main>
+
+  <footer class="muted small">
+    Read-only. This page can't place, change or cancel orders. Stops and targets are hidden; the journal keeps them.
+  </footer>
+</body>
+</html>

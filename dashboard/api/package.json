@@ -1,0 +1,16 @@
+{
+  "name": "cix-dashboard-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Read-only API for the CIX dashboard (Azure Static Web Apps managed functions).",
+  "main": "src/functions/*.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.5.0"
+  }
+}

@@ -107,6 +107,40 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  # The dashboard API's tests, and that the Azure templates and scripts are valid. Nothing here touches Azure.
+  azure-and-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Dashboard API tests
+        working-directory: dashboard/api
+        run: npm test
+
+      - name: Bicep builds and lints cleanly
+        run: |
+          az bicep install
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          az bicep lint --file infra/main.bicep
+
+      - name: PowerShell scripts parse, and the module's signing matches Microsoft's example
+        shell: pwsh
+        run: |
+          foreach ($f in Get-ChildItem tools/azure -Filter *.ps*1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | ForEach-Object { "::error file=tools/azure/$($f.Name),line=$($_.Extent.StartLineNumber)::$($_.Message)" }; exit 1 }
+          }
+          Import-Module ./tools/azure/CixAzure.psm1
+          $key = @('dsZQi3KtZmCv1ljt3VNWNm7sQUF1y5rJfC6kv5Jiwv', 'W0EndXdDku/dkKBp8/ufDToSxLzR4y+O/0H/t4bQtVNw==') -join ''  # documented sample, not a key
+          $token = New-CixCosmosAuthToken -Verb GET -ResourceType dbs -ResourceLink 'dbs/ToDoList' -Date 'Thu, 27 Apr 2017 00:51:12 GMT' -Key $key
+          if ([Uri]::UnescapeDataString($token) -ne 'type=master&ver=1.0&sig=c09PEVJrgp2uQRkr934kFbTqhByc7TVr3OHyqlu+c+c=') { throw 'Cosmos DB signing is wrong' }
+          foreach ($f in Get-ChildItem infra/environments -Filter *.json) { Get-Content $f -Raw | ConvertFrom-Json | Out-Null }
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:

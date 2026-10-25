@@ -23,3 +23,6 @@ __pycache__/
 .venv/
 logs/
 secrets/
+
+# Dashboard API dependencies (installed when publishing)
+node_modules/

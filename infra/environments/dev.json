@@ -1,0 +1,20 @@
+{
+  "$comment": "Settings for the 'dev' environment, read by tools/azure/*.ps1. No secrets here. Leave subscriptionId empty to pick it at the prompt (or pass -SubscriptionId).",
+  "environmentName": "dev",
+  "protected": false,
+  "subscriptionId": "",
+  "resourceGroup": "rg-cix-dev",
+  "location": "northeurope",
+  "dashboardLocation": "westeurope",
+  "namePrefix": "cix",
+  "cosmos": {
+    "enableFreeTier": true,
+    "databaseThroughput": 1000,
+    "databaseName": "cix",
+    "allowedIpRanges": []
+  },
+  "deployDashboard": true,
+  "tags": {
+    "purpose": "cix-paper-trading"
+  }
+}

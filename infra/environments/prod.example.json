@@ -1,0 +1,20 @@
+{
+  "$comment": "Template for a production (live-money) environment. Copy to prod.json and fill in. protected: true makes reset-database.ps1 refuse to touch it.",
+  "environmentName": "prod",
+  "protected": true,
+  "subscriptionId": "",
+  "resourceGroup": "rg-cix-prod",
+  "location": "northeurope",
+  "dashboardLocation": "westeurope",
+  "namePrefix": "cix",
+  "cosmos": {
+    "enableFreeTier": true,
+    "databaseThroughput": 1000,
+    "databaseName": "cix",
+    "allowedIpRanges": []
+  },
+  "deployDashboard": true,
+  "tags": {
+    "purpose": "cix-live-trading"
+  }
+}
