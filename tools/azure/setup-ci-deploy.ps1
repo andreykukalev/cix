@@ -54,6 +54,11 @@ if (-not $Repository) {
     throw "Couldn't tell the GitHub repository from git's origin; pass -Repository owner/repo."
   }
   $Repository = $Matches[1]
+  # Entra matches the subject case-sensitively: prefer GitHub's own spelling of the name when gh is signed in.
+  if (Get-Command gh -ErrorAction SilentlyContinue) {
+    $canonical = Invoke-CixNative { & gh repo view $Repository --json nameWithOwner --jq .nameWithOwner 2>$null }
+    if ($LASTEXITCODE -eq 0 -and "$canonical" -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { $Repository = "$canonical" }
+  }
 }
 $subject = "repo:${Repository}:ref:refs/heads/main"
 
@@ -79,6 +84,18 @@ else {
   $app = Invoke-CixAz @('ad', 'app', 'create', '--display-name', $identityName, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
   Write-CixInfo "Created $identityName ($($app.appId))."
 }
+# A reused identity must have no other way in: no client secret or certificate, and no owner but you.
+$details = Invoke-CixAz @('ad', 'app', 'show', '--id', $app.appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+foreach ($kind in 'passwordCredentials', 'keyCredentials') {
+  if ($details.PSObject.Properties[$kind] -and @($details.$kind).Count -gt 0) {
+    throw "$identityName has $kind (a client secret or certificate), which could sign in from anywhere. Remove them in the Azure portal (App registrations, Certificates & secrets) first."
+  }
+}
+$me = (Invoke-CixAz @('ad', 'signed-in-user', 'show', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson).id
+$owners = @(Invoke-CixAz @('ad', 'app', 'owner', 'list', '--id', $app.appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+$otherOwners = @($owners | Where-Object { $_.id -ne $me })
+if ($otherOwners.Count -gt 0) { throw "$identityName has other owners ($(($otherOwners | ForEach-Object { $_.id }) -join ', ')), who could add credentials to it. Refusing." }
+
 $sp = @(Invoke-CixAz @('ad', 'sp', 'list', '--filter', "appId eq '$($app.appId)'", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
 if ($sp.Count -eq 0) {
   $sp = Invoke-CixAz @('ad', 'sp', 'create', '--id', $app.appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
@@ -88,9 +105,11 @@ else { $sp = $sp[0] }
 
 Write-CixStep 'Federated credential (GitHub Actions, main only)'
 $credentials = @(Invoke-CixAz @('ad', 'app', 'federated-credential', 'list', '--id', $app.appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
-$others = @($credentials | Where-Object { $_.subject -ne $subject })
+$others = @($credentials | Where-Object {
+    $_.subject -ne $subject -or $_.issuer -ne 'https://token.actions.githubusercontent.com' -or
+    (@($_.audiences) -join ',') -ne 'api://AzureADTokenExchange' })
 if ($others.Count -gt 0) {
-  throw "$identityName also trusts $(($others | ForEach-Object { $_.subject }) -join ', '). Remove those in the Azure portal (App registrations, Certificates & secrets) first: only main may deploy."
+  throw "$identityName also trusts $(($others | ForEach-Object { "$($_.subject) (issuer $($_.issuer))" }) -join ', '). Remove those in the Azure portal (App registrations, Certificates & secrets) first: only main of $Repository may deploy."
 }
 if (@($credentials | Where-Object { $_.subject -eq $subject }).Count -eq 1) { Write-CixInfo "Already trusts $subject." }
 else {
@@ -123,10 +142,26 @@ if ($role.Count -eq 0) {
   finally { Remove-Item $file -ErrorAction SilentlyContinue }
   Write-CixInfo 'Created.'
 }
-else { Write-CixInfo 'Exists.' }
+else {
+  # An existing role with this name must grant exactly the two actions, on this resource group only.
+  $field = { param($o, $n) if ($o -and $o.PSObject.Properties[$n]) { @($o.$n) } else { @() } } # absent fields are empty, not errors
+  $p = @(& $field $role[0] 'permissions')
+  $actions = @($p | ForEach-Object { & $field $_ 'actions' } | Where-Object { $_ }) | Sort-Object
+  $extra = @($p | ForEach-Object { (& $field $_ 'notActions') + (& $field $_ 'dataActions') + (& $field $_ 'notDataActions') } | Where-Object { $_ })
+  if (($actions -join ',') -ne 'Microsoft.Web/staticSites/listSecrets/action,Microsoft.Web/staticSites/read' -or $extra.Count -gt 0 -or
+      ((& $field $role[0] 'assignableScopes') -join ',') -ne $groupId) {
+    throw "The existing role '$roleName' grants more than reading this Static Web App and its deployment token. Delete it first (az role definition delete --name `"$roleName`")."
+  }
+  Write-CixInfo 'Exists, with exactly those two actions.'
+}
 
 $assigned = @(Invoke-CixAz @('role', 'assignment', 'list', '--assignee', $sp.id, '--scope', $site.id, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
     Where-Object { $_.roleDefinitionName -eq $roleName })
+$everything = @(Invoke-CixAz @('role', 'assignment', 'list', '--assignee', $sp.id, '--all', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+$strays = @($everything | Where-Object { $_.roleDefinitionName -ne $roleName -or $_.scope -ne $site.id })
+if ($strays.Count -gt 0) {
+  throw "$identityName also holds $(($strays | ForEach-Object { "$($_.roleDefinitionName) on $($_.scope)" }) -join '; '). Remove those role assignments first: it may only read this Static Web App."
+}
 if ($assigned.Count -gt 0) { Write-CixInfo "Already assigned on $appName." }
 else {
   Confirm-Step "Assign '$roleName' to $identityName on $appName only?"

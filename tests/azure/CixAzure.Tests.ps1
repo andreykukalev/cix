@@ -406,18 +406,26 @@ Check 'provision.ps1 full run (-Yes) with no shared account: creates it, then CI
   }
 }
 
+$site = '{"id":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev","name":"stapp-cix-dev"}'
+$cleanApp = @{
+  'staticwebapp show'           = $site
+  'ad app list'                 = '[{"appId":"11111111-1111-1111-1111-111111111111"}]'
+  'ad app show'                 = '{"appId":"11111111-1111-1111-1111-111111111111","passwordCredentials":[],"keyCredentials":[]}'
+  'ad signed-in-user'           = '{"id":"me"}'
+  'ad app owner'                = '[{"id":"me"}]'
+  'ad sp list'                  = '[{"id":"22222222-2222-2222-2222-222222222222"}]'
+  'ad app federated-credential' = '[]'
+  'role definition'             = '[]'
+  'role assignment'             = '[]'
+}
+function Invoke-SetupCi([hashtable]$Overrides) {
+  $extra = @{}; foreach ($k in $cleanApp.Keys) { $extra[$k] = $cleanApp[$k] }
+  foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
+  return Invoke-WithFakeAz @{ Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment dev -Repository 'owner/repo' -Yes }
+}
+
 Check 'setup-ci-deploy.ps1 (-Yes) creates the identity, a main-only credential and the role, then prints the variables' {
-  $extra = @{
-    'staticwebapp show'           = '{"id":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev","name":"stapp-cix-dev"}'
-    'ad app list'                 = '[]'
-    'ad app create'               = '{"appId":"11111111-1111-1111-1111-111111111111"}'
-    'ad sp list'                  = '[]'
-    'ad sp create'                = '{"id":"22222222-2222-2222-2222-222222222222"}'
-    'ad app federated-credential' = '[]'
-    'role definition'             = '[]'
-    'role assignment'             = '[]'
-  }
-  $r = Invoke-WithFakeAz @{ Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment dev -Repository 'owner/repo' -Yes }
+  $r = Invoke-SetupCi @{ 'ad app list' = '[]'; 'ad app create' = '{"appId":"11111111-1111-1111-1111-111111111111"}'; 'ad sp list' = '[]'; 'ad sp create' = '{"id":"22222222-2222-2222-2222-222222222222"}' }
   if ($r.Error) { throw $r.Error }
   foreach ($expected in @('trusted only for repo:owner/repo:ref:refs/heads/main', 'Trusts repo:owner/repo:ref:refs/heads/main.', 'Assigned.',
       'AZURE_CLIENT_ID = 11111111-1111-1111-1111-111111111111', 'AZURE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa', 'DASHBOARD_ENVIRONMENT = dev')) {
@@ -425,15 +433,45 @@ Check 'setup-ci-deploy.ps1 (-Yes) creates the identity, a main-only credential a
   }
 }
 
-Check 'setup-ci-deploy.ps1 refuses an identity that also trusts other branches or pull requests' {
-  $extra = @{
-    'staticwebapp show'           = '{"id":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev"}'
-    'ad app list'                 = '[{"appId":"11111111-1111-1111-1111-111111111111"}]'
-    'ad sp list'                  = '[{"id":"22222222-2222-2222-2222-222222222222"}]'
-    'ad app federated-credential' = '[{"subject":"repo:owner/repo:pull_request"}]'
+$mainCredential = '[{"subject":"repo:owner/repo:ref:refs/heads/main","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]'
+
+Check 'setup-ci-deploy.ps1 accepts a reused identity that is exactly as it should be, changing nothing' {
+  $r = Invoke-SetupCi @{
+    'ad app federated-credential' = $mainCredential
+    'role definition'             = '[{"permissions":[{"actions":["Microsoft.Web/staticSites/read","Microsoft.Web/staticSites/listSecrets/action"],"notActions":[],"dataActions":[],"notDataActions":[]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]'
+    'role assignment'             = '[{"roleDefinitionName":"CIX dashboard deployer (dev)","scope":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev"}]'
   }
-  $r = Invoke-WithFakeAz @{ Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment dev -Repository 'owner/repo' -Yes }
-  if (-not $r.Error -or -not $r.Error.Contains('also trusts repo:owner/repo:pull_request')) { throw "got: $($r.Error)" }
+  if ($r.Error) { throw $r.Error }
+  foreach ($expected in @('Already trusts repo:owner/repo:ref:refs/heads/main.', 'Exists, with exactly those two actions.', 'Already assigned on stapp-cix-dev.')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+foreach ($case in @(
+    @{ Name = 'a client secret'; Overrides = @{ 'ad app show' = '{"appId":"1","passwordCredentials":[{"keyId":"k"}],"keyCredentials":[]}' }; Says = 'passwordCredentials' },
+    @{ Name = 'another owner'; Overrides = @{ 'ad app owner' = '[{"id":"me"},{"id":"someone-else"}]' }; Says = 'other owners (someone-else)' },
+    @{ Name = 'a pull-request credential'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:owner/repo:pull_request","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'also trusts repo:owner/repo:pull_request' },
+    @{ Name = 'a main credential from another issuer'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:owner/repo:ref:refs/heads/main","issuer":"https://evil.example","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'issuer https://evil.example' },
+    @{ Name = 'a broader role of the same name'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants more than reading' },
+    @{ Name = 'a same-named role with data actions'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/staticSites/read","Microsoft.Web/staticSites/listSecrets/action"],"notActions":[],"dataActions":["Microsoft.DocumentDB/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants more than reading' },
+    @{ Name = 'another role assignment'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role assignment' = '[{"roleDefinitionName":"Contributor","scope":"/subscriptions/x"}]' }; Says = 'also holds Contributor on /subscriptions/x' })) {
+  Check "setup-ci-deploy.ps1 refuses a reused identity with $($case.Name)" {
+    $r = Invoke-SetupCi $case.Overrides
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
+  }
+}
+
+Check 'only the deploy-dashboard job may request Azure sign-in tokens, and no workflow runs on outside triggers' {
+  foreach ($f in Get-ChildItem (Join-CixPath $repo '.github' 'workflows') -Filter *.yml) {
+    $text = [IO.File]::ReadAllText($f.FullName)
+    if ($text -match '(?m)^\s*(pull_request_target|workflow_run|issue_comment|repository_dispatch)\s*:') { throw "$($f.Name) uses the $($Matches[1]) trigger" }
+    $grants = [regex]::Matches($text, '(?m)^\s*id-token:\s*write')
+    if ($f.Name -ne 'ci.yml' -and $grants.Count -gt 0) { throw "$($f.Name) grants id-token: write" }
+    if ($f.Name -eq 'ci.yml') {
+      Expect $grants.Count 1 'id-token grants in ci.yml'
+      $deployJob = $text.IndexOf("`n  deploy-dashboard:")
+      if ($deployJob -lt 0 -or $grants[0].Index -lt $deployJob) { throw 'id-token: write is outside the deploy-dashboard job' }
+    }
+  }
 }
 
 Check 'provision.ps1 refuses a database that exists but no CIX environment claims' {

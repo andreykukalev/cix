@@ -195,6 +195,7 @@ jobs:
       SWA_CLI_VERSION: "2.0.1" # the same pinned version as tools/azure/provision.ps1 ($SwaCliVersion)
     outputs:
       publish: ${{ steps.tip.outputs.publish }}
+      sha256: ${{ steps.bundle.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -221,11 +222,14 @@ jobs:
           node-version: "22"
 
       - name: Install the API's dependency and the Static Web Apps CLI
+        id: bundle
         if: steps.tip.outputs.publish == 'true'
         run: |
           (cd dashboard/api && npm install --omit=dev --no-audit --no-fund --ignore-scripts)
           npm install --prefix .swa-cli --no-audit --no-fund "@azure/static-web-apps-cli@${SWA_CLI_VERSION}"
           tar -czf dashboard-bundle.tgz dashboard infra/environments .swa-cli
+          # The deploy job checks this hash: a job output can't be changed by other jobs, an artifact could be replaced.
+          echo "sha256=$(sha256sum dashboard-bundle.tgz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         if: steps.tip.outputs.publish == 'true'
@@ -286,7 +290,11 @@ jobs:
 
       - name: Publish the dashboard
         if: steps.setup.outputs.ready == 'true'
+        env:
+          EXPECTED_SHA256: ${{ needs.dashboard-bundle.outputs.sha256 }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          echo "$EXPECTED_SHA256  dashboard-bundle.tgz" | sha256sum -c --quiet -
           tar -xzf dashboard-bundle.tgz
           settings="infra/environments/${DASHBOARD_ENVIRONMENT}.json"
           group=$(jq -r .resourceGroup "$settings")
@@ -294,5 +302,10 @@ jobs:
           token=$(az staticwebapp secrets list --name "$app" --resource-group "$group" --query properties.apiKey -o tsv)
           echo "::add-mask::$token"
           [ -n "$token" ] || { echo "::error::Couldn't read the deployment token of $app."; exit 1; }
-          SWA_CLI_DEPLOYMENT_TOKEN="$token" .swa-cli/node_modules/.bin/swa deploy dashboard/app --api-location dashboard/api \
+          az logout # the CLI below needs only the deployment token
+          # Checked again here, inside the concurrency group: an older run waiting behind a newer one must not publish.
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$tip" != "$GITHUB_SHA" ]; then echo "::notice::main has moved on; the newer run publishes the dashboard."; exit 0; fi
+          SWA_CLI_DEPLOYMENT_TOKEN="$token" env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
+            .swa-cli/node_modules/.bin/swa deploy dashboard/app --api-location dashboard/api \
             --api-language node --api-version 22 --env production

@@ -122,10 +122,10 @@ This installs the API's one dependency, `@azure/functions` (pinned, with install
 
 After this first publish, CI publishes the dashboard by itself after every push to `main`, once the dashboard tests and the secret scan pass. You can also start it by hand: *Actions*, *CI*, *Run workflow* on `main`. A run that is no longer the tip of `main` leaves publishing to the newer one. Until the setup below is done, pushes skip publishing with a notice, and a manual run fails, so a manual run really checks the setup.
 
-**No secret is stored in GitHub** ([ADR-0010](adr/0010-dashboard-ci-deploy-oidc.md)). This matters because the repository is private on GitHub Free, which has no environment secrets limited to a branch: a repository secret would be readable by workflows on any branch, including branches agents push.
-- The `deploy-dashboard` job signs in to Azure as a dedicated identity, `cix-dashboard-deploy-dev`, through a GitHub OIDC token. That identity trusts tokens only for pushes to `main` of this repository; pull requests, other branches and forks can't use it.
-- The identity's only right is to read this Static Web App and its deployment token. The job reads the token at run time and publishes with it.
-- npm packages, including the pinned Static Web Apps CLI, are installed in a separate job with no Azure access, so their install scripts never run where credentials are in reach.
+**No secret is stored in GitHub** ([ADR-0010](adr/0010-dashboard-ci-deploy-oidc.md)). This matters because the repository is private on GitHub Free, which has no environment secrets limited to a branch: a repository secret would be readable by workflows on any branch.
+- The `deploy-dashboard` job signs in to Azure as a dedicated identity, `cix-dashboard-deploy-dev`, through a GitHub OIDC token. The identity trusts any workflow run on the `main` ref of this repository, whatever the trigger. Pull requests, other branches and forks get different token subjects and can't use it. A test keeps `id-token: write` in that one job, and forbids triggers driven by outside input (`pull_request_target`, `workflow_run`, `issue_comment`, `repository_dispatch`).
+- The identity's only right is to read this Static Web App and its deployment token. The job reads the token at run time, signs out of Azure, and publishes with it.
+- npm install scripts run in a separate job with no Azure access. The deploy job checks the bundle's hash before unpacking it. The pinned Static Web Apps CLI itself still runs with the deployment token (it has to), but without the Azure session or the ability to request new sign-in tokens.
 
 Set it up once (needs Owner on the subscription):
 
@@ -135,11 +135,13 @@ Set it up once (needs Owner on the subscription):
 
 The script:
 - creates the identity, its `main`-only federated credential, and a custom role (`Microsoft.Web/staticSites` read and listSecrets only) assigned on `stapp-cix-dev` alone, asking before each change;
+- refuses to reuse an identity with any other way in: a client secret or certificate, another owner, another trusted subject or issuer, a broader role of the same name, or any other role assignment;
+- takes the repository name from the GitHub CLI when it is signed in (Entra matches the subject case-sensitively);
 - prints four repository variables: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` and `DASHBOARD_ENVIRONMENT`. They are IDs, not secrets.
 
 Add those variables in GitHub: *Settings*, *Secrets and variables*, *Actions*, *Variables*. Or add `-SetGitHubVariables` to the script, which sets them with the GitHub CLI (`gh`, signed in). Then run *CI* on `main` once by hand to check it publishes.
 
-What the identity could still do, if a workflow on `main` misused it: read the deployment token, publish other code as the dashboard, and that code would run with the dashboard's settings, including the shared account's read-only key (which can read every project's database there). `main` has no branch protection on GitHub Free, so this trusts everyone who can push to `main`. If you suspect misuse, remove the identity's role assignment, reset the deployment token (portal: `stapp-cix-dev`, *Manage deployment token*, *Reset*), and regenerate the account's read-only keys, then run `provision.ps1` again to update the dashboard's settings.
+What the identity could still do, if a workflow on `main` misused it: read the deployment token, publish other code as the dashboard, and that code would run with the dashboard's settings, including the shared account's read-only key (which can read every project's database there). `main` has no branch protection on GitHub Free, so this trusts everyone who can push to `main`, merge into it, or start a workflow on it. That includes the Claude coding agents: their GitHub access can merge pull requests (the owner asked them to) and could push to `main` directly. Only the rules in CLAUDE.md, not GitHub, stop them. GitHub Pro with branch protection on `main` would make that a technical limit. If you suspect misuse, remove the identity's role assignment, reset the deployment token (portal: `stapp-cix-dev`, *Manage deployment token*, *Reset*), and regenerate the account's read-only keys, then run `provision.ps1` again to update the dashboard's settings.
 
 The script command above still works for publishing by hand.
 
