@@ -40,6 +40,17 @@ public enum CancelOutcome
 /// <param name="Source"><c>place_order</c>, <c>protective-exit</c> or <c>engine</c>.</param>
 public sealed record OrderContext(string Source, decimal? StopLoss = null, decimal? TakeProfit = null, string? RunId = null, string? Strategy = null);
 
+/// <summary>A portfolio valuation and when it was taken.</summary>
+public sealed record PortfolioSample(PortfolioSnapshot Snapshot, DateTimeOffset At);
+
+/// <summary>
+/// The latest reconciliation, for status reporting. <paramref name="Problem"/> is a fixed code, never free text:
+/// <c>exchange-unreadable</c>, <c>unknown-open-orders</c>, <c>unexplained-holdings-change</c>, <c>holdings-not-compared</c>
+/// (no fresh prices to value them), or null when all was well. The details are in the journal and the logs.
+/// </summary>
+/// <param name="ReconciledAt">The last reconciliation that read the exchange and compared it fully.</param>
+public sealed record ReconcileStatus(DateTimeOffset? ReconciledAt, DateTimeOffset AttemptedAt, string? Problem);
+
 /// <summary>What engaging the kill switch did to open orders.</summary>
 public sealed record KillSwitchResult(bool NewlyEngaged, int Cancelled, IReadOnlyList<string> NotCancelled);
 
@@ -233,7 +244,9 @@ public sealed partial class ExecutionService
     {
         try
         {
-            return await _portfolio.GetSnapshotAsync(0, PendingSnapshot(), cancellationToken).ConfigureAwait(false);
+            var snapshot = await _portfolio.GetSnapshotAsync(0, PendingSnapshot(), cancellationToken).ConfigureAwait(false);
+            Volatile.Write(ref _latestSample, new PortfolioSample(snapshot, _time.GetUtcNow()));
+            return snapshot;
         }
         catch (PortfolioUnavailableException ex)
         {
@@ -241,6 +254,14 @@ public sealed partial class ExecutionService
             return null;
         }
     }
+
+    private PortfolioSample? _latestSample;
+
+    /// <summary>
+    /// The portfolio as the safety monitor last valued it (every minute), or null before the first valuation. Reading it costs
+    /// no exchange call and changes nothing, so status reporting can use it freely.
+    /// </summary>
+    public PortfolioSample? LatestSample => Volatile.Read(ref _latestSample);
 
     private (DateTimeOffset At, PortfolioSnapshot Snapshot)? _portfolioCache;
 

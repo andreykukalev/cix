@@ -21,11 +21,16 @@ public sealed partial class ExecutionService
 {
     public const string ReconcilerBy = "reconciler";
 
-    /// <summary>When the engine last compared itself with the exchange successfully (the portfolio's last sync).</summary>
-    public DateTimeOffset? LastReconciledAt { get; private set; }
+    private ReconcileStatus? _reconcileStatus;
 
-    /// <summary>What the last reconciliation found wrong (why it halted, or that the exchange couldn't be read), or null.</summary>
-    public string? LastReconcileProblem { get; private set; }
+    /// <summary>The latest reconciliation (see <see cref="ReconcileStatus"/>), or null before the first.</summary>
+    public ReconcileStatus? LastReconcile => Volatile.Read(ref _reconcileStatus);
+
+    /// <summary>When the engine last compared itself with the exchange fully: the portfolio's last sync.</summary>
+    public DateTimeOffset? LastReconciledAt => LastReconcile?.ReconciledAt;
+
+    private void PublishReconcile(DateTimeOffset attemptedAt, string? problem, bool complete) =>
+        Volatile.Write(ref _reconcileStatus, new ReconcileStatus(complete ? attemptedAt : LastReconcile?.ReconciledAt, attemptedAt, problem));
 
     private Dictionary<string, DateTimeOffset> _missingSince = new(StringComparer.Ordinal);
     private HashSet<string> _uncertainMissedOnce = new(StringComparer.Ordinal);
@@ -53,7 +58,7 @@ public sealed partial class ExecutionService
             catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
             {
                 LogReconcileFailed(_logger, ex.Message);
-                LastReconcileProblem = "The exchange couldn't be read.";
+                PublishReconcile(_time.GetUtcNow(), "exchange-unreadable", complete: false);
                 return ReconcileReport.Skipped;
             }
 
@@ -133,6 +138,7 @@ public sealed partial class ExecutionService
             var engineOrdersNotional = open
                 .Where(o => o.IsOpen && (known.Contains(o.ClientOrderId) || pendingIds.Contains(o.ClientOrderId)))
                 .Sum(o => o.Quantity * (o.Price ?? 0m));
+            var hadBaseline = _store.Current.Holdings is not null;
             var (unexplained, allowance) = await CheckHoldingsAsync(holdings, engineOrdersNotional, cancellationToken).ConfigureAwait(false);
             await PrunePositionPlansAsync(holdings, openIds, pendingIds, now, cancellationToken).ConfigureAwait(false);
 
@@ -143,8 +149,12 @@ public sealed partial class ExecutionService
                 reason = $"Holdings changed by {change:0.##} in quote currency, more than the engine's fills can explain ({allowance:0.##}): deposit, withdrawal or outside trading?";
 
             report = new ReconcileReport(unknown, resolved, dropped, unexplained, reason);
-            LastReconciledAt = now;
-            LastReconcileProblem = reason;
+            var holdingsCompared = !hadBaseline || unexplained is not null;
+            var problem = unknown.Count > 0 ? "unknown-open-orders"
+                : reason is not null ? "unexplained-holdings-change"
+                : holdingsCompared ? null
+                : "holdings-not-compared";
+            PublishReconcile(now, problem, complete: holdingsCompared);
         }
         finally
         {

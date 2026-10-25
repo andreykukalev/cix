@@ -109,16 +109,15 @@ public static class ToolServerRegistration
             // state are loaded, so answering at all means ready. A halted engine is still healthy: it is up, just not trading.
             // "degraded" means a dependency is failing right now: orders that need it are refused, and it is retried.
             var services = http.RequestServices;
-            var health = services.GetService<Status.DependencyHealth>();
+            var database = services.GetService<Status.DependencyHealth>()?.Database ?? Status.DatabaseHealth.Unknown;
             var execution = services.GetService<Execution.ExecutionService>();
-            var database = health?.Database ?? "unknown";
             return Results.Json(new
             {
-                status = database == "unreachable" ? "degraded" : "ready",
+                status = database.State == "unreachable" ? "degraded" : "ready",
                 mode = services.GetService<TradingContext>()?.Mode.ToString().ToLowerInvariant(),
                 halted = services.GetService<Execution.KillSwitch>()?.IsEngaged,
-                database,
-                databaseOkAt = health?.DatabaseOkAt,
+                database = database.State,
+                databaseOkAt = database.OkAt,
                 lastReconciledAt = execution?.LastReconciledAt,
             });
         });

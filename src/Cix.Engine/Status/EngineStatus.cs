@@ -9,23 +9,33 @@ namespace Cix.Engine.Status;
 
 /// <summary>
 /// The engine's status for people and the dashboard, rewritten every minute as the <c>engine-status-&lt;mode&gt;</c> document
-/// in the state container (docs/persistence.md). Read-only: nothing in the engine reads it back, so it can't affect trading.
+/// in the state container (docs/persistence.md). Built only from what the engine already holds in memory: building it makes
+/// no exchange call and changes no state, and nothing reads it back, so it can't affect trading. It holds fixed codes and
+/// categories, never free text that could carry order IDs or amounts (those stay in the journal).
 /// </summary>
 /// <param name="UpdatedAt">When this was written: the engine's heartbeat, and its last successful database write.</param>
-/// <param name="LastReconciledAt">The last successful comparison with the exchange: when the portfolio was last in sync.</param>
+/// <param name="HaltedBy">What engaged the kill switch: <c>owner</c>, <c>reconciler</c>, <c>safety-monitor</c>, <c>execution</c> or <c>engine</c>.</param>
+/// <param name="HaltCategory">A fixed description of <paramref name="HaltedBy"/>; the exact reason is in the journal.</param>
+/// <param name="LastReconciledAt">The last full comparison with the exchange: when the portfolio was last in sync.</param>
+/// <param name="LastReconcileProblem">A code from <see cref="ReconcileStatus"/>, or null.</param>
+/// <param name="OldestQuoteAt">The oldest latest quote among the tradable coins that have one.</param>
+/// <param name="UnquotedSymbols">Tradable coins with no quote yet.</param>
 public sealed record EngineStatus(
     string Mode,
     DateTimeOffset UpdatedAt,
     DateTimeOffset StartedAt,
     string? Strategy,
     bool Halted,
-    string? HaltReason,
+    string? HaltedBy,
+    string? HaltCategory,
     DateTimeOffset? HaltedSince,
     DateTimeOffset? LastReconciledAt,
+    DateTimeOffset? LastReconcileAttemptAt,
     string? LastReconcileProblem,
     ScanStatus? LastScan,
     MarketViewStatus? MarketView,
     DateTimeOffset? OldestQuoteAt,
+    IReadOnlyList<string> UnquotedSymbols,
     PortfolioStatus? Portfolio);
 
 public sealed record ScanStatus(DateTimeOffset At, int Ranked, int Excluded, int EntrySignals, int ExitSignals, string SignalKey);
@@ -75,48 +85,29 @@ public sealed class InMemoryEngineStatusStore : IEngineStatusStore
     }
 }
 
+/// <summary>The database's health at one moment: <c>ok</c>, <c>unreachable</c>, <c>unknown</c> (not checked yet) or <c>not-used</c>.</summary>
+public sealed record DatabaseHealth(string State, DateTimeOffset? OkAt, DateTimeOffset? FailedAt, string? Problem)
+{
+    public static readonly DatabaseHealth Unknown = new("unknown", null, null, null);
+}
+
 /// <summary>
 /// Whether the engine's dependencies answer, for <c>/healthz</c> and the status record. The database is judged by the
-/// status write each minute; anything else that fails to reach it (journal, state) fails on its own terms.
+/// status write each minute; anything else that fails to reach it (journal, state) fails on its own terms. Published as one
+/// immutable record, so a reader never sees half an update.
 /// </summary>
 public sealed class DependencyHealth
 {
-    private readonly Lock _gate = new();
+    private DatabaseHealth _database = DatabaseHealth.Unknown;
 
-    public DateTimeOffset? DatabaseOkAt { get; private set; }
+    public DatabaseHealth Database => Volatile.Read(ref _database);
 
-    public DateTimeOffset? DatabaseFailedAt { get; private set; }
+    public void DatabaseNotUsed() => Volatile.Write(ref _database, new DatabaseHealth("not-used", null, null, null));
 
-    public string? DatabaseProblem { get; private set; }
+    public void DatabaseOk(DateTimeOffset at) => Volatile.Write(ref _database, Database with { State = "ok", OkAt = at, Problem = null });
 
-    /// <summary><c>ok</c>, <c>unreachable</c>, <c>unknown</c> (not checked yet) or <c>not-used</c> (no database configured).</summary>
-    public string Database { get; private set; } = "unknown";
-
-    public void DatabaseNotUsed()
-    {
-        lock (_gate)
-            Database = "not-used";
-    }
-
-    public void DatabaseOk(DateTimeOffset at)
-    {
-        lock (_gate)
-        {
-            DatabaseOkAt = at;
-            DatabaseProblem = null;
-            Database = "ok";
-        }
-    }
-
-    public void DatabaseFailed(DateTimeOffset at, string problem)
-    {
-        lock (_gate)
-        {
-            DatabaseFailedAt = at;
-            DatabaseProblem = problem;
-            Database = "unreachable";
-        }
-    }
+    public void DatabaseFailed(DateTimeOffset at, string problem) =>
+        Volatile.Write(ref _database, Database with { State = "unreachable", FailedAt = at, Problem = problem });
 }
 
 /// <summary>Writes <see cref="EngineStatus"/> every minute. A failed write is logged and marks the database unreachable; it never stops trading.</summary>
@@ -138,17 +129,28 @@ public sealed partial class EngineStatusService(
 
     private readonly DateTimeOffset _startedAt = time.GetUtcNow();
 
-    public async Task<EngineStatus> BuildAsync(CancellationToken cancellationToken)
+    /// <summary>Fixed text for each component that can engage the kill switch; the exact reason stays in the journal.</summary>
+    public static string HaltCategoryFor(string? by) => by switch
+    {
+        "owner" => "Paused by the owner.",
+        ExecutionService.ReconcilerBy => "Reconciliation found the account changed outside the engine.",
+        SafetyMonitor.By => "A safety limit was reached (drawdown, daily loss or stale market data).",
+        ExecutionService.RejectStreakBy => "Too many orders in a row were rejected by the risk gate.",
+        "engine" => "Waiting for the owner to confirm before trading starts.",
+        _ => "Halted.",
+    };
+
+    /// <summary>The status from what the engine holds in memory: no exchange call, no state change.</summary>
+    public EngineStatus Build()
     {
         var now = time.GetUtcNow();
         var kill = killSwitch.State;
         var scan = scanner?.Latest;
         var view = views?.Current;
+        var reconcile = execution.LastReconcile;
         var quoteTimes = market.QuoteTimes();
-        var tradable = limits.AllowedSymbols.Select(MarketDataPoller.NormaliseSymbol).ToList();
-        DateTimeOffset? oldestQuote = tradable.Count == 0 || tradable.Any(s => !quoteTimes.ContainsKey(s))
-            ? null
-            : tradable.Min(s => quoteTimes[s]);
+        var tradable = limits.AllowedSymbols.Select(MarketDataPoller.NormaliseSymbol).Order(StringComparer.Ordinal).ToList();
+        var quoted = tradable.Where(quoteTimes.ContainsKey).ToList();
 
         return new EngineStatus(
             trading.Mode.ToString().ToLowerInvariant(),
@@ -156,24 +158,27 @@ public sealed partial class EngineStatusService(
             _startedAt,
             specs?.Active?.Label,
             kill.Engaged,
-            kill.Engaged ? kill.Reason : null,
+            kill.Engaged ? kill.By : null,
+            kill.Engaged ? HaltCategoryFor(kill.By) : null,
             kill.Engaged ? kill.Since : null,
-            execution.LastReconciledAt,
-            execution.LastReconcileProblem,
+            reconcile?.ReconciledAt,
+            reconcile?.AttemptedAt,
+            reconcile?.Problem,
             scan is null ? null : new ScanStatus(scan.AsOf, scan.Ranked.Count, scan.Excluded.Count, scan.Entries.Count, scan.Exits.Count, scanner!.SignalKey),
             view is null
                 ? null
                 : new MarketViewStatus(view.Regime.ToString(), view.RecordedAt, view.ValidUntil, view.IsActive(now), view.Flags.Select(f => f.Symbol).ToList()),
-            oldestQuote,
-            await PortfolioAsync(cancellationToken).ConfigureAwait(false));
+            quoted.Count == 0 ? null : quoted.Min(s => quoteTimes[s]),
+            tradable.Where(s => !quoteTimes.ContainsKey(s)).ToList(),
+            Portfolio());
     }
 
-    private async Task<PortfolioStatus?> PortfolioAsync(CancellationToken cancellationToken)
+    private PortfolioStatus? Portfolio()
     {
-        if (await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false) is not { } valued)
-            return null; // can't be valued now (stale prices): the status says so by leaving it out
+        if (execution.LatestSample is not { } sample)
+            return null; // not valued yet (or never could be: stale prices): the status says so by leaving it out
 
-        var (snapshot, at) = valued;
+        var (snapshot, at) = (sample.Snapshot, sample.At);
         var plans = execution.PositionPlanStates;
         var holdings = snapshot.PositionQuoteBySymbol
             .Where(p => p.Value > 0m)
@@ -193,12 +198,22 @@ public sealed partial class EngineStatusService(
             Math.Round(snapshot.PnlToday, 2), Math.Round(snapshot.TotalExposureQuote, 2), holdings);
     }
 
-    /// <summary>Builds and saves the status once. Returns whether it was saved.</summary>
+    /// <summary>Builds and saves the status once. Returns whether it was saved. Only a failed save counts against the database.</summary>
     public async Task<bool> WriteOnceAsync(CancellationToken cancellationToken)
     {
+        EngineStatus status;
         try
         {
-            var status = await BuildAsync(cancellationToken).ConfigureAwait(false);
+            status = Build();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogBuildFailed(logger, ex.GetType().Name);
+            return false;
+        }
+
+        try
+        {
             await store.SaveAsync(status, cancellationToken).ConfigureAwait(false);
             if (store.UsesDatabase)
                 health.DatabaseOk(status.UpdatedAt);
@@ -228,6 +243,9 @@ public sealed partial class EngineStatusService(
         {
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Engine status could not be built ({Error}); trading is unaffected")]
+    private static partial void LogBuildFailed(ILogger logger, string error);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Engine status could not be written ({Error}); trading is unaffected")]
     private static partial void LogWriteFailed(ILogger logger, string error);

@@ -22,7 +22,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 | `id` | `type` | What it is | Written |
 |---|---|---|---|
 | `engine-state-paper` (`engine-state-live` in Live) | `engine-state` | The engine's operational state (below). | On every change: an order sent, confirmed or finished, a plan opened or closed, a new loss baseline, the kill switch. |
-| `engine-status-paper` (or `-live`) | `engine-status` | The engine's status for people and the dashboard (below). The engine never reads it back, so it can't affect trading. | Every minute. |
+| `engine-status-paper` (or `-live`) | `engine-status` | The engine's status for people and the dashboard (below). Built from what the engine already holds in memory, with no exchange call and no state change, and never read back, so it can't affect trading. | Every minute. |
 | `paper-account` | `paper-account` | The simulated Revolut X account: balances (`available`, `reserved`) per currency, and its orders (all open ones and the latest 500 finished). Paper mode only. | Every second when something changed, and at shutdown. |
 | `spec-<name>@v<N>-<hash>` | `strategy-spec` | An immutable copy of a strategy spec version that ran. Journal entries name it in `specVersion` (`good@v1#3f2a9c1b04de`). | Once, the first time a version runs. Never overwritten. |
 
@@ -44,12 +44,12 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 |---|---|
 | `updatedAt` | When the engine wrote it: its heartbeat, and its last successful database write. Older than a few minutes means the engine is down or can't reach the database. |
 | `startedAt`, `mode`, `strategy` | When this engine process started, paper or live, and the active strategy spec. |
-| `halted`, `haltReason`, `haltedSince` | The kill switch. |
-| `lastReconciledAt`, `lastReconcileProblem` | The last successful comparison with the exchange (the portfolio's last sync), and anything it found wrong. |
+| `halted`, `haltedBy`, `haltCategory`, `haltedSince` | The kill switch: which part of the engine engaged it and a fixed description of why. The exact reason (which can name orders or amounts) is only in the journal's `kill-switch` entry. |
+| `lastReconciledAt`, `lastReconcileAttemptAt`, `lastReconcileProblem` | The last full comparison with the exchange (the portfolio's last sync), the last attempt, and a problem code: `exchange-unreadable`, `unknown-open-orders`, `unexplained-holdings-change`, `holdings-not-compared` (no fresh prices to value the holdings), or empty. |
 | `lastScan` | The latest scan: when, how many coins ranked and excluded, entry and exit signals, and the signal key the trader watches. |
 | `marketView` | The analyst's current view: regime, until when, coins to avoid. |
-| `oldestQuoteAt` | The oldest of the latest prices across the tradable coins. Minutes old means market data has stalled. |
-| `portfolio` | Equity, cash (equity minus holdings, including what open buys reserve), peak equity, today's P&L, exposure, and each holding with its value and plan (status, entry, stop, target). Absent while prices are too stale to value it. |
+| `oldestQuoteAt`, `unquotedSymbols` | The oldest of the latest prices across the tradable coins that have one, and the coins with none yet. Minutes old means market data has stalled. |
+| `portfolio` | As the safety monitor last valued it (every minute): equity, cash (equity minus holdings, including what open buys reserve), peak equity, today's P&L, exposure, and each holding with its value and plan (status, entry, stop, target). Absent until the first valuation. |
 
 ### Why some IDs are still GUIDs
 
