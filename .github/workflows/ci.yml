@@ -271,28 +271,40 @@ jobs:
           fi
           echo "::notice::The dashboard's deploy identity isn't set up yet; skipping (docs/azure.md)."
 
-      - uses: actions/download-artifact@v4
+      - name: Still the tip of main?
+        id: tip
         if: steps.setup.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }} # this step only; the publish step below doesn't get it
+        run: |
+          # Checked again inside the concurrency group: an older run waiting behind a newer one must not publish.
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" = "$GITHUB_SHA" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"; echo "::notice::main has moved on; the newer run publishes the dashboard."
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.setup.outputs.ready == 'true' && steps.tip.outputs.publish == 'true'
         with:
           name: dashboard-bundle
 
       - uses: actions/setup-node@v4
-        if: steps.setup.outputs.ready == 'true'
+        if: steps.setup.outputs.ready == 'true' && steps.tip.outputs.publish == 'true'
         with:
           node-version: "22"
 
       - uses: azure/login@v2
-        if: steps.setup.outputs.ready == 'true'
+        if: steps.setup.outputs.ready == 'true' && steps.tip.outputs.publish == 'true'
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Publish the dashboard
-        if: steps.setup.outputs.ready == 'true'
+        if: steps.setup.outputs.ready == 'true' && steps.tip.outputs.publish == 'true'
         env:
           EXPECTED_SHA256: ${{ needs.dashboard-bundle.outputs.sha256 }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           echo "$EXPECTED_SHA256  dashboard-bundle.tgz" | sha256sum -c --quiet -
           tar -xzf dashboard-bundle.tgz
@@ -302,10 +314,9 @@ jobs:
           token=$(az staticwebapp secrets list --name "$app" --resource-group "$group" --query properties.apiKey -o tsv)
           echo "::add-mask::$token"
           [ -n "$token" ] || { echo "::error::Couldn't read the deployment token of $app."; exit 1; }
-          az logout # the CLI below needs only the deployment token
-          # Checked again here, inside the concurrency group: an older run waiting behind a newer one must not publish.
-          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
-          if [ "$tip" != "$GITHUB_SHA" ]; then echo "::notice::main has moved on; the newer run publishes the dashboard."; exit 0; fi
+          # Hygiene, not a boundary: code in this step could still reach the runner's secrets. The real limit is the
+          # identity's role, which grants no more than the deployment token the CLI is given anyway (ADR-0010).
+          az logout
           SWA_CLI_DEPLOYMENT_TOKEN="$token" env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
             .swa-cli/node_modules/.bin/swa deploy dashboard/app --api-location dashboard/api \
             --api-language node --api-version 22 --env production
