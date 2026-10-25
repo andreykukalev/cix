@@ -28,7 +28,7 @@ public sealed class ManualRequestTests
             InMemoryManualRequestStore? store = null, InMemoryManualLedgerStore? ledger = null)
         {
             Tools = tools ?? new ToolRig(spec ?? Trading, btc: btc);
-            Tools.Header(ToolServerOptions.AgentHeader, "trader");
+            Tools.Header(ToolServerOptions.AgentHeader, ToolCallContext.RequestsAgent);
             Tools.Header(ToolServerOptions.RunHeader, "run-9");
             Store = store ?? new InMemoryManualRequestStore("ok");
             Ledger = ledger ?? new InMemoryManualLedgerStore();
@@ -105,7 +105,7 @@ public sealed class ManualRequestTests
         await rig.Poll();
 
         Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-direct-1"));
-        Assert.Equal(new[] { "executing", "placed" }, rig.History("req-direct-1"));
+        Assert.Equal(new[] { "placed" }, rig.History("req-direct-1")); // nothing is written between the claim and the order
         Assert.Equal((0.0005m, 60_000m), (Dec(rig.Outcome("req-direct-1", "requestedSize")), Dec(rig.Outcome("req-direct-1", "requestedPrice"))));
         var clientOrderId = rig.Outcome("req-direct-1", "clientOrderId")!;
         Assert.Equal((ManualRequestStatus.Placed, clientOrderId), (rig.InLedger("req-direct-1")!.Status, rig.InLedger("req-direct-1")!.ClientOrderId));
@@ -328,9 +328,9 @@ public sealed class ManualRequestTests
 
         Assert.Equal("placed", answer.GetProperty("status").GetString());
         Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-agent-1"));
-        Assert.Equal(("trader", "run-9", Why), (rig.Outcome("req-agent-1", "decidedBy"), rig.Outcome("req-agent-1", "runId"), rig.Outcome("req-agent-1", "rationale")));
+        Assert.Equal(("trader-requests", "run-9", Why), (rig.Outcome("req-agent-1", "decidedBy"), rig.Outcome("req-agent-1", "runId"), rig.Outcome("req-agent-1", "rationale")));
         var order = Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "order");
-        Assert.Equal(("trader", ManualRequestService.AgentSource, 0.0005m), (order.Actor, order.Data!["tool"], Dec(order.Data["requestedSize"])));
+        Assert.Equal(("trader-requests", ManualRequestService.AgentSource, 0.0005m), (order.Actor, order.Data!["tool"], Dec(order.Data["requestedSize"])));
         Assert.Empty(rig.Service.Pending);
         await Assert.ThrowsAsync<McpException>(() => rig.Manual.AnswerManualRequest("req-agent-1", "execute", Why)); // answered once only
     }
@@ -363,7 +363,7 @@ public sealed class ManualRequestTests
         Assert.Equal("Trend is still up; I'd hold and keep the stop.", rig.Outcome("req-decline", "rationale"));
         Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == "order");
         var decided = Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == ManualRequestService.Kind && e.Data!["status"] == "declined");
-        Assert.Equal(("trader", "run-9"), (decided.Actor, decided.RunId));
+        Assert.Equal(("trader-requests", "run-9"), (decided.Actor, decided.RunId));
         Assert.Null(rig.InLedger("req-decline"));
     }
 
@@ -502,6 +502,68 @@ public sealed class ManualRequestTests
         Assert.Equal(2, rig.Tools.Journal.Entries.Count(e => e.Kind == "tool-denied"));
         Assert.Equal(("rejected", "no-trader"), (rig.Status("req-no-trad"), rig.Outcome("req-no-trad", "rule")));
         Assert.Equal(string.Empty, rig.Service.AgentKey);
+    }
+
+    [Fact]
+    public async Task OnlyRequestRuns_AnswerRequests_AndTheyCantPlaceOrCancelOrders()
+    {
+        var rig = new ManualRig(spec: Trading with { AllowedTools = ["place_order", "cancel_order"] });
+        rig.Request("req-split-1", "sell", "agent", portion: 1m);
+        await rig.Poll();
+
+        // A request run: no orders of its own, whatever a note might say.
+        await Assert.ThrowsAsync<McpException>(() => rig.Tools.Orders.PlaceOrder(Btc, "sell", 0.001m, 60_000m, Why));
+        await Assert.ThrowsAsync<McpException>(() => rig.Tools.Orders.CancelOrder("venue-1", Why));
+        // A strategy run: no request tools.
+        rig.Tools.Header(ToolServerOptions.AgentHeader, "trader");
+        await Assert.ThrowsAsync<McpException>(() => rig.Manual.GetManualRequests(CancellationToken.None));
+        await Assert.ThrowsAsync<McpException>(() => rig.Manual.AnswerManualRequest("req-split-1", "decline", Why));
+
+        Assert.Equal(4, rig.Tools.Journal.Entries.Count(e => e.Kind == "tool-denied"));
+        Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == "order");
+        Assert.Equal(ManualRequestStatus.AwaitingAgent, rig.Status("req-split-1"));
+    }
+
+    [Fact]
+    public async Task ADeclineThatCantBeSaved_IsNotReported_AndTheRequestStillWaits()
+    {
+        var rig = new ManualRig(btc: 0.001m);
+        rig.Request("req-save-01", "sell", "agent", portion: 1m);
+        await rig.Poll();
+        rig.Ledger.Fail = true;
+
+        await Assert.ThrowsAnyAsync<IOException>(() => rig.Manual.AnswerManualRequest("req-save-01", "decline", "Holding: the trend is still up."));
+
+        Assert.Equal(ManualRequestStatus.AwaitingAgent, rig.InLedger("req-save-01")!.Status);
+        Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == ManualRequestService.Kind && e.Data!["status"] == "declined");
+    }
+
+    [Fact]
+    public async Task AManualOrderThatRests_IsCancelled_SoItCantHoldThePosition()
+    {
+        var rig = new ManualRig(btc: 0.001m);
+        await rig.Tools.Rig.Execution.PlaceAsync(new OrderIntent(Btc, OrderSide.Buy, 0.0001m, 59_900m, "c-resting"), postOnly: false, CancellationToken.None,
+            context: new OrderContext(ManualRequestService.AgentSource));
+        var now = rig.Time.GetUtcNow();
+        var day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        rig.Request("req-rest-01", "buy", "agent", quoteAmount: 6m);
+        rig.Ledger.Saved = ManualLedger.Empty
+            .With(new LedgerEntry(new ManualRequest("req-rest-01", day, "buy", "agent", Btc, null, 6m, null, "owner", now), ManualRequestStatus.Placed, now, "c-resting", now))
+            .WithSeen(day, "req-rest-01");
+
+        await rig.Poll();
+        Assert.Single((await rig.Tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None)).Where(o => o.IsOpen)); // not yet
+
+        rig.Time.Advance(ManualRequestService.RestingCancelAfter);
+        rig.Tools.Rig.Quote(60_000m, 60_010m);
+        await rig.Poll();
+        Assert.Empty((await rig.Tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None)).Where(o => o.IsOpen));
+        Assert.Single(rig.Tools.Journal.Entries, e => e.Data?.GetValueOrDefault("rule") == "cancel-unfilled");
+
+        await rig.Tools.Rig.Execution.ReconcileAsync(CancellationToken.None);
+        rig.Time.Advance(ManualRequestService.SettleInterval);
+        await rig.Poll();
+        Assert.Equal(("closed", "order-closed"), (rig.Status("req-rest-01"), rig.Outcome("req-rest-01", "rule")));
     }
 
     [Fact]

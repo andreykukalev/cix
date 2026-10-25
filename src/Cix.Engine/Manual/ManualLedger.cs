@@ -12,7 +12,8 @@ public sealed record LedgerEntry(
     string? ClientOrderId = null,
     DateTimeOffset? ClaimedAt = null,
     string? DecidedBy = null,
-    string? RunId = null);
+    string? RunId = null,
+    bool CancelRequested = false);
 
 /// <summary>
 /// The engine's own record of manual requests (ADR-0011): the requests it accepted and still acts on, and today's counts. It

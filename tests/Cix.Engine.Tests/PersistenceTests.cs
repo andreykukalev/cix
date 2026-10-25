@@ -275,6 +275,12 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
             ["createdAt"] = now.ToString("O", System.Globalization.CultureInfo.InvariantCulture), ["status"] = "new", ["requestedBy"] = "owner",
         };
         await _db.Requests.CreateItemAsync(request, new PartitionKey(day)); // as the dashboard writes it
+        var forLive = (JsonObject)request.DeepClone();
+        forLive["id"] = "req-cosmos-live";
+        forLive["tradingMode"] = "live";
+        await _db.Requests.CreateItemAsync(forLive, new PartitionKey(day));
+        var listed = await new CosmosManualRequestStore(_db).ListNewAsync(DateOnly.FromDateTime(now.UtcDateTime), DateOnly.FromDateTime(now.UtcDateTime), "paper", CancellationToken.None);
+        Assert.Equal("req-cosmos-1", Assert.Single(listed).Id); // the mode is filtered in the query
         var store = new CosmosManualRequestStore(_db);
         var service = new ManualRequestService(
             store, new CosmosManualLedgerStore(_db, TradingMode.Paper), tools.Rig.Execution, tools.Rig.State, Rig.Limits, tools.Journal, tools.Specs, new ManualRequestOptions(),
@@ -289,7 +295,7 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
         Assert.Equal("owner", ManualRequestDocument.Field(stored.Document, "requestedBy")); // the requester's fields are kept
         Assert.Single(tools.Journal.Entries, e => e.Kind == "order");
         var today = DateOnly.FromDateTime(now.UtcDateTime);
-        Assert.Empty(await store.ListNewAsync(today.AddDays(-1), today.AddDays(1), CancellationToken.None)); // no longer new
+        Assert.Empty(await store.ListNewAsync(today.AddDays(-1), today.AddDays(1), "paper", CancellationToken.None)); // no longer new
         var ledger = (await new CosmosManualLedgerStore(_db, TradingMode.Paper).LoadAsync(CancellationToken.None))!;
         Assert.Equal((ManualRequestStatus.Placed, 0.5m, 1), (ledger.Active["req-cosmos-1"].Status, ledger.Active["req-cosmos-1"].Request.Portion, ledger.Accepted));
         Assert.Null(await store.TryReplaceAsync(stored with { ETag = "\"stale\"" }, stored.Document, CancellationToken.None));

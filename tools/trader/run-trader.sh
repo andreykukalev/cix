@@ -83,7 +83,7 @@ has_new_signal() {
 }
 
 run_once() {
-  local run_id log why="${1:-scheduled}" prompt="${2:-$trading_prompt}" allowed="${3:-$tools}" refused="${4:-$trading_denied}"
+  local run_id log why="${1:-scheduled}" prompt="${2:-$trading_prompt}" allowed="${3:-$tools}" refused="${4:-$trading_denied}" mcp="${5:-mcp.json}"
   run_id="run-$(date -u +%Y%m%d-%H%M%S)"
   log="$logs/$run_id.json"
   export CIX_RUN_ID="$run_id"
@@ -95,7 +95,7 @@ run_once() {
 
   (cd "$dir" && timeout "${timeout_minutes}m" claude -p "$prompt" \
       --append-system-prompt "$instructions" \
-      --mcp-config "$dir/tools/trader/mcp.json" --strict-mcp-config \
+      --mcp-config "$dir/tools/trader/$mcp" --strict-mcp-config \
       --allowedTools "$allowed" --disallowedTools "$refused" \
       --model "$model" \
       --max-turns "$max_turns" \
@@ -186,7 +186,7 @@ guarded_manual_run() {
     return 1
   fi
   manual_today=$(( manual_today + 1 ))
-  run_once "$1" "$manual_prompt" "$manual_tools" "$manual_denied"
+  run_once "$1" "$manual_prompt" "$manual_tools" "$manual_denied" "mcp-requests.json"   # the engine enforces the same split
   local rc=$?
   (( rc == NOT_RUN )) && manual_today=$(( manual_today - 1 ))   # Claude wasn't used; retried after 5 minutes at most
   return "$rc"

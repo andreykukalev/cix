@@ -23,10 +23,14 @@ public interface IManualRequestStore
     string State { get; }
 
     /// <summary>
-    /// Requests of the UTC days <paramref name="from"/> to <paramref name="to"/> that are still <c>new</c> (or have no
-    /// status). Everything after <c>new</c> is in the engine's own ledger, so later statuses aren't read back.
+    /// At most <see cref="MaxListed"/> requests for <paramref name="mode"/> (<c>paper</c> also takes those without a
+    /// <c>tradingMode</c>) of the UTC days <paramref name="from"/> to <paramref name="to"/> that are still <c>new</c> (or have
+    /// no status). Everything after <c>new</c> is in the engine's own ledger, so later statuses aren't read back.
     /// </summary>
-    Task<IReadOnlyList<StoredRequest>> ListNewAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken);
+    Task<IReadOnlyList<StoredRequest>> ListNewAsync(DateOnly from, DateOnly to, string mode, CancellationToken cancellationToken);
+
+    /// <summary>The most new requests one poll reads, so a flood of documents can't use up the database's throughput.</summary>
+    public const int MaxListed = 50;
 
     Task<StoredRequest?> GetAsync(string id, string day, CancellationToken cancellationToken);
 
@@ -73,9 +77,9 @@ public sealed class InMemoryManualRequestStore(string state = "not-used") : IMan
             _items[id] = _items[id] with { ETag = NextETag() };
     }
 
-    public Task<IReadOnlyList<StoredRequest>> ListNewAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken) =>
-        Task.FromResult(Select(r => string.CompareOrdinal(r.Day, Day(from)) >= 0 && string.CompareOrdinal(r.Day, Day(to)) <= 0
-            && r.Status == ManualRequestStatus.New));
+    public Task<IReadOnlyList<StoredRequest>> ListNewAsync(DateOnly from, DateOnly to, string mode, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<StoredRequest>>(Select(r => string.CompareOrdinal(r.Day, Day(from)) >= 0 && string.CompareOrdinal(r.Day, Day(to)) <= 0
+            && r.Status == ManualRequestStatus.New && ManualRequestDocument.ModeOf(r.Document) == mode).Take(IManualRequestStore.MaxListed).ToList());
 
     public Task<StoredRequest?> GetAsync(string id, string day, CancellationToken cancellationToken)
     {
@@ -122,11 +126,16 @@ public sealed class CosmosManualRequestStore(CosmosDb db) : IManualRequestStore
 
     public string State => db.RequestsAvailable ? "ok" : "unavailable";
 
-    public Task<IReadOnlyList<StoredRequest>> ListNewAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken) =>
-        QueryAsync(
-            new QueryDefinition("SELECT * FROM c WHERE c.day >= @from AND c.day <= @to AND (NOT IS_DEFINED(c.status) OR c.status = @new)")
-                .WithParameter("@from", Day(from)).WithParameter("@to", Day(to)).WithParameter("@new", ManualRequestStatus.New),
+    public Task<IReadOnlyList<StoredRequest>> ListNewAsync(DateOnly from, DateOnly to, string mode, CancellationToken cancellationToken)
+    {
+        // The mode is filtered here, not after reading: documents for another mode (or none we know) cost nothing.
+        var modeFilter = mode == "paper" ? "(NOT IS_DEFINED(c.tradingMode) OR c.tradingMode = @mode)" : "c.tradingMode = @mode";
+        return QueryAsync(
+            new QueryDefinition(
+                    $"SELECT TOP {IManualRequestStore.MaxListed} * FROM c WHERE c.day >= @from AND c.day <= @to AND (NOT IS_DEFINED(c.status) OR c.status = @new) AND {modeFilter}")
+                .WithParameter("@from", Day(from)).WithParameter("@to", Day(to)).WithParameter("@new", ManualRequestStatus.New).WithParameter("@mode", mode),
             cancellationToken);
+    }
 
     public async Task<StoredRequest?> GetAsync(string id, string day, CancellationToken cancellationToken)
     {

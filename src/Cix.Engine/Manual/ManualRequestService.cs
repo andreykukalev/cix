@@ -126,13 +126,16 @@ public sealed partial class ManualRequestService(
             var today = DateOnly.FromDateTime(now.UtcDateTime);
             var ledger = await LedgerAsync(cancellationToken).ConfigureAwait(false);
             if (ledger.Day != today)
+            {
                 await CommitAsync(ledger.ForDay(today), mustPersist: true, cancellationToken).ConfigureAwait(false);
+                _refused.RemoveWhere(k => string.CompareOrdinal(k, today.AddDays(-1).ToString("yyyy-MM-dd", Invariant)) < 0); // outside the query window
+            }
             else if (_ledgerDirty)
                 await CommitAsync(ledger, mustPersist: true, cancellationToken).ConfigureAwait(false);
             await RetryMirrorsAsync(cancellationToken).ConfigureAwait(false);
 
             var changed = 0;
-            var fresh = await store.ListNewAsync(today.AddDays(-1), today.AddDays(1), cancellationToken).ConfigureAwait(false);
+            var fresh = await store.ListNewAsync(today.AddDays(-1), today.AddDays(1), EngineMode, cancellationToken).ConfigureAwait(false);
             foreach (var item in fresh
                          .Where(r => ManualRequestDocument.ModeOf(r.Document) == EngineMode)
                          .Where(r => !_ledger!.Active.ContainsKey(r.Id) && !_ledger.HasSeen(r.Day, r.Id) && !_refused.Contains(Key(r.Day, r.Id)))
@@ -277,10 +280,6 @@ public sealed partial class ManualRequestService(
             var waiting = ledger.With(new LedgerEntry(request, ManualRequestStatus.AwaitingAgent, now)).WithSeen(request.Day, request.Id);
             await CommitAsync(waiting with { Accepted = ledger.Accepted + 1 }, mustPersist: true, cancellationToken).ConfigureAwait(false);
         }
-        else
-        {
-            await CommitAsync(ledger.WithSeen(request.Day, request.Id) with { Accepted = ledger.Accepted + 1 }, mustPersist: true, cancellationToken).ConfigureAwait(false);
-        }
 
         await JournalAsync("owner", null, Inv($"Owner request {request.Id}: {request.Describe()}{(request.Note is null ? string.Empty : $" ({request.Note})")}"),
             Data(request, "received", "received", "Received from " + request.RequestedBy + ".")).ConfigureAwait(false);
@@ -293,17 +292,24 @@ public sealed partial class ManualRequestService(
         }
 
         await PlaceForRequestAsync(request, request.Portion, null, null, DirectSource, EngineActor, null,
-            request.Note is null ? "Owner's direct sell." : $"Owner's direct sell: {request.Note}", cancellationToken).ConfigureAwait(false);
+            request.Note is null ? "Owner's direct sell." : $"Owner's direct sell: {request.Note}", cancellationToken, firstSight: true).ConfigureAwait(false);
     }
 
     /// <summary>Prices and sizes the order, claims the request in the ledger, sends the order through the execution service and records the outcome.</summary>
     private async Task<ManualOutcome> PlaceForRequestAsync(
         ManualRequest request, decimal? portion, decimal? stopLoss, decimal? takeProfit, string source, string decidedBy, string? runId, string rationale,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool firstSight = false)
     {
         var extra = new Dictionary<string, string?> { ["decidedBy"] = decidedBy, ["runId"] = runId, ["rationale"] = rationale, ["source"] = source };
+
+        // A direct sell is accepted (counted and remembered) in the same save as its claim, or with its refusal.
+        ManualLedger Accepted(ManualLedger ledger) =>
+            firstSight ? ledger.WithSeen(request.Day, request.Id) with { Accepted = ledger.Accepted + 1 } : ledger;
+
         async Task<ManualOutcome> Refuse(string rule, string reason)
         {
+            if (firstSight)
+                await CommitAsync(Accepted(_ledger!), mustPersist: false, cancellationToken).ConfigureAwait(false);
             await FinishAsync(request, ManualRequestStatus.Rejected, decidedBy, rule, reason, extra, runId, cancellationToken).ConfigureAwait(false);
             return new ManualOutcome(ManualRequestStatus.Rejected, rule, reason);
         }
@@ -354,13 +360,11 @@ public sealed partial class ManualRequestService(
         var clientOrderId = Guid.NewGuid().ToString();
         var now = time.GetUtcNow();
         var claim = new LedgerEntry(request, ManualRequestStatus.Executing, now, clientOrderId, now, decidedBy, runId);
-        await CommitAsync(_ledger!.With(claim), mustPersist: true, cancellationToken).ConfigureAwait(false);
+        await CommitAsync(Accepted(_ledger!).With(claim), mustPersist: true, cancellationToken).ConfigureAwait(false);
         extra["clientOrderId"] = clientOrderId;
         extra["side"] = request.Side;
         extra["requestedSize"] = size.ToString(Invariant);
         extra["requestedPrice"] = price.ToString(Invariant);
-        QueueMirror(request, ManualRequestStatus.Executing, decidedBy, Inv($"Sending {request.Side} {size} {request.Symbol} at {price}."), new Dictionary<string, string?>(extra));
-        await RetryMirrorsAsync(CancellationToken.None).ConfigureAwait(false); // best effort: the dashboard shows "executing" while the order goes out
 
         var side = request.IsSell ? OrderSide.Sell : OrderSide.Buy;
         var result = await execution.PlaceAsync(
@@ -474,6 +478,12 @@ public sealed partial class ManualRequestService(
                 continue;
             }
 
+            if (entry.Status == ManualRequestStatus.Placed && now - (entry.ClaimedAt ?? entry.Since) >= RestingCancelAfter && execution.IsWorkingOrder(clientOrderId))
+            {
+                changed += await CancelRestingAsync(entry, clientOrderId, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
             if (entry.Status != ManualRequestStatus.Executing)
             {
                 // Placed or unconfirmed: the reconciler journals how it ends. If the engine stopped tracking the order without
@@ -519,6 +529,26 @@ public sealed partial class ManualRequestService(
         return changed;
     }
 
+    /// <summary>
+    /// A manual order still unfilled after this is cancelled (the request then closes with what filled): a resting sell
+    /// mustn't hold a position past its stop, and a resting buy isn't what the owner asked for.
+    /// </summary>
+    public static readonly TimeSpan RestingCancelAfter = TimeSpan.FromMinutes(4);
+
+    private async Task<int> CancelRestingAsync(LedgerEntry entry, string clientOrderId, CancellationToken cancellationToken)
+    {
+        var open = await execution.GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
+        if (open.FirstOrDefault(o => o.IsOpen && o.ClientOrderId == clientOrderId) is not { } order)
+            return 0; // finished meanwhile: the reconciler journals it
+        var (outcome, _) = await execution.CancelOwnOrderAsync(order.VenueOrderId, cancellationToken).ConfigureAwait(false);
+        if (entry.CancelRequested || outcome != CancelOutcome.Cancelled)
+            return 0;
+        await CommitAsync(_ledger!.With(entry with { CancelRequested = true }), mustPersist: false, cancellationToken).ConfigureAwait(false);
+        await JournalAsync(EngineActor, entry.RunId, $"Owner request {entry.Request.Id}: unfilled order cancelled after {RestingCancelAfter.TotalMinutes:0} minutes",
+            Data(entry.Request, ManualRequestStatus.Placed, "cancel-unfilled", "The order didn't fill at once; cancelled so it can't hold the position.")).ConfigureAwait(false);
+        return 1;
+    }
+
     private const string OutcomeUnknown =
         "The engine has no record of how this order ended (it stopped while sending it, or lost track of it). Check the exchange's order history before sending the request again.";
 
@@ -534,8 +564,14 @@ public sealed partial class ManualRequestService(
         ManualRequest request, string status, string by, string rule, string reason, IReadOnlyDictionary<string, string?>? extra, string? runId,
         CancellationToken cancellationToken)
     {
-        if (_ledger!.Active.ContainsKey(request.Id))
-            await CommitAsync(_ledger.Without(request.Id), mustPersist: false, cancellationToken).ConfigureAwait(false);
+        if (_ledger!.Active.TryGetValue(request.Id, out var entry))
+        {
+            // A decision on a waiting request (declined, refused, expired) is saved before it is reported, so a restart
+            // can't bring the request back. After an order, the outcome is recorded whatever happens to the save.
+            var waiting = entry.Status == ManualRequestStatus.AwaitingAgent;
+            await CommitAsync(_ledger.Without(request.Id), mustPersist: waiting, waiting ? cancellationToken : CancellationToken.None).ConfigureAwait(false);
+        }
+
         await RecordAsync(request, status, by, rule, reason, extra, runId, cancellationToken).ConfigureAwait(false);
     }
 
@@ -567,7 +603,7 @@ public sealed partial class ManualRequestService(
         if (ledger.Refused <= MaxRefusalEntriesPerDay)
         {
             var data = request is null
-                ? new Dictionary<string, string>(StringComparer.Ordinal) { ["requestId"] = id, ["status"] = status, ["rule"] = rule, ["reason"] = reason }
+                ? new Dictionary<string, string>(StringComparer.Ordinal) { ["requestId"] = id, ["status"] = status, ["rule"] = rule, ["reason"] = ManualRequestDocument.Clean(reason, 1_000) ?? rule }
                 : Data(request, status, rule, reason);
             await JournalAsync(EngineActor, null, $"Owner request {id}: {status} ({rule})", data).ConfigureAwait(false);
         }
@@ -594,9 +630,12 @@ public sealed partial class ManualRequestService(
     /// <summary>Copies pending steps onto their request documents. A failure keeps the step for the next poll and never stops trading.</summary>
     private async Task RetryMirrorsAsync(CancellationToken cancellationToken)
     {
-        foreach (var mirror in _unmirrored.Values.ToList())
+        foreach (var mirror in _unmirrored.Values.Take(MaxMirrorsPerPass).ToList())
             await TryMirrorAsync(mirror, null, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Document copies written per pass: a backlog (a throttled database) catches up gradually rather than all at once.</summary>
+    public const int MaxMirrorsPerPass = 10;
 
     private async Task TryMirrorAsync(Mirror mirror, StoredRequest? current, CancellationToken cancellationToken)
     {

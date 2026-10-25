@@ -57,6 +57,14 @@ public sealed partial class ToolCallContext(
     /// <summary>The <c>X-Cix-Agent</c> value the analyst's MCP configuration sends.</summary>
     public const string AnalystAgent = "analyst";
 
+    /// <summary>
+    /// The <c>X-Cix-Agent</c> value of trader runs for owner requests (tools/trader/mcp-requests.json). Only these runs answer
+    /// requests, and they can't place or cancel orders of their own, whatever the owner's note says (ADR-0011).
+    /// </summary>
+    public const string RequestsAgent = "trader-requests";
+
+    private static readonly IReadOnlySet<string> OwnOrderTools = new HashSet<string>(StringComparer.Ordinal) { "place_order", "cancel_order" };
+
     public string Agent
     {
         get
@@ -96,8 +104,13 @@ public sealed partial class ToolCallContext(
         var isAnalyst = string.Equals(Agent, AnalystAgent, StringComparison.Ordinal);
         // Each agent keeps to its own tools, whatever its client allows: the analyst (which reads the web) never reaches
         // trading tools, and no other agent records market views.
+        var isRequests = string.Equals(Agent, RequestsAgent, StringComparison.Ordinal);
         var reason = analyst != isAnalyst
             ? analyst ? $"{tool} is for the market analyst only." : $"The market analyst can't use {tool}."
+            : ManualTools.Names.Contains(tool) && !isRequests
+            ? $"{tool} is for runs that answer owner requests only."
+            : isRequests && OwnOrderTools.Contains(tool)
+            ? "Runs that answer owner requests can't place or cancel orders; answer with answer_manual_request."
             : governing is not { } spec
             ? analyst ? "No analyst spec is configured, so analyst tools are disabled." : "No strategy spec is active, so agent tools are disabled."
             : spec.Allows(tool) || (ManualTools.Names.Contains(tool) && spec.Allows(ManualTools.ImpliedBy))
