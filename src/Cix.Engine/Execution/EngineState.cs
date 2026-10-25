@@ -98,26 +98,34 @@ public sealed record EngineState(
     public IReadOnlyDictionary<string, PositionPlanState> Plans => Positions ?? new Dictionary<string, PositionPlanState>(StringComparer.Ordinal);
 
     /// <summary>
-    /// Adds an order about to be sent. A buy with a stop or target also sets the plan for its symbol: a new plan, or, when
-    /// the position is already open, a pending stop and target that take over only if this buy fills.
+    /// Adds an order about to be sent. A buy with a stop or target also sets the plan for its symbol: a new plan, or, for a
+    /// position still held, a pending stop and target that take over only if this buy fills. An open plan whose position is
+    /// gone (sold since the last reconciliation, <paramref name="holdsPosition"/> false) never carries over to a new buy.
     /// </summary>
-    public EngineState WithSent(SentOrder order)
+    public EngineState WithSent(SentOrder order, bool holdsPosition = true)
     {
         ArgumentNullException.ThrowIfNull(order);
         if (Known.Contains(order.ClientOrderId, StringComparer.Ordinal))
             return this;
 
-        var positions = Positions;
-        if (order.Side == "buy" && (order.StopLoss is not null || order.TakeProfit is not null))
+        var next = this with { Orders = [.. SentOrders, order] };
+        if (order.Side != "buy")
+            return next;
+
+        var hasPlan = order.StopLoss is not null || order.TakeProfit is not null;
+        var open = Plans.TryGetValue(order.Symbol, out var existing) && existing.Status == PositionPlanState.Open ? existing : null;
+        if (open is not null && holdsPosition)
         {
-            var plan = Plans.TryGetValue(order.Symbol, out var existing) && existing.Status == PositionPlanState.Open
-                ? existing with { PendingClientOrderId = order.ClientOrderId, PendingStopLoss = order.StopLoss, PendingTakeProfit = order.TakeProfit }
-                : new PositionPlanState(order.Symbol, PositionPlanState.EntryPending, order.ClientOrderId, order.StopLoss, order.TakeProfit, order.SentAt,
-                    Strategy: order.Strategy, RunId: order.RunId);
-            positions = WithPlan(order.Symbol, plan);
+            return hasPlan
+                ? next with { Positions = WithPlan(order.Symbol, open with { PendingClientOrderId = order.ClientOrderId, PendingStopLoss = order.StopLoss, PendingTakeProfit = order.TakeProfit }) }
+                : next; // a further buy without levels keeps the position's own
         }
 
-        return this with { Orders = [.. SentOrders, order], Positions = positions };
+        if (!hasPlan)
+            return open is null ? next : next.WithoutPlans([order.Symbol]); // the old position's levels don't belong to this one
+        var plan = new PositionPlanState(order.Symbol, PositionPlanState.EntryPending, order.ClientOrderId, order.StopLoss, order.TakeProfit, order.SentAt,
+            Strategy: order.Strategy, RunId: order.RunId);
+        return next with { Positions = next.WithPlan(order.Symbol, plan) };
     }
 
     /// <summary>Records the exchange's ID for a sent order.</summary>
@@ -154,7 +162,8 @@ public sealed record EngineState(
             {
                 Positions = WithPlan(symbol, plan with
                 {
-                    EntryClientOrderId = clientOrderId, StopLoss = plan.PendingStopLoss, TakeProfit = plan.PendingTakeProfit,
+                    // A further buy that set only one level keeps the other: a stop is never dropped by adding to a position.
+                    EntryClientOrderId = clientOrderId, StopLoss = plan.PendingStopLoss ?? plan.StopLoss, TakeProfit = plan.PendingTakeProfit ?? plan.TakeProfit,
                     EntryPrice = averagePrice, FilledAt = at, PendingClientOrderId = null, PendingStopLoss = null, PendingTakeProfit = null,
                 }),
             };

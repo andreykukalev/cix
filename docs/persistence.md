@@ -34,7 +34,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 | `day`, `dayStartEquity` | The UTC day and the equity at its start, for the daily loss limit. |
 | `holdings` | Balances per currency at the last reconciliation, and the value of the engine's open orders then. Used to spot deposits, withdrawals or outside trades, including while the engine was down. |
 | `orders` | Orders the engine **sent and hasn't yet seen finish**. Each is readable: `clientOrderId`, `symbol`, `side`, `size`, `limitPrice`, `sentAt`, `source` (`place_order` for an agent's order, `protective-exit` for the engine's own stop or target sell), `venueOrderId` (the exchange's ID, once confirmed), and for a buy its `stopLoss`, `takeProfit`, `runId` and `strategy`. Written **before** the order is sent. Removed once reconciliation has seen it finished for a full interval. |
-| `positions` | The **plan for each position**, by symbol: `status` (`entry-pending` until the buy fills, then `open`), `entryClientOrderId` (the buy behind it), `stopLoss`, `takeProfit`, `since`, and once filled `entryPrice` and `filledAt`. Written before the buy is sent. Removed once less than the exchange minimum of the coin is held and its buy is no longer working. |
+| `positions` | The **plan for each position**, by symbol: `status` (`entry-pending` until the buy fills, then `open`), `entryClientOrderId` (the buy behind it), `stopLoss`, `takeProfit`, `since`, and once filled `entryPrice` and `filledAt`. Written before the buy is sent. A further buy for a position still held puts its levels in `pendingClientOrderId`, `pendingStopLoss` and `pendingTakeProfit`; they replace the plan's only if that buy fills (a level it doesn't set keeps the old one), so a buy that never fills can't move the stop. A buy after the position was sold out starts a fresh plan, or none. Removed once less than the exchange minimum of the coin is held and its buy is no longer working. |
 | `knownClientOrderIds` | Older format: bare client order IDs from before `orders` existed. Still read, and dropped as those orders finish. |
 
 ### Why some IDs are still GUIDs
@@ -88,9 +88,9 @@ The exchange (paper or Revolut X) is the truth for orders and balances. The engi
 
 - **Open orders it didn't send** halt trading (kill switch). An order it sent just before a restart is recognised by its `clientOrderId` in `orders`.
 - **Holdings that changed more than its fills explain** (a deposit, withdrawal or outside trade, even while it was down) halt trading.
-- **Finished orders** are looked up, and how each ended is journaled as `fill` or `order-closed`. The journal is checked first, so a restart between the lookup and the cleanup never journals a fill twice.
+- **Finished orders** are looked up, and how each ended is journaled as `fill` or `order-closed`. For an order picked up again after a restart the journal is checked first, so a fill is never journaled twice.
 - **Position plans** follow the fills. A filled buy opens its plan with the fill price. A buy that ended unfilled drops a plan that was waiting for it. A plan whose coin is no longer held is removed.
-- **Orders gone for a full interval** are dropped from `orders`.
+- **Orders gone for a full interval**, and whose ending is journaled, are dropped from `orders`.
 
 ### Restart scenarios
 

@@ -35,7 +35,7 @@ public sealed class CosmosJournal(CosmosDb db) : IJournal
         ArgumentNullException.ThrowIfNull(query);
         var limit = Math.Clamp(query.Limit, 1, FileJournal.MaxQueryLimit);
 
-        // Day, kind and run filter in the database; the data-field filters (client order ID, spec) after reading.
+        // Day, kind, run and client order ID filter in the database; the spec prefix after reading.
         var sql = "SELECT * FROM c WHERE 1 = 1";
         var parameters = new List<(string, object)>();
         if (query.From is { } from)
@@ -60,6 +60,12 @@ public sealed class CosmosJournal(CosmosDb db) : IJournal
         {
             sql += " AND c.entry.runId = @runId";
             parameters.Add(("@runId", query.RunId));
+        }
+
+        if (query.ClientOrderId is not null)
+        {
+            sql += " AND c.entry.data.clientOrderId = @clientOrderId";
+            parameters.Add(("@clientOrderId", query.ClientOrderId));
         }
 
         var definition = new QueryDefinition(sql);

@@ -45,8 +45,6 @@ check_expiry() {
   return 0
 }
 
-# The engine shares this container's network namespace; give it time after a restart, then exit so Docker restarts
-# this agent and it rejoins the engine's (possibly new) namespace.
 # Succeeds if this container has a network interface besides loopback. It shares the engine's network; when the engine
 # container is restarted, that network goes and only loopback is left, so the new engine can never be reached from here.
 has_engine_network() {

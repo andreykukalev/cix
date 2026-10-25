@@ -77,7 +77,8 @@ public sealed partial class ExecutionService
     /// <summary>Orders this process placed and hasn't yet seen finish; reconciliation journals their fills.</summary>
     private readonly Dictionary<string, TrackedOrder> _tracked = new(StringComparer.Ordinal);
 
-    private sealed record TrackedOrder(OrderIntent Order, string VenueOrderId, int Lookups = 0);
+    /// <param name="Restored">Rebuilt from the engine state after a restart: its fill may already be journaled.</param>
+    private sealed record TrackedOrder(OrderIntent Order, string VenueOrderId, int Lookups = 0, bool Restored = false);
     private int _consecutiveRejects;
     private int _streakTripped;
 
@@ -113,7 +114,7 @@ public sealed partial class ExecutionService
         // exchange confirmed are tracked again, so a fill that happened while the engine was down is still journaled.
         _usedClientOrderIds.UnionWith(store.Current.Known);
         foreach (var sent in store.Current.SentOrders.Where(o => o.VenueOrderId is not null))
-            _tracked[sent.ClientOrderId] = new TrackedOrder(ToIntent(sent), sent.VenueOrderId!);
+            _tracked[sent.ClientOrderId] = new TrackedOrder(ToIntent(sent), sent.VenueOrderId!, Restored: true);
     }
 
     /// <summary>Position plans (stop and target by symbol) from the engine state.</summary>
@@ -214,7 +215,9 @@ public sealed partial class ExecutionService
                 return new ExecutionResult(ExecutionStatus.Rejected, verdict.Rule, verdict.Reason);
             }
 
-            return await SendAsync(order, verdict, postOnly, context, cancellationToken).ConfigureAwait(false);
+            // Whether the symbol is still held decides if an open position plan applies to this order (see EngineState.WithSent).
+            var holdsPosition = portfolio.PositionQuoteBySymbol.GetValueOrDefault(rounded.Symbol) >= Math.Max(pair.MinOrderSizeQuote, 0.00000001m);
+            return await SendAsync(order, verdict, postOnly, context, holdsPosition, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -483,7 +486,8 @@ public sealed partial class ExecutionService
         return intent with { BaseSize = size, LimitPrice = price };
     }
 
-    private async Task<ExecutionResult> SendAsync(ApprovedOrder order, RiskVerdict verdict, bool postOnly, OrderContext? context, CancellationToken cancellationToken)
+    private async Task<ExecutionResult> SendAsync(
+        ApprovedOrder order, RiskVerdict verdict, bool postOnly, OrderContext? context, bool holdsPosition, CancellationToken cancellationToken)
     {
         // The kill switch may have engaged while the portfolio was being read; it flips before taking the lock.
         if (_killSwitch.IsEngaged)
@@ -496,7 +500,7 @@ public sealed partial class ExecutionService
             context?.Source ?? "engine", StopLoss: context?.StopLoss, TakeProfit: context?.TakeProfit, RunId: context?.RunId, Strategy: context?.Strategy);
         try
         {
-            _store.Update(s => s.WithSent(sent));
+            _store.Update(s => s.WithSent(sent, holdsPosition));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

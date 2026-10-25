@@ -57,6 +57,7 @@ public sealed partial class ExecutionService
             var dropped = 0;
             HashSet<string> pendingIds;
             var missedPastTimeout = new HashSet<string>(StringComparer.Ordinal);
+            var droppedIds = new List<string>();
             lock (_pending)
             {
                 foreach (var p in _pending.Values.Where(p => p.Uncertain).ToList())
@@ -76,6 +77,7 @@ public sealed partial class ExecutionService
                         if (_uncertainMissedOnce.Contains(id))
                         {
                             _pending.Remove(id);
+                            droppedIds.Add(id);
                             dropped++;
                             LogUncertainDropped(_logger, p.Order.ToString());
                         }
@@ -90,6 +92,8 @@ public sealed partial class ExecutionService
             }
 
             _uncertainMissedOnce = missedPastTimeout;
+            foreach (var id in droppedIds)
+                TryUpdateState(s => s.WithEntryAbandoned(id)); // never arrived: its plan (or pending levels) go with it
 
             var known = _store.Current.Known.ToHashSet(StringComparer.Ordinal);
             var unknown = open
@@ -100,7 +104,10 @@ public sealed partial class ExecutionService
             // order sent just before a restart has time to be listed before it could be mistaken for someone else's.
             var missing = known.Where(id => !openIds.Contains(id) && !pendingIds.Contains(id)).ToHashSet(StringComparer.Ordinal);
             var missingSince = missing.ToDictionary(id => id, id => _missingSince.GetValueOrDefault(id, now), StringComparer.Ordinal);
-            var forget = missingSince.Where(m => m.Value < now && now - m.Value >= _safety.ReconcileInterval).Select(m => m.Key).ToList();
+            HashSet<string> stillTracked;
+            lock (_pending)
+                stillTracked = _tracked.Keys.ToHashSet(StringComparer.Ordinal); // kept until their fill is journaled, with its details
+            var forget = missingSince.Where(m => m.Value < now && now - m.Value >= _safety.ReconcileInterval && !stillTracked.Contains(m.Key)).Select(m => m.Key).ToList();
             ForgetKnown(forget);
             foreach (var id in forget)
                 missingSince.Remove(id);
@@ -291,11 +298,12 @@ public sealed partial class ExecutionService
             var inv = System.Globalization.CultureInfo.InvariantCulture;
             var average = order.FilledQuantity > 0 ? order.FilledAmountQuote / order.FilledQuantity : 0m;
             var sent = _store.Current.SentOrders.FirstOrDefault(o => o.ClientOrderId == clientOrderId);
-            bool recorded;
+            var recorded = false;
             try
             {
-                // After a restart the same order can be looked at again: journal how it ended once only.
-                recorded = await AlreadyJournaledAsync(clientOrderId, cancellationToken).ConfigureAwait(false);
+                // An order rebuilt after a restart may have had its fill journaled before it: journal how it ended once only.
+                if (tracked.Restored)
+                    recorded = await AlreadyJournaledAsync(clientOrderId, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {

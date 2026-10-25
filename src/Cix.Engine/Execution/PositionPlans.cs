@@ -11,10 +11,7 @@ public sealed record PositionPlan(
     decimal? EntryPrice,
     DateTimeOffset? FilledAt,
     decimal? StopLoss,
-    decimal? TakeProfit)
-{
-    public bool HasEntry => FilledAt is not null;
-}
+    decimal? TakeProfit);
 
 /// <summary>
 /// Joins sellable positions with their plans: from the engine state (written before the buy was sent, so it survives any
@@ -56,7 +53,7 @@ public static class PositionPlans
             {
                 return new PositionPlan(
                     symbol, portfolio.Snapshot.PositionQuoteBySymbol[symbol], sellable[symbol],
-                    state.EntryPrice, state.FilledAt ?? state.Since, state.StopLoss, state.TakeProfit);
+                    state.EntryPrice, state.FilledAt, state.StopLoss, state.TakeProfit);
             }
 
             // Newest first: the latest buy fill for this symbol is the position's entry.

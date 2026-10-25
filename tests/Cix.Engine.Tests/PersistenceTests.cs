@@ -202,6 +202,26 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OrdersAndPlans_RoundTripThroughCosmos_WithReadableMetadata()
+    {
+        if (_db is null)
+            return;
+        var time = new MutableTime(new DateTimeOffset(2026, 10, 25, 12, 0, 0, TimeSpan.Zero));
+        var store = new CosmosEngineStateStore(_db, TradingMode.Paper, time);
+        store.Update(s => s.WithSent(new SentOrder("c-1", "XRP-EUR", "buy", 4.32488m, 1.1561m, time.GetUtcNow(), "place_order",
+            StopLoss: 1.1481m, TakeProfit: 1.1641m, RunId: "run-1", Strategy: "risky@v1#abc")));
+
+        var restarted = new CosmosEngineStateStore(_db, TradingMode.Paper, time);
+        using var raw = await _db.State.ReadItemStreamAsync("engine-state-paper", new PartitionKey("engine-state-paper"));
+        using var doc = await JsonDocument.ParseAsync(raw.Content);
+
+        Assert.Equal((4.32488m, 1.1481m), (Assert.Single(restarted.Current.SentOrders).Size, restarted.Current.Plans["XRP-EUR"].StopLoss));
+        Assert.Equal(PositionPlanState.EntryPending, restarted.Current.Plans["XRP-EUR"].Status);
+        Assert.Equal("engine-state", doc.RootElement.GetProperty("type").GetString());
+        Assert.False(string.IsNullOrEmpty(doc.RootElement.GetProperty("about").GetString()));
+    }
+
+    [Fact]
     public async Task PaperAccount_RoundTripsExactDecimals_StoredAsStrings()
     {
         if (_db is null)

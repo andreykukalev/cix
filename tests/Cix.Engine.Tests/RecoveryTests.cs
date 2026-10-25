@@ -146,6 +146,54 @@ public sealed class RecoveryTests
     }
 
     [Fact]
+    public async Task ARebuyAfterSellingOut_DoesntInheritTheOldStop()
+    {
+        var rig = new Rig(eur: 200m);
+        await BuyWithPlan(rig, 60_010m);
+        rig.Time.Advance(TimeSpan.FromMinutes(3));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Execution.ReconcileAsync(CancellationToken.None); // open, stop 59,000
+
+        // Sold out and bought again without levels, both before the next reconciliation could notice the sale.
+        await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Sell, 0.0005m, 60_000m, "s-1"), postOnly: false, CancellationToken.None);
+        var rebuy = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 60_010m, "c-2"), postOnly: false, CancellationToken.None);
+
+        Assert.Equal(ExecutionStatus.Placed, rebuy.Status);
+        Assert.Empty(rig.Store.Current.Plans);
+    }
+
+    [Fact]
+    public async Task OrdersAndPlans_SurviveARestartThroughTheStateFile()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "cix-recovery-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(dir, "engine-state.json");
+        try
+        {
+            var time = new MutableTime(Rig.T0);
+            var first = new Rig(eur: 200m, store: new FileEngineStateStore(path, time), time: time);
+            await first.Execution.ReleaseKillSwitchAsync("owner"); // a new state file starts halted
+            await BuyWithPlan(first, 60_010m);
+
+            var second = first.Restart(() => new FileEngineStateStore(path, first.Time)); // read back from JSON
+            second.Quote(60_000.00m, 60_010.00m);
+            var sent = Assert.Single(second.Store.Current.SentOrders);
+            await second.Execution.ReconcileAsync(CancellationToken.None);
+
+            Assert.Equal(("c-1", "buy", 0.0005m, 59_000m, 62_000m, "good@v1#abc123def456"),
+                (sent.ClientOrderId, sent.Side, sent.Size, sent.StopLoss, sent.TakeProfit, sent.Strategy));
+            var plan = second.Store.Current.Plans[Rig.Btc];
+            Assert.Equal((PositionPlanState.Open, 60_010m, 59_000m, 62_000m), (plan.Status, plan.EntryPrice, plan.StopLoss, plan.TakeProfit));
+            Assert.Single(second.Journal.Entries, e => e.Kind == "fill");
+            Assert.False(second.KillSwitch.IsEngaged);
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+                Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ARefusedBuy_LeavesNoOrderOrPlanBehind()
     {
         var rig = new Rig(eur: 200m);
