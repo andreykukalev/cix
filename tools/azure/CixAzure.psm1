@@ -90,6 +90,7 @@ function Invoke-CixNative {
   #>
   param([Parameter(Mandatory)][scriptblock]$Command)
   $ErrorActionPreference = 'Continue'
+  $global:LASTEXITCODE = -1 # a command that never started (not on PATH, broken shim) counts as failed, not as the last success
   & $Command
 }
 
@@ -239,8 +240,9 @@ function Write-CixSecretFile {
   $dir = Join-Path $script:RepoRoot 'secrets'
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $path = Join-Path $dir $Name
-  # Restrict the (empty) file first, then write: the key is never on disk with wider access.
-  if (-not (Test-Path $path)) { New-Item -ItemType File -Path $path | Out-Null }
+  # A fresh, restricted (empty) file first, then the key: it is never on disk with wider access, and no old access rules survive.
+  if (Test-Path $path) { Remove-Item $path -Force }
+  New-Item -ItemType File -Path $path | Out-Null
   [IO.File]::WriteAllText($path, '', $script:Utf8NoBom)
   if ($script:OnWindows) {
     $me = "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
@@ -299,7 +301,9 @@ function Invoke-CixCosmosRequest {
     [hashtable]$Headers = @{},
     [switch]$CrossPartition
   )
-  $base = ([Uri]$Endpoint).GetLeftPart([UriPartial]::Authority)
+  $uri = [Uri]$Endpoint
+  if ($uri.Scheme -ne 'https' -and -not $uri.IsLoopback) { throw 'The Cosmos DB endpoint must use https.' } # loopback: the tests' fake server
+  $base = $uri.GetLeftPart([UriPartial]::Authority)
   $client = Get-CixHttpClient
   for ($attempt = 1; ; $attempt++) {
     $date = [DateTime]::UtcNow.ToString('R')
@@ -351,8 +355,16 @@ function Get-CixHeader {
 function Get-CixHttpClient {
   <# One HttpClient for the session. TLS 1.2 is switched on for Windows PowerShell 5.1 (.NET Framework), which may default to older versions. #>
   if (-not $script:HttpClient) {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $script:HttpClient = New-Object System.Net.Http.HttpClient
+    if ($PSVersionTable.PSEdition -eq 'Desktop') {
+      # Only on 5.1, and only add TLS 1.2: SystemDefault (0) already allows it and anything newer.
+      $protocols = [Net.ServicePointManager]::SecurityProtocol
+      if ([int]$protocols -ne 0 -and -not ($protocols -band [Net.SecurityProtocolType]::Tls12)) {
+        [Net.ServicePointManager]::SecurityProtocol = $protocols -bor [Net.SecurityProtocolType]::Tls12
+      }
+    }
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $false # Cosmos DB never redirects; don't send signed requests anywhere else
+    $script:HttpClient = New-Object System.Net.Http.HttpClient $handler
     $script:HttpClient.Timeout = [TimeSpan]::FromSeconds(30)
     $script:HttpClient.DefaultRequestHeaders.ExpectContinue = $false # .NET Framework would otherwise wait for a 100 Continue
   }

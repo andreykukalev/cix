@@ -93,6 +93,11 @@ Check 'secret files: exact content, no byte-order mark, readable only by you' {
       $others = @($rules | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]) -ne $me })
       Expect $others.Count 0 'access rules for anyone else'
     }
+    else {
+      $mode = (& stat -c '%a' $path 2>$null)
+      if ($LASTEXITCODE -ne 0) { $mode = (& stat -f '%Lp' $path) } # macOS
+      Expect $mode '600' 'file mode'
+    }
   }
   finally { Remove-Item $path -Force -ErrorAction SilentlyContinue }
 }
@@ -139,7 +144,24 @@ try {
     Assert-CixAzureCli 6>$null
   }
 
-  Check 'a failing az call throws with its message' {
+  Check 'az missing from PATH is a failure, not a stale success' {
+  $saved = $env:PATH
+  $env:PATH = Join-Path ([IO.Path]::GetTempPath()) 'cix-no-such-dir'
+  $global:LASTEXITCODE = 0
+  $failed = $false
+  try { Invoke-CixAz @('version') | Out-Null } catch { $failed = $true }
+  finally { $env:PATH = $saved }
+  Expect $failed $true 'threw'
+}
+
+Check 'a non-https Cosmos DB endpoint is refused before any request' {
+  $message = $null
+  try { Invoke-CixCosmosRequest -Endpoint 'http://example.invalid/' -Key 'AAAA' -Method GET -ResourceType docs -ResourceLink 'x' -Path 'x' | Out-Null }
+  catch { $message = $_.Exception.Message }
+  Expect $message 'The Cosmos DB endpoint must use https.' 'message'
+}
+
+Check 'a failing az call throws with its message' {
     $message = $null
     try { Invoke-CixAz @('fail', 'now') | Out-Null } catch { $message = $_.Exception.Message }
     if ($message -notmatch 'az fail now failed: .*boom') { throw "got: $message" }
