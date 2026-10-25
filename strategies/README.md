@@ -5,22 +5,28 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 - One file per version: `<name>.v<N>.json`. Never edit a version that has run. Copy it to `v<N+1>` and change the copy, so the journal's record of what ran stays true. Each journal entry carries `name@vN#hash`; the hash shows if a file was edited anyway.
 - `status`: `draft` (never runs), `paper` (paper trading only), `live` (paper or live). Only the owner sets `live`; the `protect-live-mode` hook stops agents from writing it.
 - `allowedTools`: the tool server refuses any agent tool not listed here, except `get_strategy_spec`, which every agent may read to learn its own rules.
-- v4 is the default. Pick the active spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration.
+- Pick the active spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration. The default is `good` v1.
 
-`observer.v1.json` only reads; it checks the tool server works before a trading spec exists.
+## Trading strategies
 
-`trend.v1.json` trades BTC-EUR and ETH-EUR from the hourly market view with rules the agent applies itself.
+Both are signal-driven (ADR-0006), trade the same coins (`AllowedSymbols`) and have the same instructions, order size (`orderQuote` 5), risk per trade (1) and daily loss stop (5). The engine's scanner does the arithmetic: filters, ranking, risk-based size, stop and target, from `parameters.scanner`. The trader acts only on `scan_market` signals, and runs only when the signals change, plus a review every 4 hours.
 
-`trend.v2.json` is signal-driven (ADR-0006).
-- The engine's scanner does the arithmetic across the universe: filters, ranking, risk-based size, stop and target. It reads its settings from `parameters.scanner`.
-- The trader acts only on `scan_market` signals and cites the signal in every order's rationale.
-- Size is capped by the top-level `orderQuote`, which the order-size hook also reads. Set it there only, never inside `scanner`.
-- Because v2 allows `scan_market`, the trader container runs only when the signals change, plus a review every 4 hours, instead of every hour. With no signals there is no Claude call.
+`good.v1.json`: strict, for results close to real money.
+- Filters: 24h volume at least 20,000 EUR, spread at most 0.4%, hourly ATR at least 1× the round-trip cost (so BTC qualifies).
+- Entries: only an uptrend pullback (EMA 20 above EMA 50, price within 0.5 ATR of EMA 20, last hour not falling).
+- Stop 1.5 ATR, target 2× the risk. Exits at the stop, the target, or when the trend turns down.
 
-`trend.v3.json` is v2 with three wider scanner filters, so more coins can be ranked on Revolut X's thin EUR books. Everything else is the same.
-- `minQuoteVolume24h` 100000 → 20000. Orders are 5 to 20 EUR, so the floor is a sanity check, not a size limit. It relies on the engine's assumption that candle volume is in the coin, not in euros.
-- `maxSpreadFraction` 0.002 → 0.004. The cost filter still counts the spread, so a wide-spread coin must also be volatile enough to pass it.
-- `minAtrToCostRatio` 2 → 1.5. Admits calmer coins, with a thinner margin over fees.
-- Wider filters rank more coins; they don't create entries. A buy still needs an uptrend and a pullback.
+`risky.v1.json`: loose, for testing the order mechanics on paper. Expect losses.
+- Same filters, except hourly ATR need only be 0.5× the cost.
+- `requireUptrendPullback: false`: any coin that passes the filters gets an entry, in any trend.
+- Stop 1 ATR, target 1× the risk, so stops and targets are reached often and the engine's protective sells get exercised.
+- `trendExits: false`: positions leave only at their stop or target.
 
-`trend.v4.json` is v3 with `minAtrToCostRatio` 1.5 → 1, so a coin qualifies when its typical hourly move covers one round trip of costs. This lets BTC-EUR in (its hourly ATR is about 1.3× costs). Trades on calm coins have a thinner margin over fees.
+Size is capped by the top-level `orderQuote`, which the order-size hook also reads. Set it there only, never inside `scanner`.
+
+## Other specs
+
+- `analyst.v1.json`: the market analyst (ADR-0007). It cannot trade.
+- `observer.v1.json`: only reads; it checks the tool server works.
+
+The earlier `trend` v1 to v4 were removed. The journal keeps their instructions and labels (`trend@vN#hash`) for runs that used them.

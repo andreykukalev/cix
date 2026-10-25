@@ -45,6 +45,15 @@ public sealed record ScannerParameters
 
     public int MaxEntrySignals { get; init; } = 2;
 
+    /// <summary>
+    /// When true (the default), an entry needs an uptrend, a pullback near EMA 20 and a last hour that isn't falling. When
+    /// false, every ranked symbol may get an entry: for testing the order mechanics, not for making money.
+    /// </summary>
+    public bool RequireUptrendPullback { get; init; } = true;
+
+    /// <summary>When true (the default), a held position in a downtrend gets a trend-down exit; when false, only its stop or target.</summary>
+    public bool TrendExits { get; init; } = true;
+
     /// <summary>Hourly candles needed in the last 24 hours to judge liquidity.</summary>
     public int MinHourlyCandles24h { get; init; } = 12;
 
@@ -190,7 +199,7 @@ public static class MarketScanner
 
         var inputsBySymbol = inputs.ToDictionary(i => i.Symbol, StringComparer.Ordinal);
         var exits = held.OrderBy(h => h.Symbol, StringComparer.Ordinal)
-            .Select(h => inputsBySymbol.GetValueOrDefault(h.Symbol) is { HasOpenOrder: false } input ? Exit(h, input.Features) : null)
+            .Select(h => inputsBySymbol.GetValueOrDefault(h.Symbol) is { HasOpenOrder: false } input ? Exit(h, input.Features, parameters.TrendExits) : null)
             .OfType<ExitSignal>()
             .ToList();
 
@@ -259,16 +268,17 @@ public static class MarketScanner
     {
         var f = input.Features;
         var pair = input.Pair!;
-        if (f.Trend != Trend.Up)
+        if (p.RequireUptrendPullback && f.Trend != Trend.Up)
             return (null, $"trend {f.Trend.ToString().ToLowerInvariant()}");
         if (f.Ask is not > 0)
             return (null, "no ask");
 
         var atr = f.Atr14!.Value;
         var aboveEma = atr == 0 ? 0m : (f.Price!.Value - f.Ema20!.Value) / atr;
-        if (aboveEma > p.EntryMaxAboveEma20Atr)
+        if (p.RequireUptrendPullback && aboveEma > p.EntryMaxAboveEma20Atr)
             return (null, Inv($"extended: {aboveEma:0.##} ATR above EMA20"));
-        if (f.Return1h is not { } return1h || return1h < 0)
+        var return1h = f.Return1h ?? 0m;
+        if (p.RequireUptrendPullback && (f.Return1h is null || return1h < 0))
             return (null, "last hour falling");
 
         var entry = f.Ask.Value;
@@ -288,12 +298,13 @@ public static class MarketScanner
         if (size <= 0 || size < pair.MinOrderSize || quote < pair.MinOrderSizeQuote)
             return (null, "below exchange minimum");
 
-        var reason = Inv($"uptrend pullback {aboveEma:0.##} ATR above EMA20, 1h {return1h:+0.##%;-0.##%;0%}, 24h {(f.Return24h ?? 0m):+0.##%;-0.##%;0%}");
+        var setup = p.RequireUptrendPullback ? "uptrend pullback" : Inv($"test entry (trend {f.Trend.ToString().ToLowerInvariant()}),");
+        var reason = Inv($"{setup} {aboveEma:0.##} ATR above EMA20, 1h {return1h:+0.##%;-0.##%;0%}, 24h {(f.Return24h ?? 0m):+0.##%;-0.##%;0%}");
         return (new EntrySignal(
             input.Symbol, rank, entry, size, Math.Round(quote, 2), stop, target, Math.Round(size * lossPerUnit, 2), reason), null);
     }
 
-    private static ExitSignal? Exit(HeldPosition h, FeatureSet? f)
+    private static ExitSignal? Exit(HeldPosition h, FeatureSet? f, bool trendExits)
     {
         if (f is null || f.IsStale || f.Bid is not > 0 || h.SellableBaseSize <= 0)
             return null; // no fresh price: nothing to judge (the stale exclusion shows why)
@@ -303,7 +314,7 @@ public static class MarketScanner
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "stop", Inv($"bid {bid} at or below stop {stop}"));
         if (h.TakeProfit is { } target && bid >= target)
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "target", Inv($"bid {bid} at or above target {target}"));
-        if (f.Trend == Trend.Down)
+        if (trendExits && f.Trend == Trend.Down)
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "trend-down", "EMA20 crossed below EMA50");
         return null;
     }

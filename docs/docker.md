@@ -80,21 +80,26 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
   - The default list is federalreserve.gov, bls.gov, bea.gov, ecb.europa.eu, tradingeconomics.com, reuters.com, apnews.com, cnbc.com, coindesk.com, theblock.co, decrypt.co, rekt.news, defillama.com, tokenomist.ai, status.solana.com and revolut.com.
   - To change it, set the whole list in `.env`, for example `ANALYST_WEB_DOMAINS=reuters.com,coindesk.com,federalreserve.gov`, then run `docker compose up -d analyst`.
 
-## Strategy versions (signal-driven v2 and v3)
+## Strategies: good and risky
 
-1. The default is v4 (v3 with a lower cost ratio, so BTC qualifies). To change it, in `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Version": 2 }` (or 1).
+There are two strategies, both on the same coins (`AllowedSymbols`):
+- **good** (the default): strict rules, for results close to what real money would get. It buys only uptrend pullbacks, so it can stay in cash for days in a falling market.
+- **risky**: loose rules, for testing the order mechanics (buys, stops, targets, protective sells). It buys whatever passes the filters, even in a downtrend, so expect small losses. Risk per trade and the daily loss stop are the same as good, and the risk gate still applies.
+
+To switch:
+1. In `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Name": "risky", "Version": 1 }` (or `"good"`).
 2. Run `docker compose restart engine trader`.
 
-The trader then calls Claude only when the scanner's signals change (checked every minute), plus a position review every 4 hours (`TRADER_HEARTBEAT_MINUTES` in `.env`). The engine log shows each scan's ranking and why each symbol did or didn't signal (`Scan: ... ranked [...] excluded [...]`). To go back, set the version to 1 and restart.
+The trader calls Claude only when the scanner's signals change (checked every minute), plus a position review every 4 hours (`TRADER_HEARTBEAT_MINUTES` in `.env`). The engine log shows each scan's ranking and why each symbol did or didn't signal (`Scan: ... ranked [...] excluded [...]`). See `strategies\README.md` for the settings.
 
-Version 3 is v2 with wider scanner filters (more coins pass the volume, spread and cost checks); see `strategies\README.md`. It is the default. Each symbol in `AllowedSymbols` is polled, so the number of coins is limited by the market-data request budget (the `MarketData` section in `appsettings.json`): quotes every 20 seconds fit up to 15 symbols, and the engine refuses to start above that.
+Each symbol in `AllowedSymbols` is polled, so the number of coins is limited by the market-data request budget (the `MarketData` section in `appsettings.json`): quotes every 20 seconds fit up to 15 symbols, and the engine refuses to start above that.
 
 ## Notes
 
 - The trader uses **Sonnet** by default. Its work is mostly following the scanner's signals, and Sonnet does that fast and within your plan's limits. To change it, set `TRADER_MODEL=opus` (or `haiku`, or a full model name) in `.env`, then run `docker compose up -d trader`. Each run's log line lists the models used; Claude Code may also call a small model for side tasks.
 
-- When the engine restarts, the trader restarts too. With v1 it runs a cycle straight away and then hourly. With v2 it waits for the engine's first scan, runs a review, and then runs on new signals.
-- v2 runs are limited: at least 15 minutes apart for signals and at most 30 a day (`TRADER_MIN_GAP_MINUTES`, `TRADER_MAX_RUNS_PER_DAY` in `.env`). Signals are checked every `TRADER_POLL_SECONDS` (60).
+- When the engine restarts, the trader restarts too. It waits for the engine's first scan, runs a review, and then runs on new signals.
+- Runs are limited: at least 15 minutes apart for signals and at most 30 a day (`TRADER_MIN_GAP_MINUTES`, `TRADER_MAX_RUNS_PER_DAY` in `.env`). Signals are checked every `TRADER_POLL_SECONDS` (60).
 - On a Linux host, create `logs/trader` before the first start (the setup script does this on Windows), or Docker creates it owned by root and the trader can't write logs.
 
 ## Claude token expiry

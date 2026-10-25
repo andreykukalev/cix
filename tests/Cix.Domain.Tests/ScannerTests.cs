@@ -181,6 +181,31 @@ public sealed class ScannerTests
         Assert.Equal(why, Assert.Single(result.Ranked).NoEntryReason);
     }
 
+    [Theory]
+    [InlineData(Trend.Flat, "99.8", "0.002")]
+    [InlineData(Trend.Down, "99.8", "0.002")]
+    [InlineData(Trend.Up, "98.5", "0.002")]
+    [InlineData(Trend.Up, "99.8", "-0.001")]
+    public void TestEntries_IgnoreTheTrendAndPullbackRules_WhenTurnedOff(Trend trend, string ema20, string return1h)
+    {
+        var result = Scan([Input(Features(trend: trend, ema20: D(ema20), return1h: D(return1h)))], Defaults with { RequireUptrendPullback = false });
+
+        var entry = Assert.Single(result.Entries);
+        Assert.StartsWith($"test entry (trend {trend.ToString().ToLowerInvariant()})", entry.Reason, StringComparison.Ordinal);
+        Assert.Null(Assert.Single(result.Ranked).NoEntryReason);
+        Assert.True(entry.StopLoss < entry.LimitPrice && entry.TakeProfit > entry.LimitPrice); // still sized with a stop and target
+    }
+
+    [Fact]
+    public void WithoutTrendExits_ADowntrendKeepsThePosition_ButTheStopStillSells()
+    {
+        var noTrendExits = Defaults with { TrendExits = false };
+        var held = new HeldPosition("SOL-EUR", 0.05m, 97m, 110m);
+
+        Assert.Empty(Scan([Input(Features(trend: Trend.Down, bid: 100m))], noTrendExits, [held]).Exits);
+        Assert.Equal("stop", Assert.Single(Scan([Input(Features(trend: Trend.Down, bid: 97m))], noTrendExits, [held]).Exits).Reason);
+    }
+
     [Fact]
     public void NoEntry_BelowTheExchangeMinimum()
     {

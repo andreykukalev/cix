@@ -44,7 +44,7 @@ public sealed class OperatorTools(ToolCallContext context, IJournal journal, Exe
         [Description("Entry kind, for example order.")] string? kind = null,
         [Description("Agent run ID.")] string? runId = null,
         [Description("Client order ID.")] string? clientOrderId = null,
-        [Description("Strategy spec, for example trend or trend@v2.")] string? specVersion = null,
+        [Description("Strategy spec, for example good or good@v1.")] string? specVersion = null,
         [Description("At most this many entries (1-200).")] int limit = 50,
         CancellationToken cancellationToken = default)
     {
