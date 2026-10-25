@@ -77,7 +77,15 @@ builder.Services.AddCixCosmos(
 builder.Services.AddHostedService<HeartbeatService>();
 
 var app = builder.Build();
-await app.Services.InitializeCixPersistenceAsync(CancellationToken.None);
+
+// After a reboot the database may still be starting: wait for it (with backoff) rather than crash and be restarted by Docker.
+// The tool server, and so /healthz, only starts listening once this is done, so "healthy" means ready to trade.
+await StartupRetry.RunAsync(
+    ct => app.Services.InitializeCixPersistenceAsync(ct),
+    "the database",
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Cix.Engine.Startup"),
+    TimeProvider.System,
+    CancellationToken.None);
 _ = app.Services.GetRequiredService<MarketScanService>().Parameters; // a bad strategy spec stops startup here
 await app.Services.GetRequiredService<MarketViewStore>().RestoreAsync(CancellationToken.None);
 app.UseCixToolServer();

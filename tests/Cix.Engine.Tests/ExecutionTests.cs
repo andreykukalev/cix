@@ -16,6 +16,9 @@ internal sealed class FlakyExchange(IExchangeClient inner) : IExchangeClient
 
     public bool HideOpenOrders { get; set; }
 
+    /// <summary>The next placement is refused by the exchange (nothing is placed).</summary>
+    public bool RefuseNext { get; set; }
+
     /// <summary>Open orders can't be read (an outage).</summary>
     public bool FailReads { get; set; }
 
@@ -47,6 +50,12 @@ internal sealed class FlakyExchange(IExchangeClient inner) : IExchangeClient
 
     public async Task<PlacedOrder> PlaceLimitOrderAsync(ApprovedOrder order, bool postOnly, CancellationToken cancellationToken)
     {
+        if (RefuseNext)
+        {
+            RefuseNext = false;
+            throw new ExchangeException("Insufficient balance.", 400);
+        }
+
         if (CrashAfterSending)
         {
             await inner.PlaceLimitOrderAsync(order, postOnly, cancellationToken);

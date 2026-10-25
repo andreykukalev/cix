@@ -16,10 +16,14 @@ public sealed record PositionPlan(
     public bool HasEntry => FilledAt is not null;
 }
 
-/// <summary>Joins sellable positions with the journal: the latest buy fill per symbol and the order (stop, target) behind it.</summary>
+/// <summary>
+/// Joins sellable positions with their plans: from the engine state (written before the buy was sent, so it survives any
+/// restart), or, for a position the state has no plan for (opened before plans were kept there), the latest buy fill in the
+/// journal and the order behind it.
+/// </summary>
 public static class PositionPlans
 {
-    /// <summary>How far back to look for the buy behind a position.</summary>
+    /// <summary>How far back to look in the journal for the buy behind a position without a plan in the state.</summary>
     public const int LookbackDays = 30;
 
     /// <summary>Plans for every position big enough to sell, or null if the portfolio can't be valued now.</summary>
@@ -36,12 +40,25 @@ public static class PositionPlans
         if (sellable.Count == 0)
             return [];
 
-        var from = DateOnly.FromDateTime(portfolio.At.UtcDateTime).AddDays(-LookbackDays);
-        var fills = await journal.QueryAsync(new JournalQuery(From: from, Kind: "fill", Limit: FileJournal.MaxQueryLimit), cancellationToken).ConfigureAwait(false);
-        var orders = await journal.QueryAsync(new JournalQuery(From: from, Kind: "order", Limit: FileJournal.MaxQueryLimit), cancellationToken).ConfigureAwait(false);
+        var states = execution.PositionPlanStates;
+        IReadOnlyList<JournalEntry> fills = [];
+        IReadOnlyList<JournalEntry> orders = [];
+        if (sellable.Keys.Any(symbol => !states.ContainsKey(symbol)))
+        {
+            var from = DateOnly.FromDateTime(portfolio.At.UtcDateTime).AddDays(-LookbackDays);
+            fills = await journal.QueryAsync(new JournalQuery(From: from, Kind: "fill", Limit: FileJournal.MaxQueryLimit), cancellationToken).ConfigureAwait(false);
+            orders = await journal.QueryAsync(new JournalQuery(From: from, Kind: "order", Limit: FileJournal.MaxQueryLimit), cancellationToken).ConfigureAwait(false);
+        }
 
         return sellable.Keys.Order(StringComparer.Ordinal).Select(symbol =>
         {
+            if (states.TryGetValue(symbol, out var state))
+            {
+                return new PositionPlan(
+                    symbol, portfolio.Snapshot.PositionQuoteBySymbol[symbol], sellable[symbol],
+                    state.EntryPrice, state.FilledAt ?? state.Since, state.StopLoss, state.TakeProfit);
+            }
+
             // Newest first: the latest buy fill for this symbol is the position's entry.
             var fill = fills.FirstOrDefault(f => f.Data?.GetValueOrDefault("symbol") == symbol && f.Data?.GetValueOrDefault("side") == "buy");
             var clientOrderId = fill?.Data?.GetValueOrDefault("clientOrderId");
@@ -52,8 +69,8 @@ public static class PositionPlans
                 sellable[symbol],
                 Number(fill?.Data?.GetValueOrDefault("averagePrice")),
                 fill?.At,
-                Number(order?.Data?.GetValueOrDefault("stopLoss")),
-                Number(order?.Data?.GetValueOrDefault("takeProfit")));
+                Number(order?.Data?.GetValueOrDefault("stopLoss") ?? fill?.Data?.GetValueOrDefault("stopLoss")),
+                Number(order?.Data?.GetValueOrDefault("takeProfit") ?? fill?.Data?.GetValueOrDefault("takeProfit")));
         }).ToList();
     }
 

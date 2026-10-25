@@ -47,13 +47,36 @@ check_expiry() {
 
 # The engine shares this container's network namespace; give it time after a restart, then exit so Docker restarts
 # this agent and it rejoins the engine's (possibly new) namespace.
-wait_for_engine() {
-  for _ in $(seq 1 30); do
-    if (exec 3<>/dev/tcp/127.0.0.1/5077) 2>/dev/null; then return 0; fi
-    sleep 10
+# Succeeds if this container has a network interface besides loopback. It shares the engine's network; when the engine
+# container is restarted, that network goes and only loopback is left, so the new engine can never be reached from here.
+has_engine_network() {
+  local nic
+  for nic in /sys/class/net/*; do
+    [[ "${nic##*/}" != lo ]] && return 0
   done
-  say "The engine's tool server isn't reachable at 127.0.0.1:5077 after 5 minutes; exiting so Docker restarts the $agent_name."
-  exit 1
+  return 1
+}
+
+# Waits until the engine says it is ready (GET /healthz). After a reboot the engine may itself be waiting for the database,
+# so this logs once a minute instead of failing. Exits (and Docker restarts the container) only when waiting can't help:
+# the engine's network is gone, or nothing has answered for 10 minutes.
+wait_for_engine() {
+  local waited=0
+  until curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:5077/healthz" 2>/dev/null; do
+    if (( waited >= 30 )) && ! has_engine_network; then
+      say "The engine was restarted, so this container lost its network; exiting so Docker restarts the $agent_name with the new one."
+      exit 1
+    fi
+    if (( waited >= 600 )); then
+      say "The engine hasn't been ready for 10 minutes; exiting so Docker restarts the $agent_name."
+      exit 1
+    fi
+    if (( waited > 0 && waited % 60 == 0 )); then
+      say "Waiting for the engine to be ready (${waited}s so far)."
+    fi
+    sleep 10
+    waited=$(( waited + 10 ))
+  done
 }
 
 # Exit code for a run that didn't get to use Claude (no or expired credentials, usage or rate limit): such attempts don't

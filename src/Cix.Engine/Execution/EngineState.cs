@@ -17,21 +17,150 @@ public sealed record KillSwitchState(bool Engaged, string? Reason, string? By, D
 }
 
 /// <summary>
-/// State that must survive a restart until the journal lands (#6): the kill switch, the baselines for drawdown and
-/// daily loss, and the client order IDs of orders the engine sent that may still be open. Losing them would silently
-/// re-enable trading, reset the loss limits, or make the engine's own orders look like someone else's after a restart.
+/// An order the engine sent and hasn't yet seen finish. Recorded before the order is sent, so after a crash or restart the
+/// engine still recognises it as its own, can look up how it ended and journal its fill, and knows the plan behind it.
 /// </summary>
+/// <param name="ClientOrderId">The engine's ID for the order (a GUID: the exchange requires one, and it must be unique).</param>
+/// <param name="Side"><c>buy</c> or <c>sell</c>.</param>
+/// <param name="Source">What sent it: <c>place_order</c> (an agent), <c>protective-exit</c> (the engine's stop or target sell) or <c>engine</c>.</param>
+/// <param name="VenueOrderId">The exchange's ID, once it confirmed the order; null while the outcome is unknown.</param>
+public sealed record SentOrder(
+    string ClientOrderId,
+    string Symbol,
+    string Side,
+    decimal Size,
+    decimal LimitPrice,
+    DateTimeOffset SentAt,
+    string Source,
+    string? VenueOrderId = null,
+    decimal? StopLoss = null,
+    decimal? TakeProfit = null,
+    string? RunId = null,
+    string? Strategy = null);
+
+/// <summary>
+/// The plan for a position: the stop and target given with the buy that opened it. Written before that buy is sent, so a
+/// restart at any point keeps it; it is removed once the position is gone.
+/// </summary>
+/// <param name="Status"><see cref="EntryPending"/> until the buy fills, then <see cref="Open"/>.</param>
+/// <param name="EntryClientOrderId">The buy behind the plan (see <see cref="SentOrder"/> and the journal's <c>order</c> and <c>fill</c> entries).</param>
+public sealed record PositionPlanState(
+    string Symbol,
+    string Status,
+    string EntryClientOrderId,
+    decimal? StopLoss,
+    decimal? TakeProfit,
+    DateTimeOffset Since,
+    decimal? EntryPrice = null,
+    DateTimeOffset? FilledAt = null,
+    string? Strategy = null,
+    string? RunId = null)
+{
+    public const string EntryPending = "entry-pending";
+    public const string Open = "open";
+}
+
+/// <summary>
+/// The engine's operational state, which must survive a restart: the kill switch, the baselines for drawdown and daily
+/// loss, the holdings at the last reconciliation, the orders it sent that may still be working, and the plan (stop and
+/// target) for each position. Losing them would silently re-enable trading, reset the loss limits, make the engine's own
+/// orders look like someone else's, or leave a position without its stop. The journal holds the history; this is "now".
+/// </summary>
+/// <param name="KnownClientOrderIds">Older format: bare client order IDs. Read for compatibility and folded into <see cref="Orders"/> as they finish.</param>
+/// <param name="Orders">Orders sent and not yet seen finish, with what they are (see <see cref="SentOrder"/>).</param>
+/// <param name="Positions">Position plans by symbol (see <see cref="PositionPlanState"/>).</param>
 public sealed record EngineState(
     KillSwitchState KillSwitch,
     decimal PeakEquity,
     DateOnly? Day,
     decimal DayStartEquity,
     IReadOnlyList<string>? KnownClientOrderIds = null,
-    HoldingsBaseline? Holdings = null)
+    HoldingsBaseline? Holdings = null,
+    IReadOnlyList<SentOrder>? Orders = null,
+    IReadOnlyDictionary<string, PositionPlanState>? Positions = null)
 {
     /// <summary>Client order IDs the engine sent and hasn't yet seen finish; recorded before each send.</summary>
     [JsonIgnore]
-    public IReadOnlyList<string> Known => KnownClientOrderIds ?? [];
+    public IReadOnlyList<string> Known =>
+        (Orders ?? []).Select(o => o.ClientOrderId).Concat(KnownClientOrderIds ?? []).Distinct(StringComparer.Ordinal).ToList();
+
+    [JsonIgnore]
+    public IReadOnlyList<SentOrder> SentOrders => Orders ?? [];
+
+    [JsonIgnore]
+    public IReadOnlyDictionary<string, PositionPlanState> Plans => Positions ?? new Dictionary<string, PositionPlanState>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Adds an order about to be sent. A buy with a stop or target also sets the plan for its symbol: a new plan, or, when
+    /// the position is already open, the open plan with the new stop and target (its entry price stays until the buy fills).
+    /// </summary>
+    public EngineState WithSent(SentOrder order)
+    {
+        ArgumentNullException.ThrowIfNull(order);
+        if (Known.Contains(order.ClientOrderId, StringComparer.Ordinal))
+            return this;
+
+        var positions = Positions;
+        if (order.Side == "buy" && (order.StopLoss is not null || order.TakeProfit is not null))
+        {
+            var plan = Plans.TryGetValue(order.Symbol, out var existing) && existing.Status == PositionPlanState.Open
+                ? existing with { EntryClientOrderId = order.ClientOrderId, StopLoss = order.StopLoss, TakeProfit = order.TakeProfit, Strategy = order.Strategy, RunId = order.RunId }
+                : new PositionPlanState(order.Symbol, PositionPlanState.EntryPending, order.ClientOrderId, order.StopLoss, order.TakeProfit, order.SentAt,
+                    Strategy: order.Strategy, RunId: order.RunId);
+            positions = WithPlan(order.Symbol, plan);
+        }
+
+        return this with { Orders = [.. SentOrders, order], Positions = positions };
+    }
+
+    /// <summary>Records the exchange's ID for a sent order.</summary>
+    public EngineState WithVenueOrderId(string clientOrderId, string venueOrderId) =>
+        SentOrders.Any(o => o.ClientOrderId == clientOrderId && o.VenueOrderId != venueOrderId)
+            ? this with { Orders = SentOrders.Select(o => o.ClientOrderId == clientOrderId ? o with { VenueOrderId = venueOrderId } : o).ToList() }
+            : this;
+
+    /// <summary>Drops finished or refused orders (both formats).</summary>
+    public EngineState WithoutOrders(IReadOnlyCollection<string> clientOrderIds)
+    {
+        ArgumentNullException.ThrowIfNull(clientOrderIds);
+        if (!Known.Any(clientOrderIds.Contains))
+            return this;
+        var legacy = (KnownClientOrderIds ?? []).Where(id => !clientOrderIds.Contains(id)).ToList();
+        return this with
+        {
+            Orders = SentOrders.Where(o => !clientOrderIds.Contains(o.ClientOrderId)).ToList(),
+            KnownClientOrderIds = legacy.Count == 0 ? null : legacy,
+        };
+    }
+
+    /// <summary>A buy filled: its plan becomes open with the fill price.</summary>
+    public EngineState WithEntryFilled(string symbol, string clientOrderId, decimal averagePrice, DateTimeOffset at) =>
+        Plans.TryGetValue(symbol, out var plan) && plan.EntryClientOrderId == clientOrderId
+            && !(plan.Status == PositionPlanState.Open && plan.EntryPrice == averagePrice) // a replay after a restart changes nothing
+            ? this with { Positions = WithPlan(symbol, plan with { Status = PositionPlanState.Open, EntryPrice = averagePrice, FilledAt = at }) }
+            : this;
+
+    /// <summary>A buy ended unfilled: a plan still waiting for it goes (an open position keeps its plan).</summary>
+    public EngineState WithEntryAbandoned(string clientOrderId)
+    {
+        var symbol = Plans.Values.FirstOrDefault(p => p.EntryClientOrderId == clientOrderId && p.Status == PositionPlanState.EntryPending)?.Symbol;
+        return symbol is null ? this : WithoutPlans([symbol]);
+    }
+
+    public EngineState WithoutPlans(IReadOnlyCollection<string> symbols)
+    {
+        ArgumentNullException.ThrowIfNull(symbols);
+        if (!symbols.Any(Plans.ContainsKey))
+            return this;
+        var kept = Plans.Where(p => !symbols.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        return this with { Positions = kept.Count == 0 ? null : kept };
+    }
+
+    private Dictionary<string, PositionPlanState> WithPlan(string symbol, PositionPlanState plan)
+    {
+        var plans = new Dictionary<string, PositionPlanState>(Plans, StringComparer.Ordinal) { [symbol] = plan };
+        return plans;
+    }
 
     public static readonly EngineState Initial = new(KillSwitchState.Released, 0m, null, 0m);
 }
