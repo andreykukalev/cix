@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Cix.Domain;
+using Cix.Domain.Scanning;
 using Cix.Engine.Execution;
 using Cix.Engine.Manual;
 using Cix.Engine.Strategy;
@@ -22,22 +23,34 @@ public sealed class ManualRequestTests
 
     private sealed class ManualRig
     {
-        public ManualRig(decimal btc = 0.001m, StrategySpec? spec = null, ManualRequestOptions? options = null, TradingMode mode = TradingMode.Paper)
+        public ManualRig(
+            decimal btc = 0.001m, StrategySpec? spec = null, ManualRequestOptions? options = null, TradingMode mode = TradingMode.Paper, ToolRig? tools = null,
+            InMemoryManualRequestStore? store = null, InMemoryManualLedgerStore? ledger = null)
         {
-            Tools = new ToolRig(spec ?? Trading, btc: btc);
+            Tools = tools ?? new ToolRig(spec ?? Trading, btc: btc);
             Tools.Header(ToolServerOptions.AgentHeader, "trader");
             Tools.Header(ToolServerOptions.RunHeader, "run-9");
-            Service = new ManualRequestService(
-                Store, Tools.Rig.Execution, Tools.Rig.State, Rig.Limits, Tools.Journal, Tools.Specs, options ?? new ManualRequestOptions(),
-                new TradingContext(mode), Tools.Rig.Time, NullLogger<ManualRequestService>.Instance, Tools.Views);
+            Store = store ?? new InMemoryManualRequestStore("ok");
+            Ledger = ledger ?? new InMemoryManualLedgerStore();
+            Options = options ?? new ManualRequestOptions();
+            Mode = mode;
+            Service = NewService();
             Manual = new ManualTools(Tools.Context, Service, Tools.Rig.Execution, Tools.Rig.State);
         }
 
         public ToolRig Tools { get; }
-        public InMemoryManualRequestStore Store { get; } = new("ok");
+        public InMemoryManualRequestStore Store { get; }
+        public InMemoryManualLedgerStore Ledger { get; }
+        public ManualRequestOptions Options { get; }
+        public TradingMode Mode { get; }
         public ManualRequestService Service { get; }
         public ManualTools Manual { get; }
         public MutableTime Time => Tools.Rig.Time;
+
+        /// <summary>Another engine process on the same database: the ledger and the documents survive, memory doesn't.</summary>
+        public ManualRequestService NewService() => new(
+            Store, Ledger, Tools.Rig.Execution, Tools.Rig.State, Rig.Limits, Tools.Journal, Tools.Specs, Options,
+            new TradingContext(Mode), Tools.Rig.Time, NullLogger<ManualRequestService>.Instance, Tools.Views);
 
         public string Status(string id) => Store.Find(id)!.Status;
 
@@ -46,12 +59,14 @@ public sealed class ManualRequestTests
         public IReadOnlyList<string> History(string id) =>
             ((JsonArray)Store.Find(id)!.Document["events"]!).Select(e => e!["status"]!.GetValue<string>()).ToList();
 
+        public LedgerEntry? InLedger(string id) => Ledger.Saved?.Active.GetValueOrDefault(id);
+
         public Task<int> Poll() => Service.PollOnceAsync(CancellationToken.None);
 
         /// <summary>A request as the dashboard writes it: numbers as JSON numbers unless <paramref name="numbersAsText"/>.</summary>
         public JsonObject Request(
             string id, string side, string mode, decimal? portion = null, decimal? quoteAmount = null, TimeSpan? age = null, string symbol = Btc,
-            bool numbersAsText = false, string? tradingMode = null)
+            bool numbersAsText = false, string? tradingMode = null, string? status = "new")
         {
             var at = Time.GetUtcNow() - (age ?? TimeSpan.Zero);
             JsonNode? Number(decimal? value) => value is not { } v ? null : numbersAsText ? JsonValue.Create(v.ToString(CultureInfo.InvariantCulture)) : JsonValue.Create(v);
@@ -68,7 +83,7 @@ public sealed class ManualRequestTests
                 ["note"] = "Price jumped‮ 8% in ten minutes",
                 ["requestedBy"] = "owner",
                 ["createdAt"] = at.ToString("O", CultureInfo.InvariantCulture),
-                ["status"] = "new",
+                ["status"] = status,
             };
             if (tradingMode is not null)
                 doc["tradingMode"] = tradingMode;
@@ -93,6 +108,7 @@ public sealed class ManualRequestTests
         Assert.Equal(new[] { "executing", "placed" }, rig.History("req-direct-1"));
         Assert.Equal((0.0005m, 60_000m), (Dec(rig.Outcome("req-direct-1", "requestedSize")), Dec(rig.Outcome("req-direct-1", "requestedPrice"))));
         var clientOrderId = rig.Outcome("req-direct-1", "clientOrderId")!;
+        Assert.Equal((ManualRequestStatus.Placed, clientOrderId), (rig.InLedger("req-direct-1")!.Status, rig.InLedger("req-direct-1")!.ClientOrderId));
 
         var journal = rig.Tools.Journal.Entries;
         var received = Assert.Single(journal, e => e.Kind == ManualRequestService.Kind && e.Data!["status"] == "received");
@@ -103,13 +119,14 @@ public sealed class ManualRequestTests
             (order.Actor, order.Data!["tool"], order.Data["requestId"], order.Data["clientOrderId"], order.Data["status"]));
         Assert.Single(journal, e => e.Kind == ManualRequestService.Kind && e.Data!["status"] == "placed");
 
-        // The reconciler journals the fill; the next settle moves the request to filled.
+        // The reconciler journals the fill; the next settle moves the request to filled and out of the ledger.
         await rig.Tools.Rig.Execution.ReconcileAsync(CancellationToken.None);
         rig.Time.Advance(ManualRequestService.SettleInterval);
         await rig.Poll();
 
         Assert.Equal(ManualRequestStatus.Filled, rig.Status("req-direct-1"));
         Assert.Equal(0.0005m, Dec(rig.Outcome("req-direct-1", "filledSize")));
+        Assert.Null(rig.InLedger("req-direct-1"));
         var fill = Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "fill");
         Assert.Equal(ManualRequestService.DirectSource, fill.Data!["source"]);
         rig.Tools.Rig.Quote(60_000m, 60_010m);
@@ -117,17 +134,40 @@ public sealed class ManualRequestTests
     }
 
     [Fact]
-    public async Task ARequest_IsExecutedOnce_EvenWhenPolledAgain()
+    public async Task ARequest_IsExecutedOnce_EvenWhenItsDocumentCantBeUpdated_OrTheEngineRestarts()
     {
         var rig = new ManualRig(btc: 0.001m);
+        rig.Store.FailWrites = true; // the document keeps saying "new"
         rig.Request("req-once-1", "sell", "direct", portion: 1m);
 
         await rig.Poll();
         await rig.Poll();
-        rig.Time.Advance(TimeSpan.FromSeconds(31));
+        await rig.NewService().PollOnceAsync(CancellationToken.None); // a restart reads the ledger, not the document
+
+        Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "order");
+        Assert.Equal(ManualRequestStatus.New, rig.Status("req-once-1"));
+
+        rig.Store.FailWrites = false;
+        await rig.Poll();
+        Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-once-1")); // the copy catches up
+        Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "order");
+    }
+
+    [Fact]
+    public async Task WhenTheLedgerCantBeSaved_NothingIsSent_AndTheRequestIsTakenLater()
+    {
+        var rig = new ManualRig(btc: 0.001m);
+        rig.Ledger.Fail = true;
+        rig.Request("req-ledger1", "sell", "direct", portion: 1m);
+
+        await Assert.ThrowsAnyAsync<IOException>(() => rig.Poll()); // the day's ledger can't even start
+        Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == "order");
+
+        rig.Ledger.Fail = false;
         await rig.Poll();
 
         Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "order");
+        Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-ledger1"));
     }
 
     [Theory]
@@ -152,24 +192,55 @@ public sealed class ManualRequestTests
     }
 
     [Fact]
-    public async Task MissingOrMalformedFields_AreInvalid_NotAnError()
+    public async Task MalformedOrForgedDocuments_AreRefused_NotAnError()
     {
         var rig = new ManualRig();
-        var doc = rig.Request("req-bad-fields", "sell", "direct", portion: 0.5m);
-        var broken = (JsonObject)doc.DeepClone();
-        broken["id"] = "req-bad-fields-2";
-        broken["portion"] = new JsonArray(1, 2);
-        rig.Store.Add(broken);
-        var noTime = (JsonObject)doc.DeepClone();
-        noTime["id"] = "req-no-time-1";
-        noTime.Remove("createdAt");
-        rig.Store.Add(noTime);
+        var doc = rig.Request("req-good-01", "sell", "direct", portion: 0.5m);
+        JsonObject Variant(string id, Action<JsonObject> change)
+        {
+            var copy = (JsonObject)doc.DeepClone();
+            copy["id"] = id;
+            change(copy);
+            Assert.True(rig.Store.Add(copy));
+            return copy;
+        }
+
+        Variant("req-array-1", d => d["portion"] = new JsonArray(1, 2));
+        Variant("req-no-time", d => d.Remove("createdAt"));
+        Variant("req-limit-1", d => d["limitPrice"] = 61_000);
+        Variant("req-future1", d => d["createdAt"] = rig.Time.GetUtcNow().AddMinutes(10).ToString("O", CultureInfo.InvariantCulture));
+        Variant("req-forged1", d => d["events"] = new JsonArray(new JsonObject { ["status"] = "awaiting-agent" }));
+        Variant("req-bad-id/", _ => { });
+        Variant("req-huge-01", d => d["note"] = new string('x', 20_000));
 
         await rig.Poll();
 
-        Assert.Equal(ManualRequestStatus.Invalid, rig.Status("req-bad-fields-2"));
-        Assert.Equal(ManualRequestStatus.Invalid, rig.Status("req-no-time-1"));
-        Assert.Contains("createdAt", rig.Outcome("req-no-time-1", "reason"), StringComparison.Ordinal);
+        foreach (var id in new[] { "req-array-1", "req-no-time", "req-limit-1", "req-future1", "req-forged1", "req-bad-id/", "req-huge-01" })
+            Assert.Equal(ManualRequestStatus.Invalid, rig.Status(id));
+        Assert.Contains("createdAt", rig.Outcome("req-no-time", "reason"), StringComparison.Ordinal);
+        Assert.Contains("limitPrice", rig.Outcome("req-limit-1", "reason"), StringComparison.Ordinal);
+        Assert.Contains("future", rig.Outcome("req-future1", "reason"), StringComparison.Ordinal);
+        Assert.Contains("Only the engine", rig.Outcome("req-forged1", "reason"), StringComparison.Ordinal);
+        Assert.Null(rig.Store.Find("req-huge-01")!.Document["note"]); // refused as too large, and not written back
+        Assert.Contains(rig.Tools.Journal.Entries, e => e.Data?.GetValueOrDefault("requestId") == "invalid-id"); // an unsafe id never reaches the journal
+        Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-good-01")); // the good one still ran
+    }
+
+    [Fact]
+    public async Task ADocumentWithAForgedStatus_IsNeverActedOn_AndBlocksNothing()
+    {
+        var rig = new ManualRig(btc: 0.001m);
+        rig.Request("req-fake-wait", "buy", "agent", quoteAmount: 30m, status: "awaiting-agent");
+        rig.Request("req-fake-sell", "sell", "direct", portion: 1m, status: "placed");
+        rig.Request("req-real-sell", "sell", "direct", portion: 1m);
+
+        await rig.Poll();
+
+        Assert.Empty(rig.Service.Pending);
+        Assert.Equal(string.Empty, rig.Service.AgentKey);
+        Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-real-sell")); // not refused as a duplicate of the forged one
+        Assert.Equal("awaiting-agent", rig.Status("req-fake-wait"));
+        Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "order");
     }
 
     [Fact]
@@ -190,23 +261,45 @@ public sealed class ManualRequestTests
         Assert.Equal(ManualRequestStatus.AwaitingAgent, rig.Status("req-buy-01"));
         Assert.Equal(ManualRequestStatus.Rejected, rig.Status("req-buy-02"));
         Assert.Equal("daily-cap", rig.Outcome("req-buy-02", "rule"));
+        Assert.Equal((2, 3), (rig.Ledger.Saved!.Accepted, rig.Ledger.Saved.Refused));
         Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == "order");
     }
 
     [Fact]
-    public async Task ARequestForAnotherTradingMode_IsLeftAlone()
+    public async Task OtherTradingModes_AndLiveWithoutTheOwnersSwitch_AreLeftAlone()
     {
         var paper = new ManualRig();
         paper.Request("req-live-01", "sell", "direct", portion: 1m, tradingMode: "live");
         var live = new ManualRig(mode: TradingMode.Live);
-        live.Request("req-unmarked", "sell", "direct", portion: 1m); // no tradingMode: paper only
+        live.Request("req-live-02", "sell", "direct", portion: 1m, tradingMode: "live");
+        var allowed = new ManualRig(mode: TradingMode.Live, options: new ManualRequestOptions { AllowLive = true });
+        allowed.Request("req-unmarked", "sell", "direct", portion: 1m); // no tradingMode: paper only
 
         await paper.Poll();
         await live.Poll();
+        await allowed.Poll();
 
         Assert.Equal(ManualRequestStatus.New, paper.Status("req-live-01"));
-        Assert.Equal(ManualRequestStatus.New, live.Status("req-unmarked"));
+        Assert.Equal(("off", ManualRequestStatus.New), (live.Service.State, live.Status("req-live-02")));
+        Assert.Equal(("ok", ManualRequestStatus.New), (allowed.Service.State, allowed.Status("req-unmarked")));
         Assert.Empty(paper.Tools.Journal.Entries);
+    }
+
+    [Fact]
+    public async Task ADirectSellBeforePricesLoad_WaitsInsteadOfFailing()
+    {
+        var tools = new ToolRig(Trading, btc: 0.001m);
+        var rig = new ManualRig(tools: tools);
+        rig.Request("req-early-1", "sell", "direct", portion: 1m, symbol: "btc-eur");
+        var empty = new Cix.Engine.MarketData.MarketState(rig.Time);
+        var service = new ManualRequestService(rig.Store, rig.Ledger, tools.Rig.Execution, empty, Rig.Limits, tools.Journal, tools.Specs,
+            new ManualRequestOptions(), new TradingContext(TradingMode.Paper), rig.Time, NullLogger<ManualRequestService>.Instance);
+
+        await service.PollOnceAsync(CancellationToken.None);
+        Assert.Equal(ManualRequestStatus.New, rig.Status("req-early-1"));
+
+        await rig.Poll(); // prices are there now
+        Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-early-1"));
     }
 
     [Fact]
@@ -225,6 +318,7 @@ public sealed class ManualRequestTests
         Assert.Equal(("req-agent-1", "sell", 1m), (listed.GetProperty("requestId").GetString(), listed.GetProperty("side").GetString(), listed.GetProperty("portion").GetDecimal()));
         Assert.Equal(0.001m, listed.GetProperty("position").GetProperty("sellableBase").GetDecimal());
         Assert.Equal(20, listed.GetProperty("minutesLeft").GetInt32());
+        Assert.False(listed.GetProperty("ownerNote").GetString()!.Contains('‮', StringComparison.Ordinal));
 
         var tooMuch = await Assert.ThrowsAsync<McpException>(() => rig.Manual.AnswerManualRequest("req-agent-1", "execute", Why, portion: 1.5m));
         Assert.Contains("portion", tooMuch.Message, StringComparison.Ordinal);
@@ -242,6 +336,20 @@ public sealed class ManualRequestTests
     }
 
     [Fact]
+    public async Task AWaitingRequest_SurvivesARestart()
+    {
+        var rig = new ManualRig(btc: 0.001m);
+        rig.Request("req-restart", "sell", "agent", portion: 1m);
+        await rig.Poll();
+
+        var restarted = rig.NewService();
+        await restarted.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal("manual:req-restart", restarted.AgentKey);
+        Assert.Equal(rig.Time.GetUtcNow(), Assert.Single(restarted.Pending).AwaitingSince); // the clock didn't restart with it
+    }
+
+    [Fact]
     public async Task ADecline_IsRecordedWithTheRationale_AndNothingIsPlaced()
     {
         var rig = new ManualRig(btc: 0.001m);
@@ -256,6 +364,7 @@ public sealed class ManualRequestTests
         Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == "order");
         var decided = Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == ManualRequestService.Kind && e.Data!["status"] == "declined");
         Assert.Equal(("trader", "run-9"), (decided.Actor, decided.RunId));
+        Assert.Null(rig.InLedger("req-decline"));
     }
 
     [Fact]
@@ -292,13 +401,32 @@ public sealed class ManualRequestTests
     }
 
     [Fact]
-    public async Task AnUnansweredRequest_Expires()
+    public async Task ARiskOffMarketView_HoldsManualBuysToo()
+    {
+        var rig = new ManualRig(btc: 0m);
+        var now = rig.Time.GetUtcNow();
+        await rig.Tools.Views.RecordAsync(new MarketView(MarketRegime.RiskOff, now, now.AddHours(6), []),
+            new Journal.JournalEntry("v1", now, "market-view", "analyst", null, null, "risk-off", null), CancellationToken.None);
+        rig.Request("req-held-01", "buy", "agent", quoteAmount: 10m);
+        await rig.Poll();
+
+        var held = Parse(await rig.Manual.AnswerManualRequest("req-held-01", "execute", Why, stopLoss: 59_000m));
+
+        Assert.Equal(("rejected", "market-view"), (held.GetProperty("status").GetString(), held.GetProperty("rule").GetString()));
+        Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == "order");
+        Assert.Equal(ManualRequestStatus.Rejected, rig.Status("req-held-01"));
+    }
+
+    [Fact]
+    public async Task AnUnansweredRequest_Expires_AndCantBeAnsweredLate()
     {
         var rig = new ManualRig();
         rig.Request("req-wait-1", "sell", "agent", portion: 1m);
         await rig.Poll();
 
         rig.Time.Advance(TimeSpan.FromMinutes(21));
+        rig.Tools.Rig.Quote(60_000m, 60_010m);
+        await Assert.ThrowsAsync<McpException>(() => rig.Manual.AnswerManualRequest("req-wait-1", "execute", Why)); // late, even before the poll
         await rig.Poll();
 
         Assert.Equal(ManualRequestStatus.Expired, rig.Status("req-wait-1"));
@@ -307,41 +435,73 @@ public sealed class ManualRequestTests
     }
 
     [Fact]
-    public async Task AClaimInterruptedByARestart_IsResolved_NeverSentAgain()
+    public async Task AClaimInterruptedByARestart_IsResolved_NeverSentAgain_AndNeverCalledNotSent()
     {
         var rig = new ManualRig(btc: 0.001m);
         // A buy resting below the ask: still working on the exchange.
         await rig.Tools.Rig.Execution.PlaceAsync(new OrderIntent(Btc, OrderSide.Buy, 0.0001m, 59_900m, "c-working"), postOnly: false, CancellationToken.None);
-        foreach (var (id, clientOrderId) in new[] { ("req-sent-01", "c-working"), ("req-unsent", "c-never-sent") })
-        {
-            var doc = rig.Request(id, "sell", "direct", portion: 1m);
-            var claimed = ManualRequestDocument.WithStatus(doc, ManualRequestStatus.Executing, rig.Time.GetUtcNow(), "engine", "Sending.",
-                new Dictionary<string, string?> { ["clientOrderId"] = clientOrderId });
-            Assert.NotNull(await rig.Store.TryReplaceAsync(rig.Store.Find(id)!, claimed, CancellationToken.None));
-        }
+        var now = rig.Time.GetUtcNow();
+        var day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        ManualRequest Sell(string id) => new(id, day, "sell", "direct", Btc, 1m, null, null, "owner", now);
+        rig.Request("req-sent-01", "sell", "direct", portion: 1m);
+        rig.Request("req-unsent", "sell", "direct", portion: 1m);
+        rig.Ledger.Saved = ManualLedger.Empty
+            .With(new LedgerEntry(Sell("req-sent-01"), ManualRequestStatus.Executing, now, "c-working", now, "engine"))
+            .With(new LedgerEntry(Sell("req-unsent"), ManualRequestStatus.Executing, now, "c-never-sent", now, "engine"))
+            .WithSeen(day, "req-sent-01").WithSeen(day, "req-unsent");
 
         await rig.Poll();
         Assert.Equal(ManualRequestStatus.Unconfirmed, rig.Status("req-sent-01"));
-        Assert.Equal(ManualRequestStatus.Executing, rig.Status("req-unsent")); // within the grace period: it may still be on its way
+        Assert.Equal(ManualRequestStatus.Executing, rig.InLedger("req-unsent")!.Status); // within the grace period: it may still be on its way
 
         rig.Time.Advance(ManualRequestService.ClaimGrace);
         rig.Tools.Rig.Quote(60_000m, 60_010m);
         await rig.Poll();
 
         Assert.Equal(ManualRequestStatus.Closed, rig.Status("req-unsent"));
-        Assert.Equal("not-sent", rig.Outcome("req-unsent", "rule"));
-        Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == "order" && e.Data!.GetValueOrDefault("tool") == ManualRequestService.DirectSource);
+        Assert.Equal("outcome-unknown", rig.Outcome("req-unsent", "rule"));
+        Assert.Contains("Check the exchange", rig.Outcome("req-unsent", "reason"), StringComparison.Ordinal);
+        Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == "order"); // nothing was sent again
     }
 
     [Fact]
-    public async Task ManualTools_NeedASpecThatAllowsPlaceOrder()
+    public async Task APlacedRequest_TheEngineLostTrackOf_IsClosed_NotLeftBlockingTheCoin()
+    {
+        var rig = new ManualRig(btc: 0.001m);
+        var now = rig.Time.GetUtcNow();
+        var day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        rig.Request("req-lost-01", "sell", "direct", portion: 1m);
+        rig.Ledger.Saved = ManualLedger.Empty
+            .With(new LedgerEntry(new ManualRequest("req-lost-01", day, "sell", "direct", Btc, 1m, null, null, "owner", now), ManualRequestStatus.Placed, now, "c-gone", now))
+            .WithSeen(day, "req-lost-01");
+
+        await rig.Poll();
+        Assert.Equal(ManualRequestStatus.Placed, rig.InLedger("req-lost-01")!.Status); // not yet
+
+        rig.Time.Advance(ManualRequestService.UntrackedAfter);
+        rig.Tools.Rig.Quote(60_000m, 60_010m);
+        await rig.Poll();
+        Assert.Null(rig.InLedger("req-lost-01"));
+        Assert.Equal(("closed", "outcome-unknown"), (rig.Status("req-lost-01"), rig.Outcome("req-lost-01", "rule")));
+
+        rig.Request("req-next-01", "sell", "direct", portion: 1m);
+        await rig.Poll();
+        Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-next-01")); // the coin isn't blocked any more
+    }
+
+    [Fact]
+    public async Task ManualTools_NeedASpecThatAllowsPlaceOrder_AndAgentRequestsAreRefusedWithoutOne()
     {
         var rig = new ManualRig(spec: ToolRig.Observer);
+        rig.Request("req-no-trad", "sell", "agent", portion: 1m);
 
+        await rig.Poll();
         await Assert.ThrowsAsync<McpException>(() => rig.Manual.GetManualRequests(CancellationToken.None));
-        await Assert.ThrowsAsync<McpException>(() => rig.Manual.AnswerManualRequest("req-any-1", "decline", Why));
+        await Assert.ThrowsAsync<McpException>(() => rig.Manual.AnswerManualRequest("req-no-trad", "decline", Why));
 
         Assert.Equal(2, rig.Tools.Journal.Entries.Count(e => e.Kind == "tool-denied"));
+        Assert.Equal(("rejected", "no-trader"), (rig.Status("req-no-trad"), rig.Outcome("req-no-trad", "rule")));
+        Assert.Equal(string.Empty, rig.Service.AgentKey);
     }
 
     [Fact]
@@ -361,6 +521,7 @@ public sealed class ManualRequestTests
     public void Options_AreBounded()
     {
         new ManualRequestOptions().Validate();
+        Assert.False(new ManualRequestOptions().AllowLive);
         Assert.Throws<InvalidOperationException>(() => new ManualRequestOptions { MaxPerDay = 0 }.Validate());
         Assert.Throws<InvalidOperationException>(() => new ManualRequestOptions { PollInterval = TimeSpan.Zero }.Validate());
         Assert.Throws<InvalidOperationException>(() => new ManualRequestOptions { AgentAnswerTimeout = TimeSpan.FromMinutes(1) }.Validate());

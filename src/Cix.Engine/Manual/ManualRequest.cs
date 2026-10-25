@@ -14,6 +14,12 @@ public sealed class ManualRequestOptions
     /// <summary>When false, requests are left untouched in the database and nothing is executed.</summary>
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// Whether a Live engine acts on requests. Off by default and owner-only, like the live switch: until requests are
+    /// authenticated beyond write access to the database (ADR-0011), only paper trading takes them.
+    /// </summary>
+    public bool AllowLive { get; set; }
+
     /// <summary>How often the engine looks for new requests.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(5);
 
@@ -86,8 +92,8 @@ public static class ManualRequestStatus
 }
 
 /// <summary>
-/// An owner's request, as read from its document. Sells: <see cref="Portion"/> of the sellable position (0 to 1), direct or
-/// agent-assisted. Buys: <see cref="QuoteAmount"/> to spend, agent-assisted only.
+/// An owner's request, as read from its document. Sells: <see cref="Portion"/> of the sellable position (0 to 1) when the order
+/// is placed, at the bid, direct or agent-assisted. Buys: <see cref="QuoteAmount"/> to spend, at the ask, agent-assisted only.
 /// </summary>
 public sealed record ManualRequest(
     string Id,
@@ -97,7 +103,6 @@ public sealed record ManualRequest(
     string Symbol,
     decimal? Portion,
     decimal? QuoteAmount,
-    decimal? LimitPrice,
     string? Note,
     string RequestedBy,
     DateTimeOffset CreatedAt)
@@ -168,25 +173,22 @@ public static partial class ManualRequestDocument
         if (!allowed.Contains(symbol))
             return (null, $"{symbol} is not in the risk allowlist.");
 
-        if (!Number(document, "portion", out var portion) || !Number(document, "quoteAmount", out var quoteAmount)
-            || !Number(document, "limitPrice", out var limitPrice))
-            return (null, "portion, quoteAmount and limitPrice must be numbers.");
+        if (document.ContainsKey("limitPrice"))
+            return (null, "limitPrice isn't supported: sells go at the bid and buys at the ask, so a resting order can't hold a position past its stop.");
+        if (!Number(document, "portion", out var portion) || !Number(document, "quoteAmount", out var quoteAmount))
+            return (null, "portion and quoteAmount must be numbers.");
         if (side == ManualRequest.Sell)
         {
             if (portion is not { } p || p <= 0m || p > 1m)
                 return (null, "A sell needs portion: the share of the position to sell, more than 0 and at most 1.");
             if (quoteAmount is not null)
                 return (null, "quoteAmount is for buys; a sell takes portion.");
-            if (limitPrice is { } lp && (lp <= 0m || lp > ManualRequest.MaxAmount * 1_000m))
-                return (null, "limitPrice must be positive.");
-            if (limitPrice is not null && mode == ManualRequest.Agent)
-                return (null, "limitPrice is for direct sells; the trader prices agent-assisted ones at the bid.");
         }
         else
         {
             if (quoteAmount is not { } q || q <= 0m || q > ManualRequest.MaxAmount)
                 return (null, "A buy needs quoteAmount: the amount of quote currency to spend, more than 0.");
-            if (portion is not null || limitPrice is not null)
+            if (portion is not null)
                 return (null, "A buy takes quoteAmount only.");
         }
 
@@ -196,13 +198,44 @@ public static partial class ManualRequestDocument
         if (DateOnly.FromDateTime(createdAt.UtcDateTime) != dayValue)
             return (null, "day must be the UTC date of createdAt.");
 
-        var requestedBy = Text(document, "requestedBy") ?? "owner";
+        var requestedBy = Text(document, "requestedBy") ?? "owner"; // a role label, never an email address
         if (!SafeLabel().IsMatch(requestedBy))
             requestedBy = "invalid";
 
-        return (new ManualRequest(id, day, side, mode, symbol, portion, quoteAmount, limitPrice, Clean(Text(document, "note"), ManualRequest.MaxNote),
+        return (new ManualRequest(id, day, side, mode, symbol, portion, quoteAmount, Clean(Text(document, "note"), ManualRequest.MaxNote),
             requestedBy, createdAt.ToUniversalTime()), null);
     }
+
+    /// <summary>Fields only the engine writes. A document that arrives with any of them wasn't written by the engine: refused.</summary>
+    public static readonly IReadOnlyList<string> EngineFields = ["outcome", "events", "updatedAt"];
+
+    public const int MaxDocumentChars = 16_384;
+    public const int MaxDocumentDepth = 8;
+
+    /// <summary>Why a document is refused before it is read field by field, or null: too big, too deeply nested, or carrying engine fields.</summary>
+    public static string? ShapeProblem(JsonObject document)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        if (Depth(document) > MaxDocumentDepth || document.ToJsonString().Length > MaxDocumentChars)
+            return "The request document is too large or too deeply nested.";
+        return EngineFields.Any(document.ContainsKey) || (Status(document) != ManualRequestStatus.New)
+            ? "Only the engine writes status, outcome, events and updatedAt; a new request has status new and none of the others."
+            : null;
+    }
+
+    /// <summary>The trading mode a request is for: its <c>tradingMode</c>, <c>paper</c> when absent.</summary>
+    public static string ModeOf(JsonObject document) =>
+        Text(document ?? throw new ArgumentNullException(nameof(document)), "tradingMode")?.ToLowerInvariant() ?? "paper";
+
+    /// <summary>The id if it is safe to write to the journal and logs, otherwise <c>invalid-id</c>.</summary>
+    public static string SafeIdOrInvalid(string? id) => id is not null && SafeId().IsMatch(id) ? id : "invalid-id";
+
+    private static int Depth(JsonNode? node) => node switch
+    {
+        JsonObject o => 1 + (o.Count == 0 ? 0 : o.Max(p => Depth(p.Value))),
+        JsonArray a => 1 + (a.Count == 0 ? 0 : a.Max(Depth)),
+        _ => 0,
+    };
 
     /// <summary>A copy of <paramref name="document"/> with a new status, outcome fields and one more event in its history.</summary>
     public static JsonObject WithStatus(
@@ -318,6 +351,6 @@ public static partial class ManualRequestDocument
     [GeneratedRegex("^[A-Za-z0-9-]{8,64}$")]
     private static partial Regex SafeId();
 
-    [GeneratedRegex("^[A-Za-z0-9._:@-]{1,64}$")]
+    [GeneratedRegex("^[A-Za-z0-9._:-]{1,64}$")]
     private static partial Regex SafeLabel();
 }

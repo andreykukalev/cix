@@ -47,8 +47,14 @@ $denied = 'Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,Web
 $tools = @(
     'mcp__cix__get_strategy_spec', 'mcp__cix__get_portfolio', 'mcp__cix__get_position_plans',
     'mcp__cix__get_open_orders', 'mcp__cix__get_market_view', 'mcp__cix__get_features', 'mcp__cix__scan_market',
-    'mcp__cix__place_order', 'mcp__cix__cancel_order', 'mcp__cix__get_manual_requests', 'mcp__cix__answer_manual_request'
+    'mcp__cix__place_order', 'mcp__cix__cancel_order'
 ) -join ','
+$denied += ',mcp__cix__get_manual_requests,mcp__cix__answer_manual_request'
+if ($OwnerRequests) {
+    # A run for owner requests reads and answers only: the owner's note can't steer it into placing or cancelling orders.
+    $tools = ($tools -replace ',mcp__cix__place_order,mcp__cix__cancel_order', '') + ',mcp__cix__get_manual_requests,mcp__cix__answer_manual_request'
+    $denied = ($denied -replace ',mcp__cix__get_manual_requests,mcp__cix__answer_manual_request', '') + ',mcp__cix__place_order,mcp__cix__cancel_order'
+}
 
 $prompt = if ($OwnerRequests) {
     'The owner has sent requests from the dashboard. Read get_strategy_spec, then get_manual_requests, and answer every request with answer_manual_request as your instructions describe. Do not run the regular trading cycle in this run.'

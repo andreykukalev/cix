@@ -72,6 +72,7 @@ public sealed partial class ScannerFilterRecorder(IScannerFilterStore store, IJo
     private ScannerFilterState? _state;
     private bool _loaded;
     private string? _candidate;
+    private bool _unsaved;
 
     /// <summary>The last recorded state, or null before the first scan after startup.</summary>
     public ScannerFilterState? Current => Volatile.Read(ref _state);
@@ -90,15 +91,19 @@ public sealed partial class ScannerFilterRecorder(IScannerFilterStore store, IJo
                 _loaded = true;
             }
 
+            if (_unsaved)
+                await SaveAsync(_state!, cancellationToken).ConfigureAwait(false); // an earlier change that couldn't be saved
+
             var previous = _state;
             var (passing, excluded) = Eligibility(scan, previous);
 
             if (previous is null || previous.Filters != filters)
             {
                 var next = new ScannerFilterState(spec, filters, scan.AsOf, passing, excluded, scan.AsOf);
+                _candidate = null;
+                Take(next); // the change is taken before it is journaled: a failed save never journals it twice
                 await AppendAsync(FiltersKind, FiltersSummary(previous, next), FiltersData(previous, next), spec, cancellationToken).ConfigureAwait(false);
                 await SaveAsync(next, cancellationToken).ConfigureAwait(false);
-                _candidate = null;
                 return;
             }
 
@@ -125,9 +130,10 @@ public sealed partial class ScannerFilterRecorder(IScannerFilterStore store, IJo
             var data = EligibilityData(changed);
             data["added"] = string.Join(',', added);
             data["removed"] = string.Join(',', removed);
+            _candidate = null;
+            Take(changed);
             await AppendAsync(EligibilityKind, summary, data, spec, cancellationToken).ConfigureAwait(false);
             await SaveAsync(changed, cancellationToken).ConfigureAwait(false);
-            _candidate = null;
         }
         finally
         {
@@ -203,10 +209,21 @@ public sealed partial class ScannerFilterRecorder(IScannerFilterStore store, IJo
         LogRecorded(logger, kind, summary);
     }
 
+    /// <summary>
+    /// Takes the new state at once (so a failed save can't journal the same change again at every scan), then saves it; a
+    /// failed save is retried at the next scan.
+    /// </summary>
+    private void Take(ScannerFilterState state)
+    {
+        Volatile.Write(ref _state, state);
+        _unsaved = true;
+    }
+
     private async Task SaveAsync(ScannerFilterState state, CancellationToken cancellationToken)
     {
+        Take(state);
         await store.SaveAsync(state, cancellationToken).ConfigureAwait(false);
-        Volatile.Write(ref _state, state);
+        _unsaved = false;
     }
 
     [LoggerMessage(Level = LogLevel.Information, Message = "{Kind}: {Summary}")]

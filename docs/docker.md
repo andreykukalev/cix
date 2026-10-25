@@ -95,9 +95,9 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
 You can ask the engine to sell (or the trader to consider a buy or a sell) without waiting for a signal (ADR-0011). The dashboard's buttons create these requests; until then, or to test, create one in Data Explorer (http://localhost:1234, `cix` › `requests` › New Item). The fields and an example are in [persistence.md](persistence.md#the-requests-container).
 
 - **Direct sell** (`"mode": "direct"`): the engine sells the `portion` of the position at the bid within about 5 seconds, through the risk gate.
-- **Agent-assisted** (`"mode": "agent"`, for sells and buys): the trader is started at once, looks at the request, and executes or declines it with its reasoning. Buys are agent-assisted only.
+- **Agent-assisted** (`"mode": "agent"`, for sells and buys): the trader is started at once, looks at the request, and executes or declines it with its reasoning. Buys are agent-assisted only. These runs have their own daily cap (`TRADER_MAX_MANUAL_RUNS_PER_DAY`, 20) and can't place or cancel orders themselves.
 - **Watch it:** the request document's `status`, `outcome` and `events`, the journal's `manual-request` and `order` entries, `docker compose logs trader`, and the engine status's `manualRequests`.
-- A request more than 5 minutes old when the engine sees it expires; one the trader doesn't answer in 20 minutes expires too; a second request for the same coin and side while one is in progress is refused; at most 20 a day. To change these, add a `"ManualRequests"` section to `appsettings.json` (`Enabled`, `MaxPerDay`, `MaxAgeAtPickup`, `AgentAnswerTimeout`, `PollInterval`); `"Enabled": false` leaves requests untouched.
+- A request more than 5 minutes old when the engine sees it expires; one the trader doesn't answer in 20 minutes expires too; a second request for the same coin and side while one is in progress is refused; at most 20 a day. To change these, add a `"ManualRequests"` section to `appsettings.json` (`Enabled`, `MaxPerDay`, `MaxAgeAtPickup`, `AgentAnswerTimeout`, `PollInterval`); `"Enabled": false` leaves requests untouched. Requests are for paper trading: a Live engine ignores them (`AllowLive`, off, see ADR-0011).
 
 ## Strategies: good and risky
 

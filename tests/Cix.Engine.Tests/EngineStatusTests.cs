@@ -158,7 +158,7 @@ public sealed class EngineStatusTests
     {
         var rig = new Rig(eur: 200m);
         var manual = new Manual.ManualRequestService(
-            new Manual.InMemoryManualRequestStore("ok"), rig.Execution, rig.State, Rig.Limits, rig.Journal, new FixedSpecs(null),
+            new Manual.InMemoryManualRequestStore("ok"), new Manual.InMemoryManualLedgerStore(), rig.Execution, rig.State, Rig.Limits, rig.Journal, new FixedSpecs(null),
             new Manual.ManualRequestOptions(), new TradingContext(TradingMode.Paper), rig.Time, NullLogger<Manual.ManualRequestService>.Instance);
         await manual.PollOnceAsync(CancellationToken.None);
         var store = new InMemoryEngineStatusStore();

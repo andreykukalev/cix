@@ -25,6 +25,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 | `engine-state-paper` (`engine-state-live` in Live) | `engine-state` | The engine's operational state (below). | On every change: an order sent, confirmed or finished, a plan opened or closed, a new loss baseline, the kill switch. |
 | `engine-status-paper` (or `-live`) | `engine-status` | The engine's status for people and the dashboard (below). Built from what the engine already holds in memory, with no exchange call and no state change, and never read back, so it can't affect trading. | Every minute. |
 | `paper-account` | `paper-account` | The simulated Revolut X account: balances (`available`, `reserved`) per currency, and its orders (all open ones and the latest 500 finished). Paper mode only. | Every second when something changed, and at shutdown. |
+| `manual-requests-paper` (or `-live`) | `manual-requests` | The engine's own record of owner requests (ADR-0011): those it accepted and still acts on (`active`: the request as first read, its status, since when, the claim's `clientOrderId`), today's `accepted` and `refused` counts, and the requests accepted since yesterday (`seen`), so none is taken twice. | Before a request's order is sent, and at each later step. |
 | `scanner-filters-paper` (or `-live`) | `scanner-filters` | The coin filters in force (`value.filters`, from the active spec's `scanner` parameters), the spec they came from, since when (`since`), and the coins that passed them (`passing`) or not (`excluded`, with the reason) at the last change. Read back at startup, so a restart doesn't count as a change. | Only when the filters or the set of passing coins change (see the `scanner-filters` and `scan-eligibility` journal entries). |
 | `spec-<name>@v<N>-<hash>` | `strategy-spec` | An immutable copy of a strategy spec version that ran. Journal entries name it in `specVersion` (`good@v1#3f2a9c1b04de`). | Once, the first time a version runs. Never overwritten. |
 
@@ -84,7 +85,7 @@ Each document is `{ id, day, entry }`. The entry has `id`, `at`, `kind`, `actor`
 
 ## The `requests` container
 
-One document per owner request, partitioned by its UTC `day`. The dashboard (or, for testing, Data Explorer) creates it; the engine polls every 5 seconds and updates it with what it did. ADR-0011 explains the design.
+One document per owner request, partitioned by its UTC `day`. The dashboard (or, for testing, Data Explorer) creates it; the engine polls every 5 seconds for new ones and copies each step it takes onto the document. ADR-0011 explains the design.
 
 | Field | Written by | Meaning |
 |---|---|---|
@@ -94,14 +95,15 @@ One document per owner request, partitioned by its UTC `day`. The dashboard (or,
 | `symbol` | requester | A coin in the risk allowlist, such as `XRP-EUR`. |
 | `portion` | requester | Sells: the share of the sellable position, more than 0 and at most 1. |
 | `quoteAmount` | requester | Buys: how much quote currency (EUR) to spend. |
-| `limitPrice` | requester | Optional, direct sells only; the bid otherwise. |
 | `note`, `requestedBy` | requester | Optional text for the trader and the history (cleaned, at most 280 characters), and who asked. |
-| `tradingMode` | requester | `paper` (the default) or `live`. An engine acts only on requests for its own mode. |
-| `status` | both | `new` (requester), then the engine's: `awaiting-agent`, `executing`, `placed`, `unconfirmed`, `filled`, `closed`, `declined`, `rejected`, `failed`, `invalid`, `duplicate`, `expired`. |
+| `tradingMode` | requester | `paper` (the default) or `live`. An engine acts only on requests for its own mode, and a Live engine only with `ManualRequests:AllowLive`, which is off. |
+| `status` | both | `new` (requester), then the engine's: `awaiting-agent`, `executing`, `placed`, `unconfirmed`, `filled`, `closed`, `declined`, `rejected`, `failed`, `invalid`, `duplicate`, `expired`. A new request must have status `new` and none of `outcome`, `events` or `updatedAt`. |
 | `outcome` | engine | `rule`, `reason`, and as they apply `decidedBy`, `runId`, `rationale`, `clientOrderId`, `requestedSize`, `requestedPrice`, `approvedSize`, `approvedPrice`, `orderId`, `filledSize`, `averagePrice`. |
 | `events` | engine | The history: one `{ at, status, by, detail }` per step. |
 
-A request moves to `executing`, with its `clientOrderId`, **before** its order is sent. If the engine stops at that moment, it finds the claim at the next start: the order is reconciled if it was sent (`unconfirmed`, then `filled` or `closed`), or the request is closed as `not-sent` after 2 minutes. A request is never executed twice.
+The engine reads a request document once, while it is `new`. From then on it trusts only its own record, `manual-requests-paper` in the `state` container (below), and writes each step onto the document as a copy for people. So a document written with another status, or edited later, changes nothing.
+
+A request is claimed in that record, with its `clientOrderId`, **before** its order is sent. If the engine stops at that moment, it finds the claim at the next start: the order is reconciled if it was sent (`unconfirmed`, then `filled` or `closed`). If there is no trace of it after 2 minutes, the request is closed as `outcome-unknown`, with a reminder to check the exchange's order history before sending it again. The same happens to a placed order the engine stops tracking without a record of how it ended. A request is never executed twice.
 
 Example, for testing in Data Explorer (`requests` container, New Item; set `day` and `createdAt` to now, in UTC):
 

@@ -277,7 +277,7 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
         await _db.Requests.CreateItemAsync(request, new PartitionKey(day)); // as the dashboard writes it
         var store = new CosmosManualRequestStore(_db);
         var service = new ManualRequestService(
-            store, tools.Rig.Execution, tools.Rig.State, Rig.Limits, tools.Journal, tools.Specs, new ManualRequestOptions(),
+            store, new CosmosManualLedgerStore(_db, TradingMode.Paper), tools.Rig.Execution, tools.Rig.State, Rig.Limits, tools.Journal, tools.Specs, new ManualRequestOptions(),
             new TradingContext(TradingMode.Paper), tools.Rig.Time, NullLogger<ManualRequestService>.Instance);
 
         await service.PollOnceAsync(CancellationToken.None);
@@ -288,8 +288,10 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
         Assert.Equal(2, ((JsonArray)stored.Document["events"]!).Count); // executing, placed
         Assert.Equal("owner", ManualRequestDocument.Field(stored.Document, "requestedBy")); // the requester's fields are kept
         Assert.Single(tools.Journal.Entries, e => e.Kind == "order");
-        Assert.Empty(await store.ListActiveAsync(DateOnly.FromDateTime(now.UtcDateTime).AddDays(1), CancellationToken.None));
-        Assert.Single(await store.ListDayAsync(DateOnly.FromDateTime(now.UtcDateTime), CancellationToken.None));
+        var today = DateOnly.FromDateTime(now.UtcDateTime);
+        Assert.Empty(await store.ListNewAsync(today.AddDays(-1), today.AddDays(1), CancellationToken.None)); // no longer new
+        var ledger = (await new CosmosManualLedgerStore(_db, TradingMode.Paper).LoadAsync(CancellationToken.None))!;
+        Assert.Equal((ManualRequestStatus.Placed, 0.5m, 1), (ledger.Active["req-cosmos-1"].Status, ledger.Active["req-cosmos-1"].Request.Portion, ledger.Accepted));
         Assert.Null(await store.TryReplaceAsync(stored with { ETag = "\"stale\"" }, stored.Document, CancellationToken.None));
     }
 

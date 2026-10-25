@@ -225,7 +225,9 @@ public sealed partial class MarketScanService(
         {
             await filters.RecordAsync(result, parameters, specs.Active?.Label, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning disable CA1031 // anything, timeouts included: a record that failed must never stop the scan or the protective exits after it
+        catch (Exception ex)
+#pragma warning restore CA1031
         {
             LogFiltersFailed(logger, ex.GetType().Name, ex.Message);
         }
