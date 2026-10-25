@@ -142,7 +142,7 @@ public sealed class MarketAnalystTests
         var tools = Analyst();
 
         await Assert.ThrowsAsync<McpException>(() => tools.Analyst.RecordMarketView(
-            regime, summary, [source], hours, avoid is null ? null : [avoid], CancellationToken.None));
+            regime, summary, [source], hours, avoid is null ? null : [avoid], cancellationToken: CancellationToken.None));
 
         Assert.Null(tools.Views.Current);
         Assert.DoesNotContain(tools.Journal.Entries, e => e.Kind == MarketViewStore.Kind);
