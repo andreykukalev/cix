@@ -106,7 +106,7 @@ if (-not $SkipInfrastructure) {
   Assert-CixDatabaseClaim -Settings $settings -AccountName $sharedName
   Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -WhatIf | Out-Null
   if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed.'; return }
-  Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to $sharedName?"
+  Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"
   $outputs = Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName
   $cosmosAccount = $outputs.cosmosAccountName.value
   $cosmosEndpoint = $outputs.cosmosEndpoint.value
