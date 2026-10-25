@@ -117,6 +117,35 @@ public sealed class RecoveryTests
     }
 
     [Fact]
+    public async Task AFurtherBuy_ChangesAnOpenPlanOnlyIfItFills()
+    {
+        var rig = new Rig(eur: 200m);
+        await BuyWithPlan(rig, 60_010m);
+        rig.Time.Advance(TimeSpan.FromMinutes(3));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Execution.ReconcileAsync(CancellationToken.None); // open, stop 59,000
+
+        // A post-only buy that would cross is rejected: its stop (just under the market) must not replace the open one.
+        var refused = await rig.Execution.PlaceAsync(
+            new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 60_010m, "c-2"), postOnly: true, CancellationToken.None,
+            context: Plan with { StopLoss = 59_990m });
+        var afterRefusal = rig.Store.Current.Plans[Rig.Btc];
+
+        var filled = await rig.Execution.PlaceAsync(
+            new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 60_010m, "c-3"), postOnly: false, CancellationToken.None,
+            context: Plan with { StopLoss = 59_500m });
+        Assert.Equal(59_000m, rig.Store.Current.Plans[Rig.Btc].StopLoss); // still the old stop until the fill is confirmed
+        rig.Time.Advance(TimeSpan.FromMinutes(3));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Execution.ReconcileAsync(CancellationToken.None);
+
+        Assert.Equal((ExecutionStatus.Failed, ExecutionStatus.Placed), (refused.Status, filled.Status));
+        Assert.Equal((59_000m, "c-1", (string?)null), (afterRefusal.StopLoss, afterRefusal.EntryClientOrderId, afterRefusal.PendingClientOrderId));
+        var plan = rig.Store.Current.Plans[Rig.Btc];
+        Assert.Equal((59_500m, "c-3", (string?)null), (plan.StopLoss, plan.EntryClientOrderId, plan.PendingClientOrderId));
+    }
+
+    [Fact]
     public async Task ARefusedBuy_LeavesNoOrderOrPlanBehind()
     {
         var rig = new Rig(eur: 200m);

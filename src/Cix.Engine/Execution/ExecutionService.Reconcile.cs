@@ -217,7 +217,8 @@ public sealed partial class ExecutionService
         var gone = new List<string>();
         foreach (var plan in _store.Current.Plans.Values)
         {
-            if (openIds.Contains(plan.EntryClientOrderId) || pendingIds.Contains(plan.EntryClientOrderId) || now - plan.Since < PendingWindow)
+            if (openIds.Contains(plan.EntryClientOrderId) || pendingIds.Contains(plan.EntryClientOrderId) || now - plan.Since < PendingWindow
+                || (plan.PendingClientOrderId is { } further && (openIds.Contains(further) || pendingIds.Contains(further))))
                 continue;
             PairInfo? pair;
             try
@@ -296,9 +297,9 @@ public sealed partial class ExecutionService
                 // After a restart the same order can be looked at again: journal how it ended once only.
                 recorded = await AlreadyJournaledAsync(clientOrderId, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                LogStateWriteFailed(_logger, "journal: " + ex.Message);
+                LogStateWriteFailed(_logger, "journal read: " + ex.GetType().Name);
                 continue; // try again next time rather than risk a duplicate
             }
 

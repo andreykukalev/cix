@@ -44,6 +44,10 @@ public sealed record SentOrder(
 /// </summary>
 /// <param name="Status"><see cref="EntryPending"/> until the buy fills, then <see cref="Open"/>.</param>
 /// <param name="EntryClientOrderId">The buy behind the plan (see <see cref="SentOrder"/> and the journal's <c>order</c> and <c>fill</c> entries).</param>
+/// <param name="PendingClientOrderId">
+/// A further buy for an open position, not filled yet. Its stop and target (<paramref name="PendingStopLoss"/>,
+/// <paramref name="PendingTakeProfit"/>) replace the plan's only once it fills, so a buy that never fills can't move the stop.
+/// </param>
 public sealed record PositionPlanState(
     string Symbol,
     string Status,
@@ -54,7 +58,10 @@ public sealed record PositionPlanState(
     decimal? EntryPrice = null,
     DateTimeOffset? FilledAt = null,
     string? Strategy = null,
-    string? RunId = null)
+    string? RunId = null,
+    string? PendingClientOrderId = null,
+    decimal? PendingStopLoss = null,
+    decimal? PendingTakeProfit = null)
 {
     public const string EntryPending = "entry-pending";
     public const string Open = "open";
@@ -92,7 +99,7 @@ public sealed record EngineState(
 
     /// <summary>
     /// Adds an order about to be sent. A buy with a stop or target also sets the plan for its symbol: a new plan, or, when
-    /// the position is already open, the open plan with the new stop and target (its entry price stays until the buy fills).
+    /// the position is already open, a pending stop and target that take over only if this buy fills.
     /// </summary>
     public EngineState WithSent(SentOrder order)
     {
@@ -104,7 +111,7 @@ public sealed record EngineState(
         if (order.Side == "buy" && (order.StopLoss is not null || order.TakeProfit is not null))
         {
             var plan = Plans.TryGetValue(order.Symbol, out var existing) && existing.Status == PositionPlanState.Open
-                ? existing with { EntryClientOrderId = order.ClientOrderId, StopLoss = order.StopLoss, TakeProfit = order.TakeProfit, Strategy = order.Strategy, RunId = order.RunId }
+                ? existing with { PendingClientOrderId = order.ClientOrderId, PendingStopLoss = order.StopLoss, PendingTakeProfit = order.TakeProfit }
                 : new PositionPlanState(order.Symbol, PositionPlanState.EntryPending, order.ClientOrderId, order.StopLoss, order.TakeProfit, order.SentAt,
                     Strategy: order.Strategy, RunId: order.RunId);
             positions = WithPlan(order.Symbol, plan);
@@ -133,16 +140,39 @@ public sealed record EngineState(
         };
     }
 
-    /// <summary>A buy filled: its plan becomes open with the fill price.</summary>
-    public EngineState WithEntryFilled(string symbol, string clientOrderId, decimal averagePrice, DateTimeOffset at) =>
-        Plans.TryGetValue(symbol, out var plan) && plan.EntryClientOrderId == clientOrderId
-            && !(plan.Status == PositionPlanState.Open && plan.EntryPrice == averagePrice) // a replay after a restart changes nothing
-            ? this with { Positions = WithPlan(symbol, plan with { Status = PositionPlanState.Open, EntryPrice = averagePrice, FilledAt = at }) }
-            : this;
+    /// <summary>
+    /// A buy filled: a plan waiting for it opens with the fill price; a further buy's pending stop and target take over.
+    /// A replay after a restart changes nothing.
+    /// </summary>
+    public EngineState WithEntryFilled(string symbol, string clientOrderId, decimal averagePrice, DateTimeOffset at)
+    {
+        if (!Plans.TryGetValue(symbol, out var plan))
+            return this;
+        if (plan.PendingClientOrderId == clientOrderId)
+        {
+            return this with
+            {
+                Positions = WithPlan(symbol, plan with
+                {
+                    EntryClientOrderId = clientOrderId, StopLoss = plan.PendingStopLoss, TakeProfit = plan.PendingTakeProfit,
+                    EntryPrice = averagePrice, FilledAt = at, PendingClientOrderId = null, PendingStopLoss = null, PendingTakeProfit = null,
+                }),
+            };
+        }
 
-    /// <summary>A buy ended unfilled: a plan still waiting for it goes (an open position keeps its plan).</summary>
+        if (plan.EntryClientOrderId != clientOrderId || (plan.Status == PositionPlanState.Open && plan.EntryPrice == averagePrice))
+            return this;
+        return this with { Positions = WithPlan(symbol, plan with { Status = PositionPlanState.Open, EntryPrice = averagePrice, FilledAt = at }) };
+    }
+
+    /// <summary>
+    /// A buy ended unfilled (refused, cancelled, expired): a plan still waiting for it goes, and an open position drops the
+    /// pending stop and target it would have brought, keeping its own.
+    /// </summary>
     public EngineState WithEntryAbandoned(string clientOrderId)
     {
+        if (Plans.Values.FirstOrDefault(p => p.PendingClientOrderId == clientOrderId) is { } open)
+            return this with { Positions = WithPlan(open.Symbol, open with { PendingClientOrderId = null, PendingStopLoss = null, PendingTakeProfit = null }) };
         var symbol = Plans.Values.FirstOrDefault(p => p.EntryClientOrderId == clientOrderId && p.Status == PositionPlanState.EntryPending)?.Symbol;
         return symbol is null ? this : WithoutPlans([symbol]);
     }
