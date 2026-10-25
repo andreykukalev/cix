@@ -5,7 +5,7 @@
   "subscriptionId": "",
   "resourceGroup": "rg-cix-prod",
   "location": "northeurope",
-  "dashboardLocation": "westeurope",
+  "dashboardLocation": "eastus2",
   "namePrefix": "cix",
   "sharedCosmos": "shared",
   "cosmos": {

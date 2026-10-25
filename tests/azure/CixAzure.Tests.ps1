@@ -32,6 +32,16 @@ Check 'every script parses on this version' {
   }
 }
 
+Check 'no "$name?" in strings (PowerShell reads the ? as part of the variable name)' {
+  foreach ($f in Get-ChildItem $azureTools -Filter *.ps*1) {
+    $n = 0
+    foreach ($line in [IO.File]::ReadAllLines($f.FullName)) {
+      $n++
+      if ($line -match '\$[A-Za-z_][A-Za-z0-9_]*\?') { throw "$($f.Name):$n uses `$name? (write `${name}? instead)" }
+    }
+  }
+}
+
 Check 'scripts are plain ASCII (5.1 reads files without a byte-order mark as ANSI)' {
   foreach ($f in Get-ChildItem $azureTools -Filter *.ps*1) {
     foreach ($b in [IO.File]::ReadAllBytes($f.FullName)) { if ($b -gt 127) { throw "$($f.Name) has a non-ASCII byte" } }
@@ -184,7 +194,8 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     'group show'     = "{`"name`":`"rg-cix-dev`",`"tags`":$GroupTags}"
     'group list'     = $GroupList
     'cosmosdb list'  = $CosmosAccounts
-    'cosmosdb keys'  = "{`"primaryReadonlyMasterKey`": `"$sample`"}"
+    'cosmosdb keys'  = "{`"primaryReadonlyMasterKey`": `"$sample`", `"primaryMasterKey`": `"$sample`"}"
+    'deployment sub' = '{"properties":{"outputs":{"accountName":{"value":"cosmos-shared-x"},"cosmosAccountName":{"value":"cosmos-shared-x"},"cosmosEndpoint":{"value":"https://cosmos-shared-x.documents.azure.com:443/"},"staticWebAppName":{"value":"stapp-cix-dev"},"dashboardUrl":{"value":"https://dash.example"}}}}'
   }
   if ($onWindows) {
     $lines = @('@echo off', 'echo WARNING: fake az writes to stderr 1>&2')
@@ -350,6 +361,26 @@ Check 'provision.ps1 rerun: uses the existing shared account untouched and previ
   }
   if ($r.Error) { throw $r.Error }
   foreach ($expected in @('Using cosmos-shared-x; left unchanged', "==> CIX (rg-cix-dev, database 'cix')", 'Preview only: nothing was changed.')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+
+Check 'provision.ps1 full run (-Yes) with an existing shared account: deploys CIX and reports the dashboard' {
+  $r = Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $false } {
+    & (Join-Path $azureTools 'provision.ps1') -Environment dev -Yes -SkipEngineConfig
+  }
+  if ($r.Error) { throw $r.Error }
+  foreach ($expected in @('Using cosmos-shared-x; left unchanged', 'Cosmos DB account:  cosmos-shared-x (shared, in rg-shared)', 'Dashboard:          https://dash.example')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+
+Check 'provision.ps1 full run (-Yes) with no shared account: creates it, then CIX' {
+  $r = Invoke-WithFakeAz @{ GroupExists = 'false'; GroupList = '[]'; DatabaseExists = $false } {
+    & (Join-Path $azureTools 'provision.ps1') -Environment dev -Yes -SkipEngineConfig
+  }
+  if ($r.Error) { throw $r.Error }
+  foreach ($expected in @('Shared account: cosmos-shared-x', "==> CIX (rg-cix-dev, database 'cix')", 'Dashboard:          https://dash.example')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
 }
