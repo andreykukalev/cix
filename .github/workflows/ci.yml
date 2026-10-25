@@ -146,8 +146,10 @@ jobs:
       - name: Bicep builds and lints cleanly
         run: |
           az bicep install
-          az bicep build --file infra/main.bicep --stdout > /dev/null
-          az bicep lint --file infra/main.bicep
+          for f in infra/main.bicep infra/shared/main.bicep; do
+            az bicep build --file "$f" --stdout > /dev/null
+            az bicep lint --file "$f"
+          done
 
       - name: Azure scripts on PowerShell 7 (parse, module, provision preview with a fake az, signing)
         shell: pwsh

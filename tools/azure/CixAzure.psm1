@@ -59,21 +59,42 @@ function Write-CixInfo([string]$Text) { Write-Host "    $Text" }
 function Write-CixWarn([string]$Text) { Write-Host "    ! $Text" -ForegroundColor Yellow }
 
 function Read-CixEnvironment {
-  <# Loads and checks infra/environments/<Name>.json. #>
+  <# Loads and checks infra/environments/<Name>.json, and the shared Cosmos DB settings it names (as .shared). #>
   param([Parameter(Mandatory)][ValidatePattern('^[a-z0-9-]{2,12}$')][string]$Name)
   $path = Join-CixPath $script:RepoRoot 'infra' 'environments' "$Name.json"
   if (-not (Test-Path $path)) {
     throw "No settings file for environment '$Name' ($path). Copy one of the files in infra/environments and edit it."
   }
   $s = ConvertTo-CixHashtable (Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json)
-  foreach ($key in 'environmentName', 'protected', 'resourceGroup', 'location', 'dashboardLocation', 'namePrefix', 'cosmos', 'deployDashboard') {
+  foreach ($key in 'environmentName', 'protected', 'resourceGroup', 'location', 'dashboardLocation', 'namePrefix', 'sharedCosmos', 'cosmos', 'deployDashboard') {
     if (-not $s.ContainsKey($key)) { throw "$path is missing '$key'." }
   }
   if ($s.environmentName -ne $Name) { throw "$path says environmentName '$($s.environmentName)', not '$Name'." }
   if ($s.protected -isnot [bool]) { throw "${path}: 'protected' must be true or false." }
   if ($s.resourceGroup -notmatch '^[\w\-\.\(\)]{1,90}$') { throw "${path}: resourceGroup isn't a valid name." }
   if ($s.cosmos.databaseName -notmatch '^[a-zA-Z0-9-]{1,64}$') { throw "${path}: cosmos.databaseName isn't a valid name." }
+  if (-not ($s.cosmos.databaseThroughput -is [int] -or $s.cosmos.databaseThroughput -is [long]) -or $s.cosmos.databaseThroughput -lt 400 -or $s.cosmos.databaseThroughput -gt 1000) {
+    throw "${path}: cosmos.databaseThroughput must be a whole number from 400 to 1000."
+  }
   if ($s.subscriptionId -and $s.subscriptionId -notmatch '^[0-9a-fA-F-]{36}$') { throw "${path}: subscriptionId must be a GUID or empty." }
+  $s['path'] = $path
+  $s['shared'] = Read-CixSharedSettings -Name $s.sharedCosmos
+  if ($s.shared.resourceGroup -eq $s.resourceGroup) { throw "${path}: the shared Cosmos DB account needs its own resource group, not $($s.resourceGroup)." }
+  return $s
+}
+
+function Read-CixSharedSettings {
+  <# Loads and checks infra/shared/<Name>.json: the Cosmos DB account shared by the owner's projects. #>
+  param([Parameter(Mandatory)][ValidatePattern('^[a-z0-9-]{2,24}$')][string]$Name)
+  $path = Join-CixPath $script:RepoRoot 'infra' 'shared' "$Name.json"
+  if (-not (Test-Path $path)) { throw "No shared settings file '$Name' ($path)." }
+  $s = ConvertTo-CixHashtable (Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json)
+  foreach ($key in 'resourceGroup', 'location', 'accountName', 'enableFreeTier', 'allowedIpRanges') {
+    if (-not $s.ContainsKey($key)) { throw "$path is missing '$key'." }
+  }
+  if ($s.resourceGroup -notmatch '^[\w\-\.\(\)]{1,90}$') { throw "${path}: resourceGroup isn't a valid name." }
+  if ($s.accountName -and $s.accountName -notmatch '^[a-z0-9][a-z0-9-]{2,43}$') { throw "${path}: accountName must be 3 to 44 lowercase letters, digits or hyphens, or empty." }
+  if ($s.enableFreeTier -isnot [bool]) { throw "${path}: 'enableFreeTier' must be true or false." }
   $s['path'] = $path
   return $s
 }
@@ -160,48 +181,85 @@ function Connect-CixAzure {
   return $account
 }
 
-function New-CixDeploymentParameters {
-  <# Writes the Bicep parameters for an environment to a temporary file and returns its path. #>
-  param([Parameter(Mandatory)][hashtable]$Settings)
-  $parameters = [ordered]@{
-    environmentName    = @{ value = $Settings.environmentName }
-    location           = @{ value = $Settings.location }
-    dashboardLocation  = @{ value = $Settings.dashboardLocation }
-    namePrefix         = @{ value = $Settings.namePrefix }
-    enableFreeTier     = @{ value = [bool]$Settings.cosmos.enableFreeTier }
-    databaseThroughput = @{ value = [int]$Settings.cosmos.databaseThroughput }
-    databaseName       = @{ value = $Settings.cosmos.databaseName }
-    allowedIpRanges    = @{ value = @($Settings.cosmos.allowedIpRanges) }
-    deployDashboard    = @{ value = [bool]$Settings.deployDashboard }
-    protectedEnvironment = @{ value = [bool]$Settings.protected }
-    tags               = @{ value = if ($Settings.ContainsKey('tags')) { $Settings.tags } else { @{} } }
-  }
+function New-CixParametersFile {
+  <# Writes deployment parameters (name -> value) to a temporary file and returns its path. #>
+  param([Parameter(Mandatory)][System.Collections.IDictionary]$Values, [Parameter(Mandatory)][string]$Label)
+  $parameters = [ordered]@{}
+  foreach ($k in $Values.Keys) { $parameters[$k] = @{ value = $Values[$k] } }
   $document = [ordered]@{
     '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
     contentVersion = '1.0.0.0'
     parameters     = $parameters
   }
-  $path = Join-Path ([IO.Path]::GetTempPath()) "cix-$($Settings.environmentName)-$([guid]::NewGuid().ToString('N')).parameters.json"
+  $path = Join-Path ([IO.Path]::GetTempPath()) "cix-$Label-$([guid]::NewGuid().ToString('N')).parameters.json"
   # No byte-order mark (5.1's Set-Content -Encoding utf8 writes one).
   [IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), $script:Utf8NoBom)
   return $path
 }
 
+function Get-CixDeploymentValues {
+  <#
+    The template and parameter values for one deployment: -Shared for the shared Cosmos DB account (infra/shared/main.bicep),
+    otherwise CIX's resources (infra/main.bicep), which need the shared account's name.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Shared, [string]$SharedAccountName)
+  $tags = if ($Settings.ContainsKey('tags')) { $Settings.tags } else { @{} }
+  if ($Shared) {
+    $sh = $Settings.shared
+    return @{
+      Template = Join-CixPath $script:RepoRoot 'infra' 'shared' 'main.bicep'
+      Location = $sh.location
+      Label    = 'shared'
+      Values   = [ordered]@{
+        resourceGroupName = $sh.resourceGroup
+        location          = $sh.location
+        accountName       = [string]$sh.accountName
+        enableFreeTier    = [bool]$sh.enableFreeTier
+        allowedIpRanges   = @($sh.allowedIpRanges)
+        tags              = if ($sh.ContainsKey('tags')) { $sh.tags } else { @{} }
+      }
+    }
+  }
+  if (-not $SharedAccountName) { throw 'The shared Cosmos DB account must exist before CIX is deployed.' }
+  return @{
+    Template = Join-CixPath $script:RepoRoot 'infra' 'main.bicep'
+    Location = $Settings.location
+    Label    = "cix-$($Settings.environmentName)"
+    Values   = [ordered]@{
+      environmentName         = $Settings.environmentName
+      resourceGroupName       = $Settings.resourceGroup
+      location                = $Settings.location
+      dashboardLocation       = $Settings.dashboardLocation
+      namePrefix              = $Settings.namePrefix
+      sharedResourceGroupName = $Settings.shared.resourceGroup
+      sharedAccountName       = $SharedAccountName
+      databaseName            = $Settings.cosmos.databaseName
+      databaseThroughput      = [int]$Settings.cosmos.databaseThroughput
+      protectedEnvironment    = [bool]$Settings.protected
+      deployDashboard         = [bool]$Settings.deployDashboard
+      tags                    = $tags
+    }
+  }
+}
+
 function Invoke-CixDeployment {
-  <# Deploys infra/main.bicep to the environment's resource group and returns the deployment outputs. -WhatIf previews only. #>
-  param([Parameter(Mandatory)][hashtable]$Settings, [switch]$WhatIf)
-  $template = Join-CixPath $script:RepoRoot 'infra' 'main.bicep'
-  $parameters = New-CixDeploymentParameters -Settings $Settings
+  <#
+    Deploys a subscription-scope template (it creates its own resource group) and returns its outputs. -WhatIf previews
+    only. -Shared deploys the shared Cosmos DB account; otherwise CIX's resources, in the shared account -SharedAccountName.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Shared, [string]$SharedAccountName, [switch]$WhatIf)
+  $d = Get-CixDeploymentValues -Settings $Settings -Shared:$Shared -SharedAccountName $SharedAccountName
+  $parameters = New-CixParametersFile -Values $d.Values -Label $d.Label
   try {
     if ($WhatIf) {
       # Straight to the console: the caller must not swallow the preview it is about to ask you to approve.
-      Invoke-CixNative { & az deployment group what-if --resource-group $Settings.resourceGroup --template-file $template --parameters "@$parameters" --only-show-errors | Out-Host }
+      Invoke-CixNative { & az deployment sub what-if --location $d.Location --template-file $d.Template --parameters "@$parameters" --only-show-errors | Out-Host }
       if ($LASTEXITCODE -ne 0) { throw 'The what-if preview failed.' }
       return $null
     }
-    $name = "cix-$($Settings.environmentName)-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"
-    $result = Invoke-CixAz @('deployment', 'group', 'create', '--resource-group', $Settings.resourceGroup, '--name', $name,
-      '--template-file', $template, '--parameters', "@$parameters", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+    $name = "$($d.Label)-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"
+    $result = Invoke-CixAz @('deployment', 'sub', 'create', '--location', $d.Location, '--name', $name,
+      '--template-file', $d.Template, '--parameters', "@$parameters", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
     return $result.properties.outputs
   }
   finally {
@@ -209,27 +267,54 @@ function Invoke-CixDeployment {
   }
 }
 
-function Get-CixCosmosAccount {
+function Find-CixSharedCosmos {
   <#
-    The environment's Cosmos DB account: the one in its resource group tagged cix-environment=<name>. Refuses anything else,
-    so a script can't be pointed at an unrelated account by a wrong name.
+    The shared Cosmos DB account: the one tagged shared-role=cosmos in the shared resource group (and named accountName when
+    the settings give one). Returns $null if there is none yet; refuses to guess between several.
   #>
   param([Parameter(Mandatory)][hashtable]$Settings)
-  $accounts = @(Invoke-CixAz @('cosmosdb', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
-      Where-Object { $_.tags -and $_.tags.PSObject.Properties['cix-environment'] -and $_.tags.'cix-environment' -eq $Settings.environmentName })
-  if ($accounts.Count -eq 0) {
-    throw "No Cosmos DB account tagged cix-environment=$($Settings.environmentName) in resource group $($Settings.resourceGroup)."
-  }
-  if ($accounts.Count -gt 1) { throw "More than one Cosmos DB account is tagged cix-environment=$($Settings.environmentName); refusing to guess." }
+  $sh = $Settings.shared
+  if ((Invoke-CixAz @('group', 'exists', '--name', $sh.resourceGroup)) -ne 'true') { return $null }
+  $accounts = @(Invoke-CixAz @('cosmosdb', 'list', '--resource-group', $sh.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+      Where-Object { $_.tags -and $_.tags.PSObject.Properties['shared-role'] -and $_.tags.'shared-role' -eq 'cosmos' })
+  if ($sh.accountName) { $accounts = @($accounts | Where-Object { $_.name -eq $sh.accountName }) }
+  if ($accounts.Count -gt 1) { throw "More than one Cosmos DB account in $($sh.resourceGroup) is tagged shared-role=cosmos; set accountName in $($sh.path)." }
+  if ($accounts.Count -eq 0) { return $null }
   return $accounts[0]
+}
+
+function Get-CixCosmosAccount {
+  <# The shared Cosmos DB account that holds CIX's database; fails if it doesn't exist yet. #>
+  param([Parameter(Mandatory)][hashtable]$Settings)
+  $account = Find-CixSharedCosmos -Settings $Settings
+  if (-not $account) {
+    throw "No shared Cosmos DB account (tag shared-role=cosmos) in resource group $($Settings.shared.resourceGroup). Run provision.ps1 first."
+  }
+  return $account
+}
+
+function Assert-CixDatabase {
+  <# Fails unless CIX's database exists in the shared account. #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$AccountName)
+  Invoke-CixAz @('cosmosdb', 'sql', 'database', 'show', '--account-name', $AccountName, '--resource-group', $Settings.shared.resourceGroup,
+    '--name', $Settings.cosmos.databaseName, '--only-show-errors', '-o', 'none') | Out-Null
+}
+
+function Get-CixEnvironmentTags {
+  <# The tags on CIX's resource group (set by infra/main.bicep): cix-environment and cix-protected. $null if it doesn't exist. #>
+  param([Parameter(Mandatory)][hashtable]$Settings)
+  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return $null }
+  $group = Invoke-CixAz @('group', 'show', '--name', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+  return $group.tags
 }
 
 function Get-CixCosmosKey {
   <# The account's primary key (read-write) or read-only key, as a string held in memory. Never print it. #>
   param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$AccountName, [switch]$ReadOnly)
+  # The account is shared, so its keys reach every project's database in it (ADR-0009).
   $type = if ($ReadOnly) { 'read-only-keys' } else { 'keys' }
   $field = if ($ReadOnly) { 'primaryReadonlyMasterKey' } else { 'primaryMasterKey' }
-  $keys = Invoke-CixAz -Quiet @('cosmosdb', 'keys', 'list', '--resource-group', $Settings.resourceGroup, '--name', $AccountName,
+  $keys = Invoke-CixAz -Quiet @('cosmosdb', 'keys', 'list', '--resource-group', $Settings.shared.resourceGroup, '--name', $AccountName,
     '--type', $type, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
   $key = $keys.$field
   if (-not $key) { throw 'The Cosmos DB key could not be read.' }

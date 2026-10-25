@@ -1,5 +1,5 @@
 {
-  "$comment": "Template for a production (live-money) environment. Copy to prod.json and fill in. protected: true makes reset-database.ps1 refuse to touch it.",
+  "$comment": "Template for a production (live-money) environment. Copy to prod.json and fill in. protected: true makes reset-database.ps1 refuse to touch it. Its database must differ from dev's when both share one account.",
   "environmentName": "prod",
   "protected": true,
   "subscriptionId": "",
@@ -7,11 +7,10 @@
   "location": "northeurope",
   "dashboardLocation": "westeurope",
   "namePrefix": "cix",
+  "sharedCosmos": "shared",
   "cosmos": {
-    "enableFreeTier": true,
-    "databaseThroughput": 1000,
-    "databaseName": "cix",
-    "allowedIpRanges": []
+    "databaseName": "cix-prod",
+    "databaseThroughput": 400
   },
   "deployDashboard": true,
   "tags": {

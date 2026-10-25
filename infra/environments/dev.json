@@ -1,5 +1,5 @@
 {
-  "$comment": "Settings for the 'dev' environment, read by tools/azure/*.ps1. No secrets here. Leave subscriptionId empty to pick it at the prompt (or pass -SubscriptionId).",
+  "$comment": "Settings for the 'dev' environment, read by tools/azure/*.ps1. No secrets here. Leave subscriptionId empty to pick it at the prompt (or pass -SubscriptionId). CIX's database lives in the shared Cosmos DB account described by infra/shared/<sharedCosmos>.json.",
   "environmentName": "dev",
   "protected": false,
   "subscriptionId": "",
@@ -7,11 +7,10 @@
   "location": "northeurope",
   "dashboardLocation": "westeurope",
   "namePrefix": "cix",
+  "sharedCosmos": "shared",
   "cosmos": {
-    "enableFreeTier": true,
-    "databaseThroughput": 1000,
     "databaseName": "cix",
-    "allowedIpRanges": []
+    "databaseThroughput": 400
   },
   "deployDashboard": true,
   "tags": {

@@ -1,15 +1,19 @@
-// CIX in Azure: the database (Cosmos DB, free tier) and the read-only dashboard (Static Web Apps, Free). The engine and the
-// agents keep running in Docker on the owner's PC and connect to the database over HTTPS with the account key.
-// Deploy with tools/azure/provision.ps1, which reads infra/environments/<name>.json. See docs/azure.md.
-targetScope = 'resourceGroup'
+// CIX in Azure: its own resource group with the read-only dashboard (Static Web Apps, Free), and its own database in the
+// shared Cosmos DB account (infra/shared/main.bicep, deployed first). The engine and the agents keep running in Docker on
+// the owner's PC and connect to the database over HTTPS with the account key.
+// Deploy with tools/azure/provision.ps1, which reads infra/environments/<name>.json. See docs/azure.md and ADR-0009.
+targetScope = 'subscription'
 
-@description('Environment name, for example dev. Part of every resource name and the cix-environment tag the scripts check.')
+@description('Environment name, for example dev. Part of resource names and the cix-environment tag the scripts check.')
 @minLength(2)
 @maxLength(12)
 param environmentName string
 
-@description('Region for Cosmos DB.')
-param location string = resourceGroup().location
+@description('CIX\'s resource group, for example rg-cix-dev.')
+param resourceGroupName string
+
+@description('Region for CIX\'s resource group.')
+param location string
 
 @description('Region for the Static Web App. Free tier is offered in a few regions only: westeurope, centralus, eastus2, westus2, eastasia.')
 @allowed(['westeurope', 'centralus', 'eastus2', 'westus2', 'eastasia'])
@@ -20,64 +24,66 @@ param dashboardLocation string = 'westeurope'
 @maxLength(8)
 param namePrefix string = 'cix'
 
-@description('Use the Cosmos DB free tier (1000 RU/s and 25 GB free). Only one account per subscription can have it; set false if another already does, and expect charges.')
-param enableFreeTier bool = true
+@description('The shared Cosmos DB account\'s resource group and name (from infra/shared/main.bicep).')
+param sharedResourceGroupName string
+param sharedAccountName string
 
-@description('Throughput shared by the database\'s containers. 1000 RU/s or less is free with the free tier.')
-@minValue(400)
-@maxValue(1000)
-param databaseThroughput int = 1000
-
-@description('Cosmos DB database name; the engine uses Cosmos:Database (default cix).')
+@description('CIX\'s database in the shared account; the engine uses Cosmos:Database.')
 param databaseName string = 'cix'
 
-@description('Public IP ranges allowed to reach Cosmos DB, for example ["203.0.113.7"]. Empty allows any address; the account key is then the protection.')
-param allowedIpRanges array = []
+@description('Throughput shared by CIX\'s two containers. The free tier covers 1000 RU/s for the whole account, shared with other projects\' databases.')
+@minValue(400)
+@maxValue(1000)
+param databaseThroughput int = 400
 
-@description('True for an environment with real money. Tagged on every resource as cix-protected; the reset script refuses it.')
+@description('True for an environment with real money. Tagged on CIX\'s resource group as cix-protected; the reset script refuses it.')
 param protectedEnvironment bool = false
 
 @description('Create the dashboard (Static Web App, Free).')
 param deployDashboard bool = true
 
-@description('Extra tags for every resource.')
+@description('Extra tags for CIX\'s resources.')
 param tags object = {}
 
 var allTags = union(tags, {
   'cix-environment': environmentName
   'cix-component': 'cix'
-  'cix-protected': string(protectedEnvironment)
+  'cix-protected': protectedEnvironment ? 'true' : 'false'
 })
 
-var accountName = toLower('${namePrefix}-${environmentName}-${uniqueString(resourceGroup().id)}')
+resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
+  name: resourceGroupName
+  location: location
+  tags: allTags
+}
 
-module cosmos 'modules/cosmos.bicep' = {
-  name: 'cix-cosmos'
+module database 'modules/cosmos-database.bicep' = {
+  name: 'cix-${environmentName}-database'
+  scope: resourceGroup(sharedResourceGroupName)
   params: {
-    accountName: accountName
-    location: location
-    enableFreeTier: enableFreeTier
+    accountName: sharedAccountName
     databaseName: databaseName
     databaseThroughput: databaseThroughput
-    allowedIpRanges: allowedIpRanges
-    allowAzureServices: deployDashboard && !empty(allowedIpRanges)
-    tags: allTags
   }
 }
 
 module dashboard 'modules/dashboard.bicep' = if (deployDashboard) {
-  name: 'cix-dashboard'
+  name: 'cix-${environmentName}-dashboard'
+  scope: group
   params: {
     name: 'stapp-${namePrefix}-${environmentName}'
     location: dashboardLocation
-    cosmosAccountName: cosmos.outputs.accountName
+    cosmosAccountName: sharedAccountName
+    cosmosResourceGroupName: sharedResourceGroupName
     databaseName: databaseName
     tags: allTags
   }
+  dependsOn: [database]
 }
 
-output cosmosAccountName string = cosmos.outputs.accountName
-output cosmosEndpoint string = cosmos.outputs.endpoint
+output resourceGroupName string = group.name
+output cosmosAccountName string = sharedAccountName
+output cosmosEndpoint string = database.outputs.endpoint
 output databaseName string = databaseName
 output staticWebAppName string = deployDashboard ? dashboard!.outputs.name : ''
 output dashboardUrl string = deployDashboard ? dashboard!.outputs.url : ''

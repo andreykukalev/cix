@@ -1,16 +1,20 @@
 # CIX in Azure: database and dashboard
 
-The engine and the agents keep running in Docker on your PC. Only the database moves to Azure, plus a read-only dashboard you can open from anywhere. Decision record: [ADR-0008](adr/0008-azure-database-local-agents-dashboard.md).
+The engine and the agents keep running in Docker on your PC. Only the database moves to Azure, plus a read-only dashboard you can open from anywhere. The Cosmos DB account is shared with your other projects, in its own resource group; CIX keeps its own resource group and its own database in that account. Decision records: [ADR-0008](adr/0008-azure-database-local-agents-dashboard.md), [ADR-0009](adr/0009-shared-cosmos-account.md).
 
 ```
 Your PC (Docker Compose)                                   Azure
-┌───────────────────────────────┐   HTTPS 443, account key   ┌──────────────────────────────────┐
-│ engine ── trader, analyst     │ ─────────────────────────► │ Cosmos DB (free tier)            │
-│ (paper exchange, risk gate)   │                            │   database cix: journal, state   │
-└───────────────────────────────┘                            └──────────────▲───────────────────┘
-                                                                            │ read-only key (server side)
+                                                           rg-shared (shared by your projects)
+┌───────────────────────────────┐   HTTPS 443, account key   ┌──────────────────────────────────────┐
+│ engine ── trader, analyst     │ ─────────────────────────► │ Cosmos DB cosmos-shared-<suffix>     │
+│ (paper exchange, risk gate)   │                            │ (free tier: 1000 RU/s for the account)│
+└───────────────────────────────┘                            │   database cix (400 RU/s):           │
+                                                             │     journal, state                   │
+                                                             │   (other projects' databases)        │
+                                                             └──────────────▲───────────────────────┘
+                                                           rg-cix-dev       │ read-only key (server side)
 Browser ── https://<name>.azurestaticapps.net ── /api (managed Functions) ───┘
-           Static Web Apps, Free plan
+           Static Web App stapp-cix-dev, Free plan
 ```
 
 Nothing in this guide runs by itself. You provision, switch and reset, each with its own command.
@@ -19,14 +23,15 @@ Nothing in this guide runs by itself. You provision, switch and reset, each with
 
 | Resource | Plan | Expected cost |
 |---|---|---|
-| Cosmos DB account, database with 1000 RU/s shared by `journal` and `state` | Free tier | **$0**. The free tier covers the first 1000 RU/s and 25 GB. |
-| Static Web App with managed API | Free | **$0** (includes 100 GB of bandwidth a month) |
+| Shared Cosmos DB account (`rg-shared`) | Free tier | **$0** for the first 1000 RU/s and 25 GB across all its databases |
+| CIX's database `cix`, 400 RU/s shared by `journal` and `state` | Inside the free tier | **$0**. It leaves 600 RU/s of the free tier for other projects. |
+| Static Web App with managed API (`rg-cix-dev`) | Free | **$0** (includes 100 GB of bandwidth a month) |
 | Data sent from Azure to your PC | | Well under the free 100 GB a month |
 
 Charges you could see:
-- **Another free-tier account already exists in the subscription.** Only one account per subscription can have the free tier. Then set `cosmos.enableFreeTier` to `false` in your settings file, and the database costs about **$58 a month at 1000 RU/s**, or about **$23 at 400 RU/s** (set `cosmos.databaseThroughput` to `400`).
+- **More than 1000 RU/s across all databases in the shared account.** The part over 1000 is billed, about $5.80 a month per 100 RU/s. A database needs at least 400 RU/s, so CIX plus one more project at 400 stay free, and a third project adds about $23 a month.
+- **Another free-tier account already exists in the subscription.** Only one account per subscription can have the free tier, so the first deployment of the shared account fails. Use another subscription, or set `enableFreeTier` to `false` in `infra/shared/shared.json` and expect about $23 a month for CIX's 400 RU/s.
 - **Storage over 25 GB**, at about $0.25 per GB a month. The journal grows by a few MB a day.
-- **Raising `databaseThroughput` above 1000** is billed for the part over 1000 RU/s.
 
 Nothing else is created: no Key Vault, no App Service, no Container Apps, no monitoring workspace.
 
@@ -39,38 +44,51 @@ Nothing else is created: no Key Vault, no App Service, no Container Apps, no mon
 
 ## 1. Settings
 
-Each environment has a settings file in `infra/environments/`. `dev.json` is ready to use:
+Two settings files, both ready to use:
+
+`infra/shared/shared.json`, the shared Cosmos DB account (one per subscription, used by all your projects):
+
+| Setting | Meaning |
+|---|---|
+| `resourceGroup`, `location` | Its resource group (`rg-shared`) and region (`northeurope` is close to Vilnius) |
+| `accountName` | Empty gives a generic name, `cosmos-shared-<suffix>`. The scripts find the account by its `shared-role=cosmos` tag |
+| `enableFreeTier` | See costs above |
+| `allowedIpRanges` | Empty: any address may connect, and the key protects it. Add your public IP to restrict access; trading then stops (safely) whenever your ISP changes it, until you update the setting and redeploy with `-UpdateShared` |
+
+`infra/environments/dev.json`, CIX's environment:
 
 | Setting | Meaning |
 |---|---|
 | `environmentName` | Short name, part of resource names and the `cix-environment` tag the scripts check |
 | `protected` | `true` for an environment with real money: the reset script refuses it |
-| `subscriptionId` | Pin a subscription, or leave empty to choose at the prompt (or pass `-SubscriptionId`) |
-| `resourceGroup`, `location` | Where Cosmos DB goes (`northeurope` is close to Vilnius) |
+| `subscriptionId` | Pin a subscription, or leave empty to choose at the prompt (or pass `-SubscriptionId`). Don't commit a real ID |
+| `resourceGroup`, `location` | CIX's own resource group (`rg-cix-dev`), which holds the dashboard |
 | `dashboardLocation` | Static Web Apps Free runs in a few regions only: `westeurope`, `centralus`, `eastus2`, `westus2`, `eastasia` |
-| `cosmos.enableFreeTier`, `cosmos.databaseThroughput` | See costs above |
-| `cosmos.allowedIpRanges` | Empty: any address may connect, and the key protects it. Add your public IP to restrict access; trading then stops (safely) whenever your ISP changes it, until you update the setting and redeploy |
+| `sharedCosmos` | Which shared settings file to use (`shared` means `infra/shared/shared.json`) |
+| `cosmos.databaseName`, `cosmos.databaseThroughput` | CIX's database in the shared account, and its throughput (400 to 1000 RU/s; 400 leaves room for other projects) |
 | `deployDashboard` | Create the Static Web App |
 
-No secrets go in these files. `prod.example.json` shows a protected environment.
+No secrets go in these files. `prod.example.json` shows a protected environment, with its own database name.
 
 ## 2. Provision
 
 ```powershell
-.\tools\azure\provision.ps1 -Environment dev -WhatIfOnly    # preview: what would be created
-.\tools\azure\provision.ps1 -Environment dev                # create it
+.\tools\azure\provision.ps1 -Environment dev -SubscriptionId <id> -WhatIfOnly   # preview: what would be created
+.\tools\azure\provision.ps1 -Environment dev -SubscriptionId <id>               # create it
 ```
 
 The script:
 1. Checks the Azure CLI.
 2. Signs you in with `az login` if needed, and selects the subscription.
-3. Creates the resource group after asking.
-4. Shows a what-if preview, asks again, then deploys `infra/main.bicep`.
+3. **Shared account.** If `rg-shared` has no account tagged `shared-role=cosmos` yet, it shows a what-if preview of `infra/shared/main.bicep` (the resource group and the account, no databases), asks, then deploys it. An existing shared account is left exactly as it is; pass `-UpdateShared` to apply the template to it (for example after changing `allowedIpRanges`).
+4. **CIX.** It shows a what-if preview of `infra/main.bicep` (`rg-cix-dev`, the dashboard, and the `cix` database with its two containers in the shared account), asks, then deploys it.
 5. Prints the Cosmos DB endpoint and the dashboard URL.
+
+With `-WhatIfOnly` and no shared account yet, only the shared account's preview is shown: CIX's preview needs the account to exist.
 
 It then writes the engine's settings:
 - `COSMOS_ENDPOINT` and `COSMOS_DATABASE` go into `.env`.
-- The account key goes into `secrets\cosmos_key`, readable only by you. The key is never printed.
+- The shared account's key goes into `secrets\cosmos_key`, readable only by you. The key is never printed. It is account-wide: it reaches every project's database in the shared account (see Limits).
 
 Pass `-SkipEngineConfig` to leave these two files alone.
 
@@ -125,7 +143,7 @@ It is **read-only and public** (anyone with the URL can open it):
 | What the key can do | Read and write documents. It can't create or delete containers: key-based metadata writes are disabled, and schema changes go through Azure Resource Manager with your Azure sign-in. |
 | Dashboard API to Cosmos DB | The read-only key, in the Static Web App's settings, used server side only. |
 | Your scripts | Your Azure CLI sign-in (`az login`). The scripts read keys into memory when needed and never print them. |
-| Rotating the engine's key | `az cosmosdb keys regenerate --kind primary ...`, then run `provision.ps1 -Environment dev` again (it rewrites `secrets/cosmos_key`), then `docker compose ... restart engine`. |
+| Rotating the engine's key | `az cosmosdb keys regenerate --kind primary ...`, then run `provision.ps1 -Environment dev` again (it rewrites `secrets/cosmos_key`), then `docker compose ... restart engine`. The key belongs to the shared account, so every project using it needs the new key. |
 
 ## Reliability
 
@@ -168,10 +186,10 @@ docker compose -f docker-compose.yml -f docker-compose.azure.yml up -d
 | `-ResetSchema` | Deletes the selected containers and creates them again from `infra/main.bicep`, with the same partition keys and settings. Quicker for a big journal. Needs `-Mode all` with State. |
 
 Safeguards:
-- It refuses environments marked `protected`, in the settings file or in the account's `cix-protected` tag (set by the template from the same setting).
+- It refuses environments marked `protected`, in the settings file or in the `cix-protected` tag on CIX's resource group (set by the template from the same setting). The group must also be tagged `cix-environment=<environment>`.
 - Agents can't run it: a hook blocks the script for every Claude agent, along with deleting Cosmos DB resources, regenerating keys, or `docker compose down -v`. It is the one thing allowed to delete journal entries, an owner-approved exception to the append-only rule ([ADR-0008](adr/0008-azure-database-local-agents-dashboard.md)).
-- It acts only on the one Cosmos DB account tagged with the environment's name, in that environment's resource group.
-- It touches only the `journal` and `state` containers. It never deletes the database or the account.
+- It acts only on CIX's database (`cosmos.databaseName`) in the single shared account (tagged `shared-role=cosmos` in the shared resource group), and checks the database exists first. Other projects' databases are never touched.
+- It touches only the `journal` and `state` containers. It never deletes the database or the shared account.
 - It refuses while the engine is running.
 - It deletes nothing without `-Apply` and the typed confirmation, and prints a summary of what was planned and what was done.
 
@@ -179,7 +197,9 @@ The local emulator is reset differently: `docker compose down -v` removes its vo
 
 ## Limits
 
-- **One free-tier account per subscription** (see costs).
+- **One free-tier account per subscription** (see costs), which is why it is shared.
+- **The shared account's keys reach every project's database in it.** CIX's key (and the dashboard's read-only key) could read, and CIX's key write, other projects' data, and theirs CIX's. Acceptable while every project is yours and on paper or test data. Per-project access would need Cosmos DB role-based access with an Entra identity per project ([ADR-0009](adr/0009-shared-cosmos-account.md)).
+- **Other projects** add their own database to the shared account from their own templates (as `infra/modules/cosmos-database.bicep` does), with `existing` references to the account, and must keep the total throughput within 1000 RU/s to stay free.
 - **No managed identity.** Static Web Apps managed functions can't use one, so the dashboard holds the read-only key in its settings. A separate Function App on the Consumption plan could use a managed identity if that ever matters.
 - **No data migration.** Data isn't copied from the emulator; Azure starts fresh by design.
 - **No lockfile for the API yet.** The package registry wasn't reachable where this was built, so `@azure/functions` is pinned to an exact version but its own dependencies aren't locked. Run `npm install --package-lock-only` in `dashboard/api` once and commit `package-lock.json`. The Static Web Apps CLI version is pinned in `provision.ps1` (`$SwaCliVersion`).
