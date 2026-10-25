@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: # also publishes the dashboard (deploy-dashboard job)
 
 permissions:
   contents: read
@@ -180,3 +181,55 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-dashboard:
+    # Publishes dashboard/ to the Static Web App after a push to main that changes it (or on a manual run), once the
+    # dashboard tests and the secret scan pass. The deployment token is an environment secret: set it in the "dashboard"
+    # environment, limited to the main branch, so pull-request workflows can never read it (docs/azure.md).
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [azure-and-dashboard, secret-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: dashboard
+    concurrency:
+      group: deploy-dashboard
+      cancel-in-progress: false
+    env:
+      SWA_CLI_VERSION: "2.0.1" # the same pinned version as tools/azure/provision.ps1 ($SwaCliVersion)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Did the dashboard change?
+        id: changed
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --quiet "$BEFORE" "$GITHUB_SHA" -- dashboard .github/workflows/ci.yml; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"; echo "::notice::No dashboard changes; not publishing."
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.changed.outputs.deploy == 'true'
+        with:
+          node-version: "22"
+
+      - name: Publish the dashboard
+        if: steps.changed.outputs.deploy == 'true'
+        env:
+          SWA_CLI_DEPLOYMENT_TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+        run: |
+          if [ -z "$SWA_CLI_DEPLOYMENT_TOKEN" ]; then
+            echo "::notice::AZURE_STATIC_WEB_APPS_API_TOKEN isn't set in the dashboard environment; skipping (docs/azure.md)."
+            exit 0
+          fi
+          (cd dashboard/api && npm install --omit=dev --no-audit --no-fund --ignore-scripts)
+          npx --yes "@azure/static-web-apps-cli@${SWA_CLI_VERSION}" deploy dashboard/app --api-location dashboard/api \
+            --api-language node --api-version 22 --env production

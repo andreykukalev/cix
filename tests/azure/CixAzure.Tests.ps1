@@ -70,6 +70,15 @@ Check 'settings load as nested hashtables, with the shared account settings, on 
   }
 }
 
+Check 'CI publishes the dashboard with the same pinned Static Web Apps CLI as provision.ps1' {
+  $script = [IO.File]::ReadAllText((Join-Path $azureTools 'provision.ps1'))
+  $ci = [IO.File]::ReadAllText((Join-CixPath $repo '.github' 'workflows' 'ci.yml'))
+  if ($script -notmatch "\`$SwaCliVersion = '([\d.]+)'") { throw 'no $SwaCliVersion in provision.ps1' }
+  $version = $Matches[1]
+  if ($ci -notmatch 'SWA_CLI_VERSION: "([\d.]+)"') { throw 'no SWA_CLI_VERSION in ci.yml' }
+  Expect $Matches[1] $version 'SWA CLI version in CI'
+}
+
 Check 'Join-CixPath joins several parts' {
   Expect (Join-CixPath 'a' 'b' 'c') (Join-Path (Join-Path 'a' 'b') 'c') 'path'
 }

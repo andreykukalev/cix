@@ -116,7 +116,21 @@ Trading mode doesn't change. It stays paper unless you set live yourself (CLAUDE
 .\tools\azure\provision.ps1 -Environment dev -DeployDashboard -SkipInfrastructure -SkipEngineConfig
 ```
 
-This installs the API's one dependency, `@azure/functions` (pinned, with install scripts disabled), into `dashboard/api`. It then publishes `dashboard/app` and `dashboard/api` with the Static Web Apps CLI, using the app's deployment token. The token is read into an environment variable for that command only, and never printed. Run the same command again after changing the dashboard.
+This installs the API's one dependency, `@azure/functions` (pinned, with install scripts disabled), into `dashboard/api`. It then publishes `dashboard/app` and `dashboard/api` with the Static Web Apps CLI, using the app's deployment token. The token is read into an environment variable for that command only, and never printed.
+
+### Publishing from CI
+
+After this first publish, CI publishes the dashboard by itself: the `deploy-dashboard` job in `.github/workflows/ci.yml` runs after every push to `main` that changes `dashboard/` (once the dashboard tests and the secret scan pass), and on a manual run (*Actions*, *CI*, *Run workflow* on `main`). It uses the same pinned Static Web Apps CLI as the script. Until the token below is set, the job skips with a notice.
+
+Set it up once:
+1. In GitHub, open the repository's *Settings*, then *Environments*, and create an environment named `dashboard`. Under *Deployment branches and tags*, choose *Selected branches and tags* and add `main`. Only jobs running on `main` can then use its secrets, so a pull request can't read the token, even one that edits the workflow.
+2. Copy the deployment token: in the Azure portal, open `stapp-cix-dev`, then *Overview*, then *Manage deployment token*.
+3. In the `dashboard` environment, add the secret `AZURE_STATIC_WEB_APPS_API_TOKEN` with that token. Use an environment secret, not a repository secret: a repository secret is readable by pull-request workflows.
+4. Run *CI* on `main` once by hand to check it publishes.
+
+The token can only publish this one Static Web App; it can't read the database or change anything else in Azure. To rotate it, use *Reset deployment token* on the same portal page, then update the secret.
+
+The script command above still works for publishing by hand.
 
 The dashboard shows:
 - **Market briefing** (at the top, for stepping in by hand): the analyst's latest view (from the last 24 hours) and reasoning, up to five highlights (the most important news and scheduled events, each marked risk, opportunity or watch, with its coins and a source link), and a short **Needs attention** list picked from the latest scan: buy and sell signals, moves of 5% or more in 24 hours or 2% in an hour, volume at 2.5 times its usual level, an hourly range of 2% or more, coins the scanner excluded as too volatile, too thin or without fresh data, and coins the analyst said to avoid. A falling coin you hold ranks higher. The full scan of every coin is one click away. Highlights are only as fresh as the analyst's last run (every `ANALYST_INTERVAL_HOURS`, 6 by default); a shorter interval gives fresher news at the cost of more Opus runs.
