@@ -33,11 +33,11 @@ Check 'every script parses on this version' {
 }
 
 Check 'no "$name?" in strings (PowerShell reads the ? as part of the variable name)' {
-  foreach ($f in Get-ChildItem $azureTools -Filter *.ps*1) {
+  foreach ($f in @(Get-ChildItem $azureTools -Filter *.ps*1) + @(Get-Item (Join-Path (Join-Path $repo 'tools') 'setup-secrets.ps1'))) {
     $n = 0
     foreach ($line in [IO.File]::ReadAllLines($f.FullName)) {
       $n++
-      if ($line -match '\$[A-Za-z_][A-Za-z0-9_]*\?') { throw "$($f.Name):$n uses `$name? (write `${name}? instead)" }
+      if ($line -match '\$(\w+:)?\w+\?') { throw "$($f.Name):$n uses `$name? (write `${name}? instead)" }
     }
   }
 }
@@ -194,13 +194,14 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     'group show'     = "{`"name`":`"rg-cix-dev`",`"tags`":$GroupTags}"
     'group list'     = $GroupList
     'cosmosdb list'  = $CosmosAccounts
-    'cosmosdb keys'  = "{`"primaryReadonlyMasterKey`": `"$sample`", `"primaryMasterKey`": `"$sample`"}"
-    'deployment sub' = '{"properties":{"outputs":{"accountName":{"value":"cosmos-shared-x"},"cosmosAccountName":{"value":"cosmos-shared-x"},"cosmosEndpoint":{"value":"https://cosmos-shared-x.documents.azure.com:443/"},"staticWebAppName":{"value":"stapp-cix-dev"},"dashboardUrl":{"value":"https://dash.example"}}}}'
+    # Read-only key only: if a run ever forgot -SkipEngineConfig, reading the read-write key fails before any file is written.
+    'cosmosdb keys'  = "{`"primaryReadonlyMasterKey`": `"$sample`"}"
+    'deployment sub create' = '{"properties":{"outputs":{"accountName":{"value":"cosmos-shared-x"},"cosmosAccountName":{"value":"cosmos-shared-x"},"cosmosEndpoint":{"value":"https://cosmos-shared-x.documents.azure.com:443/"},"staticWebAppName":{"value":"stapp-cix-dev"},"dashboardUrl":{"value":"https://dash.example"}}}}'
   }
   if ($onWindows) {
     $lines = @('@echo off', 'echo WARNING: fake az writes to stderr 1>&2')
     foreach ($k in $answers.Keys) {
-      $match = if ($k.Contains(' ')) { '"%1 %2"' } else { '"%1"' }
+      $match = switch (($k -split ' ').Count) { 1 { '"%1"' } 2 { '"%1 %2"' } default { '"%1 %2 %3"' } }
       $lines += "if $match==`"$k`" echo $($answers[$k])& exit /b 0"
     }
     if (-not $DatabaseExists) { $lines += 'if "%1 %2"=="cosmosdb sql" echo ERROR: (NotFound) Resource not found 1>&2& exit /b 3' }
@@ -208,12 +209,12 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     [IO.File]::WriteAllText((Join-Path $dir 'az.cmd'), ($lines -join "`r`n"), [Text.Encoding]::ASCII)
   }
   else {
-    $lines = @('#!/bin/sh', 'echo "WARNING: fake az writes to stderr" >&2', 'case "$1 $2" in')
+    $lines = @('#!/bin/sh', 'echo "WARNING: fake az writes to stderr" >&2', 'case "$1 $2 $3 " in')
     foreach ($k in $answers.Keys) {
-      $pattern = if ($k.Contains(' ')) { "'$k'" } else { "'$k '*" }
+      $pattern = "'$k '*"
       $lines += "  $pattern) echo '$($answers[$k])' ;;"
     }
-    if (-not $DatabaseExists) { $lines += "  'cosmosdb sql') echo 'ERROR: (NotFound) Resource not found' >&2; exit 3 ;;" }
+    if (-not $DatabaseExists) { $lines += "  'cosmosdb sql '*) echo 'ERROR: (NotFound) Resource not found' >&2; exit 3 ;;" }
     $lines += @("  'fail '*) echo boom >&2; exit 3 ;;", 'esac')
     $script = Join-Path $dir 'az'
     [IO.File]::WriteAllText($script, (($lines -join "`n") + "`n"))
@@ -222,12 +223,21 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
   return $dir
 }
 
+function Assert-FakeAzFirst([string]$Dir) {
+  <# Never let a test reach the real Azure CLI (some runs deploy with -Yes, others read keys). #>
+  $resolved = (Get-Command az -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+  if (-not $resolved -or (Split-Path -Parent $resolved) -ne $Dir) { throw "the fake az isn't first on PATH (got '$resolved')" }
+}
+
 function Invoke-WithFakeAz([hashtable]$Fake, [scriptblock]$Script) {
   <# Runs $Script with a fake az first on PATH; returns what it wrote (all streams) and the error, if any. #>
   $dir = New-FakeAz @Fake
   $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
   $result = @{ Output = ''; Error = $null }
-  try { $result.Output = & $Script *>&1 | Out-String }
+  try {
+    Assert-FakeAzFirst $dir
+    $result.Output = & $Script *>&1 | Out-String
+  }
   catch { $result.Error = $_.Exception.Message }
   finally { $env:PATH = $savedPath; Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
   return $result
@@ -237,6 +247,7 @@ $savedPath = $env:PATH
 $fake = New-FakeAz
 $env:PATH = "$fake$([IO.Path]::PathSeparator)$savedPath"
 try {
+  Assert-FakeAzFirst $fake
   Check 'az warnings on stderr are not errors (5.1 would stop on them)' {
     Expect ((Invoke-CixAz @('version', '-o', 'json') | ConvertFrom-CixJson).'azure-cli') '2.65.0' 'version'
     Assert-CixAzureCli 6>$null
@@ -330,7 +341,7 @@ Check 'reset-database.ps1 dry run end to end: finds the tagged account, reads th
   $dir = New-FakeAz -CosmosAccounts $accounts -GroupExists 'true' -GroupTags $devTags -GroupList $ownClaim
   $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
   $seen = @()
-  try { $output = & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All 6>&1 | Out-String }
+  try { Assert-FakeAzFirst $dir; $output = & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All 6>&1 | Out-String }
   finally {
     $env:PATH = $savedPath
     Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue

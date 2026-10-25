@@ -50,7 +50,7 @@ Two settings files, both ready to use:
 
 | Setting | Meaning |
 |---|---|
-| `resourceGroup`, `location` | Its resource group (`rg-shared`) and region: `polandcentral`, close to Vilnius (North Europe had no Cosmos DB capacity for new accounts in October 2026). If a region refuses with "high demand", delete the failed `rg-shared` and pick another |
+| `resourceGroup`, `location` | Its resource group (`rg-shared`) and region: `polandcentral`, close to Vilnius (North Europe had no Cosmos DB capacity for new accounts in October 2026). If a region refuses with "high demand", delete the failed `rg-shared` and pick another. Once the account exists, keep `location` equal to its region: an account or group can't move, so `-UpdateShared` with another region fails |
 | `accountName` | Empty gives a generic name, `cosmos-shared-<suffix>`. The scripts find the account by its `shared-role=cosmos` tag |
 | `enableFreeTier` | See costs above |
 | `allowedIpRanges` | Empty: any address may connect, and the key protects it. Add your public IP to restrict access; trading then stops (safely) whenever your ISP changes it, until you update the setting and redeploy with `-UpdateShared` |
@@ -63,7 +63,7 @@ Two settings files, both ready to use:
 | `protected` | `true` for an environment with real money: the reset script refuses it |
 | `subscriptionId` | Pin a subscription, or leave empty to choose at the prompt (or pass `-SubscriptionId`). Don't commit a real ID |
 | `resourceGroup`, `location` | CIX's own resource group (`rg-cix-dev`), which holds the dashboard |
-| `dashboardLocation` | Static Web Apps Free runs in a few regions only: `westeurope`, `centralus`, `eastus2`, `westus2`, `eastasia`. `eastus2`, because West Europe refused new customers in October 2026; only the dashboard's small API runs there, the page is served worldwide |
+| `dashboardLocation` | Static Web Apps Free runs in a few regions only: `westeurope`, `centralus`, `eastus2`, `westus2`, `eastasia`. `eastus2`, because West Europe refused new customers in October 2026; only the dashboard's small API runs there, the page is served worldwide. Its reads cross to the database's region (about 0.1 s each; the few MB a day of cross-region traffic cost effectively nothing) |
 | `sharedCosmos` | Which shared settings file to use (`shared` means `infra/shared/shared.json`) |
 | `cosmos.databaseName`, `cosmos.databaseThroughput` | CIX's database in the shared account, and its throughput (400 to 1000 RU/s; 400 leaves room for other projects) |
 | `deployDashboard` | Create the Static Web App |
