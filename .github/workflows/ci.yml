@@ -156,15 +156,17 @@ jobs:
   azure-scripts-windows-powershell:
     # The owner runs the Azure scripts in Windows PowerShell 5.1, which has no 7-only syntax or parameters.
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Azure scripts on Windows PowerShell 5.1
         shell: powershell
-        run: |
-          $PSVersionTable.PSVersion
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/azure/CixAzure.Tests.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/azure/CixAzure.Tests.ps1
+
+      - name: Azure scripts on PowerShell 7 on Windows
+        shell: pwsh
+        run: ./tests/azure/CixAzure.Tests.ps1
 
   secret-scan:
     runs-on: ubuntu-latest

@@ -47,6 +47,7 @@ function ConvertFrom-CixJson {
   param([Parameter(Mandatory, ValueFromPipeline)][AllowEmptyString()][string]$Json)
   process {
     $value = $Json | ConvertFrom-Json
+    if ($null -eq $value) { return }
     if ($value -is [System.Array]) { foreach ($item in $value) { $item } } else { $value }
   }
 }
@@ -85,8 +86,9 @@ function Assert-CixCommand {
 
 function Invoke-CixNative {
   <#
-    Runs a native command whose stderr is redirected. Windows PowerShell 5.1 turns each stderr line into a terminating error
-    when $ErrorActionPreference is Stop (az writes warnings there), so the call runs with Continue; callers check $LASTEXITCODE.
+    Runs a native command. Windows PowerShell 5.1 can turn each stderr line into a terminating error when $ErrorActionPreference
+    is Stop (always when redirected, and in the ISE), and az and npm write warnings there; so the call runs with Continue, and
+    callers check $LASTEXITCODE.
   #>
   param([Parameter(Mandatory)][scriptblock]$Command)
   $ErrorActionPreference = 'Continue'
@@ -132,7 +134,7 @@ function Connect-CixAzure {
   $null = Invoke-CixNative { & az account show -o none 2>&1 }
   if ($LASTEXITCODE -ne 0) {
     Write-CixInfo 'Signing in to Azure (a browser window opens)...'
-    & az login -o none
+    Invoke-CixNative { & az login -o none }
     if ($LASTEXITCODE -ne 0) { throw 'Azure sign-in failed.' }
   }
 
@@ -193,7 +195,7 @@ function Invoke-CixDeployment {
   try {
     if ($WhatIf) {
       # Straight to the console: the caller must not swallow the preview it is about to ask you to approve.
-      & az deployment group what-if --resource-group $Settings.resourceGroup --template-file $template --parameters "@$parameters" --only-show-errors | Out-Host
+      Invoke-CixNative { & az deployment group what-if --resource-group $Settings.resourceGroup --template-file $template --parameters "@$parameters" --only-show-errors | Out-Host }
       if ($LASTEXITCODE -ne 0) { throw 'The what-if preview failed.' }
       return $null
     }
@@ -214,7 +216,7 @@ function Get-CixCosmosAccount {
   #>
   param([Parameter(Mandatory)][hashtable]$Settings)
   $accounts = @(Invoke-CixAz @('cosmosdb', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
-      Where-Object { $_.tags -and $_.tags.'cix-environment' -eq $Settings.environmentName })
+      Where-Object { $_.tags -and $_.tags.PSObject.Properties['cix-environment'] -and $_.tags.'cix-environment' -eq $Settings.environmentName })
   if ($accounts.Count -eq 0) {
     throw "No Cosmos DB account tagged cix-environment=$($Settings.environmentName) in resource group $($Settings.resourceGroup)."
   }
@@ -246,10 +248,10 @@ function Write-CixSecretFile {
   [IO.File]::WriteAllText($path, '', $script:Utf8NoBom)
   if ($script:OnWindows) {
     $me = "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
-    icacls $path /inheritance:r /grant:r "${me}:(R,W)" | Out-Null
+    Invoke-CixNative { icacls $path /inheritance:r /grant:r "${me}:(R,W)" | Out-Null }
   }
   else {
-    chmod 600 $path
+    Invoke-CixNative { chmod 600 $path }
   }
   if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to $path; the key was not written." }
   [IO.File]::WriteAllText($path, $Value, $script:Utf8NoBom)

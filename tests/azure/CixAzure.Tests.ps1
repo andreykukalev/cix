@@ -102,98 +102,13 @@ Check 'secret files: exact content, no byte-order mark, readable only by you' {
   finally { Remove-Item $path -Force -ErrorAction SilentlyContinue }
 }
 
-# --- A fake Azure CLI that writes a warning to stderr on every call, as the real one often does ---------------------------
-$fake = Join-Path ([IO.Path]::GetTempPath()) "cix-fake-az-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $fake | Out-Null
-$accounts = '[{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one","state":"Enabled"},{"id":"00000000-0000-0000-0000-000000000002","name":"Disabled one","state":"Disabled"}]'
-$account = '{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one"}'
-if ($onWindows) {
-  $lines = @(
-    '@echo off',
-    'echo WARNING: fake az writes to stderr 1>&2',
-    'if "%1"=="version" echo {"azure-cli": "2.65.0"}& exit /b 0',
-    'if "%1"=="bicep" echo Bicep CLI version 0.30.3& exit /b 0',
-    "if `"%1 %2`"==`"account list`" echo $accounts& exit /b 0",
-    "if `"%1 %2`"==`"account show`" echo $account& exit /b 0",
-    'if "%1 %2"=="group exists" echo false& exit /b 0',
-    'if "%1"=="fail" echo boom 1>&2& exit /b 3',
-    'exit /b 0')
-  [IO.File]::WriteAllText((Join-Path $fake 'az.cmd'), ($lines -join "`r`n"), [Text.Encoding]::ASCII)
-}
-else {
-  $lines = @(
-    '#!/bin/sh',
-    'echo "WARNING: fake az writes to stderr" >&2',
-    'case "$1 $2" in',
-    "  'version '*) echo '{`"azure-cli`": `"2.65.0`"}' ;;",
-    "  'bicep '*) echo 'Bicep CLI version 0.30.3' ;;",
-    "  'account list') echo '$accounts' ;;",
-    "  'account show') echo '$account' ;;",
-    "  'group exists') echo false ;;",
-    "  'fail '*) echo boom >&2; exit 3 ;;",
-    'esac')
-  $script = Join-Path $fake 'az'
-  [IO.File]::WriteAllText($script, (($lines -join "`n") + "`n"))
-  chmod +x $script
-}
-$savedPath = $env:PATH
-$env:PATH = "$fake$([IO.Path]::PathSeparator)$env:PATH"
-try {
-  Check 'az warnings on stderr are not errors (5.1 would stop on them)' {
-    Expect ((Invoke-CixAz @('version', '-o', 'json') | ConvertFrom-CixJson).'azure-cli') '2.65.0' 'version'
-    Assert-CixAzureCli 6>$null
-  }
+# --- Fakes: a loopback Cosmos DB and an Azure CLI that writes a warning to stderr on every call, as the real one often does ---
+$sample = @('dsZQi3KtZmCv1ljt3VNWNm7sQUF1y5rJfC6kv5Jiwv', 'W0EndXdDku/dkKBp8/ufDToSxLzR4y+O/0H/t4bQtVNw==') -join '' # Microsoft's sample, not a key
 
-  Check 'az missing from PATH is a failure, not a stale success' {
-  $saved = $env:PATH
-  $env:PATH = Join-Path ([IO.Path]::GetTempPath()) 'cix-no-such-dir'
-  $global:LASTEXITCODE = 0
-  $failed = $false
-  try { Invoke-CixAz @('version') | Out-Null } catch { $failed = $true }
-  finally { $env:PATH = $saved }
-  Expect $failed $true 'threw'
-}
-
-Check 'a non-https Cosmos DB endpoint is refused before any request' {
-  $message = $null
-  try { Invoke-CixCosmosRequest -Endpoint 'http://example.invalid/' -Key 'AAAA' -Method GET -ResourceType docs -ResourceLink 'x' -Path 'x' | Out-Null }
-  catch { $message = $_.Exception.Message }
-  Expect $message 'The Cosmos DB endpoint must use https.' 'message'
-}
-
-Check 'a failing az call throws with its message' {
-    $message = $null
-    try { Invoke-CixAz @('fail', 'now') | Out-Null } catch { $message = $_.Exception.Message }
-    if ($message -notmatch 'az fail now failed: .*boom') { throw "got: $message" }
-  }
-
-  Check 'provision.ps1 -WhatIfOnly runs to its first decision, picking the enabled subscription' {
-    $output = & (Join-Path $azureTools 'provision.ps1') -Environment dev -WhatIfOnly 6>&1 | Out-String
-    if ($output -notmatch 'Subscription: Enabled one') { throw "no subscription line: $output" }
-    if ($output -notmatch "rg-cix-dev doesn't exist yet") { throw "didn't stop at the missing resource group: $output" }
-  }
-
-  Check 'reset-database.ps1 refuses -ResetSchema on state without -Mode all, before touching Azure' {
-    $message = $null
-    try { & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target State -ResetSchema 6>$null } catch { $message = $_.Exception.Message }
-    if ($message -notmatch 'pass -Mode all') { throw "got: $message" }
-  }
-}
-finally {
-  $env:PATH = $savedPath
-  Remove-Item $fake -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-# --- A fake Cosmos DB endpoint on loopback: throttles once, then answers, then has nothing ---------------------------------
-Check 'Cosmos DB requests: headers, retry on 429, continuation, 404' {
-  $body = '{"Documents":[{"id":"e1","day":"2026-10-25"}],"_count":1}'
-  $replies = @(
-    "HTTP/1.1 429 Too Many Requests`r`nx-ms-retry-after-ms: 5`r`nContent-Length: 0`r`nConnection: close`r`n`r`n",
-    "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nx-ms-continuation: next-page`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n$body",
-    "HTTP/1.1 404 Not Found`r`nContent-Length: 0`r`nConnection: close`r`n`r`n")
+function Start-FakeCosmos([string[]]$Replies) {
+  <# Answers one connection per reply, in order, and records each request (head and body). #>
   $listener = New-Object System.Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), 0
   $listener.Start()
-  $port = $listener.LocalEndpoint.Port
   $server = [PowerShell]::Create()
   [void]$server.AddScript({
       param($listener, $replies)
@@ -216,36 +131,164 @@ Check 'Cosmos DB requests: headers, retry on 429, continuation, 404' {
         $client.Close()
       }
       , $seen.ToArray()
-    }).AddArgument($listener).AddArgument($replies)
-  $async = $server.BeginInvoke()
+    }).AddArgument($listener).AddArgument($Replies)
+  return [pscustomobject]@{ Listener = $listener; Server = $server; Async = $server.BeginInvoke(); Port = $listener.LocalEndpoint.Port }
+}
+
+function Stop-FakeCosmos($Fake) {
+  <# The requests it received, in order. #>
   try {
-    $sample = @('dsZQi3KtZmCv1ljt3VNWNm7sQUF1y5rJfC6kv5Jiwv', 'W0EndXdDku/dkKBp8/ufDToSxLzR4y+O/0H/t4bQtVNw==') -join ''
-    $r = Invoke-CixCosmosRequest -Endpoint "http://127.0.0.1:$port/" -Key $sample -Method POST -ResourceType docs `
+    if (-not $Fake.Async.AsyncWaitHandle.WaitOne(20000)) { throw 'the fake Cosmos DB did not get every request it expected' }
+    return @($Fake.Server.EndInvoke($Fake.Async) | ForEach-Object { $_ })
+  }
+  finally { $Fake.Listener.Stop(); $Fake.Server.Dispose() }
+}
+
+function Reply([int]$Status, [string]$Body = '', [string]$Extra = '') {
+  $reason = @{ 200 = 'OK'; 404 = 'Not Found'; 429 = 'Too Many Requests' }[$Status]
+  return "HTTP/1.1 $Status $reason`r`nContent-Type: application/json`r`n$($Extra)Content-Length: $($Body.Length)`r`nConnection: close`r`n`r`n$Body"
+}
+
+function New-FakeAz([string]$CosmosAccounts = '[]') {
+  <# A directory holding a fake az (az.cmd on Windows); put it first on PATH. #>
+  $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-fake-az-$([guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Path $dir | Out-Null
+  $answers = [ordered]@{
+    'version'        = '{"azure-cli": "2.65.0"}'
+    'bicep'          = 'Bicep CLI version 0.30.3'
+    'account list'   = '[{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one","state":"Enabled"},{"id":"00000000-0000-0000-0000-000000000002","name":"Disabled one","state":"Disabled"}]'
+    'account show'   = '{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one"}'
+    'group exists'   = 'false'
+    'cosmosdb list'  = $CosmosAccounts
+    'cosmosdb keys'  = "{`"primaryReadonlyMasterKey`": `"$sample`"}"
+  }
+  if ($onWindows) {
+    $lines = @('@echo off', 'echo WARNING: fake az writes to stderr 1>&2')
+    foreach ($k in $answers.Keys) {
+      $match = if ($k.Contains(' ')) { '"%1 %2"' } else { '"%1"' }
+      $lines += "if $match==`"$k`" echo $($answers[$k])& exit /b 0"
+    }
+    $lines += @('if "%1"=="fail" echo boom 1>&2& exit /b 3', 'exit /b 0')
+    [IO.File]::WriteAllText((Join-Path $dir 'az.cmd'), ($lines -join "`r`n"), [Text.Encoding]::ASCII)
+  }
+  else {
+    $lines = @('#!/bin/sh', 'echo "WARNING: fake az writes to stderr" >&2', 'case "$1 $2" in')
+    foreach ($k in $answers.Keys) {
+      $pattern = if ($k.Contains(' ')) { "'$k'" } else { "'$k '*" }
+      $lines += "  $pattern) echo '$($answers[$k])' ;;"
+    }
+    $lines += @("  'fail '*) echo boom >&2; exit 3 ;;", 'esac')
+    $script = Join-Path $dir 'az'
+    [IO.File]::WriteAllText($script, (($lines -join "`n") + "`n"))
+    chmod +x $script
+  }
+  return $dir
+}
+
+$savedPath = $env:PATH
+$fake = New-FakeAz
+$env:PATH = "$fake$([IO.Path]::PathSeparator)$savedPath"
+try {
+  Check 'az warnings on stderr are not errors (5.1 would stop on them)' {
+    Expect ((Invoke-CixAz @('version', '-o', 'json') | ConvertFrom-CixJson).'azure-cli') '2.65.0' 'version'
+    Assert-CixAzureCli 6>$null
+  }
+
+  Check 'az missing from PATH is a failure, not a stale success' {
+    $env:PATH = Join-Path ([IO.Path]::GetTempPath()) 'cix-no-such-dir'
+    $global:LASTEXITCODE = 0
+    $failed = $false
+    try { Invoke-CixAz @('version') | Out-Null } catch { $failed = $true }
+    finally { $env:PATH = "$fake$([IO.Path]::PathSeparator)$savedPath" }
+    Expect $failed $true 'threw'
+  }
+
+  Check 'a failing az call throws with its message' {
+    $message = $null
+    try { Invoke-CixAz @('fail', 'now') | Out-Null } catch { $message = $_.Exception.Message }
+    if ($message -notmatch 'az fail now failed: .*boom') { throw "got: $message" }
+  }
+
+  Check 'provision.ps1 -WhatIfOnly runs to its first decision, picking the enabled subscription' {
+    $output = & (Join-Path $azureTools 'provision.ps1') -Environment dev -WhatIfOnly 6>&1 | Out-String
+    if ($output -notmatch 'Subscription: Enabled one') { throw "no subscription line: $output" }
+    if ($output -notmatch "rg-cix-dev doesn't exist yet") { throw "didn't stop at the missing resource group: $output" }
+  }
+
+  Check 'reset-database.ps1 refuses -ResetSchema on state without -Mode all, before touching Azure' {
+    $message = $null
+    try { & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target State -ResetSchema 6>$null } catch { $message = $_.Exception.Message }
+    if ($message -notmatch 'pass -Mode all') { throw "got: $message" }
+  }
+}
+finally {
+  $env:PATH = $savedPath
+  Remove-Item $fake -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Check 'a non-https Cosmos DB endpoint is refused before any request' {
+  $message = $null
+  try { Invoke-CixCosmosRequest -Endpoint 'http://example.invalid/' -Key 'AAAA' -Method GET -ResourceType docs -ResourceLink 'x' -Path 'x' | Out-Null }
+  catch { $message = $_.Exception.Message }
+  Expect $message 'The Cosmos DB endpoint must use https.' 'message'
+}
+
+Check 'ConvertFrom-CixJson emits nothing for empty output' {
+  Expect (@('' | ConvertFrom-CixJson).Count) 0 'items'
+}
+
+Check 'Cosmos DB requests: headers, retry on 429, continuation, 404' {
+  $body = '{"Documents":[{"id":"e1","day":"2026-10-25"}],"_count":1}'
+  $cosmos = Start-FakeCosmos @((Reply 429 '' "x-ms-retry-after-ms: 5`r`n"), (Reply 200 $body "x-ms-continuation: next-page`r`n"), (Reply 404))
+  $seen = @()
+  try {
+    $r = Invoke-CixCosmosRequest -Endpoint "http://127.0.0.1:$($cosmos.Port)/" -Key $sample -Method POST -ResourceType docs `
       -ResourceLink 'dbs/cix/colls/journal' -Path 'dbs/cix/colls/journal/docs' -Body '{"query":"SELECT c.id FROM c","parameters":[]}' `
       -Headers @{ 'x-ms-documentdb-isquery' = 'True' } -CrossPartition
     Expect $r.Status 200 'status after one 429'
     Expect $r.Continuation 'next-page' 'continuation'
     Expect (($r.Body | ConvertFrom-Json).Documents[0].id) 'e1' 'body'
-    $missing = Get-CixCosmosItem -Endpoint "http://127.0.0.1:$port/" -Key $sample -Database cix -Container state -Id 'engine-status-paper' -PartitionKey 'engine-status-paper'
+    $missing = Get-CixCosmosItem -Endpoint "http://127.0.0.1:$($cosmos.Port)/" -Key $sample -Database cix -Container state -Id 'engine-status-paper' -PartitionKey 'engine-status-paper'
     if ($null -ne $missing) { throw '404 should be $null' }
+  }
+  finally { $seen = Stop-FakeCosmos $cosmos }
+  Expect $seen.Count 3 'requests'
+  $query = $seen[1]
+  if ($query -notmatch '(?im)^POST /dbs/cix/colls/journal/docs HTTP/1\.1$') { throw "request line: $query" }
+  if ($query -notmatch '(?im)^authorization: type%3Dmaster%26ver%3D1\.0%26sig%3D') { throw 'authorization header' }
+  if ($query -notmatch '(?im)^content-type: application/query\+json$') { throw 'content type' }
+  if ($query -notmatch '(?im)^x-ms-documentdb-query-enablecrosspartition: True$') { throw 'cross-partition header' }
+  if ($query -match '(?im)^expect:') { throw 'sent Expect: 100-continue' }
+  if ($query -notmatch 'BODY:\{"query":"SELECT c\.id FROM c","parameters":\[\]\}') { throw 'body' }
+  if ($seen[2] -notmatch '(?im)^GET /dbs/cix/colls/state/docs/engine-status-paper HTTP/1\.1$') { throw "read line: $($seen[2])" }
+  if ($seen[2] -notmatch '(?im)^x-ms-documentdb-partitionkey: \["engine-status-paper"\]$') { throw 'partition key header' }
+}
 
-    if (-not $async.AsyncWaitHandle.WaitOne(20000)) { throw 'the fake server did not finish' }
-    $seen = @($server.EndInvoke($async) | ForEach-Object { $_ })
-    Expect $seen.Count 3 'requests'
-    $query = $seen[1]
-    if ($query -notmatch '(?im)^POST /dbs/cix/colls/journal/docs HTTP/1\.1$') { throw "request line: $query" }
-    if ($query -notmatch '(?im)^authorization: type%3Dmaster%26ver%3D1\.0%26sig%3D') { throw 'authorization header' }
-    if ($query -notmatch '(?im)^content-type: application/query\+json$') { throw 'content type' }
-    if ($query -notmatch '(?im)^x-ms-documentdb-query-enablecrosspartition: True$') { throw 'cross-partition header' }
-    if ($query -match '(?im)^expect:') { throw 'sent Expect: 100-continue' }
-    if ($query -notmatch 'BODY:\{"query":"SELECT c\.id FROM c","parameters":\[\]\}') { throw 'body' }
-    if ($seen[2] -notmatch '(?im)^GET /dbs/cix/colls/state/docs/engine-status-paper HTTP/1\.1$') { throw "read line: $($seen[2])" }
-    if ($seen[2] -notmatch '(?im)^x-ms-documentdb-partitionkey: \["engine-status-paper"\]$') { throw 'partition key header' }
-  }
+Check 'reset-database.ps1 dry run end to end: finds the tagged account, reads the heartbeat, plans, deletes nothing' {
+  $heartbeat = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
+  $state = '{"Documents":[{"id":"engine-state-paper","type":"engine-state"},{"id":"spec-good@v1-abc","type":"strategy-spec"}],"_count":2}'
+  $journal = '{"Documents":[{"id":"j1","day":"2026-10-24"},{"id":"j2","day":"2026-10-24"},{"id":"j3","day":"2026-10-24"}],"_count":3}'
+  $cosmos = Start-FakeCosmos @(
+    (Reply 200 "{`"id`":`"engine-status-paper`",`"updatedAt`":`"$heartbeat`"}"),
+    (Reply 404),
+    (Reply 200 $state),
+    (Reply 200 $journal))
+  # An untagged account in the same group must not trip StrictMode; only the tagged one is used.
+  $accounts = "[{`"name`":`"other`",`"tags`":{}},{`"name`":`"cosmos-cix-dev`",`"documentEndpoint`":`"http://127.0.0.1:$($cosmos.Port)/`",`"tags`":{`"cix-environment`":`"dev`",`"cix-protected`":`"false`"}}]"
+  $dir = New-FakeAz -CosmosAccounts $accounts
+  $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
+  $seen = @()
+  try { $output = & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All 6>&1 | Out-String }
   finally {
-    $listener.Stop()
-    $server.Dispose()
+    $env:PATH = $savedPath
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    $seen = Stop-FakeCosmos $cosmos
   }
+  foreach ($expected in @('Account:  cosmos-cix-dev', 'paper: last heartbeat 10 minutes ago', 'live: no status record',
+      'would remove state/engine-state-paper', 'keeps state/spec-good@v1-abc', 'from 1 day(s): 2026-10-24 to 2026-10-24', 'Dry run: nothing was changed')) {
+    if (-not $output.Contains($expected)) { throw "missing '$expected' in: $output" }
+  }
+  if (@($seen | Where-Object { $_ -match '^DELETE ' }).Count -ne 0) { throw 'a dry run sent a DELETE' }
 }
 
 Write-Host ''

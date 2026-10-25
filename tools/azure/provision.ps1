@@ -121,15 +121,17 @@ if ($DeployDashboard) {
   $api = Join-CixPath $root 'dashboard' 'api'
   Push-Location $api
   try {
-    & npm install --omit=dev --no-audit --no-fund --ignore-scripts
+    Invoke-CixNative { & npm install --omit=dev --no-audit --no-fund --ignore-scripts }
     if ($LASTEXITCODE -ne 0) { throw 'npm install failed for dashboard/api.' }
   }
   finally { Pop-Location }
   $env:SWA_CLI_DEPLOYMENT_TOKEN = Invoke-CixAz -Quiet @('staticwebapp', 'secrets', 'list', '--name', $staticWebApp, '--resource-group',
     $settings.resourceGroup, '--query', 'properties.apiKey', '-o', 'tsv')
   try {
-    & npx --yes "@azure/static-web-apps-cli@$SwaCliVersion" deploy (Join-CixPath $root 'dashboard' 'app') --api-location $api `
-      --api-language node --api-version 22 --env production
+    Invoke-CixNative {
+      & npx --yes "@azure/static-web-apps-cli@$SwaCliVersion" deploy (Join-CixPath $root 'dashboard' 'app') --api-location $api `
+        --api-language node --api-version 22 --env production
+    }
     if ($LASTEXITCODE -ne 0) { throw 'Publishing the dashboard failed.' }
   }
   finally {
