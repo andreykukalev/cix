@@ -1,14 +1,19 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Provisions CIX's Azure resources for one environment: Cosmos DB (free tier) and the read-only dashboard (Static Web Apps,
-  Free). The engine and agents keep running in Docker on this PC.
+  Provisions CIX's Azure resources for one environment, in two resource groups:
+    - the shared Cosmos DB account (free tier) in its own group, for example rg-shared, created once and reused by other
+      projects (infra/shared/main.bicep, settings in infra/shared/<name>.json);
+    - CIX's own group, for example rg-cix-dev, with the read-only dashboard (Static Web Apps, Free), plus CIX's database in
+      the shared account (infra/main.bicep, settings in infra/environments/<Environment>.json).
+  The engine and agents keep running in Docker on this PC.
 
 .DESCRIPTION
   1. Checks the tools it needs (Azure CLI with Bicep; Node.js only for -DeployDashboard).
-  2. Reads infra/environments/<Environment>.json, signs in with the Azure CLI and selects the subscription.
-  3. Creates the resource group if it doesn't exist (after asking).
-  4. Shows a what-if preview of infra/main.bicep, asks, then deploys it.
+  2. Reads the settings, signs in with the Azure CLI and selects the subscription.
+  3. Shared account: if it doesn't exist yet (or with -UpdateShared), shows a what-if preview, asks, then deploys it.
+     An existing shared account is left exactly as it is.
+  4. CIX: shows a what-if preview, asks, then deploys its resource group, database and dashboard.
   5. Prints the endpoints, and (unless -SkipEngineConfig) writes the engine's settings: COSMOS_ENDPOINT and COSMOS_DATABASE
      to .env, and the account key to secrets/cosmos_key (readable only by you; never printed).
   6. With -DeployDashboard, publishes dashboard/ to the Static Web App.
@@ -21,7 +26,7 @@
 .EXAMPLE
   .\tools\azure\provision.ps1 -Environment dev                  # deploy, then write the engine's settings
 .EXAMPLE
-  .\tools\azure\provision.ps1 -Environment dev -DeployDashboard -SkipInfrastructure   # publish a new dashboard version only
+  .\tools\azure\provision.ps1 -Environment dev -DeployDashboard -SkipInfrastructure -SkipEngineConfig   # publish the dashboard only
 #>
 [CmdletBinding()]
 param(
@@ -31,10 +36,13 @@ param(
   [switch]$SkipInfrastructure,
   [switch]$SkipEngineConfig,
   [switch]$DeployDashboard,
+  [switch]$UpdateShared,
+  [switch]$AllowProtectedInSharedAccount,
   [switch]$Yes
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($WhatIfOnly) { $SkipEngineConfig = $true; $DeployDashboard = $false } # a preview changes nothing, here either
 Import-Module (Join-Path $PSScriptRoot 'CixAzure.psm1') -Force
 
 # Pinned: this code runs with the dashboard's deployment token in its environment. Update deliberately.
@@ -43,7 +51,7 @@ $SwaCliVersion = '2.0.1'
 function Confirm-Step([string]$Question) {
   if ($Yes) { return }
   $answer = Read-Host "    $Question [y/N]"
-  if ($answer -notmatch '^(y|yes)$') { throw 'Stopped: not confirmed.' }
+  if ($answer -notmatch '^(y|yes)$') { Write-CixWarn 'Stopped: not confirmed (type y to go ahead). Nothing more was changed.'; exit 1 }
 }
 
 Write-CixStep 'Checking prerequisites'
@@ -55,35 +63,51 @@ if ($DeployDashboard) {
 
 Write-CixStep "Environment '$Environment'"
 $settings = Read-CixEnvironment -Name $Environment
+$shared = $settings.shared
 Write-CixInfo "Settings:        $($settings.path)"
-Write-CixInfo "Resource group:  $($settings.resourceGroup) ($($settings.location))"
-Write-CixInfo "Cosmos DB:       free tier $($settings.cosmos.enableFreeTier), $($settings.cosmos.databaseThroughput) RU/s shared, database '$($settings.cosmos.databaseName)'"
+Write-CixInfo "Shared account:  resource group $($shared.resourceGroup) ($($shared.location)), free tier $($shared.enableFreeTier) ($($shared.path))"
+Write-CixInfo "CIX:             resource group $($settings.resourceGroup) ($($settings.location)), database '$($settings.cosmos.databaseName)' at $($settings.cosmos.databaseThroughput) RU/s"
 Write-CixInfo "Dashboard:       $(if ($settings.deployDashboard) { "Static Web App (Free) in $($settings.dashboardLocation)" } else { 'not deployed' })"
-if ($settings.protected) { Write-CixWarn 'This environment is marked protected (live money). Deploying changes its infrastructure.' }
+if ($settings.protected) {
+  # The shared account's keys reach every project's database (ADR-0009): fine for paper and tests, not for live money.
+  if (-not $AllowProtectedInSharedAccount) {
+    throw "Environment '$Environment' is protected (live money), and its database would live in the shared account, whose keys every project holds. Revisit ADR-0009 first (a separate account, or per-project access), or pass -AllowProtectedInSharedAccount."
+  }
+  Write-CixWarn 'This environment is marked protected (live money). Deploying changes its infrastructure.'
+}
 
 Write-CixStep 'Signing in'
 $account = Connect-CixAzure -Settings $settings -SubscriptionId $SubscriptionId
 
 if (-not $SkipInfrastructure) {
-  Write-CixStep 'Resource group'
-  $exists = (Invoke-CixAz @('group', 'exists', '--name', $settings.resourceGroup)) -eq 'true'
-  if ($exists) { Write-CixInfo "$($settings.resourceGroup) exists." }
-  elseif ($WhatIfOnly) { Write-CixWarn "$($settings.resourceGroup) doesn't exist yet; the preview needs it. Run without -WhatIfOnly to create it."; return }
+  Write-CixStep "Shared Cosmos DB account ($($shared.resourceGroup))"
+  $existing = Find-CixSharedCosmos -Settings $settings
+  if ($existing -and -not $UpdateShared) {
+    Write-CixInfo "Using $($existing.name); left unchanged (pass -UpdateShared to apply infra/shared/main.bicep to it)."
+    $sharedName = $existing.name
+  }
   else {
-    Confirm-Step "Create resource group $($settings.resourceGroup) in $($settings.location) (subscription $($account.name))?"
-    $tagArgs = @("cix-environment=$($settings.environmentName)")
-    Invoke-CixAz (@('group', 'create', '--name', $settings.resourceGroup, '--location', $settings.location, '--tags') + $tagArgs + @('-o', 'none')) | Out-Null
-    Write-CixInfo 'Created.'
+    $target = if ($existing) { $existing.name } else { '' }
+    if ($existing) { Write-CixWarn "Updating $target, which other projects may use too. Its settings and tags become those in $($shared.path)." }
+    Invoke-CixDeployment -Settings $settings -Shared -SharedAccountName $target -WhatIf | Out-Null
+    if ($WhatIfOnly) {
+      if (-not $existing) { Write-CixInfo "Preview only: nothing was changed. CIX's own preview needs the shared account; it shows once that exists."; return }
+      $sharedName = $existing.name
+    }
+    else {
+      Write-CixWarn 'Cosmos DB free tier: one account per subscription. If another account already has it, this fails: use another subscription, or set enableFreeTier to false in the shared settings and expect charges (docs/azure.md).'
+      Confirm-Step "Deploy the shared account to $($shared.resourceGroup) (subscription $($account.name))?"
+      $sharedName = (Invoke-CixDeployment -Settings $settings -Shared -SharedAccountName $target).accountName.value
+      Write-CixInfo "Shared account: $sharedName"
+    }
   }
 
-  Write-CixStep 'Preview (what-if)'
-  Invoke-CixDeployment -Settings $settings -WhatIf | Out-Null
+  Write-CixStep "CIX ($($settings.resourceGroup), database '$($settings.cosmos.databaseName)')"
+  Assert-CixDatabaseClaim -Settings $settings -AccountName $sharedName
+  Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -WhatIf | Out-Null
   if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed.'; return }
-
-  Write-CixStep 'Deploying'
-  Write-CixWarn 'Cosmos DB free tier: one account per subscription. If another account already has it, set cosmos.enableFreeTier to false and expect charges (docs/azure.md).'
-  Confirm-Step "Deploy these changes to $($settings.resourceGroup)?"
-  $outputs = Invoke-CixDeployment -Settings $settings
+  Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to $sharedName?"
+  $outputs = Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName
   $cosmosAccount = $outputs.cosmosAccountName.value
   $cosmosEndpoint = $outputs.cosmosEndpoint.value
   $staticWebApp = $outputs.staticWebAppName.value
@@ -98,7 +122,7 @@ else {
 }
 
 Write-CixStep 'Resources'
-Write-CixInfo "Cosmos DB account:  $cosmosAccount"
+Write-CixInfo "Cosmos DB account:  $cosmosAccount (shared, in $($shared.resourceGroup))"
 Write-CixInfo "Cosmos DB endpoint: $cosmosEndpoint"
 Write-CixInfo "Database:           $($settings.cosmos.databaseName) (containers: journal, state)"
 if ($dashboardUrl) { Write-CixInfo "Dashboard:          $dashboardUrl" }
@@ -110,7 +134,7 @@ if (-not $SkipEngineConfig) {
   $key = $null
   Set-CixEnvValue -Key 'COSMOS_ENDPOINT' -Value $cosmosEndpoint
   Set-CixEnvValue -Key 'COSMOS_DATABASE' -Value $settings.cosmos.databaseName
-  Write-CixInfo "Wrote the account key to $secretPath (readable only by you)."
+  Write-CixInfo "Wrote the account key to $secretPath (readable only by you). It is the shared account's key: it reaches every project's database there."
   Write-CixInfo 'Wrote COSMOS_ENDPOINT and COSMOS_DATABASE to .env.'
 }
 

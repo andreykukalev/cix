@@ -1,0 +1,11 @@
+{
+  "$comment": "The Cosmos DB account shared by the owner's projects (infra/shared/main.bicep). No secrets here. accountName empty gives a generic name, cosmos-shared-<unique suffix>. The free tier covers 1000 RU/s for the whole account: CIX's database takes 400.",
+  "resourceGroup": "rg-shared",
+  "location": "northeurope",
+  "accountName": "",
+  "enableFreeTier": true,
+  "allowedIpRanges": [],
+  "tags": {
+    "purpose": "shared"
+  }
+}

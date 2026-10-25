@@ -5,17 +5,21 @@
   A dry run unless you pass -Apply, and then only after you type the confirmation it asks for.
 
 .DESCRIPTION
-  What it can remove, in the environment's Cosmos DB account (found by its cix-environment tag, never by name alone):
+  What it can remove, in the environment's database (cosmos.databaseName) in the shared Cosmos DB account (found by its
+  shared-role=cosmos tag in the shared resource group, never by name alone). Other projects' databases are never touched:
     -Target State    the engine's state documents for -Mode (paper by default): engine-state-<mode>, engine-status-<mode>,
                      and for paper the paper-account. With -IncludeSpecArchive, also the archived strategy specs (spec-*).
     -Target Journal  every journal entry (optionally only days before -JournalBefore).
     -Target All      both.
   With -ResetSchema, the selected containers are deleted and created again from infra/main.bicep (same partition keys and
-  settings), which is quicker for a large journal. Without it, the containers, database and account are never touched.
+  settings), which is quicker for a large journal. Without it, the containers, database and account are never touched;
+  the database itself and the shared account are never deleted.
 
   Safeguards:
     - The environment must have a settings file in infra/environments, and must not be marked "protected" there (live money).
-    - The Cosmos DB account must be the single one tagged cix-environment=<Environment> in that environment's resource group.
+    - CIX's resource group must be tagged cix-environment=<Environment>, cix-protected=false, and cix-database and
+      cix-cosmos-account naming this database and account (all set by infra/main.bicep); no other group may claim the
+      database; and it must exist in the single shared account.
     - It refuses while the engine is running (its status heartbeat is under 3 minutes old) unless -IgnoreRunningEngine.
     - It lists what it would remove first; nothing is deleted without -Apply and the typed confirmation.
     - It is never run by deployment, the engine, or the dashboard.
@@ -59,15 +63,22 @@ if ($settings.protected) {
 
 Assert-CixAzureCli
 $account = Connect-CixAzure -Settings $settings -SubscriptionId $SubscriptionId
-$cosmos = Get-CixCosmosAccount -Settings $settings
-# The account's own tag must agree: a settings file edited locally can't unprotect a live environment.
-$tags = $cosmos.tags
-if (-not $tags.PSObject.Properties['cix-protected'] -or $tags.'cix-protected' -ne 'false') {
-  throw "The Cosmos DB account isn't tagged cix-protected=false (it says '$(if ($tags.PSObject.Properties['cix-protected']) { $tags.'cix-protected' } else { 'nothing' })'). Refusing."
+# CIX's resource group tags must agree: a settings file edited locally can't unprotect a live environment.
+$tags = Get-CixEnvironmentTags -Settings $settings
+$say = { param($name) if ($tags -and $tags.PSObject.Properties[$name]) { $tags.$name } else { 'nothing' } }
+if (-not $tags -or -not $tags.PSObject.Properties['cix-environment'] -or $tags.'cix-environment' -ne $Environment) {
+  throw "Resource group $($settings.resourceGroup) isn't tagged cix-environment=$Environment (it says '$(& $say 'cix-environment')'). Refusing."
 }
-$endpoint = $cosmos.documentEndpoint
+if (-not $tags.PSObject.Properties['cix-protected'] -or $tags.'cix-protected' -ne 'false') {
+  throw "Resource group $($settings.resourceGroup) isn't tagged cix-protected=false (it says '$(& $say 'cix-protected')'). Refusing."
+}
+$cosmos = Get-CixCosmosAccount -Settings $settings
 $database = $settings.cosmos.databaseName
-Write-CixInfo "Account:  $($cosmos.name) in $($settings.resourceGroup) (subscription $($account.name))"
+# The database must be this environment's alone: claimed by its group's tags and by no other group.
+Assert-CixDatabaseClaim -Settings $settings -AccountName $cosmos.name -RequireOwn
+if (-not (Test-CixDatabase -Settings $settings -AccountName $cosmos.name)) { throw "Database '$database' doesn't exist in $($cosmos.name)." }
+$endpoint = $cosmos.documentEndpoint
+Write-CixInfo "Account:  $($cosmos.name) (shared) in $($settings.shared.resourceGroup) (subscription $($account.name))"
 Write-CixInfo "Database: $database; containers: $($containers -join ', ')"
 
 # Keys are needed for the data plane: read-only to plan, read-write only when applying. Never printed.
@@ -149,12 +160,12 @@ $failed = 0
 if ($ResetSchema) {
   Write-CixStep 'Recreating containers'
   foreach ($c in $containers) {
-    Invoke-CixAz @('cosmosdb', 'sql', 'container', 'delete', '--account-name', $cosmos.name, '--resource-group', $settings.resourceGroup,
+    Invoke-CixAz @('cosmosdb', 'sql', 'container', 'delete', '--account-name', $cosmos.name, '--resource-group', $settings.shared.resourceGroup,
       '--database-name', $database, '--name', $c, '--yes', '--only-show-errors') | Out-Null
     Write-CixInfo "deleted container $c"
   }
   try {
-    Invoke-CixDeployment -Settings $settings | Out-Null # creates them again exactly as the template defines
+    Invoke-CixDeployment -Settings $settings -SharedAccountName $cosmos.name | Out-Null # creates them again exactly as the template defines
   }
   catch {
     Write-CixWarn "Recreating the containers failed: $($_.Exception.Message)"

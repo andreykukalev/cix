@@ -1,6 +1,6 @@
 # 0008. Azure Cosmos DB with local agents, and a Static Web Apps dashboard
 
-- Status: proposed
+- Status: accepted; the Cosmos DB account layout is superseded by [0009](0009-shared-cosmos-account.md) (a shared account, CIX in its own database)
 - Date: 2026-10-25
 - Amends: 0003 (free tier with shared throughput instead of serverless), 0005 (agents stay on the owner's PC for now)
 
