@@ -14,6 +14,7 @@ TestResults/
 secrets.json
 .env
 .env.*
+!.env.example
 
 # Local Claude Code settings
 .claude/settings.local.json

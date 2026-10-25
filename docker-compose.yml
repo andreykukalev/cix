@@ -21,7 +21,19 @@ services:
       dockerfile: docker/engine.Dockerfile
     image: cix-engine
     restart: unless-stopped
-    depends_on: [cosmos]
+    depends_on:
+      cosmos:
+        condition: service_started   # started first; the engine itself waits (with backoff) until the database answers
+        required: false              # docker-compose.azure.yml switches the emulator off
+    healthcheck:
+      # Healthy once the database is reachable and the saved state is loaded: the tool server only listens after that.
+      # bash's /dev/tcp, because the runtime image has no curl.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/5077 && printf 'GET /healthz HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' >&3 && grep -q ' 200 ' <&3"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10m       # the emulator can take minutes after a reboot
+      start_interval: 5s
     environment:
       # Not Production: the engine refuses Live outside Production, so this stack can only paper trade.
       ASPNETCORE_ENVIRONMENT: "Compose"
@@ -48,7 +60,10 @@ services:
         CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-latest}"   # pin in .env, e.g. CLAUDE_CODE_VERSION=2.1.0
     image: cix-trader
     restart: unless-stopped
-    depends_on: [engine]
+    depends_on:
+      engine:
+        condition: service_healthy   # start once the engine is ready, not just running
+        restart: true                # and restart with it: this container shares the engine's network
     network_mode: "service:engine"   # reaches the tool server at 127.0.0.1:5077; nothing else can
     environment:
       TRADER_MODEL: "${TRADER_MODEL:-sonnet}"                       # opus, sonnet, haiku or a full model name
@@ -74,7 +89,10 @@ services:
         CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-latest}"
     entrypoint: ["bash", "/cix/tools/trader/run-analyst.sh"]
     restart: unless-stopped
-    depends_on: [engine]
+    depends_on:
+      engine:
+        condition: service_healthy
+        restart: true
     network_mode: "service:engine"   # reaches the engine's analyst tools at 127.0.0.1:5077; has web access, no order tools
     environment:
       ANALYST_MODEL: "${ANALYST_MODEL:-opus}"

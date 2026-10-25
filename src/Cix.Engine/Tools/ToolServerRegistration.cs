@@ -71,6 +71,9 @@ public static class ToolServerRegistration
     /// <summary>Read-only summary of the latest scan, polled by the trader loop.</summary>
     public const string SignalsEndpoint = "/signals";
 
+    /// <summary>Readiness for Docker and the agents: 200 once the engine has loaded its state and is listening.</summary>
+    public const string HealthEndpoint = "/healthz";
+
     /// <summary>
     /// Maps the MCP endpoint behind a guard: requests with an <c>Origin</c> header (any browser page) get 403, and posts must
     /// be JSON, so a web page can't drive the tools through the user's browser even though the server is on localhost.
@@ -100,6 +103,24 @@ public static class ToolServerRegistration
             await next(context).ConfigureAwait(false);
         });
         app.MapMcp(Endpoint);
+        app.MapGet(HealthEndpoint, (HttpContext http) =>
+        {
+            // Docker's health check and the agents' readiness wait. The listener only starts after the database and the saved
+            // state are loaded, so answering at all means ready. A halted engine is still healthy: it is up, just not trading.
+            // "degraded" means a dependency is failing right now: orders that need it are refused, and it is retried.
+            var services = http.RequestServices;
+            var database = services.GetService<Status.DependencyHealth>()?.Database ?? Status.DatabaseHealth.Unknown;
+            var execution = services.GetService<Execution.ExecutionService>();
+            return Results.Json(new
+            {
+                status = database.State == "unreachable" ? "degraded" : "ready",
+                mode = services.GetService<TradingContext>()?.Mode.ToString().ToLowerInvariant(),
+                halted = services.GetService<Execution.KillSwitch>()?.IsEngaged,
+                database = database.State,
+                databaseOkAt = database.OkAt,
+                lastReconciledAt = execution?.LastReconciledAt,
+            });
+        });
         app.MapGet(SignalsEndpoint, (HttpContext http) =>
         {
             // Read-only and cheap: the latest background scan, no exchange call. The trader loop polls it to decide whether an

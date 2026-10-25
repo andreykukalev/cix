@@ -52,8 +52,13 @@ public sealed class CosmosOptions
 }
 
 /// <summary>
-/// The engine's Cosmos DB database: <c>journal</c> (partitioned by UTC day) and <c>state</c> (one document per id: engine
-/// state, paper account, archived strategy specs). Works the same against the emulator and Azure (serverless).
+/// The engine's Cosmos DB database (docs/persistence.md):
+/// <list type="bullet">
+/// <item><c>journal</c>: the append-only history of decisions, orders, fills and safety events, partitioned by UTC day.</item>
+/// <item><c>state</c>: what is true now, one document per id: <c>engine-state-paper</c> (or <c>-live</c>), <c>paper-account</c>,
+/// and the archived strategy specs <c>spec-name@vN-hash</c>. Each document says what it is in <c>type</c> and <c>about</c>.</item>
+/// </list>
+/// Works the same against the emulator and Azure (serverless).
 /// </summary>
 public sealed class CosmosDb : IDisposable
 {
@@ -76,9 +81,11 @@ public sealed class CosmosDb : IDisposable
             MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromSeconds(2),
             Serializer = new SystemTextJsonCosmosSerializer(Json),
         };
+        // Gateway mode: HTTPS on port 443 only, which works from a home network to Azure as well as to the emulator (direct
+        // mode would also need ports 10250-10256). It adds a few milliseconds per call, which doesn't matter at this volume.
+        clientOptions.ConnectionMode = ConnectionMode.Gateway;
         if (options.Emulator)
         {
-            clientOptions.ConnectionMode = ConnectionMode.Gateway;
             clientOptions.LimitToEndpoint = true;
             clientOptions.HttpClientFactory = () => new HttpClient(new HttpClientHandler
             {
@@ -121,8 +128,11 @@ public sealed class CosmosDb : IDisposable
 
     public void Dispose() => _client.Dispose();
 
-    /// <summary>A document in the <c>state</c> container: one value per id.</summary>
-    internal sealed record StateDocument<T>(string Id, T Value);
+    /// <summary>
+    /// A document in the <c>state</c> container: one value per id, with <paramref name="Type"/> and <paramref name="About"/> so a
+    /// person browsing the container can tell what it is, and when it last changed. Older documents may lack those three.
+    /// </summary>
+    internal sealed record StateDocument<T>(string Id, T Value, string? Type = null, string? About = null, DateTimeOffset? UpdatedAt = null);
 
     internal static async Task<T?> ReadStateAsync<T>(Container container, string id, CancellationToken cancellationToken)
         where T : class
@@ -138,8 +148,8 @@ public sealed class CosmosDb : IDisposable
         }
     }
 
-    internal static Task WriteStateAsync<T>(Container container, string id, T value, CancellationToken cancellationToken) =>
-        container.UpsertItemAsync(new StateDocument<T>(id, value), new PartitionKey(id), cancellationToken: cancellationToken);
+    internal static Task WriteStateAsync<T>(Container container, string id, T value, string type, string about, CancellationToken cancellationToken) =>
+        container.UpsertItemAsync(new StateDocument<T>(id, value, type, about, DateTimeOffset.UtcNow), new PartitionKey(id), cancellationToken: cancellationToken);
 }
 
 /// <summary>Cosmos DB serialization through System.Text.Json with the given options.</summary>

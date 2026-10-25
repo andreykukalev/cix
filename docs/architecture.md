@@ -56,7 +56,8 @@ flowchart LR
 | Order execution | Deterministic | Idempotent client order IDs, pair filters (step sizes, min size), partial fills, retries |
 | Paper execution | Deterministic | Simulates fills from live Revolut X prices and fees; the default until go-live |
 | Portfolio | Deterministic | Built from polled orders and fills; reconciled with balances; halts on mismatch |
-| Decision journal | Append-only Cosmos DB container | Every agent run: inputs, spec version, tool calls, rationale, risk verdict, orders, fills, PnL |
+| Decision journal | Append-only Cosmos DB container (`journal`) | Every agent run: inputs, spec version, tool calls, rationale, risk verdict, orders, fills, PnL |
+| Operational state | Cosmos DB container (`state`) | What is true now: kill switch, loss baselines, orders in flight, position plans (stop and target), the paper account, archived specs. Recovery after a restart starts here and reconciles with the exchange ([persistence.md](persistence.md)) |
 | Tool server | C# MCP server | Agent tools and operator tools; the only path from agents to the exchange |
 
 ## Rules that never bend

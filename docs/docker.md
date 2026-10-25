@@ -41,9 +41,15 @@ docker compose down               # stop everything; the paper account stays in 
 
 Run `docker compose down -v` only if you want to wipe the paper account and journal.
 
+**After a reboot or restart** nothing needs doing by hand.
+- The engine waits for the database (the emulator can take a few minutes) and logs `Waiting for the database` meanwhile, instead of crashing.
+- Docker marks it healthy once it has loaded its saved state. The trader and analyst start only then, and restart with it.
+- Orders, fills and each position's stop and target carry on from where they were. See [persistence.md](persistence.md#recovery).
+- `docker compose ps` shows `(healthy)` next to the engine when it is ready.
+
 ## Where things are
 
-- **Journal, paper account, engine state:** in Cosmos. Browse them at http://localhost:1234 (database `cix`, container `journal`).
+- **Journal, paper account, engine state:** in Cosmos. Browse them at http://localhost:1234 (database `cix`: `state` is what is true now, `journal` is what happened). What each record means, how to trace a trade, and how the engine recovers after a restart: [persistence.md](persistence.md).
 - **Agent run output:** `logs\trader\run-*.json` and `logs\analyst\analyst-*.json`.
 - **Strategy, settings and risk limits:** mounted read-only from `strategies\`, `src\Cix.Engine\appsettings.json` and `config\risk-limits.json`. After changing them, run `docker compose restart engine trader`.
 - **Code changes:** need a rebuild with `docker compose up -d --build`.

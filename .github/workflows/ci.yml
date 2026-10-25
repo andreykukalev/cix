@@ -103,6 +103,26 @@ jobs:
           docker compose logs engine | tail -60 | sed 's/^/::error::/'
           exit 1
 
+      - name: Engine is healthy, and survives a restart of everything at once without crashing
+        # Like a PC reboot: the database and the engine start together; the engine must wait for the database, not crash.
+        run: |
+          engine() { docker compose ps -q engine; }
+          healthy() { [ "$(docker inspect -f '{{.State.Health.Status}}' "$(engine)")" = healthy ]; }
+          wait_healthy() {
+            for _ in $(seq 1 120); do healthy && return 0; sleep 5; done
+            docker compose logs engine | tail -60 | sed 's/^/::error::/'
+            return 1
+          }
+          wait_healthy
+          echo "engine healthy"
+          docker compose stop engine cosmos
+          docker compose up -d cosmos engine
+          wait_healthy
+          restarts="$(docker inspect -f '{{.RestartCount}}' "$(engine)")"
+          if [ "$restarts" != 0 ]; then echo "::error::the engine crashed and was restarted $restarts times while the database started"; exit 1; fi
+          docker compose logs engine | grep -E "Waiting for the database|ready after" || true
+          echo "engine healthy again after a cold start, no crash"
+
       - name: Stop
         if: always()
         run: docker compose down -v

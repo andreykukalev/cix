@@ -1,0 +1,21 @@
+# Use Azure Cosmos DB instead of the local emulator. The agents and the engine still run here; only the database moves.
+#   tools/azure/provision.ps1 -Environment dev     writes COSMOS_ENDPOINT to .env and the key to secrets/cosmos_key
+#   docker compose -f docker-compose.yml -f docker-compose.azure.yml up -d --build
+# The connection is HTTPS (gateway mode, port 443) with the account key, which arrives as a Docker secret and is never in an
+# image, this file or the logs. See docs/azure.md.
+services:
+  cosmos:
+    profiles: ["emulator"]   # not started: the data lives in Azure
+
+  engine:
+    environment:
+      Cosmos__Emulator: "false"
+      Cosmos__Endpoint: "${COSMOS_ENDPOINT:?COSMOS_ENDPOINT is missing from .env; run tools/azure/provision.ps1}"
+      Cosmos__Database: "${COSMOS_DATABASE:-cix}"
+    secrets:
+      - source: cosmos_key
+        target: Cosmos__AccountKey
+
+secrets:
+  cosmos_key:
+    file: ./secrets/cosmos_key
