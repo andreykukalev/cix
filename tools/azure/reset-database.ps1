@@ -153,7 +153,14 @@ if ($ResetSchema) {
       '--database-name', $database, '--name', $c, '--yes', '--only-show-errors') | Out-Null
     Write-CixInfo "deleted container $c"
   }
-  Invoke-CixDeployment -Settings $settings | Out-Null # creates them again exactly as the template defines
+  try {
+    Invoke-CixDeployment -Settings $settings | Out-Null # creates them again exactly as the template defines
+  }
+  catch {
+    Write-CixWarn "Recreating the containers failed: $($_.Exception.Message)"
+    Write-CixWarn "The engine can't create them itself (key-based metadata writes are off). Run: .\tools\azure\provision.ps1 -Environment $Environment -SkipEngineConfig"
+    exit 1
+  }
   Write-CixInfo "created $($containers -join ', ') again from infra/main.bicep"
   $removed = $plan.Count
 }

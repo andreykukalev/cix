@@ -94,8 +94,9 @@ test('masks prices in every text format the engine writes', () => {
     'buy SOL-EUR rank 1 at 150.25: uptrend pullback 0.3 ATR above EMA20',
     'bid 59800 at or below stop 61000',
     'stopLoss=1.2 takeProfit: 1.3 target 2.5',
+    'stop at 58000', 'stop-loss 58000', 'SL 58000', 'tp: 70000', 'sell at 58k', 'Buy 1 DOT-EUR @ 15: Placed',
   ];
-  for (const text of engineTexts) assert.doesNotMatch(publicText(text), /\d+\.\d+|\d{3,}/, text);
+  for (const text of engineTexts) assert.doesNotMatch(publicText(text), /\d+\.\d+|\d{3,}|\d+k|@ \d/, text);
   assert.equal(publicText('rank 1, 24h +3%'), 'rank 1, 24h +3%');
   assert.equal(publicText(null), null);
 });

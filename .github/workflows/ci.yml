@@ -119,7 +119,9 @@ jobs:
 
       - name: Dashboard API tests
         working-directory: dashboard/api
-        run: npm test
+        run: |
+          npm install --omit=dev --ignore-scripts --no-audit --no-fund
+          npm test
 
       - name: Bicep builds and lints cleanly
         run: |

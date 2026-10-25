@@ -8,13 +8,16 @@ const STALE_AFTER_MS = 3 * 60 * 1000; // the engine writes its status every minu
 // The dashboard is public, so it never shows a price: not where a position was bought or will be sold (entry, stop,
 // target), not resting orders' limits, not fills' prices. Structured fields are allowlisted (no price field is passed on),
 // and free text from the journal goes through publicText, which masks every number that could be a price or a level:
-// anything with a decimal point and any whole number of three or more digits. Small counts (rank 1, 24h) stay readable.
+// anything with a decimal point, any whole number of three or more digits or written like 58k, and any number after "@",
+// "at", "stop", "target", "SL" or "TP". Small counts elsewhere (rank 1, 24h) stay readable.
 // The journal in Cosmos DB keeps everything for the owner.
 const MASK = '…';
 
 function publicText(text) {
   if (typeof text !== 'string') return text ?? null;
-  return text.replace(/\d+(?:[.,]\d+)+|\d{3,}/g, MASK);
+  return text
+    .replace(/(@|\bat\b|\b(?:stop|target|sl|tp)\b)(\s*[:=]?\s*)\d+(?:[.,]\d+)*k?/gi, `$1$2${MASK}`) // any number after @, at, stop, target
+    .replace(/\d+(?:[.,]\d+)+|\d{3,}|\b\d+k\b/gi, MASK);
 }
 
 const AGENTS = ['trader', 'analyst'];

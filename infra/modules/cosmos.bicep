@@ -1,8 +1,9 @@
 // Cosmos DB for CIX: one account, one database with shared throughput, and the two containers the engine uses.
 //   journal  the append-only history, partitioned by UTC day (/day)
 //   state    what is true now, one document per id (/id)
-// The engine creates them itself when missing, but here they are created first, with the database's shared throughput,
-// so nothing gets its own (billed) throughput.
+// They are created here, with the database's shared throughput, so nothing gets its own (billed) throughput. The engine
+// can't create them itself in Azure: key-based metadata writes are disabled below, so a missing container means running
+// this template again (tools/azure/provision.ps1).
 
 param accountName string
 param location string

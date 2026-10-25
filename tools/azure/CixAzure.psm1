@@ -139,7 +139,8 @@ function Invoke-CixDeployment {
   $parameters = New-CixDeploymentParameters -Settings $Settings
   try {
     if ($WhatIf) {
-      & az deployment group what-if --resource-group $Settings.resourceGroup --template-file $template --parameters "@$parameters" --only-show-errors
+      # Straight to the console: the caller must not swallow the preview it is about to ask you to approve.
+      & az deployment group what-if --resource-group $Settings.resourceGroup --template-file $template --parameters "@$parameters" --only-show-errors | Out-Host
       if ($LASTEXITCODE -ne 0) { throw 'The what-if preview failed.' }
       return $null
     }

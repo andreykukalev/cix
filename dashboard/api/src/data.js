@@ -6,6 +6,7 @@ const { summarize, publicSummary } = require('./summarize');
 
 const MODES = new Set(['paper', 'live']);
 const JOURNAL_PER_DAY = 300;
+const STATE_LIST_MAX = 200;
 
 function utcDay(ms) {
   return new Date(ms).toISOString().slice(0, 10);
@@ -33,7 +34,7 @@ async function loadDashboard(reader, mode, now) {
     mode === 'paper' ? attempt('the paper account', readErrors, () => reader.readDocument('state', 'paper-account')) : null,
     attempt("today's journal", readErrors, () => reader.query('journal', `SELECT TOP ${JOURNAL_PER_DAY} * FROM c ORDER BY c.entry.at DESC`, { partitionKey: today, maxItems: JOURNAL_PER_DAY })),
     attempt("yesterday's journal", readErrors, () => reader.query('journal', `SELECT TOP ${JOURNAL_PER_DAY} * FROM c ORDER BY c.entry.at DESC`, { partitionKey: yesterday, maxItems: JOURNAL_PER_DAY })),
-    attempt('the list of state documents', readErrors, () => reader.query('state', 'SELECT c.id, c.type, c.about, c.updatedAt FROM c', { maxItems: 200 })),
+    attempt('the list of state documents', readErrors, () => reader.query('state', 'SELECT c.id, c.type, c.about, c.updatedAt FROM c', { maxItems: STATE_LIST_MAX })),
   ]);
 
   return summarize({
@@ -43,7 +44,9 @@ async function loadDashboard(reader, mode, now) {
     paperAccount: accountDoc?.value ?? null,
     journal: [...(todayEntries ?? []), ...(yesterdayEntries ?? [])].map((d) => d.entry).filter(Boolean),
     stateDocs: (stateDocs ?? []).map((d) => ({ id: d.id, type: d.type ?? null, about: d.about ?? null, updatedAt: d.updatedAt ?? null })),
-    readErrors,
+    readErrors: (stateDocs ?? []).length >= STATE_LIST_MAX
+      ? [...readErrors, `Showing the first ${STATE_LIST_MAX} state documents only.`]
+      : readErrors,
   }, now);
 }
 

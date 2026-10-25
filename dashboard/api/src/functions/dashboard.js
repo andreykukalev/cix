@@ -36,7 +36,8 @@ async function cached(key, load) {
 }
 
 function respond(body, status = 200) {
-  return { status, jsonBody: body, headers: { 'cache-control': `public, max-age=${CACHE_MS / 1000}`, 'x-content-type-options': 'nosniff' } };
+  const cacheControl = status === 200 ? `public, max-age=${CACHE_MS / 1000}` : 'no-store'; // never keep an error around
+  return { status, jsonBody: body, headers: { 'cache-control': cacheControl, 'x-content-type-options': 'nosniff' } };
 }
 
 async function handle(context, load) {
