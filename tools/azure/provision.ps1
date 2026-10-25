@@ -1,4 +1,4 @@
-#Requires -Version 7.2
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Provisions CIX's Azure resources for one environment: Cosmos DB (free tier) and the read-only dashboard (Static Web Apps,
@@ -118,7 +118,7 @@ if ($DeployDashboard) {
   Write-CixStep 'Publishing the dashboard'
   if (-not $settings.deployDashboard) { throw "deployDashboard is false in $($settings.path)." }
   $root = Get-CixRepoRoot
-  $api = Join-Path $root 'dashboard' 'api'
+  $api = Join-CixPath $root 'dashboard' 'api'
   Push-Location $api
   try {
     & npm install --omit=dev --no-audit --no-fund --ignore-scripts
@@ -128,7 +128,7 @@ if ($DeployDashboard) {
   $env:SWA_CLI_DEPLOYMENT_TOKEN = Invoke-CixAz -Quiet @('staticwebapp', 'secrets', 'list', '--name', $staticWebApp, '--resource-group',
     $settings.resourceGroup, '--query', 'properties.apiKey', '-o', 'tsv')
   try {
-    & npx --yes "@azure/static-web-apps-cli@$SwaCliVersion" deploy (Join-Path $root 'dashboard' 'app') --api-location $api `
+    & npx --yes "@azure/static-web-apps-cli@$SwaCliVersion" deploy (Join-CixPath $root 'dashboard' 'app') --api-location $api `
       --api-language node --api-version 22 --env production
     if ($LASTEXITCODE -ne 0) { throw 'Publishing the dashboard failed.' }
   }

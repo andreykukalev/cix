@@ -32,7 +32,7 @@ Nothing else is created: no Key Vault, no App Service, no Container Apps, no mon
 
 ## Before you start
 
-- PowerShell 7.2 or later (`winget install Microsoft.PowerShell`).
+- Windows PowerShell 5.1 (built into Windows 10 and 11) or PowerShell 7. The scripts run on both; CI tests them on both. If Windows blocks scripts, start them with `powershell -ExecutionPolicy Bypass -File .\tools\azure\provision.ps1 ...`.
 - Azure CLI 2.60 or later (`winget install Microsoft.AzureCLI`). The scripts install Bicep for it when needed.
 - Node.js 22 LTS, only to publish the dashboard (`winget install OpenJS.NodeJS.LTS`).
 - An Azure subscription where you can create resource groups.

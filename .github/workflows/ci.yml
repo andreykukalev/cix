@@ -149,19 +149,22 @@ jobs:
           az bicep build --file infra/main.bicep --stdout > /dev/null
           az bicep lint --file infra/main.bicep
 
-      - name: PowerShell scripts parse, and the module's signing matches Microsoft's example
+      - name: Azure scripts on PowerShell 7 (parse, module, provision preview with a fake az, signing)
         shell: pwsh
+        run: ./tests/azure/CixAzure.Tests.ps1
+
+  azure-scripts-windows-powershell:
+    # The owner runs the Azure scripts in Windows PowerShell 5.1, which has no 7-only syntax or parameters.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure scripts on Windows PowerShell 5.1
+        shell: powershell
         run: |
-          foreach ($f in Get-ChildItem tools/azure -Filter *.ps*1) {
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
-            if ($errors) { $errors | ForEach-Object { "::error file=tools/azure/$($f.Name),line=$($_.Extent.StartLineNumber)::$($_.Message)" }; exit 1 }
-          }
-          Import-Module ./tools/azure/CixAzure.psm1
-          $key = @('dsZQi3KtZmCv1ljt3VNWNm7sQUF1y5rJfC6kv5Jiwv', 'W0EndXdDku/dkKBp8/ufDToSxLzR4y+O/0H/t4bQtVNw==') -join ''  # documented sample, not a key
-          $token = New-CixCosmosAuthToken -Verb GET -ResourceType dbs -ResourceLink 'dbs/ToDoList' -Date 'Thu, 27 Apr 2017 00:51:12 GMT' -Key $key
-          if ([Uri]::UnescapeDataString($token) -ne 'type=master&ver=1.0&sig=c09PEVJrgp2uQRkr934kFbTqhByc7TVr3OHyqlu+c+c=') { throw 'Cosmos DB signing is wrong' }
-          foreach ($f in Get-ChildItem infra/environments -Filter *.json) { Get-Content $f -Raw | ConvertFrom-Json | Out-Null }
+          $PSVersionTable.PSVersion
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/azure/CixAzure.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   secret-scan:
     runs-on: ubuntu-latest

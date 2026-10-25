@@ -1,4 +1,4 @@
-#Requires -Version 7.2
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Resets CIX's Azure Cosmos DB data for testing (for example after releasing a new version): bot state, journal, or both.
