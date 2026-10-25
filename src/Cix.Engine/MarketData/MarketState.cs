@@ -31,6 +31,13 @@ public sealed class MarketState(TimeProvider time)
         }
     }
 
+    /// <summary>When each symbol's latest quote was taken.</summary>
+    public IReadOnlyDictionary<string, DateTimeOffset> QuoteTimes()
+    {
+        lock (_gate)
+            return _quotes.ToDictionary(q => q.Key, q => q.Value.AsOf, StringComparer.Ordinal);
+    }
+
     public MarketQuote? Quote(string symbol)
     {
         lock (_gate)

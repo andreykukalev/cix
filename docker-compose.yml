@@ -21,7 +21,10 @@ services:
       dockerfile: docker/engine.Dockerfile
     image: cix-engine
     restart: unless-stopped
-    depends_on: [cosmos]   # started first; the engine itself waits (with backoff) until the database answers
+    depends_on:
+      cosmos:
+        condition: service_started   # started first; the engine itself waits (with backoff) until the database answers
+        required: false              # docker-compose.azure.yml switches the emulator off
     healthcheck:
       # Healthy once the database is reachable and the saved state is loaded: the tool server only listens after that.
       # bash's /dev/tcp, because the runtime image has no curl.

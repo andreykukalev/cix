@@ -81,9 +81,11 @@ public sealed class CosmosDb : IDisposable
             MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromSeconds(2),
             Serializer = new SystemTextJsonCosmosSerializer(Json),
         };
+        // Gateway mode: HTTPS on port 443 only, which works from a home network to Azure as well as to the emulator (direct
+        // mode would also need ports 10250-10256). It adds a few milliseconds per call, which doesn't matter at this volume.
+        clientOptions.ConnectionMode = ConnectionMode.Gateway;
         if (options.Emulator)
         {
-            clientOptions.ConnectionMode = ConnectionMode.Gateway;
             clientOptions.LimitToEndpoint = true;
             clientOptions.HttpClientFactory = () => new HttpClient(new HttpClientHandler
             {

@@ -22,6 +22,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 | `id` | `type` | What it is | Written |
 |---|---|---|---|
 | `engine-state-paper` (`engine-state-live` in Live) | `engine-state` | The engine's operational state (below). | On every change: an order sent, confirmed or finished, a plan opened or closed, a new loss baseline, the kill switch. |
+| `engine-status-paper` (or `-live`) | `engine-status` | The engine's status for people and the dashboard (below). Built from what the engine already holds in memory, with no exchange call and no state change, and never read back, so it can't affect trading. | Every minute. |
 | `paper-account` | `paper-account` | The simulated Revolut X account: balances (`available`, `reserved`) per currency, and its orders (all open ones and the latest 500 finished). Paper mode only. | Every second when something changed, and at shutdown. |
 | `spec-<name>@v<N>-<hash>` | `strategy-spec` | An immutable copy of a strategy spec version that ran. Journal entries name it in `specVersion` (`good@v1#3f2a9c1b04de`). | Once, the first time a version runs. Never overwritten. |
 
@@ -36,6 +37,19 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 | `orders` | Orders the engine **sent and hasn't yet seen finish**. Each is readable: `clientOrderId`, `symbol`, `side`, `size`, `limitPrice`, `sentAt`, `source` (`place_order` for an agent's order, `protective-exit` for the engine's own stop or target sell), `venueOrderId` (the exchange's ID, once confirmed), and for a buy its `stopLoss`, `takeProfit`, `runId` and `strategy`. Written **before** the order is sent. Removed once reconciliation has seen it finished for a full interval. |
 | `positions` | The **plan for each position**, by symbol: `status` (`entry-pending` until the buy fills, then `open`), `entryClientOrderId` (the buy behind it), `stopLoss`, `takeProfit`, `since`, and once filled `entryPrice` and `filledAt`. Written before the buy is sent. A further buy for a position still held puts its levels in `pendingClientOrderId`, `pendingStopLoss` and `pendingTakeProfit`; they replace the plan's only if that buy fills (a level it doesn't set keeps the old one), so a buy that never fills can't move the stop. A buy after the position was sold out starts a fresh plan, or none. Removed once less than the exchange minimum of the coin is held and its buy is no longer working. |
 | `knownClientOrderIds` | Older format: bare client order IDs from before `orders` existed. Still read, and dropped as those orders finish. |
+
+### `engine-status-*`
+
+| Field | Meaning |
+|---|---|
+| `updatedAt` | When the engine wrote it: its heartbeat, and its last successful database write. Older than a few minutes means the engine is down or can't reach the database. |
+| `startedAt`, `mode`, `strategy` | When this engine process started, paper or live, and the active strategy spec. |
+| `halted`, `haltedBy`, `haltCategory`, `haltedSince` | The kill switch: which part of the engine engaged it and a fixed description of why. The exact reason (which can name orders or amounts) is only in the journal's `kill-switch` entry. |
+| `lastReconciledAt`, `lastReconcileAttemptAt`, `lastReconcileProblem` | The last full comparison with the exchange (the portfolio's last sync), the last attempt, and a problem code: `exchange-unreadable`, `unknown-open-orders`, `unexplained-holdings-change`, `holdings-not-compared` (no fresh prices to value the holdings), or empty. |
+| `lastScan` | The latest scan: when, how many coins ranked and excluded, entry and exit signals, and the signal key the trader watches. |
+| `marketView` | The analyst's current view: regime, until when, coins to avoid. |
+| `oldestQuoteAt`, `unquotedSymbols` | The oldest of the latest prices across the tradable coins that have one, and the coins with none yet. Minutes old means market data has stalled. |
+| `portfolio` | As the safety monitor last valued it (every minute): equity, cash (equity minus holdings, including what open buys reserve), peak equity, today's P&L, exposure, and each holding with its value and plan (status, entry, stop, target). Absent until the first valuation. |
 
 ### Why some IDs are still GUIDs
 
@@ -111,7 +125,9 @@ A position with no plan in `positions` (opened before plans were kept in state) 
 
 ## Health and readiness
 
-- `GET http://127.0.0.1:5077/healthz` returns `{"status":"ready","mode":"paper","halted":false}` once the engine has loaded its state. It is reachable only inside the engine's network, like the tool server.
+- `GET http://127.0.0.1:5077/healthz` answers once the engine has loaded its state, for example `{"status":"ready","mode":"paper","halted":false,"database":"ok","databaseOkAt":"…","lastReconciledAt":"…"}`. It is reachable only inside the engine's network, like the tool server.
+  - `database` is `ok`, `unreachable` (the last status write failed; `status` is then `degraded`), `unknown` (not checked yet) or `not-used`.
+  - While the database is unreachable, the engine keeps running. Orders are refused, because each must be recorded first. Protective sells are refused too and retried. Writes are retried as the connection returns. Nothing is half-written: each state change is one document write.
 - Docker marks the engine **healthy** from it. In Compose, the trader and analyst start only when the engine is healthy, and are restarted with it, because they share its network.
 - The agents also wait for `/healthz` before each run. While the engine is starting they log `Waiting for the engine to be ready` once a minute. They exit (so Docker restarts them) only when the engine's network is gone or nothing has answered for 10 minutes.
 - After a PC reboot, Docker starts everything again by its restart policy. The engine waits for the emulator, the agents wait for the engine, and trading resumes from the saved state, with no step done by hand.

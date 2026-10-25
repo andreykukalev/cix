@@ -136,6 +136,7 @@ public static class PersistenceRegistration
         services.AddSingleton<IJournal>(sp => new CosmosJournal(sp.GetRequiredService<CosmosDb>()));
         services.AddSingleton<IEngineStateStore>(sp => new CosmosEngineStateStore(sp.GetRequiredService<CosmosDb>(), mode, sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<CosmosSpecArchive>();
+        services.AddSingleton<Status.IEngineStatusStore>(sp => new CosmosEngineStatusStore(sp.GetRequiredService<CosmosDb>(), mode));
         if (mode == TradingMode.Paper)
         {
             services.AddSingleton<IPaperAccountStore, CosmosPaperAccountStore>();
