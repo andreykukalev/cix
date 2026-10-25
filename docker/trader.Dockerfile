@@ -20,6 +20,10 @@ COPY src/Cix.Engine/appsettings.json src/Cix.Engine/appsettings.json
 COPY strategies/ strategies/
 COPY tools/trader/ tools/trader/
 
+# A Windows checkout may have CRLF line endings (e.g. one made before .gitattributes forced LF); bash would then fail on
+# them, and a failing order-size hook blocks every buy. Strip them here so the image never depends on the checkout.
+RUN find /cix/.claude/hooks /cix/tools/trader -name '*.sh' -exec sed -i 's/\r$//' {} + \
+    && ! grep -rl "$(printf '\r')" /cix/.claude/hooks /cix/tools/trader --include='*.sh'
 RUN mkdir -p /cix/logs/trader /cix/logs/analyst && chown -R node:node /cix/logs
 ENV DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
