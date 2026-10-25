@@ -191,7 +191,7 @@ function renderBriefing(view) {
   const b = view.briefing ?? {};
   const a = b.analyst;
   document.getElementById('briefing-meta').textContent = [
-    a ? `analyst ${ago(a.recordedAt)}${a.active ? '' : ' (view expired)'}` : 'no analyst view in 48 hours',
+    a ? `analyst ${ago(a.recordedAt)}${a.active ? '' : ' (view expired)'}` : 'no analyst view in 24 hours',
     b.scanAt ? `scan ${ago(b.scanAt)}${b.scanStale ? ' (stale)' : ''}` : 'no scan yet',
   ].join(' · ');
 
@@ -200,7 +200,7 @@ function renderBriefing(view) {
     el('span', { class: `badge ${a.regime === 'risk-off' ? 'warn' : a.regime === 'risk-on' ? 'ok' : ''}`, text: a.regime ?? 'unknown' }), ' ',
     a.summary ?? '',
     a.avoid?.length && a.active ? el('span', {}, ' Avoid: ', ...chips(a.avoid)) : null,
-  ].filter((n) => n !== null) : ['The analyst has not recorded a view in the last 48 hours.']));
+  ].filter((n) => n !== null) : ['The analyst has not recorded a view in the last 24 hours.']));
 
   const highlights = a?.highlights ?? [];
   document.getElementById('highlights').replaceChildren(...(highlights.length

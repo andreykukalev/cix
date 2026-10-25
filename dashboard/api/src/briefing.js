@@ -13,8 +13,8 @@
 
 const MAX_HIGHLIGHTS = 5;
 const MAX_ATTENTION = 8;
-const VIEW_MAX_AGE_MS = 48 * 3600 * 1000;
-const SCAN_STALE_MS = 30 * 60 * 1000;
+const VIEW_MAX_AGE_MS = 24 * 3600 * 1000; // the API reads today's and yesterday's journal, so 24 hours is always covered
+const SCAN_STALE_MS = 2 * 3600 * 1000; // the scan interval can be set up to an hour
 
 // What counts as worth a look. Moves are fractions (0.05 = 5%).
 const THRESHOLDS = Object.freeze({
@@ -23,6 +23,13 @@ const THRESHOLDS = Object.freeze({
   move1h: 0.02, // a 1h move of 2% or more
   volumeRatio: 2.5, // last hour's volume at 2.5 times the usual hourly volume
   volatility: 0.02, // hourly range (ATR) of 2% of the price or more
+});
+
+// Exclusion codes from the scanner worth a look: [severity, direction, reason].
+const EXCLUSIONS = Object.freeze({
+  'too-volatile': [2, 'risk', 'Excluded: too volatile to trade'],
+  'wide-spread': [2, 'risk', 'Excluded: spread too wide (thin market)'],
+  stale: [1, 'watch', 'Excluded: no fresh market data'],
 });
 
 const IMPACTS = new Set(['high', 'medium']);
@@ -151,6 +158,8 @@ function attention(rows, avoid, held) {
     if (r.volumeRatio !== null && r.volumeRatio >= THRESHOLDS.volumeRatio) add(1, 'watch', `Volume ${r.volumeRatio.toFixed(1)}× usual`);
     if (r.volatility !== null && r.volatility >= THRESHOLDS.volatility) add(1, 'watch', `Volatile: ${(r.volatility * 100).toFixed(1)}% hourly range`);
     if (avoided.has(r.symbol)) add(2, 'risk', 'Analyst: avoid new entries');
+    // Excluded coins carry no numbers, only why: the abnormal ones are often the ones to look at.
+    if (r.rank === null && Object.hasOwn(EXCLUSIONS, r.note ?? '')) add(...EXCLUSIONS[r.note]);
     if (severity === 0) continue;
     // A held coin falling matters more than one we don't own.
     if (held.has(r.symbol) && dirs.has('risk')) severity = Math.min(3, severity + 1);

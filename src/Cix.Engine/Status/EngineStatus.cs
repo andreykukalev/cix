@@ -40,7 +40,7 @@ public sealed record EngineStatus(
 
 /// <param name="Market">Every scanned symbol from the latest scan, for the owner's market overview.</param>
 public sealed record ScanStatus(
-    DateTimeOffset At, int Ranked, int Excluded, int EntrySignals, int ExitSignals, string SignalKey, IReadOnlyList<MarketRow>? Market = null);
+    DateTimeOffset At, int Ranked, int Excluded, int EntrySignals, int ExitSignals, string SignalKey, IReadOnlyList<MarketRow> Market);
 
 /// <summary>
 /// One symbol in the latest scan: how it moved and what the scanner made of it. Moves and volatility are fractions
@@ -168,12 +168,12 @@ public sealed partial class EngineStatusService(
         var buys = scan.Entries.Select(e => e.Symbol).ToHashSet(StringComparer.Ordinal);
         var sells = scan.Exits.GroupBy(x => x.Symbol, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First().Reason, StringComparer.Ordinal);
         string? Signal(string symbol) => buys.Contains(symbol) ? "buy" : sells.TryGetValue(symbol, out var reason) ? $"sell ({reason})" : null;
-        static decimal? Round(decimal? value) => value is { } v ? Math.Round(v, 4) : null;
+        static decimal? Round(decimal? value, int digits = 4) => value is { } v ? Math.Round(v, digits, MidpointRounding.AwayFromZero) : null;
 
         return scan.Ranked.OrderBy(r => r.Rank)
             .Select(r => new MarketRow(
                 r.Symbol, r.Rank, r.Trend.ToString().ToLowerInvariant(), Round(r.Return1h), Round(r.Return24h), Round(r.AtrFraction),
-                r.VolumeRatio is { } ratio ? Math.Round(ratio, 2) : null, Signal(r.Symbol), r.NoEntryReason))
+                Round(r.VolumeRatio, 2), Signal(r.Symbol), r.NoEntryReason))
             .Concat(scan.Excluded.OrderBy(x => x.Symbol, StringComparer.Ordinal)
                 .Select(x => new MarketRow(x.Symbol, null, null, null, null, null, null, Signal(x.Symbol), x.Reason)))
             .ToList();

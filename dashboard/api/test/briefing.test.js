@@ -48,7 +48,7 @@ test('the latest market view in the last two days is shown with its checked high
 });
 
 test('an old or missing market view shows no analyst section', () => {
-  assert.equal(briefing(status, [view('2026-10-23T06:00:00+00:00', { regime: 'neutral', validUntil: '2026-10-23T12:00:00+00:00' })], NOW).analyst, null);
+  assert.equal(briefing(status, [view('2026-10-24T12:00:00+00:00', { regime: 'neutral', validUntil: '2026-10-24T18:00:00+00:00' })], NOW).analyst, null);
   assert.equal(briefing(status, [], NOW).analyst, null);
   const expired = briefing(status, [view('2026-10-25T01:00:00+00:00', { regime: 'risk-off', validUntil: '2026-10-25T07:00:00+00:00', avoid: 'SOL-EUR' })], NOW);
   assert.equal(expired.analyst.active, false);
@@ -72,7 +72,7 @@ test('needs attention: signals, big moves, volume and volatility, most pressing 
 });
 
 test('a stale or missing scan is flagged', () => {
-  assert.equal(briefing({ lastScan: { at: '2026-10-25T11:00:00Z', market: [] } }, [], NOW).scanStale, true);
+  assert.equal(briefing({ lastScan: { at: '2026-10-25T10:30:00Z', market: [] } }, [], NOW).scanStale, true);
   const none = briefing(null, [], NOW);
   assert.equal(none.scanStale, true);
   assert.deepEqual([none.attention, none.market], [[], []]);
@@ -97,4 +97,20 @@ test('the dashboard carries the briefing, and the scan rows only there', () => {
   assert.equal(v.briefing.market.length, 4);
   assert.equal(v.cycle.lastScan.market, undefined);
   assert.equal(v.cycle.lastScan.signalKey, 'k');
+});
+
+test('excluded coins that look abnormal need attention too, more so when held', () => {
+  const b = briefing({
+    lastScan: { at: '2026-10-25T12:57:57Z', market: [
+      { symbol: 'SOL-EUR', note: 'too-volatile' }, { symbol: 'DOT-EUR', note: 'wide-spread' },
+      { symbol: 'SUI-EUR', note: 'stale' }, { symbol: 'AAVE-EUR', note: 'costs-exceed-volatility' }, { symbol: 'LINK-EUR', note: '__proto__' },
+    ] },
+    portfolio: { holdings: [{ symbol: 'SOL-EUR' }] },
+  }, [], NOW);
+
+  assert.deepEqual(b.attention.map((a) => [a.symbol, a.severity, a.direction, a.reasons[0]]), [
+    ['SOL-EUR', 3, 'risk', 'Excluded: too volatile to trade'],
+    ['DOT-EUR', 2, 'risk', 'Excluded: spread too wide (thin market)'],
+    ['SUI-EUR', 1, 'watch', 'Excluded: no fresh market data'],
+  ]);
 });
