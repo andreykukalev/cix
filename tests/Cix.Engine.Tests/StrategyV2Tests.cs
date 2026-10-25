@@ -14,7 +14,7 @@ namespace Cix.Engine.Tests;
 
 public sealed class StrategyV2Tests
 {
-    private static string SpecPath(int version) => Path.Combine(AppContext.BaseDirectory, "strategies", $"trend.v{version}.json");
+    private static string SpecPath(string name) => Path.Combine(AppContext.BaseDirectory, "strategies", $"{name}.v1.json");
 
     private static StrategySpec Spec(string parametersJson)
     {
@@ -24,40 +24,43 @@ public sealed class StrategyV2Tests
     }
 
     [Fact]
-    public void TrendV2_LoadsForPaper_UsesTheScanner_AndItsParametersAreValid()
+    public void Good_LoadsForPaperOnly_AndKeepsTheStrictEntryRules()
     {
-        var spec = FileStrategySpecStore.Load(SpecPath(2), "trend", 2, TradingMode.Paper);
+        var spec = FileStrategySpecStore.Load(SpecPath("good"), "good", 1, TradingMode.Paper);
 
         Assert.Equal(SpecStatus.Paper, spec.Status);
         Assert.True(spec.Allows("scan_market"));
         Assert.False(spec.Allows("get_market_view")); // signals replace the raw market view
-        var parameters = MarketScanService.FromSpec(spec, new ScannerParameters());
-        Assert.Equal((5m, 1.5m, 2m, 1m), (parameters.OrderQuote, parameters.StopAtr, parameters.RewardRisk, parameters.RiskPerTradeQuote));
-        Assert.Throws<InvalidOperationException>(() => FileStrategySpecStore.Load(SpecPath(2), "trend", 2, TradingMode.Live));
+        var p = MarketScanService.FromSpec(spec, new ScannerParameters());
+        Assert.Equal((5m, 1.5m, 2m, 1m, 1m), (p.OrderQuote, p.StopAtr, p.RewardRisk, p.RiskPerTradeQuote, p.MinAtrToCostRatio));
+        Assert.True(p.RequireUptrendPullback);
+        Assert.True(p.TrendExits);
+        Assert.Throws<InvalidOperationException>(() => FileStrategySpecStore.Load(SpecPath("good"), "good", 1, TradingMode.Live));
     }
 
     [Fact]
-    public void TrendV3_IsV2WithOnlyThreeWiderFilters()
+    public void Risky_IsGoodWithLooseEntries_ForTestingOrders_AndPaperOnly()
     {
-        var v2 = FileStrategySpecStore.Load(SpecPath(2), "trend", 2, TradingMode.Paper);
-        var v3 = FileStrategySpecStore.Load(SpecPath(3), "trend", 3, TradingMode.Paper);
+        var good = FileStrategySpecStore.Load(SpecPath("good"), "good", 1, TradingMode.Paper);
+        var risky = FileStrategySpecStore.Load(SpecPath("risky"), "risky", 1, TradingMode.Paper);
 
-        Assert.Equal(SpecStatus.Paper, v3.Status);
-        Assert.Equal(v2.Instructions, v3.Instructions);
-        Assert.Equal(v2.AllowedTools, v3.AllowedTools);
+        Assert.Equal(good.Instructions, risky.Instructions);
+        Assert.Equal(good.AllowedTools, risky.AllowedTools);
         Assert.Equal(
-            MarketScanService.FromSpec(v2, new ScannerParameters()) with { MinQuoteVolume24h = 20_000m, MaxSpreadFraction = 0.004m, MinAtrToCostRatio = 1.5m },
-            MarketScanService.FromSpec(v3, new ScannerParameters()));
-        Assert.Throws<InvalidOperationException>(() => FileStrategySpecStore.Load(SpecPath(3), "trend", 3, TradingMode.Live));
+            MarketScanService.FromSpec(good, new ScannerParameters()) with
+            {
+                MinAtrToCostRatio = 0.5m, StopAtr = 1m, RewardRisk = 1m, RequireUptrendPullback = false, TrendExits = false,
+            },
+            MarketScanService.FromSpec(risky, new ScannerParameters()));
+        Assert.Throws<InvalidOperationException>(() => FileStrategySpecStore.Load(SpecPath("risky"), "risky", 1, TradingMode.Live));
     }
 
     [Fact]
-    public void TrendV1_HasNoScannerSection_SoConfigurationApplies()
+    public void ASpecWithoutAScannerSection_UsesConfiguration()
     {
-        var spec = FileStrategySpecStore.Load(SpecPath(1), "trend", 1, TradingMode.Paper);
         var fallback = new ScannerParameters { MaxSpreadFraction = 0.003m };
 
-        var parameters = MarketScanService.FromSpec(spec, fallback);
+        var parameters = MarketScanService.FromSpec(Spec("""{ "orderQuote": 5 }"""), fallback);
 
         Assert.Equal(fallback with { OrderQuote = 5m }, parameters);
         Assert.Same(fallback, MarketScanService.FromSpec(null, fallback));

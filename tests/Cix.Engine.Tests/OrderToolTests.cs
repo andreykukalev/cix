@@ -247,15 +247,15 @@ public sealed class OrderToolTests
     }
 
     [Fact]
-    public void TrendV1_LoadsForPaper_AndAllowsOnlyAgentTools()
+    public void Good_LoadsForPaper_AndAllowsOnlyAgentTools()
     {
-        var spec = Strategy.FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", "trend.v1.json"), "trend", 1, TradingMode.Paper);
+        var spec = Strategy.FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", "good.v1.json"), "good", 1, TradingMode.Paper);
 
         Assert.Equal(5, spec.Parameters["orderQuote"].GetDecimal());
         Assert.Contains("place_order", spec.AllowedTools);
         Assert.DoesNotContain(spec.AllowedTools, t => t is "pause_trading" or "resume_trading" or "query_journal");
         Assert.Throws<InvalidOperationException>(() => Strategy.FileStrategySpecStore.Load(
-            Path.Combine(AppContext.BaseDirectory, "strategies", "trend.v1.json"), "trend", 1, TradingMode.Live));
+            Path.Combine(AppContext.BaseDirectory, "strategies", "good.v1.json"), "good", 1, TradingMode.Live));
     }
 
     [Fact]

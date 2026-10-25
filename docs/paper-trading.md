@@ -2,7 +2,7 @@
 
 > The simplest way to run everything is Docker Compose: see [docker.md](docker.md). The steps below run the engine and trader directly with `dotnet run` and PowerShell, which is handy while developing.
 
-The engine runs on your PC with simulated money and live Revolut X prices. A Claude Code agent trades through the engine's tools once an hour, following the active strategy (`strategies/trend.v1.json`). Nothing here can touch your real account: paper mode holds no trading keys.
+The engine runs on your PC with simulated money and live Revolut X prices. A Claude Code agent trades through the engine's tools once an hour, following the active strategy (`strategies/good.v1.json` by default). Nothing here can touch your real account: paper mode holds no trading keys.
 
 ## Once
 
@@ -59,4 +59,4 @@ To pause everything: stop the run script, or call `pause_trading` with the owner
 
 ## Changing the strategy
 
-Copy `strategies/trend.v1.json` to `trend.v2.json`, edit the copy (raise the version inside too), and set `Strategy:Version` to 2 in `src/Cix.Engine/appsettings.json`. Never edit a version that has already run.
+There are two strategies, `good` and `risky` (see `strategies/README.md`); pick one with `Strategy:Name` in `src/Cix.Engine/appsettings.json`. To change one, copy it to the next version (for example `good.v2.json`), edit the copy (raise the version inside too), and set `Strategy:Version`. Never edit a version that has already run.

@@ -181,6 +181,47 @@ public sealed class ScannerTests
         Assert.Equal(why, Assert.Single(result.Ranked).NoEntryReason);
     }
 
+    [Theory]
+    [InlineData(Trend.Flat, "99.8", "0.002")]
+    [InlineData(Trend.Down, "99.8", "0.002")]
+    [InlineData(Trend.Up, "98.5", "0.002")]
+    [InlineData(Trend.Up, "99.8", "-0.001")]
+    public void TestEntries_IgnoreTheTrendAndPullbackRules_WhenTurnedOff(Trend trend, string ema20, string return1h)
+    {
+        var result = Scan([Input(Features(trend: trend, ema20: D(ema20), return1h: D(return1h)))], Defaults with { RequireUptrendPullback = false });
+
+        var entry = Assert.Single(result.Entries);
+        Assert.StartsWith($"test entry (trend {trend.ToString().ToLowerInvariant()})", entry.Reason, StringComparison.Ordinal);
+        Assert.Null(Assert.Single(result.Ranked).NoEntryReason);
+        Assert.True(entry.StopLoss < entry.LimitPrice && entry.TakeProfit > entry.LimitPrice); // still sized with a stop and target
+    }
+
+    [Fact]
+    public void WithoutTrendExits_ADowntrendKeepsThePosition_ButTheStopStillSells()
+    {
+        var noTrendExits = Defaults with { TrendExits = false };
+        var held = new HeldPosition("SOL-EUR", 0.05m, 97m, 110m);
+
+        Assert.Empty(Scan([Input(Features(trend: Trend.Down, bid: 100m))], noTrendExits, [held]).Exits);
+        Assert.Equal("stop", Assert.Single(Scan([Input(Features(trend: Trend.Down, bid: 97m))], noTrendExits, [held]).Exits).Reason);
+
+        // A position with no recorded stop (bought without one, or before a strategy switch) still leaves on a downtrend.
+        var unplanned = new HeldPosition("SOL-EUR", 0.05m, null, null);
+        Assert.Equal("trend-down", Assert.Single(Scan([Input(Features(trend: Trend.Down, bid: 100m))], noTrendExits, [unplanned]).Exits).Reason);
+    }
+
+    [Fact]
+    public void NoEntry_WhenTheStopWouldBeCloserThanPlaceOrderAllows()
+    {
+        // ATR 0.3% passes a 0.5× cost filter (cost 0.38%), but a 1-ATR stop is 0.3% away: under the 0.5% place_order needs.
+        var loose = Defaults with { RequireUptrendPullback = false, MinAtrToCostRatio = 0.5m, StopAtr = 1m };
+
+        var result = Scan([Input(Features(atrFraction: 0.003m))], loose);
+
+        Assert.Empty(result.Entries);
+        Assert.Equal("stop or target too close", Assert.Single(result.Ranked).NoEntryReason);
+    }
+
     [Fact]
     public void NoEntry_BelowTheExchangeMinimum()
     {

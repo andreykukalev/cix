@@ -27,7 +27,7 @@ public sealed class OrderTools(
     public const int MaxRationale = 1_000;
 
     /// <summary>Least distance between a buy's limit price and its stop or target.</summary>
-    public const decimal MinExitDistance = 0.005m;
+    public const decimal MinExitDistance = Cix.Domain.Scanning.MarketScanner.MinExitDistanceFraction;
 
     [McpServerTool(Name = "place_order", Destructive = false, Idempotent = false)]
     [Description("Places a limit order. The engine rounds it to the exchange's steps and the risk gate may accept, resize or reject it; the result says which and why. Explain the decision in rationale: it goes into the journal the owner reviews.")]
