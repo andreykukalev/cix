@@ -1,14 +1,56 @@
-#Requires -Version 7.2
+#Requires -Version 5.1
 <#
   Shared helpers for tools/azure/provision.ps1 and tools/azure/reset-database.ps1.
   - Settings come from infra/environments/<name>.json; nothing environment-specific is hard-coded here.
   - Azure is reached through the Azure CLI (az), signed in as you. Keys are read into memory when needed and never printed.
+  - Runs on Windows PowerShell 5.1 and PowerShell 7: no 7-only syntax or parameters (CI runs tests/azure on both).
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+$script:RepoRoot = (Resolve-Path (Join-Path (Join-Path $PSScriptRoot '..') '..')).Path
 $script:CixContainers = @('journal', 'state')
+$script:OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+$script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$script:HttpClient = $null
+Add-Type -AssemblyName System.Net.Http # built in on PowerShell 7; Windows PowerShell 5.1 loads it on demand
+
+function Join-CixPath {
+  <# Join-Path for several parts (Windows PowerShell 5.1's Join-Path takes only two). #>
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory, ValueFromRemainingArguments)][string[]]$Child)
+  foreach ($c in $Child) { $Path = Join-Path $Path $c }
+  return $Path
+}
+
+function ConvertTo-CixHashtable {
+  <# ConvertFrom-Json output as nested hashtables and arrays (what -AsHashtable does on PowerShell 7). #>
+  param([AllowNull()][object]$InputObject)
+  if ($null -eq $InputObject) { return $null }
+  if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+    $table = @{}
+    foreach ($p in $InputObject.PSObject.Properties) { $table[$p.Name] = ConvertTo-CixHashtable $p.Value }
+    return $table
+  }
+  if ($InputObject -is [System.Collections.IList]) {
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($item in $InputObject) { $list.Add((ConvertTo-CixHashtable $item)) }
+    return , $list.ToArray()
+  }
+  return $InputObject
+}
+
+function ConvertFrom-CixJson {
+  <#
+    ConvertFrom-Json that sends an array's items down the pipeline one by one on every version (Windows PowerShell 5.1 sends
+    the whole array as one object, which breaks Where-Object filters).
+  #>
+  param([Parameter(Mandatory, ValueFromPipeline)][AllowEmptyString()][string]$Json)
+  process {
+    $value = $Json | ConvertFrom-Json
+    if ($null -eq $value) { return }
+    if ($value -is [System.Array]) { foreach ($item in $value) { $item } } else { $value }
+  }
+}
 
 function Get-CixRepoRoot { $script:RepoRoot }
 
@@ -19,11 +61,11 @@ function Write-CixWarn([string]$Text) { Write-Host "    ! $Text" -ForegroundColo
 function Read-CixEnvironment {
   <# Loads and checks infra/environments/<Name>.json. #>
   param([Parameter(Mandatory)][ValidatePattern('^[a-z0-9-]{2,12}$')][string]$Name)
-  $path = Join-Path $script:RepoRoot 'infra' 'environments' "$Name.json"
+  $path = Join-CixPath $script:RepoRoot 'infra' 'environments' "$Name.json"
   if (-not (Test-Path $path)) {
     throw "No settings file for environment '$Name' ($path). Copy one of the files in infra/environments and edit it."
   }
-  $s = Get-Content $path -Raw | ConvertFrom-Json -AsHashtable
+  $s = ConvertTo-CixHashtable (Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json)
   foreach ($key in 'environmentName', 'protected', 'resourceGroup', 'location', 'dashboardLocation', 'namePrefix', 'cosmos', 'deployDashboard') {
     if (-not $s.ContainsKey($key)) { throw "$path is missing '$key'." }
   }
@@ -42,13 +84,25 @@ function Assert-CixCommand {
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) { throw "'$Name' isn't installed or isn't on PATH. $Hint" }
 }
 
+function Invoke-CixNative {
+  <#
+    Runs a native command. Windows PowerShell 5.1 can turn each stderr line into a terminating error when $ErrorActionPreference
+    is Stop (always when redirected, and in the ISE), and az and npm write warnings there; so the call runs with Continue, and
+    callers check $LASTEXITCODE.
+  #>
+  param([Parameter(Mandatory)][scriptblock]$Command)
+  $ErrorActionPreference = 'Continue'
+  $global:LASTEXITCODE = -1 # a command that never started (not on PATH, broken shim) counts as failed, not as the last success
+  & $Command
+}
+
 function Invoke-CixAz {
   <#
     Runs the Azure CLI and returns its output. On failure throws with az's message. -Quiet hides the command line from the
     error (use it when the output is a secret, so nothing about the call is echoed).
   #>
   param([Parameter(Mandatory)][string[]]$Arguments, [switch]$Quiet)
-  $output = & az @Arguments 2>&1
+  $output = Invoke-CixNative { & az @Arguments 2>&1 }
   if ($LASTEXITCODE -ne 0) {
     $message = ($output | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() }) -join ' '
     if ($Quiet) { throw "The Azure CLI call failed." }
@@ -60,15 +114,15 @@ function Invoke-CixAz {
 function Assert-CixAzureCli {
   <# The Azure CLI, a recent enough version, and Bicep. #>
   Assert-CixCommand -Name 'az' -Hint 'Install it from https://learn.microsoft.com/cli/azure/install-azure-cli, then reopen the terminal.'
-  $version = [version]((Invoke-CixAz @('version', '-o', 'json') | ConvertFrom-Json).'azure-cli')
+  $version = [version]((Invoke-CixAz @('version', '-o', 'json') | ConvertFrom-CixJson).'azure-cli')
   if ($version -lt [version]'2.60.0') { throw "Azure CLI $version is too old; run 'az upgrade' (2.60 or later is needed)." }
   Write-CixInfo "Azure CLI $version"
-  $bicep = & az bicep version 2>&1
+  $bicep = Invoke-CixNative { & az bicep version 2>&1 }
   if ($LASTEXITCODE -ne 0) {
     Write-CixInfo 'Installing Bicep for the Azure CLI...'
     Invoke-CixAz @('bicep', 'install') | Out-Null
   }
-  else { Write-CixInfo (($bicep | Select-Object -First 1) -replace '\s+', ' ') }
+  else { Write-CixInfo ((@($bicep | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) | Select-Object -First 1) -replace '\s+', ' ') }
 }
 
 function Connect-CixAzure {
@@ -77,16 +131,16 @@ function Connect-CixAzure {
     subscriptions. Returns the selected account.
   #>
   param([Parameter(Mandatory)][hashtable]$Settings, [string]$SubscriptionId)
-  $null = & az account show -o none 2>&1
+  $null = Invoke-CixNative { & az account show -o none 2>&1 }
   if ($LASTEXITCODE -ne 0) {
     Write-CixInfo 'Signing in to Azure (a browser window opens)...'
-    & az login -o none
+    Invoke-CixNative { & az login -o none }
     if ($LASTEXITCODE -ne 0) { throw 'Azure sign-in failed.' }
   }
 
   $target = if ($SubscriptionId) { $SubscriptionId } elseif ($Settings.subscriptionId) { $Settings.subscriptionId } else { $null }
   if (-not $target) {
-    $subs = @(Invoke-CixAz @('account', 'list', '--only-show-errors', '-o', 'json') | ConvertFrom-Json | Where-Object { $_.state -eq 'Enabled' })
+    $subs = @(Invoke-CixAz @('account', 'list', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson | Where-Object { $_.state -eq 'Enabled' })
     if ($subs.Count -eq 0) { throw 'This account has no enabled subscriptions.' }
     if ($subs.Count -eq 1) { $target = $subs[0].id }
     else {
@@ -98,7 +152,7 @@ function Connect-CixAzure {
   }
 
   Invoke-CixAz @('account', 'set', '--subscription', $target) | Out-Null
-  $account = Invoke-CixAz @('account', 'show', '-o', 'json') | ConvertFrom-Json
+  $account = Invoke-CixAz @('account', 'show', '-o', 'json') | ConvertFrom-CixJson
   if ($Settings.subscriptionId -and $account.id -ne $Settings.subscriptionId) {
     throw "The settings file pins subscription $($Settings.subscriptionId), but $($account.id) is selected."
   }
@@ -128,25 +182,26 @@ function New-CixDeploymentParameters {
     parameters     = $parameters
   }
   $path = Join-Path ([IO.Path]::GetTempPath()) "cix-$($Settings.environmentName)-$([guid]::NewGuid().ToString('N')).parameters.json"
-  $document | ConvertTo-Json -Depth 10 | Set-Content -Path $path -Encoding utf8
+  # No byte-order mark (5.1's Set-Content -Encoding utf8 writes one).
+  [IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), $script:Utf8NoBom)
   return $path
 }
 
 function Invoke-CixDeployment {
   <# Deploys infra/main.bicep to the environment's resource group and returns the deployment outputs. -WhatIf previews only. #>
   param([Parameter(Mandatory)][hashtable]$Settings, [switch]$WhatIf)
-  $template = Join-Path $script:RepoRoot 'infra' 'main.bicep'
+  $template = Join-CixPath $script:RepoRoot 'infra' 'main.bicep'
   $parameters = New-CixDeploymentParameters -Settings $Settings
   try {
     if ($WhatIf) {
       # Straight to the console: the caller must not swallow the preview it is about to ask you to approve.
-      & az deployment group what-if --resource-group $Settings.resourceGroup --template-file $template --parameters "@$parameters" --only-show-errors | Out-Host
+      Invoke-CixNative { & az deployment group what-if --resource-group $Settings.resourceGroup --template-file $template --parameters "@$parameters" --only-show-errors | Out-Host }
       if ($LASTEXITCODE -ne 0) { throw 'The what-if preview failed.' }
       return $null
     }
     $name = "cix-$($Settings.environmentName)-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"
     $result = Invoke-CixAz @('deployment', 'group', 'create', '--resource-group', $Settings.resourceGroup, '--name', $name,
-      '--template-file', $template, '--parameters', "@$parameters", '--only-show-errors', '-o', 'json') | ConvertFrom-Json
+      '--template-file', $template, '--parameters', "@$parameters", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
     return $result.properties.outputs
   }
   finally {
@@ -160,8 +215,8 @@ function Get-CixCosmosAccount {
     so a script can't be pointed at an unrelated account by a wrong name.
   #>
   param([Parameter(Mandatory)][hashtable]$Settings)
-  $accounts = @(Invoke-CixAz @('cosmosdb', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-Json |
-      Where-Object { $_.tags -and $_.tags.'cix-environment' -eq $Settings.environmentName })
+  $accounts = @(Invoke-CixAz @('cosmosdb', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+      Where-Object { $_.tags -and $_.tags.PSObject.Properties['cix-environment'] -and $_.tags.'cix-environment' -eq $Settings.environmentName })
   if ($accounts.Count -eq 0) {
     throw "No Cosmos DB account tagged cix-environment=$($Settings.environmentName) in resource group $($Settings.resourceGroup)."
   }
@@ -175,7 +230,7 @@ function Get-CixCosmosKey {
   $type = if ($ReadOnly) { 'read-only-keys' } else { 'keys' }
   $field = if ($ReadOnly) { 'primaryReadonlyMasterKey' } else { 'primaryMasterKey' }
   $keys = Invoke-CixAz -Quiet @('cosmosdb', 'keys', 'list', '--resource-group', $Settings.resourceGroup, '--name', $AccountName,
-    '--type', $type, '--only-show-errors', '-o', 'json') | ConvertFrom-Json
+    '--type', $type, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
   $key = $keys.$field
   if (-not $key) { throw 'The Cosmos DB key could not be read.' }
   return $key
@@ -187,18 +242,19 @@ function Write-CixSecretFile {
   $dir = Join-Path $script:RepoRoot 'secrets'
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $path = Join-Path $dir $Name
-  # Restrict the (empty) file first, then write: the key is never on disk with wider access.
-  if (-not (Test-Path $path)) { New-Item -ItemType File -Path $path | Out-Null }
-  [IO.File]::WriteAllText($path, '', [Text.UTF8Encoding]::new($false))
-  if ($IsWindows) {
+  # A fresh, restricted (empty) file first, then the key: it is never on disk with wider access, and no old access rules survive.
+  if (Test-Path $path) { Remove-Item $path -Force }
+  New-Item -ItemType File -Path $path | Out-Null
+  [IO.File]::WriteAllText($path, '', $script:Utf8NoBom)
+  if ($script:OnWindows) {
     $me = "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
-    icacls $path /inheritance:r /grant:r "${me}:(R,W)" | Out-Null
+    Invoke-CixNative { icacls $path /inheritance:r /grant:r "${me}:(R,W)" | Out-Null }
   }
   else {
-    chmod 600 $path
+    Invoke-CixNative { chmod 600 $path }
   }
   if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to $path; the key was not written." }
-  [IO.File]::WriteAllText($path, $Value, [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($path, $Value, $script:Utf8NoBom)
   return $path
 }
 
@@ -247,7 +303,10 @@ function Invoke-CixCosmosRequest {
     [hashtable]$Headers = @{},
     [switch]$CrossPartition
   )
-  $base = ([Uri]$Endpoint).GetLeftPart([UriPartial]::Authority)
+  $uri = [Uri]$Endpoint
+  if ($uri.Scheme -ne 'https' -and -not $uri.IsLoopback) { throw 'The Cosmos DB endpoint must use https.' } # loopback: the tests' fake server
+  $base = $uri.GetLeftPart([UriPartial]::Authority)
+  $client = Get-CixHttpClient
   for ($attempt = 1; ; $attempt++) {
     $date = [DateTime]::UtcNow.ToString('R')
     $h = @{
@@ -258,20 +317,60 @@ function Invoke-CixCosmosRequest {
     foreach ($k in $Headers.Keys) { $h[$k] = $Headers[$k] }
     if ($null -ne $PartitionKey) { $h['x-ms-documentdb-partitionkey'] = (ConvertTo-Json @($PartitionKey) -Compress) }
     if ($CrossPartition) { $h['x-ms-documentdb-query-enablecrosspartition'] = 'True' }
-    $request = @{ Uri = "$base/$Path"; Method = $Method; Headers = $h; SkipHttpErrorCheck = $true; TimeoutSec = 30 }
-    if ($Body) { $request.Body = $Body; $request.ContentType = 'application/query+json' }
-    $response = Invoke-WebRequest @request
-    $status = [int]$response.StatusCode
-    if (($status -eq 429 -or $status -eq 503) -and $attempt -lt 8) {
-      $wait = 1000
-      if ($response.Headers['x-ms-retry-after-ms']) { $wait = [int]([string]$response.Headers['x-ms-retry-after-ms']) }
-      Start-Sleep -Milliseconds ([Math]::Min([Math]::Max($wait, 100) * $attempt, 10000))
-      continue
+
+    $request = New-Object System.Net.Http.HttpRequestMessage ([System.Net.Http.HttpMethod]::new($Method)), ([Uri]"$base/$Path")
+    $response = $null
+    try {
+      foreach ($k in $h.Keys) { [void]$request.Headers.TryAddWithoutValidation($k, [string]$h[$k]) }
+      if ($Body) {
+        $request.Content = New-Object System.Net.Http.StringContent $Body, ([Text.Encoding]::UTF8)
+        $request.Content.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue 'application/query+json'
+      }
+      # Status codes come back as values, not exceptions, the same on 5.1 and 7.
+      $response = $client.SendAsync($request).GetAwaiter().GetResult()
+      $status = [int]$response.StatusCode
+      if (($status -eq 429 -or $status -eq 503) -and $attempt -lt 8) {
+        $wait = 1000
+        $retryAfter = Get-CixHeader $response 'x-ms-retry-after-ms'
+        if ($retryAfter -match '^\d+$') { $wait = [int]$retryAfter }
+        Start-Sleep -Milliseconds ([Math]::Min([Math]::Max($wait, 100) * $attempt, 10000))
+        continue
+      }
+      $content = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+      return @{ Status = $status; Body = $content; Continuation = (Get-CixHeader $response 'x-ms-continuation') }
     }
-    $continuation = if ($response.Headers['x-ms-continuation']) { [string]$response.Headers['x-ms-continuation'] } else { $null }
-    $content = if ($response.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($response.Content) } else { [string]$response.Content }
-    return @{ Status = $status; Body = $content; Continuation = $continuation }
+    finally {
+      if ($response) { $response.Dispose() }
+      $request.Dispose()
+    }
   }
+}
+
+function Get-CixHeader {
+  <# One response header's value, or $null. #>
+  param([Parameter(Mandatory)][System.Net.Http.HttpResponseMessage]$Response, [Parameter(Mandatory)][string]$Name)
+  $values = $null
+  if ($Response.Headers.TryGetValues($Name, [ref]$values)) { return (@($values) -join ',') }
+  return $null
+}
+
+function Get-CixHttpClient {
+  <# One HttpClient for the session. TLS 1.2 is switched on for Windows PowerShell 5.1 (.NET Framework), which may default to older versions. #>
+  if (-not $script:HttpClient) {
+    if ($PSVersionTable.PSEdition -eq 'Desktop') {
+      # Only on 5.1, and only add TLS 1.2: SystemDefault (0) already allows it and anything newer.
+      $protocols = [Net.ServicePointManager]::SecurityProtocol
+      if ([int]$protocols -ne 0 -and -not ($protocols -band [Net.SecurityProtocolType]::Tls12)) {
+        [Net.ServicePointManager]::SecurityProtocol = $protocols -bor [Net.SecurityProtocolType]::Tls12
+      }
+    }
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $false # Cosmos DB never redirects; don't send signed requests anywhere else
+    $script:HttpClient = New-Object System.Net.Http.HttpClient $handler
+    $script:HttpClient.Timeout = [TimeSpan]::FromSeconds(30)
+    $script:HttpClient.DefaultRequestHeaders.ExpectContinue = $false # .NET Framework would otherwise wait for a 100 Continue
+  }
+  return $script:HttpClient
 }
 
 function Get-CixCosmosItems {
@@ -290,7 +389,7 @@ function Get-CixCosmosItems {
     $r = Invoke-CixCosmosRequest -Endpoint $Endpoint -Key $Key -Method POST -ResourceType 'docs' -ResourceLink $link -Path "$link/docs" `
       -Body (@{ query = $Query; parameters = @() } | ConvertTo-Json -Compress) -Headers $headers -CrossPartition
     if ($r.Status -ne 200) { throw "Listing $Container failed (HTTP $($r.Status))." }
-    foreach ($doc in ($r.Body | ConvertFrom-Json).Documents) { $items.Add($doc) }
+    foreach ($doc in @(($r.Body | ConvertFrom-Json).Documents)) { $items.Add($doc) }
     $continuation = $r.Continuation
   } while ($continuation)
   return , $items.ToArray()

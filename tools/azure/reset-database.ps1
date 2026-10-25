@@ -1,4 +1,4 @@
-#Requires -Version 7.2
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Resets CIX's Azure Cosmos DB data for testing (for example after releasing a new version): bot state, journal, or both.
@@ -126,7 +126,7 @@ if ($summary) { $summary | Format-Table -AutoSize | Out-String | Write-Host }
 else { Write-CixInfo 'Nothing to remove.' }
 $plan | Where-Object Container -eq 'state' | ForEach-Object { Write-CixInfo "would remove state/$($_.Id)" }
 if ($plan | Where-Object Container -eq 'journal') {
-  $days = $plan | Where-Object Container -eq 'journal' | Group-Object PartitionKey | Sort-Object Name
+  $days = @($plan | Where-Object Container -eq 'journal' | Group-Object PartitionKey | Sort-Object Name)
   Write-CixInfo "would remove journal entries from $($days.Count) day(s): $(($days | Select-Object -First 1).Name) to $(($days | Select-Object -Last 1).Name)"
 }
 foreach ($k in $kept) { Write-CixInfo "keeps $k" }
