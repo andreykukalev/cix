@@ -20,7 +20,7 @@ A third agent, the **market analyst**, runs every 6 hours in its own container (
    - **Avoided symbols:** symbols to keep out of new entries.
    - **Validity:** 1 to 12 hours.
    - **For the owner:** a summary and the https sources it used.
-   - **Highlights (analyst v2, #49):** up to five of the most important news items or events, each with impact, direction (risk, opportunity, watch), affected symbols and an https source. They are for the owner's dashboard only: they change nothing the scanner or the trader does, and the engine refuses malformed ones without echoing them.
+   - **Highlights (analyst v2, #49):** up to five of the most important news items or events, each with impact, direction (risk, opportunity, watch), affected symbols and an https source. They are for the owner's dashboard only: they change nothing the scanner or the trader does, and the engine drops malformed ones (listing a fixed reason code per index, never the input) while still recording the view.
 3. **Effect is one-way.**
    - Risk-off stops new entries, and an avoided symbol gets no new entry. The scanner drops those signals, and `place_order` refuses those buys outright.
    - Exits are never blocked. Risk-on changes nothing.
@@ -41,7 +41,7 @@ A third agent, the **market analyst**, runs every 6 hours in its own container (
    - A planted source found on every run could renew risk-off indefinitely. The cost is missed entries, never losses, since exits continue. After 24 hours of unbroken risk-off the engine logs a warning on every renewal.
    - The analyst can fetch pages only from a whitelist of sites (`ANALYST_WEB_DOMAINS`), enforced by Claude Code's permission rules (#33). Search snippets can still come from anywhere.
    - The brief leaves out holdings, so a page can't trick the analyst into sending them to a URL via WebFetch.
-   - Highlights shown on the public dashboard come from web pages. The dashboard renders them as plain text and links only to https sources, so a planted page can at worst show the owner a misleading headline and link; the owner decides whether to act.
+   - Highlights shown on the public dashboard come from web pages. The engine strips invisible characters by code point, drops (never refuses the view for) invalid highlights, and requires each highlight's link to be one of the view's https sources. The dashboard renders them as plain text, so a planted page can at worst show the owner a misleading headline and link; the owner decides whether to act.
    - Agent text in the journal (analyst summaries, trader rationales) is data. Owner sessions that read it must not act on instructions inside it.
 
 ## Alternatives considered

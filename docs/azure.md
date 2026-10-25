@@ -112,8 +112,8 @@ The dashboard shows:
 
 It is **read-only and public** (anyone with the URL can open it):
 - Its API can only `GET`, and it reads with the account's read-only key, kept in the app's settings on the server.
-- It shows **no prices at all**: no entry, stop, target or fill prices, and no limits of resting orders. In free text (summaries, the agents' reasoning) every number that could be a price is masked as `…`. Holdings show their value, and whether a stop is set. The journal in Cosmos DB keeps everything.
-- The briefing shows the analyst's own text unmasked: the analyst never sees the account's positions, stops or targets, so its text can't hold them. It is written from web pages, so the page shows it as plain text only, and opens only `https` source links, in a new tab without access back to the dashboard. The coins' moves are percentages, never prices.
+- It shows **no order levels**: no entry, stop, target or fill prices, and no limits of resting orders. In the journal's free text (summaries, the trader's reasoning) every number that could be a price is masked as `…`. Holdings show their value, and whether a stop is set. The journal in Cosmos DB keeps everything.
+- The briefing shows the analyst's own text unmasked: the analyst never sees the account's positions, stops or targets, so its text can't hold them, though it may quote public market prices. It is written from web pages, so the page shows it as plain text only, and opens only `https` source links (each must be one of the view's sources), in a new tab without access back to the dashboard. The coins' moves are percentages, never prices.
 - Responses are cached for 20 seconds, and identical requests share one database read. The journal browser accepts only the last 14 days, known kinds and three page sizes, so heavy traffic can't use up the database throughput the engine needs.
 - To make it private later, add `"allowedRoles": ["owner"]` to the `/*` and `/api/*` routes in `dashboard/app/staticwebapp.config.json`, then invite yourself under *Role management* in the Azure portal (the Free plan supports this).
 
