@@ -168,6 +168,73 @@ function renderActivity(entries, emptyText) {
   rows('activity', entries, (e) => [when(e.at), e.kind, e.actor, shortId(e.runId), td(e.summary, 'why'), shortId(e.id)], emptyText);
 }
 
+const DIRECTION_LABEL = { risk: 'Risk', opportunity: 'Opportunity', watch: 'Watch' };
+const DIRECTION_TONE = { risk: 'bad', opportunity: 'ok', watch: 'warn' };
+const SEVERITY_LABEL = { 3: 'high', 2: 'medium', 1: 'low' };
+
+function pct(value, digits = 1) {
+  return value === null || value === undefined ? '–' : `${value > 0 ? '+' : ''}${(value * 100).toFixed(digits)}%`;
+}
+
+/** An external link: https only (the API checks too), opened in a new tab without access back to this page. */
+function sourceLink(url, host) {
+  let href = null;
+  try { href = new URL(url).protocol === 'https:' ? url : null; } catch { /* not a URL */ }
+  return href ? el('a', { href, target: '_blank', rel: 'noopener noreferrer nofollow', text: host || 'source' }) : null;
+}
+
+function chips(symbols) {
+  return (symbols ?? []).map((s) => el('span', { class: 'chip', text: s }));
+}
+
+function renderBriefing(view) {
+  const b = view.briefing ?? {};
+  const a = b.analyst;
+  document.getElementById('briefing-meta').textContent = [
+    a ? `analyst ${ago(a.recordedAt)}${a.active ? '' : ' (view expired)'}` : 'no analyst view in 48 hours',
+    b.scanAt ? `scan ${ago(b.scanAt)}${b.scanStale ? ' (stale)' : ''}` : 'no scan yet',
+  ].join(' · ');
+
+  const summary = document.getElementById('analyst-summary');
+  summary.replaceChildren(...(a ? [
+    el('span', { class: `badge ${a.regime === 'risk-off' ? 'warn' : a.regime === 'risk-on' ? 'ok' : ''}`, text: a.regime ?? 'unknown' }), ' ',
+    a.summary ?? '',
+    a.avoid?.length && a.active ? el('span', {}, ' Avoid: ', ...chips(a.avoid)) : null,
+  ].filter((n) => n !== null) : ['The analyst has not recorded a view in the last 48 hours.']));
+
+  const highlights = a?.highlights ?? [];
+  document.getElementById('highlights').replaceChildren(...(highlights.length
+    ? highlights.map((h) => el('li', { class: `card ${h.direction}` },
+      el('div', { class: 'head' },
+        el('span', { class: `badge ${DIRECTION_TONE[h.direction] ?? ''}`, text: DIRECTION_LABEL[h.direction] ?? h.direction }),
+        el('span', { class: 'badge', text: `${h.impact} impact` }),
+        el('span', { class: 'title', text: h.title }),
+        ...chips(h.symbols)),
+      h.detail ? el('p', { class: 'detail', text: h.detail }) : null,
+      el('p', { class: 'meta' }, sourceLink(h.source, h.sourceHost))))
+    : [el('li', { class: 'muted', text: a ? 'No major news or events flagged.' : '' })]));
+
+  const attention = b.attention ?? [];
+  document.getElementById('attention').replaceChildren(...(attention.length
+    ? attention.map((item) => el('li', { class: `card ${item.direction}` },
+      el('div', { class: 'head' },
+        el('span', { class: `badge ${DIRECTION_TONE[item.direction] ?? ''}`, text: DIRECTION_LABEL[item.direction] ?? item.direction }),
+        el('span', { class: 'chip', text: item.symbol }),
+        item.held ? el('span', { class: 'badge', text: 'held' }) : null,
+        el('span', { class: 'muted small', text: `${SEVERITY_LABEL[item.severity] ?? ''} priority` })),
+      el('ul', { class: 'reasons' }, item.reasons.map((r) => el('li', { text: r })))))
+    : [el('li', { class: 'muted', text: b.market?.length ? 'Nothing unusual in the latest scan.' : 'No scan yet.' })]));
+
+  rows('market', b.market ?? [], (r) => [
+    r.symbol, td(r.rank === null ? '–' : String(r.rank), 'num'), r.trend ?? '–',
+    td(pct(r.return1h), `num ${signed(r.return1h)}`), td(pct(r.return24h), `num ${signed(r.return24h)}`),
+    td(r.volatility === null ? '–' : `${(r.volatility * 100).toFixed(1)}%`, 'num'),
+    td(r.volumeRatio === null ? '–' : `${r.volumeRatio.toFixed(1)}×`, 'num'),
+    r.signal ? el('span', { class: `badge ${r.signal === 'buy' ? 'ok' : 'bad'}`, text: r.signal }) : '–',
+    td(r.note ?? '', 'muted'),
+  ], 'No scan yet.');
+}
+
 function banner(text, bad) {
   const node = document.getElementById('banner');
   node.hidden = !text;
@@ -186,6 +253,7 @@ async function refresh() {
   try {
     const view = await getJson(`/api/dashboard?mode=${encodeURIComponent(state.mode)}`);
     renderTiles(view);
+    renderBriefing(view);
     renderPortfolio(view);
     renderCycle(view);
     renderTables(view);

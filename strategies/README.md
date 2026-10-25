@@ -29,6 +29,7 @@ Size is capped by the top-level `orderQuote`, which the order-size hook also rea
 ## Other specs
 
 - `analyst.v1.json`: the market analyst (ADR-0007). It cannot trade.
+- `analyst.v2.json` (active): v1 plus up to five sourced highlights (important news and events) for the owner's dashboard. Highlights never reach the trader.
 - `observer.v1.json`: only reads; it checks the tool server works.
 
 The earlier `trend` v1 to v4 were removed. The journal keeps their instructions and labels (`trend@vN#hash`) for runs that used them.

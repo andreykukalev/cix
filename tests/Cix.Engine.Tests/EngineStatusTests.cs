@@ -107,6 +107,39 @@ public sealed class EngineStatusTests
         await app.StopAsync();
     }
 
+    [Fact]
+    public void MarketRows_ListEverySymbol_WithMovesSignalsAndReasons_ButNoPrices()
+    {
+        var at = Rig.T0;
+        var ranked = new[]
+        {
+            new Domain.Scanning.ScanRow("SOL-EUR", 2, 1.2m, 150m, Domain.MarketData.Trend.Down, 0.0123456m, -0.004m, -0.061234m, 1_000_000m, 3.456m, 0.001m, 0.003m, "trend down"),
+            new Domain.Scanning.ScanRow("ETH-EUR", 1, 2.5m, 3_000m, Domain.MarketData.Trend.Up, 0.008m, 0.002m, 0.03m, 5_000_000m, 1.1m, 0.0005m, 0.0028m, null),
+        };
+        var scan = new Domain.Scanning.ScanResult(at, ranked,
+            [new Domain.Scanning.ScanExclusion("BTC-EUR", "costs-exceed-volatility", "detail")],
+            [new Domain.Scanning.EntrySignal("ETH-EUR", 1, 3_000m, 0.001m, 3m, 2_900m, 3_200m, 0.1m, "uptrend pullback")],
+            [new Domain.Scanning.ExitSignal("BTC-EUR", 0.001m, 60_000m, "stop", "bid at stop")]);
+
+        var rows = EngineStatusService.MarketRows(scan);
+
+        Assert.Equal(new[] { "ETH-EUR", "SOL-EUR", "BTC-EUR" }, rows.Select(r => r.Symbol));
+        Assert.Equal("buy", rows[0].Signal);
+        Assert.Equal("up", rows[0].Trend);
+        Assert.Equal(0.03m, rows[0].Return24h);
+        Assert.Equal(-0.0612m, rows[1].Return24h);
+        Assert.Equal(0.0123m, rows[1].Volatility);
+        Assert.Equal(3.46m, rows[1].VolumeRatio);
+        Assert.Equal("trend down", rows[1].Note);
+        Assert.Null(rows[1].Signal);
+        Assert.Equal("sell (stop)", rows[2].Signal);
+        Assert.Equal("costs-exceed-volatility", rows[2].Note);
+        Assert.Null(rows[2].Rank);
+        var json = System.Text.Json.JsonSerializer.Serialize(rows);
+        foreach (var price in new[] { "3000", "2900", "3200", "60000", "150" })
+            Assert.DoesNotContain(price, json, StringComparison.Ordinal);
+    }
+
     private sealed class FailingStatusStore : IEngineStatusStore
     {
         public bool Fail { get; set; } = true;

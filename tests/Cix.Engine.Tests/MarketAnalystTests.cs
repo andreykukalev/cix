@@ -244,6 +244,65 @@ public sealed class MarketAnalystTests
     }
 
     [Fact]
+    public async Task Highlights_AreCleanedAndJournaledForTheOwner_ButNeverReachTheScan()
+    {
+        var tools = Analyst();
+        MarketHighlight[] highlights =
+        [
+            new("FOMC decision at 18:00 UTC\u200b today", "HIGH", "risk", "https://example.com/fed", ["BTC-EUR"], "Rates surprise could move all coins."),
+            new("Exchange outage resolved overnight", "medium", "watch", "https://example.com/outage"),
+        ];
+
+        using var reply = JsonDocument.Parse(await tools.Analyst.RecordMarketView(
+            "neutral", "Quiet market ahead of the Fed decision.", Sources, highlights: highlights, cancellationToken: CancellationToken.None));
+        var scan = await tools.Scanner.ScanAsync(CancellationToken.None);
+
+        Assert.Equal(2, reply.RootElement.GetProperty("highlights").GetInt32());
+        var entry = Assert.Single(tools.Journal.Entries, e => e.Kind == MarketViewStore.Kind);
+        using var stored = JsonDocument.Parse(entry.Data!["highlights"]);
+        var first = stored.RootElement[0];
+        Assert.Equal(("FOMC decision at 18:00 UTC today", "high", "risk", "BTC-EUR"),
+            (first.GetProperty("title").GetString(), first.GetProperty("impact").GetString(), first.GetProperty("direction").GetString(), first.GetProperty("symbols")[0].GetString()));
+        Assert.DoesNotContain("FOMC", JsonSerializer.Serialize(scan), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Title long enough", "huge", "risk", "https://example.com/a", null)]          // impact
+    [InlineData("Title long enough", "high", "panic", "https://example.com/a", null)]         // direction
+    [InlineData("Title long enough", "high", "risk", "http://example.com/a", null)]           // not https
+    [InlineData("Short", "high", "risk", "https://example.com/a", null)]                      // title too short
+    [InlineData("Title long enough", "high", "risk", "https://example.com/a", "DOGE-EUR")]   // not tradable here
+    public async Task BadHighlights_AreRefused_AndNothingIsRecorded(string title, string impact, string direction, string source, string? symbol)
+    {
+        var tools = Analyst();
+        MarketHighlight[] highlights = [new(title, impact, direction, source, symbol is null ? null : [symbol])];
+
+        await Assert.ThrowsAsync<McpException>(() => tools.Analyst.RecordMarketView(
+            "neutral", "Quiet market ahead of the Fed decision.", Sources, highlights: highlights, cancellationToken: CancellationToken.None));
+        Assert.DoesNotContain(tools.Journal.Entries, e => e.Kind == MarketViewStore.Kind);
+    }
+
+    [Fact]
+    public async Task MoreThanFiveHighlights_AreRefused()
+    {
+        var tools = Analyst();
+        var six = Enumerable.Range(1, 6).Select(i => new MarketHighlight($"Item number {i} today", "medium", "watch", "https://example.com/" + i)).ToArray();
+
+        await Assert.ThrowsAsync<McpException>(() => tools.Analyst.RecordMarketView(
+            "neutral", "Quiet market ahead of the Fed decision.", Sources, highlights: six, cancellationToken: CancellationToken.None));
+    }
+
+    [Fact]
+    public void AnalystSpecV2_AddsHighlights_WithTheSameTwoTools()
+    {
+        var spec = FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", "analyst.v2.json"), "analyst", 2, TradingMode.Paper);
+
+        Assert.Equal(new[] { "get_analyst_brief", "record_market_view" }, spec.AllowedTools.Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(5, spec.Parameters["maxHighlights"].GetInt32());
+        Assert.Contains("highlights", spec.Instructions, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AnalystSpecFile_LoadsForPaper_AndAllowsOnlyItsTwoTools()
     {
         var spec = FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", "analyst.v1.json"), "analyst", 1, TradingMode.Paper);

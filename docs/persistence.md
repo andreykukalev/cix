@@ -46,7 +46,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 | `startedAt`, `mode`, `strategy` | When this engine process started, paper or live, and the active strategy spec. |
 | `halted`, `haltedBy`, `haltCategory`, `haltedSince` | The kill switch: which part of the engine engaged it and a fixed description of why. The exact reason (which can name orders or amounts) is only in the journal's `kill-switch` entry. |
 | `lastReconciledAt`, `lastReconcileAttemptAt`, `lastReconcileProblem` | The last full comparison with the exchange (the portfolio's last sync), the last attempt, and a problem code: `exchange-unreadable`, `unknown-open-orders`, `unexplained-holdings-change`, `holdings-not-compared` (no fresh prices to value the holdings), or empty. |
-| `lastScan` | The latest scan: when, how many coins ranked and excluded, entry and exit signals, and the signal key the trader watches. |
+| `lastScan` | The latest scan: when, how many coins ranked and excluded, entry and exit signals, and the signal key the trader watches. `market` lists every coin: rank, trend, 1h and 24h return, hourly range (ATR) and volume ratio as fractions, its signal (`buy`, `sell (stop)`, ...) and why it has no entry or was excluded. No prices. |
 | `marketView` | The analyst's current view: regime, until when, coins to avoid. |
 | `oldestQuoteAt`, `unquotedSymbols` | The oldest of the latest prices across the tradable coins that have one, and the coins with none yet. Minutes old means market data has stalled. |
 | `portfolio` | As the safety monitor last valued it (every minute): equity, cash (equity minus holdings, including what open buys reserve), peak equity, today's P&L, exposure, and each holding with its value and plan (status, entry, stop, target). Absent until the first valuation. |
@@ -73,7 +73,7 @@ Each document is `{ id, day, entry }`. The entry has `id`, `at`, `kind`, `actor`
 | `order-closed` | An order finished with nothing filled (cancelled, expired, rejected). | as `fill` |
 | `kill-switch` | Trading halted or resumed. | `action`, `reason`, `cancelled` |
 | `scan-signal` | The scanner found a new entry or exit signal. | `symbol`, signal fields |
-| `market-view` | The analyst recorded a view. | `regime`, `validUntil`, `avoid`, `sources` |
+| `market-view` | The analyst recorded a view. | `regime`, `validUntil`, `avoid`, `sources`, `highlights` (from analyst v2: a JSON list of up to five items with `title`, `impact`, `direction`, `symbols`, `detail`, `source`, for the owner's dashboard; the trader never sees them) |
 
 ### Tracing one trade
 

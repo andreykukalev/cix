@@ -3,6 +3,8 @@
 // so it is tested on its own. Amounts arrive as strings (the engine writes decimals as strings to keep them exact) and are
 // passed through as strings for display; only the drawdown percentage is computed here, for display.
 
+const { briefing } = require('./briefing');
+
 const STALE_AFTER_MS = 3 * 60 * 1000; // the engine writes its status every minute
 
 // The dashboard is public, so it never shows a price: not where a position was bought or will be sold (entry, stop,
@@ -150,6 +152,10 @@ function problems(entries, status, readErrors) {
   return list.sort(byTimeDesc);
 }
 
+function withoutMarket({ market, ...scan }) {
+  return scan;
+}
+
 function portfolio(status, paperAccount) {
   const p = status?.portfolio;
   const balances = Object.entries(paperAccount?.wallets ?? {})
@@ -175,8 +181,9 @@ function portfolio(status, paperAccount) {
 }
 
 /**
- * @param {{mode: string, status: object|null, engineState: object|null, paperAccount: object|null, journal: object[], stateDocs: object[], readErrors?: string[]}} input
- *   Document values (the `value` of state documents, the `entry` of journal documents).
+ * @param {{mode: string, status: object|null, engineState: object|null, paperAccount: object|null, journal: object[], marketViews?: object[], stateDocs: object[], readErrors?: string[]}} input
+ *   Document values (the `value` of state documents, the `entry` of journal documents). `marketViews` are the latest
+ *   market-view entries, read on their own so a busy journal can't push them out of the recent entries.
  * @param {number} now Milliseconds since the epoch.
  */
 function summarize(input, now) {
@@ -208,7 +215,7 @@ function summarize(input, now) {
       reconcileProblem: status?.lastReconcileProblem ? RECONCILE_PROBLEMS[status.lastReconcileProblem] ?? status.lastReconcileProblem : null,
     },
     cycle: {
-      lastScan: status?.lastScan ?? null,
+      lastScan: status?.lastScan ? withoutMarket(status.lastScan) : null, // the coins are in the briefing
       lastTraderRun,
       ordersInFlight: (engineState?.orders ?? []).map((o) => ({
         clientOrderId: o.clientOrderId, symbol: o.symbol, side: o.side, size: o.size, source: o.source, sentAt: o.sentAt,
@@ -219,6 +226,7 @@ function summarize(input, now) {
         protected: p.stopLoss !== undefined && p.stopLoss !== null,
       })),
     },
+    briefing: briefing(status, [...entries, ...(input.marketViews ?? [])], now),
     agents: agentsSummary(entries, now),
     portfolio: portfolio(status, input.paperAccount),
     decisions: decisions(entries).slice(0, 50),

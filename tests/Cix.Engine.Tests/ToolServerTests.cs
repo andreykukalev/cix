@@ -277,6 +277,10 @@ public sealed class McpEndToEndTests
             ["summary"] = "Exchange outage reported by several outlets.",
             ["sources"] = new[] { "https://example.com/a", "https://example.org/b" },
             ["avoidSymbols"] = new[] { "BTC-EUR" },
+            ["highlights"] = new[]
+            {
+                new Dictionary<string, object?> { ["title"] = "Exchange outage on a major venue", ["impact"] = "high", ["direction"] = "risk", ["source"] = "https://example.com/a", ["symbols"] = new[] { "BTC-EUR" } },
+            },
         });
 
         Assert.NotEqual(true, recorded.IsError);
@@ -285,6 +289,7 @@ public sealed class McpEndToEndTests
         Assert.Equal(TimeSpan.FromHours(6), view.ValidUntil - view.RecordedAt); // validHours defaulted
         var entry = Assert.Single(tools.Journal.Entries, e => e.Kind == MarketViewStore.Kind);
         Assert.Equal(("analyst-1", "analyst@v1#fedcba654321"), (entry.RunId, entry.SpecVersion));
+        Assert.Contains("\"title\":\"Exchange outage on a major venue\"", entry.Data!["highlights"], StringComparison.Ordinal); // bound over MCP
         await app.StopAsync();
     }
 

@@ -28,7 +28,10 @@ test('reads today and yesterday as single-partition queries and the state list',
   const reader = fakeReader();
   const view = await loadDashboard(reader, 'paper', NOW);
 
-  assert.deepEqual(reader.queries.filter((q) => q.container === 'journal').map((q) => q.partitionKey), ['2026-10-25', '2026-10-24']);
+  assert.deepEqual(reader.queries.filter((q) => q.container === 'journal').map((q) => q.partitionKey), ['2026-10-25', '2026-10-24', '2026-10-25', '2026-10-24']);
+  const views = reader.queries.filter((q) => q.container === 'journal' && q.maxItems === 1);
+  assert.equal(views.length, 2);
+  assert.ok(views.every((q) => q.sql.startsWith('SELECT TOP 1 * FROM c WHERE c.entry.kind = @kind') && q.parameters[0].value === 'market-view'));
   assert.ok(reader.queries.filter((q) => q.container === 'journal').every((q) => q.sql.includes('ORDER BY')));
   const stateList = reader.queries.find((q) => q.container === 'state');
   assert.equal(stateList.partitionKey, undefined);
