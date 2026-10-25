@@ -17,7 +17,7 @@ param location string
 
 @description('Region for the Static Web App. Free tier is offered in a few regions only: westeurope, centralus, eastus2, westus2, eastasia.')
 @allowed(['westeurope', 'centralus', 'eastus2', 'westus2', 'eastasia'])
-param dashboardLocation string = 'westeurope'
+param dashboardLocation string = 'eastus2'
 
 @description('Short prefix for resource names.')
 @minLength(2)
