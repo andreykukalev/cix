@@ -5,12 +5,16 @@
 
 const STALE_AFTER_MS = 3 * 60 * 1000; // the engine writes its status every minute
 
-// The dashboard is public, so it never shows where a position will be sold: no stops, targets or entry prices, no prices
-// of resting orders, and levels named in an agent's rationale are blanked. The journal keeps them for the owner.
-const HIDDEN = 'hidden';
+// The dashboard is public, so it never shows a price: not where a position was bought or will be sold (entry, stop,
+// target), not resting orders' limits, not fills' prices. Structured fields are allowlisted (no price field is passed on),
+// and free text from the journal goes through publicText, which masks every number that could be a price or a level:
+// anything with a decimal point and any whole number of three or more digits. Small counts (rank 1, 24h) stay readable.
+// The journal in Cosmos DB keeps everything for the owner.
+const MASK = '…';
 
-function redactLevels(text) {
-  return typeof text === 'string' ? text.replace(/\b(stop(?:loss)?|target|takeprofit|take-profit)(\s*[:=]?\s*)[0-9][0-9.,]*/gi, `$1$2${HIDDEN}`) : text;
+function publicText(text) {
+  if (typeof text !== 'string') return text ?? null;
+  return text.replace(/\d+(?:[.,]\d+)+|\d{3,}/g, MASK);
 }
 
 const AGENTS = ['trader', 'analyst'];
@@ -29,7 +33,7 @@ const ERROR_ORDER_STATUSES = new Set(['rejected', 'failed', 'uncertain']);
  */
 function publicSummary(e) {
   if (e.kind === 'kill-switch') return `Kill switch ${e.data?.action === 'released' ? 'released' : 'engaged'} by ${e.actor}.`;
-  return redactLevels(e.summary);
+  return publicText(e.summary);
 }
 
 function num(value) {
@@ -100,13 +104,12 @@ function decisions(entries) {
       symbol: d.symbol ?? null,
       side: d.side ?? null,
       size: d.approvedSize ?? d.requestedSize ?? null,
-      price: d.approvedPrice ?? d.requestedPrice ?? null,
       status: d.status ?? null,
       rule: d.rule ?? null,
-      rationale: redactLevels(d.rationale ?? null),
+      rationale: publicText(d.rationale ?? null),
       hasStop: d.stopLoss !== undefined,
       clientOrderId: d.clientOrderId ?? null,
-      summary: redactLevels(e.summary),
+      summary: publicSummary(e),
     };
   }).sort(byTimeDesc);
 }
@@ -119,10 +122,6 @@ function trades(entries) {
       symbol: d.symbol ?? null,
       side: d.side ?? null,
       filledSize: d.filledSize ?? null,
-      averagePrice: d.averagePrice ?? null,
-      filledQuote: d.filledQuote ?? null,
-      fee: d.fee ?? null,
-      feeCurrency: d.feeCurrency ?? null,
       source: d.source ?? null,
       status: d.status ?? null,
       clientOrderId: d.clientOrderId ?? null,
@@ -135,10 +134,10 @@ function problems(entries, status, readErrors) {
   const list = [];
   for (const e of entries) {
     const d = e.data ?? {};
-    if (e.kind === 'tool-denied') list.push({ at: e.at, source: e.actor, kind: 'tool-denied', message: e.summary });
+    if (e.kind === 'tool-denied') list.push({ at: e.at, source: e.actor, kind: 'tool-denied', message: publicSummary(e) });
     else if (e.kind === 'kill-switch' && d.action !== 'released') list.push({ at: e.at, source: e.actor, kind: 'kill-switch', message: publicSummary(e) });
     else if (e.kind === 'order' && ERROR_ORDER_STATUSES.has(d.status)) {
-      list.push({ at: e.at, source: e.actor, kind: `order-${d.status}`, message: d.reason ? `${publicSummary(e)}: ${redactLevels(d.reason)}` : publicSummary(e) });
+      list.push({ at: e.at, source: e.actor, kind: `order-${d.status}`, message: d.reason ? `${publicSummary(e)}: ${publicText(d.reason)}` : publicSummary(e) });
     }
   }
   if (status?.lastReconcileProblem) {
@@ -227,4 +226,4 @@ function summarize(input, now) {
   };
 }
 
-module.exports = { summarize, engineHealth, agentRuns, redactLevels, publicSummary, STALE_AFTER_MS };
+module.exports = { summarize, engineHealth, agentRuns, publicText, publicSummary, STALE_AFTER_MS };

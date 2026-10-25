@@ -5,7 +5,7 @@
 
 const { app } = require('@azure/functions');
 const { CosmosReader } = require('../cosmos');
-const { loadDashboard, loadJournalDay } = require('../data');
+const { loadDashboard, loadJournalDay, journalRequest } = require('../data');
 
 const CACHE_MS = 20_000;
 const cache = new Map();
@@ -20,13 +20,19 @@ function getReader() {
   return reader;
 }
 
+// Concurrent requests for the same thing share one database read (the promise is cached, not just the result).
 async function cached(key, load) {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.body;
-  const body = await load();
+  const body = load();
   cache.set(key, { at: Date.now(), body });
-  if (cache.size > 100) cache.delete(cache.keys().next().value);
-  return body;
+  if (cache.size > 200) cache.delete(cache.keys().next().value);
+  try {
+    return await body;
+  } catch (error) {
+    cache.delete(key); // don't keep a failure
+    throw error;
+  }
 }
 
 function respond(body, status = 200) {
@@ -48,7 +54,7 @@ app.http('dashboard', {
   authLevel: 'anonymous',
   route: 'dashboard',
   handler: (request, context) => handle(context, () => {
-    const mode = request.query.get('mode') ?? 'paper';
+    const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
     return cached(`dashboard:${mode}`, () => loadDashboard(getReader(), mode, Date.now()));
   }),
 });
@@ -58,9 +64,8 @@ app.http('journal', {
   authLevel: 'anonymous',
   route: 'journal',
   handler: (request, context) => handle(context, () => {
-    const day = request.query.get('day');
-    const kind = request.query.get('kind') ?? '';
-    const limit = request.query.get('limit') ?? '100';
-    return cached(`journal:${day}:${kind}:${limit}`, () => loadJournalDay(getReader(), day, kind, limit));
+    const now = Date.now();
+    const r = journalRequest(request.query.get('day'), request.query.get('kind') ?? '', request.query.get('limit') ?? '100', now);
+    return cached(r.key, () => loadJournalDay(getReader(), r.day, r.kind, String(r.top), now));
   }),
 });

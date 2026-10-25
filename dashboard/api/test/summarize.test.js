@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { summarize, engineHealth, redactLevels } = require('../src/summarize');
+const { summarize, engineHealth, publicText } = require('../src/summarize');
 
 const NOW = Date.parse('2026-10-25T13:00:00Z');
 
@@ -42,9 +42,10 @@ test('the public view never shows stops, targets or kill-switch reasons', () => 
   const view = summarize({ mode: 'paper', status, engineState: null, paperAccount: null, journal, stateDocs: [] }, NOW);
   const text = JSON.stringify(view);
 
-  for (const secret of ['1.1481', '1.1641', 'venue-9']) assert.ok(!text.includes(secret), `${secret} leaked`);
+  for (const secret of ['1.1481', '1.1641', '1.1561', '1.1560', 'venue-9']) assert.ok(!text.includes(secret), `${secret} leaked`);
   assert.deepEqual(view.portfolio.holdings, [{ symbol: 'XRP-EUR', valueQuote: '5.00', planStatus: 'open', protected: true }]);
-  assert.equal(view.decisions[1].rationale, 'signal entry XRP-EUR rank 1: test entry; stop hidden target hidden risk 0.05');
+  assert.equal(view.decisions[1].rationale, 'signal entry XRP-EUR rank 1: test entry; stop …, target …, risk …');
+  assert.ok(!('price' in view.decisions[0]) && !('averagePrice' in view.trades[0]), 'no price fields at all');
 });
 
 test('summarises portfolio, trades, decisions, problems, agents and sync', () => {
@@ -59,7 +60,7 @@ test('summarises portfolio, trades, decisions, problems, agents and sync', () =>
   assert.equal(view.portfolio.drawdownPct, 0.25);
   assert.deepEqual(view.portfolio.balances.map((b) => b.currency), ['EUR', 'XRP']);
   assert.equal(view.trades.length, 1);
-  assert.equal(view.trades[0].averagePrice, '1.1560');
+  assert.equal(view.trades[0].filledSize, '4.3');
   assert.deepEqual(view.decisions.map((d) => d.status), ['rejected', 'placed']);
   assert.deepEqual(view.problems.map((p) => p.kind), ['order-rejected', 'kill-switch']);
   assert.equal(view.problems[1].message, 'Kill switch engaged by reconciler.');
@@ -85,7 +86,16 @@ test('reconcile problems are shown as plain sentences', () => {
   assert.match(view.sync.reconcileProblem, /open orders the engine didn't send/);
 });
 
-test('redaction handles the forms the engine and agents write', () => {
-  assert.equal(redactLevels('stopLoss=1.2 takeProfit: 1.3 target 2'), 'stopLoss=hidden takeProfit: hidden target hidden');
-  assert.equal(redactLevels('risk 0.05, 24h +3%'), 'risk 0.05, 24h +3%');
+test('masks prices in every text format the engine writes', () => {
+  // The exact formats of OrderTools, MarketScanService (protective exits, scan signals) and MarketScanner exit details.
+  const engineTexts = [
+    'Buy 0.0005 BTC-EUR @ 60010: Placed (accepted)',
+    'protective stop sell 4.32488 XRP-EUR @ 1.1481: Placed (accepted)',
+    'buy SOL-EUR rank 1 at 150.25: uptrend pullback 0.3 ATR above EMA20',
+    'bid 59800 at or below stop 61000',
+    'stopLoss=1.2 takeProfit: 1.3 target 2.5',
+  ];
+  for (const text of engineTexts) assert.doesNotMatch(publicText(text), /\d+\.\d+|\d{3,}/, text);
+  assert.equal(publicText('rank 1, 24h +3%'), 'rank 1, 24h +3%');
+  assert.equal(publicText(null), null);
 });

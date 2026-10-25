@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadDashboard, loadJournalDay } = require('../src/data');
+const { loadDashboard, loadJournalDay, journalRequest } = require('../src/data');
 
 const NOW = Date.parse('2026-10-25T13:00:00Z');
 
@@ -45,16 +45,24 @@ test('a failed read is reported, the rest still shows', async () => {
 
 test('rejects unknown modes and malformed journal filters', async () => {
   await assert.rejects(() => loadDashboard(fakeReader(), 'prod', NOW), RangeError);
-  await assert.rejects(() => loadJournalDay(fakeReader(), '2026-10-25; DROP', '', '10'), RangeError);
-  await assert.rejects(() => loadJournalDay(fakeReader(), '2026-10-25', 'tool call', '10'), RangeError);
+  await assert.rejects(() => loadJournalDay(fakeReader(), '2026-10-25; DROP', '', '10', NOW), RangeError);
+  await assert.rejects(() => loadJournalDay(fakeReader(), '2026-10-25', 'tool call', '10', NOW), RangeError);
+  await assert.rejects(() => loadJournalDay(fakeReader(), '2026-10-25', 'made-up-kind', '10', NOW), RangeError);
+  await assert.rejects(() => loadJournalDay(fakeReader(), '2026-09-01', '', '10', NOW), RangeError); // older than 14 days
 });
 
 test('a journal day is one partition, parameterised, capped, and hides raw data', async () => {
   const reader = fakeReader();
-  const entries = await loadJournalDay(reader, '2026-10-25', 'tool-call', '5000');
+  const entries = await loadJournalDay(reader, '2026-10-25', 'tool-call', '5000', NOW);
   const q = reader.queries[0];
   assert.equal(q.partitionKey, '2026-10-25');
-  assert.match(q.sql, /^SELECT TOP 300 \* FROM c WHERE c\.entry\.kind = @kind/);
+  assert.match(q.sql, /^SELECT TOP 200 \* FROM c WHERE c\.entry\.kind = @kind/);
   assert.deepEqual(q.parameters, [{ name: '@kind', value: 'tool-call' }]);
   assert.deepEqual(Object.keys(entries[0]), ['id', 'at', 'kind', 'actor', 'runId', 'summary']);
+});
+
+test('journal requests are normalised so equal requests share one cache entry', () => {
+  const keys = ['1', '01', '001', '50', 'abc'].map((limit) => journalRequest('2026-10-25', 'fill', limit, NOW).key);
+  assert.deepEqual([...new Set(keys)], ['journal:2026-10-25:fill:50', 'journal:2026-10-25:fill:100']);
+  assert.equal(journalRequest('2026-10-25', '', '150', NOW).top, 200);
 });

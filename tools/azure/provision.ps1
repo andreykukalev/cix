@@ -37,6 +37,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'CixAzure.psm1') -Force
 
+# Pinned: this code runs with the dashboard's deployment token in its environment. Update deliberately.
+$SwaCliVersion = '2.0.1'
+
 function Confirm-Step([string]$Question) {
   if ($Yes) { return }
   $answer = Read-Host "    $Question [y/N]"
@@ -118,14 +121,14 @@ if ($DeployDashboard) {
   $api = Join-Path $root 'dashboard' 'api'
   Push-Location $api
   try {
-    & npm install --omit=dev --no-audit --no-fund
+    & npm install --omit=dev --no-audit --no-fund --ignore-scripts
     if ($LASTEXITCODE -ne 0) { throw 'npm install failed for dashboard/api.' }
   }
   finally { Pop-Location }
   $env:SWA_CLI_DEPLOYMENT_TOKEN = Invoke-CixAz -Quiet @('staticwebapp', 'secrets', 'list', '--name', $staticWebApp, '--resource-group',
     $settings.resourceGroup, '--query', 'properties.apiKey', '-o', 'tsv')
   try {
-    & npx --yes '@azure/static-web-apps-cli@2' deploy (Join-Path $root 'dashboard' 'app') --api-location $api `
+    & npx --yes "@azure/static-web-apps-cli@$SwaCliVersion" deploy (Join-Path $root 'dashboard' 'app') --api-location $api `
       --api-language node --api-version 22 --env production
     if ($LASTEXITCODE -ne 0) { throw 'Publishing the dashboard failed.' }
   }

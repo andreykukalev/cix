@@ -151,8 +151,7 @@ function renderCycle(view) {
 
 function renderTables(view) {
   rows('trades', view.trades, (t) => [
-    when(t.at), t.symbol ?? '–', t.side ?? '–', td(amount(t.filledSize, 0), 'num'), td(amount(t.averagePrice, 0), 'num'),
-    td(t.fee ? `${amount(t.fee, 0)} ${t.feeCurrency ?? ''}` : '–', 'num'), t.source ?? '–', shortId(t.clientOrderId),
+    when(t.at), t.symbol ?? '–', t.side ?? '–', td(amount(t.filledSize, 0), 'num'), t.source ?? '–', t.status ?? '–', shortId(t.clientOrderId),
   ], 'No fills in the last 48 hours.');
   rows('decisions', view.decisions, (d) => [
     when(d.at), d.actor, d.action ?? '–', d.symbol ?? '–', d.side ?? '–', td(amount(d.size, 0), 'num'),

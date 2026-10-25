@@ -60,6 +60,11 @@ if ($settings.protected) {
 Assert-CixAzureCli
 $account = Connect-CixAzure -Settings $settings -SubscriptionId $SubscriptionId
 $cosmos = Get-CixCosmosAccount -Settings $settings
+# The account's own tag must agree: a settings file edited locally can't unprotect a live environment.
+$tags = $cosmos.tags
+if (-not $tags.PSObject.Properties['cix-protected'] -or $tags.'cix-protected' -ne 'false') {
+  throw "The Cosmos DB account isn't tagged cix-protected=false (it says '$(if ($tags.PSObject.Properties['cix-protected']) { $tags.'cix-protected' } else { 'nothing' })'). Refusing."
+}
 $endpoint = $cosmos.documentEndpoint
 $database = $settings.cosmos.databaseName
 Write-CixInfo "Account:  $($cosmos.name) in $($settings.resourceGroup) (subscription $($account.name))"
@@ -134,7 +139,7 @@ if (-not $Apply) {
 if ($plan.Count -eq 0 -and -not $ResetSchema) { Write-CixStep 'Nothing to do.'; return }
 
 # --- Confirm and apply ---------------------------------------------------------------------------------------------------
-$phrase = "reset $Environment"
+$phrase = if ($Mode -eq 'paper') { "reset $Environment" } else { "reset $Environment including live state" }
 Write-Host ''
 $typed = Read-Host "    This permanently removes the data above from '$Environment'. Type '$phrase' to continue"
 if ($typed -cne $phrase) { throw 'Not confirmed: nothing was changed.' }

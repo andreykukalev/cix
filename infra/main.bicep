@@ -34,6 +34,9 @@ param databaseName string = 'cix'
 @description('Public IP ranges allowed to reach Cosmos DB, for example ["203.0.113.7"]. Empty allows any address; the account key is then the protection.')
 param allowedIpRanges array = []
 
+@description('True for an environment with real money. Tagged on every resource as cix-protected; the reset script refuses it.')
+param protectedEnvironment bool = false
+
 @description('Create the dashboard (Static Web App, Free).')
 param deployDashboard bool = true
 
@@ -43,6 +46,7 @@ param tags object = {}
 var allTags = union(tags, {
   'cix-environment': environmentName
   'cix-component': 'cix'
+  'cix-protected': string(protectedEnvironment)
 })
 
 var accountName = toLower('${namePrefix}-${environmentName}-${uniqueString(resourceGroup().id)}')

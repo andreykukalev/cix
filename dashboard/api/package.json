@@ -11,6 +11,6 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@azure/functions": "^4.5.0"
+    "@azure/functions": "4.5.0"
   }
 }

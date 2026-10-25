@@ -98,21 +98,21 @@ Trading mode doesn't change. It stays paper unless you set live yourself (CLAUDE
 .\tools\azure\provision.ps1 -Environment dev -DeployDashboard -SkipInfrastructure -SkipEngineConfig
 ```
 
-This installs the API's one dependency, `@azure/functions`, into `dashboard/api`. It then publishes `dashboard/app` and `dashboard/api` with the Static Web Apps CLI, using the app's deployment token. The token is read into an environment variable for that command only, and never printed. Run the same command again after changing the dashboard.
+This installs the API's one dependency, `@azure/functions` (pinned, with install scripts disabled), into `dashboard/api`. It then publishes `dashboard/app` and `dashboard/api` with the Static Web Apps CLI, using the app's deployment token. The token is read into an environment variable for that command only, and never printed. Run the same command again after changing the dashboard.
 
 The dashboard shows:
 - **Engine:** running, or not responding when the heartbeat is older than 3 minutes. Also its strategy, and the kill switch with who engaged it and why, as a category.
 - **Mode:** paper or live, a toggle at the top. Live shows data only if a live engine has written it.
 - **Market:** the analyst's market view, how fresh the prices are, and the last sync with the exchange and with the database.
 - **Portfolio:** equity, cash, today's P&L, peak, drawdown, exposure, holdings, and the paper account's balances.
-- **Trading cycle:** the last scan and its signals, orders still working, and the trader's and analyst's recent runs.
+- **Trading cycle:** the last scan and its signals, orders still working (no prices), and the trader's and analyst's recent runs.
 - **History:** executed trades, decisions with the agent's reasoning, and errors and safety events.
 - **Records:** journal activity, browsable by day and kind, and the state documents with what each one is.
 
 It is **read-only and public** (anyone with the URL can open it):
 - Its API can only `GET`, and it reads with the account's read-only key, kept in the app's settings on the server.
-- It leaves out stops, targets, entry prices and the prices of resting orders, and blanks levels in the agents' reasoning, so the page doesn't show where positions will be sold. The journal in Cosmos DB keeps everything.
-- Responses are cached for 20 seconds, so heavy traffic can't use up the database throughput the engine needs.
+- It shows **no prices at all**: no entry, stop, target or fill prices, and no limits of resting orders. In free text (summaries, the agents' reasoning) every number that could be a price is masked as `…`. Holdings show their value, and whether a stop is set. The journal in Cosmos DB keeps everything.
+- Responses are cached for 20 seconds, and identical requests share one database read. The journal browser accepts only the last 14 days, known kinds and three page sizes, so heavy traffic can't use up the database throughput the engine needs.
 - To make it private later, add `"allowedRoles": ["owner"]` to the `/*` and `/api/*` routes in `dashboard/app/staticwebapp.config.json`, then invite yourself under *Role management* in the Azure portal (the Free plan supports this).
 
 ## How the PC connects to Azure
@@ -161,12 +161,13 @@ docker compose -f docker-compose.yml -f docker-compose.azure.yml up -d
 | `-Target State` | Removes `engine-state-<mode>`, `engine-status-<mode>` and, for paper, `paper-account`. The engine then starts with a fresh paper account. |
 | `-Target Journal` | Removes journal entries: all of them, or with `-JournalBefore 2026-10-20` only earlier days. |
 | `-Target All` | Both. |
-| `-Mode paper` (default), `live`, `all` | Which mode's state documents. Removing a live state makes the engine start halted until you confirm. |
+| `-Mode paper` (default), `live`, `all` | Which mode's state documents. Removing a live state makes the engine start halted until you confirm, and the confirmation to type becomes `reset dev including live state`. |
 | `-IncludeSpecArchive` | Also removes the archived strategy specs (`spec-*`). Kept by default, because journal entries refer to them. |
 | `-ResetSchema` | Deletes the selected containers and creates them again from `infra/main.bicep`, with the same partition keys and settings. Quicker for a big journal. Needs `-Mode all` with State. |
 
 Safeguards:
-- It refuses environments marked `protected`.
+- It refuses environments marked `protected`, in the settings file or in the account's `cix-protected` tag (set by the template from the same setting).
+- Agents can't run it: a hook blocks the script for every Claude agent, along with deleting Cosmos DB resources, regenerating keys, or `docker compose down -v`. It is the one thing allowed to delete journal entries, an owner-approved exception to the append-only rule ([ADR-0008](adr/0008-azure-database-local-agents-dashboard.md)).
 - It acts only on the one Cosmos DB account tagged with the environment's name, in that environment's resource group.
 - It touches only the `journal` and `state` containers. It never deletes the database or the account.
 - It refuses while the engine is running.
@@ -179,4 +180,5 @@ The local emulator is reset differently: `docker compose down -v` removes its vo
 - **One free-tier account per subscription** (see costs).
 - **No managed identity.** Static Web Apps managed functions can't use one, so the dashboard holds the read-only key in its settings. A separate Function App on the Consumption plan could use a managed identity if that ever matters.
 - **No data migration.** Data isn't copied from the emulator; Azure starts fresh by design.
+- **No lockfile for the API yet.** The package registry wasn't reachable where this was built, so `@azure/functions` is pinned to an exact version but its own dependencies aren't locked. Run `npm install --package-lock-only` in `dashboard/api` once and commit `package-lock.json`. The Static Web Apps CLI version is pinned in `provision.ps1` (`$SwaCliVersion`).
 - **Not tested against Azure here.** The templates and scripts are validated (Bicep build and lint, PowerShell parsing, request signing against Microsoft's documented example, dashboard API tests), but nothing has been deployed from this repository yet. Run `-WhatIfOnly` first.

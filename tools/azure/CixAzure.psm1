@@ -119,6 +119,7 @@ function New-CixDeploymentParameters {
     databaseName       = @{ value = $Settings.cosmos.databaseName }
     allowedIpRanges    = @{ value = @($Settings.cosmos.allowedIpRanges) }
     deployDashboard    = @{ value = [bool]$Settings.deployDashboard }
+    protectedEnvironment = @{ value = [bool]$Settings.protected }
     tags               = @{ value = if ($Settings.ContainsKey('tags')) { $Settings.tags } else { @{} } }
   }
   $document = [ordered]@{
@@ -185,15 +186,18 @@ function Write-CixSecretFile {
   $dir = Join-Path $script:RepoRoot 'secrets'
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $path = Join-Path $dir $Name
-  [IO.File]::WriteAllText($path, $Value, [Text.UTF8Encoding]::new($false))
+  # Restrict the (empty) file first, then write: the key is never on disk with wider access.
+  if (-not (Test-Path $path)) { New-Item -ItemType File -Path $path | Out-Null }
+  [IO.File]::WriteAllText($path, '', [Text.UTF8Encoding]::new($false))
   if ($IsWindows) {
     $me = "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
     icacls $path /inheritance:r /grant:r "${me}:(R,W)" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to $path." }
   }
   else {
     chmod 600 $path
   }
+  if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to $path; the key was not written." }
+  [IO.File]::WriteAllText($path, $Value, [Text.UTF8Encoding]::new($false))
   return $path
 }
 

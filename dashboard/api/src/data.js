@@ -48,13 +48,28 @@ async function loadDashboard(reader, mode, now) {
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const KIND = /^[a-z-]{1,40}$/;
+const KINDS = new Set(['order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view']);
+const LIMITS = [50, 100, 200];
+const JOURNAL_DAYS = 14;
+
+/**
+ * Checks and normalises a journal request, so equal requests share one cache entry and the set of distinct requests (each
+ * a database query on the engine's throughput) stays small: the last 14 days, known kinds, three page sizes.
+ */
+function journalRequest(day, kind, limit, now) {
+  if (!DAY.test(day ?? '')) throw new RangeError('day must be YYYY-MM-DD');
+  const age = (now - Date.parse(`${day}T00:00:00Z`)) / (24 * 3600 * 1000);
+  if (!(age > -1 && age < JOURNAL_DAYS)) throw new RangeError(`day must be within the last ${JOURNAL_DAYS} days`);
+  if (kind && !KINDS.has(kind)) throw new RangeError('kind is not valid');
+  const wanted = Number.parseInt(limit ?? '100', 10) || 100;
+  const top = LIMITS.find((l) => wanted <= l) ?? LIMITS[LIMITS.length - 1];
+  return { day, kind: kind || '', top, key: `journal:${day}:${kind || ''}:${top}` };
+}
 
 /** One UTC day of the journal, newest first, optionally one kind only. */
-async function loadJournalDay(reader, day, kind, limit) {
-  if (!DAY.test(day ?? '')) throw new RangeError('day must be YYYY-MM-DD');
-  if (kind && !KIND.test(kind)) throw new RangeError('kind is not valid');
-  const top = Math.min(Math.max(Number.parseInt(limit ?? '100', 10) || 100, 1), 300);
+async function loadJournalDay(reader, day, kind, limit, now = Date.now()) {
+  ({ day, kind, top: limit } = journalRequest(day, kind, limit, now));
+  const top = limit;
   const sql = kind
     ? `SELECT TOP ${top} * FROM c WHERE c.entry.kind = @kind ORDER BY c.entry.at DESC`
     : `SELECT TOP ${top} * FROM c ORDER BY c.entry.at DESC`;
@@ -63,4 +78,4 @@ async function loadJournalDay(reader, day, kind, limit) {
   return docs.map((d) => d.entry).filter(Boolean).map((e) => ({ id: e.id, at: e.at, kind: e.kind, actor: e.actor, runId: e.runId ?? null, summary: publicSummary(e) }));
 }
 
-module.exports = { loadDashboard, loadJournalDay, utcDay };
+module.exports = { loadDashboard, loadJournalDay, journalRequest, utcDay };

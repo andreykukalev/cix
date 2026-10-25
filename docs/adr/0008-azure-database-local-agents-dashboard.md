@@ -16,7 +16,12 @@ Paper trading runs on the owner's PC in Docker Compose. The owner wants the data
 - **Dashboard:** a static page on **Azure Static Web Apps, Free plan**, with a **managed Functions API** (Node.js 22) under `/api`.
   - The API reads Cosmos DB through the REST API with the account's **read-only key**, held in the app's settings on the server. The browser never sees a key.
   - The page is public by the owner's choice, so the API leaves out stops, targets, entry prices, resting order prices and free-text halt reasons.
-- **Provisioning:** Bicep in `infra/`, settings per environment in `infra/environments/<name>.json`, applied by `tools/azure/provision.ps1` (what-if first, then confirmation). Test resets use `tools/azure/reset-database.ps1`: a dry run by default, refused for protected environments.
+- **Provisioning:** Bicep in `infra/`, settings per environment in `infra/environments/<name>.json`, applied by `tools/azure/provision.ps1` (what-if first, then confirmation).
+- **Test resets, an owner-approved exception to CLAUDE.md rule 4:** the owner asked for a way to clear the journal and state when testing a new version. `tools/azure/reset-database.ps1` does it, and it is the only thing that ever deletes journal entries. It is owner-only:
+  - A hook (`.claude/hooks/block-database-reset.sh`) blocks agents from running it, deleting Cosmos DB resources, regenerating keys, or wiping the emulator's volume.
+  - It refuses environments marked protected, in both the settings file and the account's `cix-protected` tag.
+  - It is a dry run unless given `-Apply` and a typed confirmation.
+  - Rule 4 still holds for the engine and every agent: nothing they run updates or deletes a journal entry.
 
 ## Alternatives considered
 
