@@ -70,6 +70,8 @@ public sealed partial class ToolCallContext(
 
     public StrategySpec? Spec => specs.Active;
 
+    public DateTimeOffset Now => time.GetUtcNow();
+
     public bool IsOperator
     {
         get
@@ -98,7 +100,9 @@ public sealed partial class ToolCallContext(
             ? analyst ? $"{tool} is for the market analyst only." : $"The market analyst can't use {tool}."
             : governing is not { } spec
             ? analyst ? "No analyst spec is configured, so analyst tools are disabled." : "No strategy spec is active, so agent tools are disabled."
-            : spec.Allows(tool) ? null : $"The active {(analyst ? "analyst" : "strategy")} spec ({spec.Label}) doesn't allow {tool}.";
+            : spec.Allows(tool) || (ManualTools.Names.Contains(tool) && spec.Allows(ManualTools.ImpliedBy))
+            ? null // owner requests: allowed with place_order, which can do more than they can (ADR-0011)
+            : $"The active {(analyst ? "analyst" : "strategy")} spec ({spec.Label}) doesn't allow {tool}.";
         if (reason is null)
             return;
         await DenyAsync(tool, reason, cancellationToken).ConfigureAwait(false);

@@ -221,6 +221,22 @@ public sealed class CosmosEngineStatusStore(CosmosDb db, TradingMode mode) : Sta
         CosmosDb.WriteStateAsync(db.State, $"{DocumentPrefix}-{mode.ToString().ToLowerInvariant()}", status, DocumentPrefix, About, cancellationToken);
 }
 
+/// <summary>The coin filters in force and which coins pass, as <c>scanner-filters-&lt;mode&gt;</c>; replaced only when they change.</summary>
+public sealed class CosmosScannerFilterStore(CosmosDb db, TradingMode mode) : Scanning.IScannerFilterStore
+{
+    public const string DocumentPrefix = "scanner-filters";
+    public const string About =
+        "The coin filters in force (from the active strategy spec), since when, and which coins passed them at the last change. Replaced only when the filters or the set of passing coins change; the journal's scanner-filters and scan-eligibility entries keep the history.";
+
+    private string Id => $"{DocumentPrefix}-{mode.ToString().ToLowerInvariant()}";
+
+    public Task<Scanning.ScannerFilterState?> LoadAsync(CancellationToken cancellationToken) =>
+        CosmosDb.ReadStateAsync<Scanning.ScannerFilterState>(db.State, Id, cancellationToken);
+
+    public Task SaveAsync(Scanning.ScannerFilterState state, CancellationToken cancellationToken) =>
+        CosmosDb.WriteStateAsync(db.State, Id, state, DocumentPrefix, About, cancellationToken);
+}
+
 /// <summary>For tests.</summary>
 public sealed class InMemoryPaperAccountStore : IPaperAccountStore
 {

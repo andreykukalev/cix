@@ -15,9 +15,12 @@
   .\tools\trader\run-trader.ps1 -Once
 .EXAMPLE
   .\tools\trader\run-trader.ps1 -IntervalMinutes 60
+.EXAMPLE
+  .\tools\trader\run-trader.ps1 -OwnerRequests     # one run that answers the owner's waiting dashboard requests
 #>
 param(
     [switch]$Once,
+    [switch]$OwnerRequests,
     [int]$IntervalMinutes = 60,
     [int]$MaxTurns = 30,
     [ValidatePattern('(?-i)^[a-z0-9][a-z0-9.-]{1,63}(\[1m\])?$')]
@@ -44,8 +47,12 @@ $denied = 'Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,WebFetch,Web
 $tools = @(
     'mcp__cix__get_strategy_spec', 'mcp__cix__get_portfolio', 'mcp__cix__get_position_plans',
     'mcp__cix__get_open_orders', 'mcp__cix__get_market_view', 'mcp__cix__get_features', 'mcp__cix__scan_market',
-    'mcp__cix__place_order', 'mcp__cix__cancel_order'
+    'mcp__cix__place_order', 'mcp__cix__cancel_order', 'mcp__cix__get_manual_requests', 'mcp__cix__answer_manual_request'
 ) -join ','
+
+$prompt = if ($OwnerRequests) {
+    'The owner has sent requests from the dashboard. Read get_strategy_spec, then get_manual_requests, and answer every request with answer_manual_request as your instructions describe. Do not run the regular trading cycle in this run.'
+} else { 'Run one trading cycle of the active strategy now.' }
 
 function Invoke-TraderRun {
     $runId = 'run-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
@@ -57,18 +64,18 @@ function Invoke-TraderRun {
     try {
         # A job, so a hung run is stopped after TimeoutMinutes instead of blocking the next one.
         $job = Start-Job -ScriptBlock {
-            param($dir, $instructions, $mcpConfig, $tools, $denied, $maxTurns, $runId, $model)
+            param($dir, $instructions, $mcpConfig, $tools, $denied, $maxTurns, $runId, $model, $prompt)
             Set-Location $dir
             $env:CIX_RUN_ID = $runId
             [Console]::OutputEncoding = [Text.Encoding]::UTF8
-            claude -p 'Run one trading cycle of the active strategy now.' `
+            claude -p $prompt `
                 --append-system-prompt $instructions `
                 --mcp-config $mcpConfig --strict-mcp-config `
                 --allowedTools $tools --disallowedTools $denied `
                 --model $model `
                 --max-turns $maxTurns `
                 --output-format json
-        } -ArgumentList $repo, $instructions, $mcpConfig, $tools, $denied, $MaxTurns, $runId, $Model
+        } -ArgumentList $repo, $instructions, $mcpConfig, $tools, $denied, $MaxTurns, $runId, $Model, $prompt
 
         if (-not (Wait-Job $job -Timeout ($TimeoutMinutes * 60))) {
             Stop-Job $job
@@ -94,7 +101,7 @@ function Invoke-TraderRun {
     }
 }
 
-if ($Once) {
+if ($Once -or $OwnerRequests) {
     Invoke-TraderRun
     return
 }

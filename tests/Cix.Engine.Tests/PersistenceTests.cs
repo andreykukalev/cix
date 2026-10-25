@@ -1,10 +1,13 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Cix.Domain;
 using Cix.Domain.Exchange;
 using Cix.Engine.Execution;
 using Cix.Engine.Journal;
+using Cix.Engine.Manual;
 using Cix.Engine.Paper;
 using Cix.Engine.Persistence;
+using Cix.Engine.Scanning;
 using Cix.Engine.Strategy;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -255,5 +258,57 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
         Assert.False(await archive.ArchiveAsync(spec with { Instructions = "changed" }, CancellationToken.None));
         var archived = (await archive.GetAsync(spec.Label, CancellationToken.None))!;
         Assert.Equal(("original", "trend@v1#abc123def456"), (archived.Instructions, archived.Label));
+    }
+
+    [Fact]
+    public async Task ManualRequests_RoundTripThroughCosmos_AndAreExecutedOnce()
+    {
+        if (_db is null)
+            return;
+        Assert.True(_db.RequestsAvailable);
+        var tools = new ToolRig(ToolRig.Observer with { AllowedTools = ["place_order"] }, btc: 0.001m);
+        var now = tools.Rig.Time.GetUtcNow();
+        var day = now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        var request = new JsonObject
+        {
+            ["id"] = "req-cosmos-1", ["day"] = day, ["side"] = "sell", ["mode"] = "direct", ["symbol"] = "BTC-EUR", ["portion"] = "0.5",
+            ["createdAt"] = now.ToString("O", System.Globalization.CultureInfo.InvariantCulture), ["status"] = "new", ["requestedBy"] = "owner",
+        };
+        await _db.Requests.CreateItemAsync(request, new PartitionKey(day)); // as the dashboard writes it
+        var store = new CosmosManualRequestStore(_db);
+        var service = new ManualRequestService(
+            store, tools.Rig.Execution, tools.Rig.State, Rig.Limits, tools.Journal, tools.Specs, new ManualRequestOptions(),
+            new TradingContext(TradingMode.Paper), tools.Rig.Time, NullLogger<ManualRequestService>.Instance);
+
+        await service.PollOnceAsync(CancellationToken.None);
+        await service.PollOnceAsync(CancellationToken.None);
+
+        var stored = (await store.GetAsync("req-cosmos-1", day, CancellationToken.None))!;
+        Assert.Equal(ManualRequestStatus.Placed, stored.Status);
+        Assert.Equal(2, ((JsonArray)stored.Document["events"]!).Count); // executing, placed
+        Assert.Equal("owner", ManualRequestDocument.Field(stored.Document, "requestedBy")); // the requester's fields are kept
+        Assert.Single(tools.Journal.Entries, e => e.Kind == "order");
+        Assert.Empty(await store.ListActiveAsync(DateOnly.FromDateTime(now.UtcDateTime).AddDays(1), CancellationToken.None));
+        Assert.Single(await store.ListDayAsync(DateOnly.FromDateTime(now.UtcDateTime), CancellationToken.None));
+        Assert.Null(await store.TryReplaceAsync(stored with { ETag = "\"stale\"" }, stored.Document, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ScannerFilters_RoundTripThroughCosmos()
+    {
+        if (_db is null)
+            return;
+        var store = new CosmosScannerFilterStore(_db, TradingMode.Paper);
+        var at = new DateTimeOffset(2026, 10, 26, 10, 0, 0, TimeSpan.Zero);
+        var state = new ScannerFilterState("risky@v2#b", new Domain.Scanning.ScannerParameters { MinQuoteVolume24h = 20_000m, MaxSpreadFraction = 0.004m },
+            at, ["BTC-EUR", "DOGE-EUR"], new Dictionary<string, string> { ["SOL-EUR"] = "wide-spread" }, at.AddMinutes(5));
+
+        Assert.Null(await store.LoadAsync(CancellationToken.None));
+        await store.SaveAsync(state, CancellationToken.None);
+        var loaded = (await store.LoadAsync(CancellationToken.None))!;
+
+        Assert.Equal((state.Spec, state.Filters, state.Since, state.EligibilityAt), (loaded.Spec, loaded.Filters, loaded.Since, loaded.EligibilityAt));
+        Assert.Equal(state.Passing, loaded.Passing);
+        Assert.Equal("wide-spread", loaded.Excluded["SOL-EUR"]);
     }
 }

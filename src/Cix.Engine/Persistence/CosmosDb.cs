@@ -57,6 +57,8 @@ public sealed class CosmosOptions
 /// <item><c>journal</c>: the append-only history of decisions, orders, fills and safety events, partitioned by UTC day.</item>
 /// <item><c>state</c>: what is true now, one document per id: <c>engine-state-paper</c> (or <c>-live</c>), <c>paper-account</c>,
 /// and the archived strategy specs <c>spec-name@vN-hash</c>. Each document says what it is in <c>type</c> and <c>about</c>.</item>
+/// <item><c>requests</c>: the owner's manual buy and sell requests, partitioned by UTC day; written by the dashboard, then
+/// updated by the engine with what it did (ADR-0011). Optional: without it, manual requests are off.</item>
 /// </list>
 /// Works the same against the emulator and Azure (serverless).
 /// </summary>
@@ -64,6 +66,7 @@ public sealed class CosmosDb : IDisposable
 {
     public const string JournalContainer = "journal";
     public const string StateContainer = "state";
+    public const string RequestsContainer = "requests";
 
     private readonly CosmosClient _client;
     private readonly string _database;
@@ -114,12 +117,30 @@ public sealed class CosmosDb : IDisposable
 
     public Container State => _client.GetContainer(_database, StateContainer);
 
-    /// <summary>Creates the database and containers if they don't exist yet. Call once at startup.</summary>
+    public Container Requests => _client.GetContainer(_database, RequestsContainer);
+
+    /// <summary>Whether the <c>requests</c> container exists (known after <see cref="InitializeAsync"/>).</summary>
+    public bool RequestsAvailable { get; private set; }
+
+    /// <summary>
+    /// Creates the database and containers if they don't exist yet. Call once at startup. The <c>requests</c> container is
+    /// optional: in Azure the engine can't create containers (key-based metadata writes are off), so an account provisioned
+    /// before it existed runs on without manual requests until provisioning runs again.
+    /// </summary>
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         Database database = await _client.CreateDatabaseIfNotExistsAsync(_database, cancellationToken: cancellationToken).ConfigureAwait(false);
         await database.CreateContainerIfNotExistsAsync(new ContainerProperties(JournalContainer, "/day"), cancellationToken: cancellationToken).ConfigureAwait(false);
         await database.CreateContainerIfNotExistsAsync(new ContainerProperties(StateContainer, "/id"), cancellationToken: cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await database.CreateContainerIfNotExistsAsync(new ContainerProperties(RequestsContainer, "/day"), cancellationToken: cancellationToken).ConfigureAwait(false);
+            RequestsAvailable = true;
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            RequestsAvailable = false; // exists only once infra/main.bicep has run again; reported in the status and the log
+        }
     }
 
     /// <summary>For tests only: removes the whole database.</summary>

@@ -1,7 +1,9 @@
 // CIX's database in the shared Cosmos DB account (deployed into the shared resource group), with its own throughput
-// shared by its two containers:
-//   journal  the append-only history, partitioned by UTC day (/day)
-//   state    what is true now, one document per id (/id)
+// shared by its containers:
+//   journal   the append-only history, partitioned by UTC day (/day)
+//   state     what is true now, one document per id (/id)
+//   requests  the owner's manual buy and sell requests, partitioned by UTC day (/day); added for #63, so an existing
+//             database gains it when this template runs again, and nothing else changes (ADR-0011)
 // The engine can't create them itself in Azure (key-based metadata writes are disabled on the account), so a missing
 // container means running this template again (tools/azure/provision.ps1).
 
@@ -48,6 +50,20 @@ resource state 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@20
       id: 'state'
       partitionKey: {
         paths: ['/id']
+        kind: 'Hash'
+      }
+    }
+  }
+}
+
+resource requests 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: database
+  name: 'requests'
+  properties: {
+    resource: {
+      id: 'requests'
+      partitionKey: {
+        paths: ['/day']
         kind: 'Hash'
       }
     }

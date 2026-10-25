@@ -145,6 +145,7 @@ public sealed class StrategyV2Tests
         Assert.True(root.GetProperty("signalDriven").GetBoolean());
         Assert.Equal(1, root.GetProperty("entries").GetInt32());
         Assert.Equal("buy:BTC-EUR", root.GetProperty("key").GetString());
+        Assert.Equal(("", 0), (root.GetProperty("manualKey").GetString(), root.GetProperty("manualPending").GetInt32())); // no owner requests
         Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
         Assert.Contains("#1 BTC-EUR", description, StringComparison.Ordinal);
         Assert.Contains("SOL-EUR not-allowed", description, StringComparison.Ordinal);

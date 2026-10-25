@@ -140,6 +140,36 @@ public sealed class EngineStatusTests
             Assert.DoesNotContain(price, json, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MarketRows_ShowMovesForExcludedSymbolsToo()
+    {
+        var scan = new Domain.Scanning.ScanResult(Rig.T0, [],
+            [new Domain.Scanning.ScanExclusion("DOGE-EUR", "low-volume", "detail", 0.012345m, -0.05m), new Domain.Scanning.ScanExclusion("ADA-EUR", "stale", "detail")],
+            [], []);
+
+        var rows = EngineStatusService.MarketRows(scan);
+
+        Assert.Equal(("ADA-EUR", (decimal?)null, (decimal?)null), (rows[0].Symbol, rows[0].Return1h, rows[0].Return24h));
+        Assert.Equal(("DOGE-EUR", (decimal?)0.0123m, (decimal?)-0.05m, "low-volume"), (rows[1].Symbol, rows[1].Return1h, rows[1].Return24h, rows[1].Note));
+    }
+
+    [Fact]
+    public async Task Status_ReportsManualRequests_WhenTheServiceRuns()
+    {
+        var rig = new Rig(eur: 200m);
+        var manual = new Manual.ManualRequestService(
+            new Manual.InMemoryManualRequestStore("ok"), rig.Execution, rig.State, Rig.Limits, rig.Journal, new FixedSpecs(null),
+            new Manual.ManualRequestOptions(), new TradingContext(TradingMode.Paper), rig.Time, NullLogger<Manual.ManualRequestService>.Instance);
+        await manual.PollOnceAsync(CancellationToken.None);
+        var store = new InMemoryEngineStatusStore();
+
+        await new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper), store, new DependencyHealth(), rig.Time,
+            NullLogger<EngineStatusService>.Instance, manual: manual).WriteOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new ManualRequestsStatus("ok", 0, Rig.T0), store.Last!.ManualRequests);
+        Assert.Null(store.Last.Filters); // no scanner in this rig
+    }
+
     private sealed class FailingStatusStore : IEngineStatusStore
     {
         public bool Fail { get; set; } = true;
