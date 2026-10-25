@@ -143,7 +143,7 @@ public sealed class AgentTools(
             stopLoss = p.StopLoss,
             takeProfit = p.TakeProfit,
             note = p.StopLoss is null && p.TakeProfit is null
-                ? "No stop or target recorded for this position (bought without one, earlier, or outside the engine)."
+                ? "This position has no stop or target recorded (bought without one, earlier, or outside the engine)."
                 : null,
         }).ToList();
 
