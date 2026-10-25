@@ -291,7 +291,7 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
 
         var stored = (await store.GetAsync("req-cosmos-1", day, CancellationToken.None))!;
         Assert.Equal(ManualRequestStatus.Placed, stored.Status);
-        Assert.Equal(2, ((JsonArray)stored.Document["events"]!).Count); // executing, placed
+        Assert.Single((JsonArray)stored.Document["events"]!); // placed: nothing is written between the claim and the order
         Assert.Equal("owner", ManualRequestDocument.Field(stored.Document, "requestedBy")); // the requester's fields are kept
         Assert.Single(tools.Journal.Entries, e => e.Kind == "order");
         var today = DateOnly.FromDateTime(now.UtcDateTime);
