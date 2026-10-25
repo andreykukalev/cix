@@ -20,7 +20,9 @@ Both are signal-driven (ADR-0006), trade the same coins (`AllowedSymbols`) and h
 - Same filters, except hourly ATR need only be 0.5× the cost.
 - `requireUptrendPullback: false`: any coin that passes the filters gets an entry, in any trend.
 - Stop 1 ATR, target 1× the risk, so stops and targets are reached often and the engine's protective sells get exercised.
-- `trendExits: false`: positions leave only at their stop or target.
+- `trendExits: false`: positions leave at their stop or target. A position with no recorded stop (bought without one, or held from before a switch) still leaves on a downtrend.
+- `entryMaxAboveEma20Atr` is ignored while `requireUptrendPullback` is false.
+- In both, the scanner skips an entry whose stop or target would be under 0.5% from the price, the distance `place_order` requires.
 
 Size is capped by the top-level `orderQuote`, which the order-size hook also reads. Set it there only, never inside `scanner`.
 

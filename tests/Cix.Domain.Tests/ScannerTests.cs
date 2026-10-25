@@ -204,6 +204,22 @@ public sealed class ScannerTests
 
         Assert.Empty(Scan([Input(Features(trend: Trend.Down, bid: 100m))], noTrendExits, [held]).Exits);
         Assert.Equal("stop", Assert.Single(Scan([Input(Features(trend: Trend.Down, bid: 97m))], noTrendExits, [held]).Exits).Reason);
+
+        // A position with no recorded stop (bought without one, or before a strategy switch) still leaves on a downtrend.
+        var unplanned = new HeldPosition("SOL-EUR", 0.05m, null, null);
+        Assert.Equal("trend-down", Assert.Single(Scan([Input(Features(trend: Trend.Down, bid: 100m))], noTrendExits, [unplanned]).Exits).Reason);
+    }
+
+    [Fact]
+    public void NoEntry_WhenTheStopWouldBeCloserThanPlaceOrderAllows()
+    {
+        // ATR 0.3% passes a 0.5× cost filter (cost 0.38%), but a 1-ATR stop is 0.3% away: under the 0.5% place_order needs.
+        var loose = Defaults with { RequireUptrendPullback = false, MinAtrToCostRatio = 0.5m, StopAtr = 1m };
+
+        var result = Scan([Input(Features(atrFraction: 0.003m))], loose);
+
+        Assert.Empty(result.Entries);
+        Assert.Equal("stop or target too close", Assert.Single(result.Ranked).NoEntryReason);
     }
 
     [Fact]

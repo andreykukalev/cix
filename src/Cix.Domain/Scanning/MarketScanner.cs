@@ -287,6 +287,8 @@ public static class MarketScanner
         if (stop <= 0)
             return (null, "stop below zero");
         var target = CeilToStep(entry + (p.RewardRisk * r), pair.QuoteStep);
+        if (stop > entry * (1 - MinExitDistanceFraction) || target < entry * (1 + MinExitDistanceFraction))
+            return (null, "stop or target too close"); // place_order would refuse it, and the next scan would offer it again
 
         // Loss per unit if stopped: the stop distance plus round-trip costs on the entry value.
         var lossPerUnit = (entry - stop) + (m.RoundTripCost * entry);
@@ -298,11 +300,15 @@ public static class MarketScanner
         if (size <= 0 || size < pair.MinOrderSize || quote < pair.MinOrderSizeQuote)
             return (null, "below exchange minimum");
 
+        var hour = f.Return1h is null ? "n/a" : return1h.ToString("+0.##%;-0.##%;0%", CultureInfo.InvariantCulture);
         var setup = p.RequireUptrendPullback ? "uptrend pullback" : Inv($"test entry (trend {f.Trend.ToString().ToLowerInvariant()}),");
-        var reason = Inv($"{setup} {aboveEma:0.##} ATR above EMA20, 1h {return1h:+0.##%;-0.##%;0%}, 24h {(f.Return24h ?? 0m):+0.##%;-0.##%;0%}");
+        var reason = Inv($"{setup} {aboveEma:0.##} ATR above EMA20, 1h {hour}, 24h {(f.Return24h ?? 0m):+0.##%;-0.##%;0%}");
         return (new EntrySignal(
             input.Symbol, rank, entry, size, Math.Round(quote, 2), stop, target, Math.Round(size * lossPerUnit, 2), reason), null);
     }
+
+    /// <summary>Least distance of a stop or target from the entry; the same rule as place_order's.</summary>
+    public const decimal MinExitDistanceFraction = 0.005m;
 
     private static ExitSignal? Exit(HeldPosition h, FeatureSet? f, bool trendExits)
     {
@@ -314,7 +320,8 @@ public static class MarketScanner
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "stop", Inv($"bid {bid} at or below stop {stop}"));
         if (h.TakeProfit is { } target && bid >= target)
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "target", Inv($"bid {bid} at or above target {target}"));
-        if (trendExits && f.Trend == Trend.Down)
+        // Without trend exits a position relies on its stop; one without a recorded stop still leaves on a downtrend.
+        if ((trendExits || h.StopLoss is null) && f.Trend == Trend.Down)
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "trend-down", "EMA20 crossed below EMA50");
         return null;
     }
