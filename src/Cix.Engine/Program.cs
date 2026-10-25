@@ -6,6 +6,7 @@ using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
 using Cix.Engine.Persistence;
 using Cix.Engine.Scanning;
+using Cix.Engine.Status;
 using Cix.Engine.Strategy;
 using Cix.Engine.Tools;
 using Cix.Exchange.RevolutX;
@@ -69,7 +70,10 @@ builder.Services.AddCixAnalyst(
 // Deterministic scans of the universe every few minutes; signals are journaled and served by scan_market. Never trades.
 builder.Services.AddCixScanner(scanner, universe);
 
-// Cosmos DB (emulator locally, Azure later) for the journal, engine state and paper account; off unless configured.
+// A readable status record every minute (heartbeat, last sync, portfolio) and dependency health for /healthz.
+builder.Services.AddCixStatus();
+
+// Cosmos DB (emulator locally, or Azure) for the journal, engine state, status and paper account; off unless configured.
 builder.Services.AddCixCosmos(
     builder.Configuration.GetSection(CosmosOptions.SectionName).Get<CosmosOptions>() ?? new CosmosOptions(),
     mode);

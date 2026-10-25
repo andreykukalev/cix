@@ -21,6 +21,12 @@ public sealed partial class ExecutionService
 {
     public const string ReconcilerBy = "reconciler";
 
+    /// <summary>When the engine last compared itself with the exchange successfully (the portfolio's last sync).</summary>
+    public DateTimeOffset? LastReconciledAt { get; private set; }
+
+    /// <summary>What the last reconciliation found wrong (why it halted, or that the exchange couldn't be read), or null.</summary>
+    public string? LastReconcileProblem { get; private set; }
+
     private Dictionary<string, DateTimeOffset> _missingSince = new(StringComparer.Ordinal);
     private HashSet<string> _uncertainMissedOnce = new(StringComparer.Ordinal);
     private decimal _sentNotionalSinceReconcile;
@@ -47,6 +53,7 @@ public sealed partial class ExecutionService
             catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
             {
                 LogReconcileFailed(_logger, ex.Message);
+                LastReconcileProblem = "The exchange couldn't be read.";
                 return ReconcileReport.Skipped;
             }
 
@@ -136,6 +143,8 @@ public sealed partial class ExecutionService
                 reason = $"Holdings changed by {change:0.##} in quote currency, more than the engine's fills can explain ({allowance:0.##}): deposit, withdrawal or outside trading?";
 
             report = new ReconcileReport(unknown, resolved, dropped, unexplained, reason);
+            LastReconciledAt = now;
+            LastReconcileProblem = reason;
         }
         finally
         {

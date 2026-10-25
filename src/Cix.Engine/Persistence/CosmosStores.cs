@@ -208,6 +208,19 @@ public sealed class CosmosPaperAccountStore(CosmosDb db) : IPaperAccountStore
         CosmosDb.WriteStateAsync(db.State, DocumentId, state, DocumentId, About, cancellationToken);
 }
 
+/// <summary>The engine's status (heartbeat, last sync, portfolio) as <c>engine-status-&lt;mode&gt;</c>, replaced every minute.</summary>
+public sealed class CosmosEngineStatusStore(CosmosDb db, TradingMode mode) : Status.IEngineStatusStore
+{
+    public const string DocumentPrefix = "engine-status";
+    public const string About =
+        "The engine's status, rewritten every minute: heartbeat, last sync with the exchange, last scan, market view and portfolio. For people and the dashboard; the engine never reads it back.";
+
+    public bool UsesDatabase => true;
+
+    public Task SaveAsync(Status.EngineStatus status, CancellationToken cancellationToken) =>
+        CosmosDb.WriteStateAsync(db.State, $"{DocumentPrefix}-{mode.ToString().ToLowerInvariant()}", status, DocumentPrefix, About, cancellationToken);
+}
+
 /// <summary>For tests.</summary>
 public sealed class InMemoryPaperAccountStore : IPaperAccountStore
 {

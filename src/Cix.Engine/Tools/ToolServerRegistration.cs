@@ -107,12 +107,19 @@ public static class ToolServerRegistration
         {
             // Docker's health check and the agents' readiness wait. The listener only starts after the database and the saved
             // state are loaded, so answering at all means ready. A halted engine is still healthy: it is up, just not trading.
+            // "degraded" means a dependency is failing right now: orders that need it are refused, and it is retried.
             var services = http.RequestServices;
+            var health = services.GetService<Status.DependencyHealth>();
+            var execution = services.GetService<Execution.ExecutionService>();
+            var database = health?.Database ?? "unknown";
             return Results.Json(new
             {
-                status = "ready",
+                status = database == "unreachable" ? "degraded" : "ready",
                 mode = services.GetService<TradingContext>()?.Mode.ToString().ToLowerInvariant(),
                 halted = services.GetService<Execution.KillSwitch>()?.IsEngaged,
+                database,
+                databaseOkAt = health?.DatabaseOkAt,
+                lastReconciledAt = execution?.LastReconciledAt,
             });
         });
         app.MapGet(SignalsEndpoint, (HttpContext http) =>
