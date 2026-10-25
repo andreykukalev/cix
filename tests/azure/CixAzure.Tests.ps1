@@ -16,7 +16,12 @@ $onWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 
 function Check([string]$Name, [scriptblock]$Test) {
   try { & $Test; Write-Host "ok   $Name" }
-  catch { $failures.Add($Name); Write-Host "FAIL $Name -- $($_.Exception.Message)" -ForegroundColor Red }
+  catch {
+    $failures.Add($Name)
+    Write-Host "FAIL $Name -- $($_.Exception.Message)" -ForegroundColor Red
+    # In GitHub Actions, also as an annotation: job logs aren't readable from where agents work, annotations are.
+    if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host "::error title=CixAzure.Tests ($($PSVersionTable.PSVersion))::$Name -- $(($_.Exception.Message -replace '[\r\n]+', ' ').Substring(0, [Math]::Min(900, ($_.Exception.Message -replace '[\r\n]+', ' ').Length)))" }
+  }
 }
 function Expect($Actual, $Expected, [string]$What) {
   if ($Actual -ne $Expected) { throw "$What`: expected '$Expected', got '$Actual'" }
