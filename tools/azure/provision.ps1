@@ -45,7 +45,8 @@ $ErrorActionPreference = 'Stop'
 if ($WhatIfOnly) { $SkipEngineConfig = $true; $DeployDashboard = $false } # a preview changes nothing, here either
 Import-Module (Join-Path $PSScriptRoot 'CixAzure.psm1') -Force
 
-# Pinned: this code runs with the dashboard's deployment token in its environment. Update deliberately.
+# Pinned: this code runs with the dashboard's deployment token in its environment. Update deliberately, together with
+# SWA_CLI_VERSION in .github/workflows/ci.yml (deploy-dashboard); tests/azure checks they match.
 $SwaCliVersion = '2.0.1'
 
 function Confirm-Step([string]$Question) {

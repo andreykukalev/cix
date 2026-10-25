@@ -16,7 +16,12 @@ $onWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 
 function Check([string]$Name, [scriptblock]$Test) {
   try { & $Test; Write-Host "ok   $Name" }
-  catch { $failures.Add($Name); Write-Host "FAIL $Name -- $($_.Exception.Message)" -ForegroundColor Red }
+  catch {
+    $failures.Add($Name)
+    Write-Host "FAIL $Name -- $($_.Exception.Message)" -ForegroundColor Red
+    # In GitHub Actions, also as an annotation: job logs aren't readable from where agents work, annotations are.
+    if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host "::error title=CixAzure.Tests ($($PSVersionTable.PSVersion))::$Name -- $(($_.Exception.Message -replace '[\r\n]+', ' ').Substring(0, [Math]::Min(900, ($_.Exception.Message -replace '[\r\n]+', ' ').Length)))" }
+  }
 }
 function Expect($Actual, $Expected, [string]$What) {
   if ($Actual -ne $Expected) { throw "$What`: expected '$Expected', got '$Actual'" }
@@ -68,6 +73,15 @@ Check 'settings load as nested hashtables, with the shared account settings, on 
   foreach ($f in @(Get-ChildItem (Join-CixPath $repo 'infra' 'environments') -Filter *.json) + @(Get-ChildItem (Join-CixPath $repo 'infra' 'shared') -Filter *.json)) {
     Get-Content $f.FullName -Raw | ConvertFrom-Json | Out-Null
   }
+}
+
+Check 'CI publishes the dashboard with the same pinned Static Web Apps CLI as provision.ps1' {
+  $script = [IO.File]::ReadAllText((Join-Path $azureTools 'provision.ps1'))
+  $ci = [IO.File]::ReadAllText((Join-CixPath $repo '.github' 'workflows' 'ci.yml'))
+  if ($script -notmatch "\`$SwaCliVersion = '([\d.]+)'") { throw 'no $SwaCliVersion in provision.ps1' }
+  $version = $Matches[1]
+  if ($ci -notmatch 'SWA_CLI_VERSION: "([\d.]+)"') { throw 'no SWA_CLI_VERSION in ci.yml' }
+  Expect $Matches[1] $version 'SWA CLI version in CI'
 }
 
 Check 'Join-CixPath joins several parts' {
@@ -181,7 +195,7 @@ function Reply([int]$Status, [string]$Body = '', [string]$Extra = '') {
 }
 
 function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'false', [string]$GroupTags = '{}',
-  [string]$GroupList = '[]', [bool]$DatabaseExists = $true) {
+  [string]$GroupList = '[]', [bool]$DatabaseExists = $true, [hashtable]$Extra = @{}) {
   <# A directory holding a fake az (az.cmd on Windows); put it first on PATH. #>
   $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-fake-az-$([guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $dir | Out-Null
@@ -189,7 +203,7 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     'version'        = '{"azure-cli": "2.65.0"}'
     'bicep'          = 'Bicep CLI version 0.30.3'
     'account list'   = '[{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one","state":"Enabled"},{"id":"00000000-0000-0000-0000-000000000002","name":"Disabled one","state":"Disabled"}]'
-    'account show'   = '{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one"}'
+    'account show'   = '{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one","tenantId":"00000000-0000-0000-0000-0000000000aa"}'
     'group exists'   = $GroupExists
     'group show'     = "{`"name`":`"rg-cix-dev`",`"tags`":$GroupTags}"
     'group list'     = $GroupList
@@ -198,8 +212,9 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     'cosmosdb keys'  = "{`"primaryReadonlyMasterKey`": `"$sample`"}"
     'deployment sub create' = '{"properties":{"outputs":{"accountName":{"value":"cosmos-shared-x"},"cosmosAccountName":{"value":"cosmos-shared-x"},"cosmosEndpoint":{"value":"https://cosmos-shared-x.documents.azure.com:443/"},"staticWebAppName":{"value":"stapp-cix-dev"},"dashboardUrl":{"value":"https://dash.example"}}}}'
   }
+  foreach ($k in $Extra.Keys) { $answers[$k] = $Extra[$k] }
   if ($onWindows) {
-    $lines = @('@echo off', 'echo WARNING: fake az writes to stderr 1>&2')
+    $lines = @('@echo off', 'echo %* >> "%~dp0calls.log"', 'echo WARNING: fake az writes to stderr 1>&2')
     foreach ($k in $answers.Keys) {
       $match = switch (($k -split ' ').Count) { 1 { '"%1"' } 2 { '"%1 %2"' } default { '"%1 %2 %3"' } }
       $lines += "if $match==`"$k`" echo $($answers[$k])& exit /b 0"
@@ -209,7 +224,7 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     [IO.File]::WriteAllText((Join-Path $dir 'az.cmd'), ($lines -join "`r`n"), [Text.Encoding]::ASCII)
   }
   else {
-    $lines = @('#!/bin/sh', 'echo "WARNING: fake az writes to stderr" >&2', 'case "$1 $2 $3 " in')
+    $lines = @('#!/bin/sh', 'echo "$*" >> "$(dirname "$0")/calls.log"', 'echo "WARNING: fake az writes to stderr" >&2', 'case "$1 $2 $3 " in')
     foreach ($k in $answers.Keys) {
       $pattern = "'$k '*"
       $lines += "  $pattern) echo '$($answers[$k])' ;;"
@@ -233,13 +248,18 @@ function Invoke-WithFakeAz([hashtable]$Fake, [scriptblock]$Script) {
   <# Runs $Script with a fake az first on PATH; returns what it wrote (all streams) and the error, if any. #>
   $dir = New-FakeAz @Fake
   $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
-  $result = @{ Output = ''; Error = $null }
+  $result = @{ Output = ''; Error = $null; Calls = '' }
   try {
     Assert-FakeAzFirst $dir
     $result.Output = & $Script *>&1 | Out-String
   }
   catch { $result.Error = $_.Exception.Message }
-  finally { $env:PATH = $savedPath; Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+  finally {
+    $env:PATH = $savedPath
+    $log = Join-Path $dir 'calls.log'
+    if (Test-Path $log) { $result.Calls = [IO.File]::ReadAllText($log) }
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+  }
   return $result
 }
 
@@ -253,7 +273,16 @@ try {
     Assert-CixAzureCli 6>$null
   }
 
-  Check 'az missing from PATH is a failure, not a stale success' {
+  Check 'Invoke-CixNative relaxes stderr handling for script blocks from scripts too, and restores it' {
+  # A script block from this script runs in this script's scope (not the module's): what 5.1 does with stderr depends on it.
+  $ErrorActionPreference = 'Stop'
+  $out = Invoke-CixNative { & az fail now 2>&1 }
+  if ($LASTEXITCODE -ne 3) { throw "exit code $LASTEXITCODE" }
+  if (-not (($out | ForEach-Object { "$_" }) -join ' ').Contains('boom')) { throw 'stderr not captured' }
+  Expect $ErrorActionPreference 'Stop' 'restored preference'
+}
+
+Check 'az missing from PATH is a failure, not a stale success' {
     $env:PATH = Join-Path ([IO.Path]::GetTempPath()) 'cix-no-such-dir'
     $global:LASTEXITCODE = 0
     $failed = $false
@@ -393,6 +422,102 @@ Check 'provision.ps1 full run (-Yes) with no shared account: creates it, then CI
   if ($r.Error) { throw $r.Error }
   foreach ($expected in @('Shared account: cosmos-shared-x', "==> CIX (rg-cix-dev, database 'cix')", 'Dashboard:          https://dash.example')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+
+$site = '{"id":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev","name":"stapp-cix-dev"}'
+$cleanApp = @{
+  'staticwebapp show'           = $site
+  'ad app list'                 = '[{"appId":"11111111-1111-1111-1111-111111111111","displayName":"cix-dashboard-deploy-dev"},{"appId":"33333333-3333-3333-3333-333333333333","displayName":"cix-dashboard-deploy-devtest"}]'
+  'ad app show'                 = '{"appId":"11111111-1111-1111-1111-111111111111","passwordCredentials":[],"keyCredentials":[]}'
+  'ad signed-in-user'           = '{"id":"me"}'
+  'ad app owner'                = '[{"id":"me"}]'
+  'ad sp list'                  = '[{"id":"22222222-2222-2222-2222-222222222222"}]'
+  'ad sp show'                  = '{"id":"22222222-2222-2222-2222-222222222222","passwordCredentials":[],"keyCredentials":[]}'
+  'ad sp owner'                 = '[]'
+  'rest'                        = '{"value":[]}'
+  'ad app federated-credential' = '[]'
+  'role definition'             = '[]'
+  'role assignment'             = '[]'
+}
+function Invoke-SetupCi([hashtable]$Overrides) {
+  $extra = @{}; foreach ($k in $cleanApp.Keys) { $extra[$k] = $cleanApp[$k] }
+  foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
+  return Invoke-WithFakeAz @{ Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment dev -Repository 'owner/repo' -Yes }
+}
+
+Check 'setup-ci-deploy.ps1 (-Yes) creates the identity, a main-only credential and the role, then prints the variables' {
+  $r = Invoke-SetupCi @{ 'ad app list' = '[]'; 'ad app create' = '{"appId":"11111111-1111-1111-1111-111111111111"}'; 'ad sp list' = '[]'; 'ad sp create' = '{"id":"22222222-2222-2222-2222-222222222222"}' }
+  if ($r.Error) { throw $r.Error }
+  $creates = @($r.Calls -split "`n" | Where-Object { $_ -match '\bcreate\b' })
+  if ($creates.Count -eq 0 -or $creates[-1] -notmatch 'federated-credential create') { throw "the trust for main must be created last; creates were: $($creates -join '; ')" }
+  foreach ($expected in @('trusted only for repo:owner/repo:ref:refs/heads/main', 'Trusts repo:owner/repo:ref:refs/heads/main.', 'Assigned.',
+      'AZURE_CLIENT_ID = 11111111-1111-1111-1111-111111111111', 'AZURE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa', 'DASHBOARD_ENVIRONMENT = dev')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+
+$mainCredential = '[{"subject":"repo:owner/repo:ref:refs/heads/main","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]'
+
+Check 'setup-ci-deploy.ps1 accepts a reused identity that is exactly as it should be, changing nothing' {
+  $r = Invoke-SetupCi @{
+    'ad app federated-credential' = $mainCredential
+    'role definition'             = '[{"permissions":[{"actions":["Microsoft.Web/staticSites/read","Microsoft.Web/staticSites/listSecrets/action"],"notActions":[],"dataActions":[],"notDataActions":[]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]'
+    'role assignment'             = '[{"roleDefinitionName":"CIX dashboard deployer (dev)","scope":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev"}]'
+  }
+  if ($r.Error) { throw $r.Error }
+  foreach ($expected in @('Already trusts repo:owner/repo:ref:refs/heads/main.', 'Exists, with exactly those two actions.', 'Already assigned on stapp-cix-dev.')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+foreach ($case in @(
+    @{ Name = 'a client secret'; Overrides = @{ 'ad app show' = '{"appId":"1","passwordCredentials":[{"keyId":"k"}],"keyCredentials":[]}' }; Says = 'passwordCredentials' },
+    @{ Name = 'another owner'; Overrides = @{ 'ad app owner' = '[{"id":"me"},{"id":"someone-else"}]' }; Says = 'other owners (someone-else)' },
+    @{ Name = 'a pull-request credential'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:owner/repo:pull_request","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'also trusts repo:owner/repo:pull_request' },
+    @{ Name = 'a main credential from another issuer'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:owner/repo:ref:refs/heads/main","issuer":"https://evil.example","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'issuer https://evil.example' },
+    @{ Name = 'a broader role of the same name'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants more than reading' },
+    @{ Name = 'a same-named role with data actions'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/staticSites/read","Microsoft.Web/staticSites/listSecrets/action"],"notActions":[],"dataActions":["Microsoft.DocumentDB/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants more than reading' },
+    @{ Name = 'another role assignment, before trusting main'; Overrides = @{ 'role assignment' = '[{"roleDefinitionName":"Contributor","scope":"/subscriptions/x"}]' }; Says = 'also holds Contributor on /subscriptions/x' },
+    @{ Name = 'a service principal secret'; Overrides = @{ 'ad sp show' = '{"id":"2","passwordCredentials":[{"keyId":"k"}],"keyCredentials":[]}' }; Says = 'service principal of cix-dashboard-deploy-dev has passwordCredentials' },
+    @{ Name = 'a service principal owner'; Overrides = @{ 'ad sp owner' = '[{"id":"someone-else"}]' }; Says = 'service principal of cix-dashboard-deploy-dev has other owners' },
+    @{ Name = 'API permissions or directory roles'; Overrides = @{ 'rest' = '{"value":[{"id":"x"}]}' }; Says = 'has appRoleAssignments' })) {
+  Check "setup-ci-deploy.ps1 refuses a reused identity with $($case.Name), changing nothing" {
+    $r = Invoke-SetupCi $case.Overrides
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
+    if ($r.Calls -match '(?m)\bcreate\b') { throw "it changed something before refusing: $(($r.Calls -split "`n" | Where-Object { $_ -match 'create' }) -join '; ')" }
+  }
+}
+
+Check 'only the deploy-dashboard job may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
+  # A guard against accidents, not a security control: anyone who can change main can change this test too (ADR-0010).
+  $files = @(Get-ChildItem (Join-CixPath $repo '.github' 'workflows') -File | Where-Object { $_.Extension -in '.yml', '.yaml' })
+  if ($files.Count -eq 0) { throw 'no workflows found' }
+  foreach ($f in $files) {
+    $lines = [IO.File]::ReadAllLines($f.FullName)
+    $text = $lines -join "`n"
+    if ($text -match 'write-all') { throw "$($f.Name) grants write-all" }
+    # Triggers: the keys under the top-level on:, or its inline value.
+    $triggers = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+      if ($lines[$i] -match '^["'']?on["'']?\s*:\s*(.*)$') {
+        $inline = $Matches[1].Trim()
+        if ($inline -and -not $inline.StartsWith('#')) { $triggers += @($inline.Trim('[', ']', '{', '}') -split ',' | ForEach-Object { ($_ -split ':')[0].Trim(' ', '"', "'") } | Where-Object { $_ }) }
+        for ($j = $i + 1; $j -lt $lines.Count -and ($lines[$j] -match '^\s' -or $lines[$j] -eq ''); $j++) {
+          if ($lines[$j] -match '^  ["'']?([A-Za-z_]+)["'']?\s*:') { $triggers += $Matches[1] }
+        }
+      }
+    }
+    if ($triggers.Count -eq 0) { throw "$($f.Name): couldn't read its triggers" }
+    $unexpected = @($triggers | Where-Object { $_ -notin 'push', 'pull_request', 'workflow_dispatch' })
+    if ($unexpected.Count -gt 0) { throw "$($f.Name) runs on $($unexpected -join ', '); only push, pull_request and workflow_dispatch are allowed" }
+    # id-token, in any spelling, only inside the deploy-dashboard job of ci.yml, once.
+    $grants = [regex]::Matches($text, 'id-token')
+    if ($f.Name -ne 'ci.yml') { if ($grants.Count -gt 0) { throw "$($f.Name) mentions id-token" }; continue }
+    Expect $grants.Count 1 'id-token mentions in ci.yml'
+    $jobStart = $text.IndexOf("`n  deploy-dashboard:")
+    $next = [regex]::Match($text.Substring($jobStart + 1), '\n  [A-Za-z_-]+:')
+    $jobEnd = if ($next.Success) { $jobStart + 1 + $next.Index } else { $text.Length }
+    foreach ($g in $grants) { if ($g.Index -lt $jobStart -or $g.Index -gt $jobEnd) { throw 'id-token appears outside the deploy-dashboard job' } }
   }
 }
 
