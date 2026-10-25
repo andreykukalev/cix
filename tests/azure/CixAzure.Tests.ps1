@@ -223,15 +223,19 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
   return $dir
 }
 
+function Assert-FakeAzFirst([string]$Dir) {
+  <# Never let a test reach the real Azure CLI (some runs deploy with -Yes, others read keys). #>
+  $resolved = (Get-Command az -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+  if (-not $resolved -or (Split-Path -Parent $resolved) -ne $Dir) { throw "the fake az isn't first on PATH (got '$resolved')" }
+}
+
 function Invoke-WithFakeAz([hashtable]$Fake, [scriptblock]$Script) {
   <# Runs $Script with a fake az first on PATH; returns what it wrote (all streams) and the error, if any. #>
   $dir = New-FakeAz @Fake
   $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
   $result = @{ Output = ''; Error = $null }
   try {
-    # Never let a test reach the real Azure CLI (some runs deploy with -Yes).
-    $resolved = (Get-Command az -CommandType Application | Select-Object -First 1).Source
-    if (-not $resolved.StartsWith($dir)) { throw "the fake az isn't first on PATH (got $resolved)" }
+    Assert-FakeAzFirst $dir
     $result.Output = & $Script *>&1 | Out-String
   }
   catch { $result.Error = $_.Exception.Message }
@@ -243,6 +247,7 @@ $savedPath = $env:PATH
 $fake = New-FakeAz
 $env:PATH = "$fake$([IO.Path]::PathSeparator)$savedPath"
 try {
+  Assert-FakeAzFirst $fake
   Check 'az warnings on stderr are not errors (5.1 would stop on them)' {
     Expect ((Invoke-CixAz @('version', '-o', 'json') | ConvertFrom-CixJson).'azure-cli') '2.65.0' 'version'
     Assert-CixAzureCli 6>$null
@@ -336,7 +341,7 @@ Check 'reset-database.ps1 dry run end to end: finds the tagged account, reads th
   $dir = New-FakeAz -CosmosAccounts $accounts -GroupExists 'true' -GroupTags $devTags -GroupList $ownClaim
   $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
   $seen = @()
-  try { $output = & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All 6>&1 | Out-String }
+  try { Assert-FakeAzFirst $dir; $output = & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All 6>&1 | Out-String }
   finally {
     $env:PATH = $savedPath
     Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
