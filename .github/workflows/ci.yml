@@ -182,54 +182,117 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  deploy-dashboard:
-    # Publishes dashboard/ to the Static Web App after a push to main that changes it (or on a manual run), once the
-    # dashboard tests and the secret scan pass. The deployment token is an environment secret: set it in the "dashboard"
-    # environment, limited to the main branch, so pull-request workflows can never read it (docs/azure.md).
+  dashboard-bundle:
+    # Step 1 of publishing the dashboard (after every push to main, or a manual run on main): install the API's
+    # dependency and the pinned Static Web Apps CLI here, in a job with no Azure access, so no npm install script ever
+    # runs where credentials are in reach. Hands the result to deploy-dashboard as an artifact.
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    needs: [azure-and-dashboard, secret-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      SWA_CLI_VERSION: "2.0.1" # the same pinned version as tools/azure/provision.ps1 ($SwaCliVersion)
+    outputs:
+      publish: ${{ steps.tip.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Is this still the tip of main?
+        id: tip
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          TOKEN: ${{ github.token }}
+        run: |
+          # Runs can finish out of order; an older one must not publish over a newer one (which publishes itself).
+          tip=$(git -c "http.extraheader=AUTHORIZATION: bearer $TOKEN" ls-remote "$REPO_URL" refs/heads/main | cut -f1)
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main has moved on; the newer run publishes the dashboard."
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.tip.outputs.publish == 'true'
+        with:
+          node-version: "22"
+
+      - name: Install the API's dependency and the Static Web Apps CLI
+        if: steps.tip.outputs.publish == 'true'
+        run: |
+          (cd dashboard/api && npm install --omit=dev --no-audit --no-fund --ignore-scripts)
+          npm install --prefix .swa-cli --no-audit --no-fund "@azure/static-web-apps-cli@${SWA_CLI_VERSION}"
+          tar -czf dashboard-bundle.tgz dashboard infra/environments .swa-cli
+
+      - uses: actions/upload-artifact@v4
+        if: steps.tip.outputs.publish == 'true'
+        with:
+          name: dashboard-bundle
+          path: dashboard-bundle.tgz
+          retention-days: 1
+
+  deploy-dashboard:
+    # Step 2: sign in to Azure as the dashboard's deploy identity, which trusts only workflows on main of this repository
+    # (an OIDC federated credential) and may only read this Static Web App's deployment token. No secret is stored in
+    # GitHub; the repository variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID are IDs, not secrets.
+    # Set up once with tools/azure/setup-ci-deploy.ps1 (docs/azure.md, ADR-0010).
+    needs: [azure-and-dashboard, secret-scan, dashboard-bundle]
+    if: needs.dashboard-bundle.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: dashboard
+    permissions:
+      contents: read
+      id-token: write # for the Azure sign-in; only this job has it
     concurrency:
       group: deploy-dashboard
       cancel-in-progress: false
     env:
-      SWA_CLI_VERSION: "2.0.1" # the same pinned version as tools/azure/provision.ps1 ($SwaCliVersion)
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      DASHBOARD_ENVIRONMENT: ${{ vars.DASHBOARD_ENVIRONMENT || 'dev' }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Did the dashboard change?
-        id: changed
-        env:
-          BEFORE: ${{ github.event.before }}
+      - name: Is the deploy identity set up?
+        id: setup
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
-             || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
+          if [ -n "$AZURE_CLIENT_ID" ] && [ -n "$AZURE_TENANT_ID" ] && [ -n "$AZURE_SUBSCRIPTION_ID" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if git diff --quiet "$BEFORE" "$GITHUB_SHA" -- dashboard .github/workflows/ci.yml; then
-            echo "deploy=false" >> "$GITHUB_OUTPUT"; echo "::notice::No dashboard changes; not publishing."
-          else
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "::error::Set the repository variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID (tools/azure/setup-ci-deploy.ps1)."; exit 1
           fi
+          echo "::notice::The dashboard's deploy identity isn't set up yet; skipping (docs/azure.md)."
+
+      - uses: actions/download-artifact@v4
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          name: dashboard-bundle
 
       - uses: actions/setup-node@v4
-        if: steps.changed.outputs.deploy == 'true'
+        if: steps.setup.outputs.ready == 'true'
         with:
           node-version: "22"
 
+      - uses: azure/login@v2
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - name: Publish the dashboard
-        if: steps.changed.outputs.deploy == 'true'
-        env:
-          SWA_CLI_DEPLOYMENT_TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+        if: steps.setup.outputs.ready == 'true'
         run: |
-          if [ -z "$SWA_CLI_DEPLOYMENT_TOKEN" ]; then
-            echo "::notice::AZURE_STATIC_WEB_APPS_API_TOKEN isn't set in the dashboard environment; skipping (docs/azure.md)."
-            exit 0
-          fi
-          (cd dashboard/api && npm install --omit=dev --no-audit --no-fund --ignore-scripts)
-          npx --yes "@azure/static-web-apps-cli@${SWA_CLI_VERSION}" deploy dashboard/app --api-location dashboard/api \
+          tar -xzf dashboard-bundle.tgz
+          settings="infra/environments/${DASHBOARD_ENVIRONMENT}.json"
+          group=$(jq -r .resourceGroup "$settings")
+          app="stapp-$(jq -r .namePrefix "$settings")-$(jq -r .environmentName "$settings")"
+          token=$(az staticwebapp secrets list --name "$app" --resource-group "$group" --query properties.apiKey -o tsv)
+          echo "::add-mask::$token"
+          [ -n "$token" ] || { echo "::error::Couldn't read the deployment token of $app."; exit 1; }
+          SWA_CLI_DEPLOYMENT_TOKEN="$token" .swa-cli/node_modules/.bin/swa deploy dashboard/app --api-location dashboard/api \
             --api-language node --api-version 22 --env production

@@ -190,7 +190,7 @@ function Reply([int]$Status, [string]$Body = '', [string]$Extra = '') {
 }
 
 function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'false', [string]$GroupTags = '{}',
-  [string]$GroupList = '[]', [bool]$DatabaseExists = $true) {
+  [string]$GroupList = '[]', [bool]$DatabaseExists = $true, [hashtable]$Extra = @{}) {
   <# A directory holding a fake az (az.cmd on Windows); put it first on PATH. #>
   $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-fake-az-$([guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $dir | Out-Null
@@ -198,7 +198,7 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     'version'        = '{"azure-cli": "2.65.0"}'
     'bicep'          = 'Bicep CLI version 0.30.3'
     'account list'   = '[{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one","state":"Enabled"},{"id":"00000000-0000-0000-0000-000000000002","name":"Disabled one","state":"Disabled"}]'
-    'account show'   = '{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one"}'
+    'account show'   = '{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one","tenantId":"00000000-0000-0000-0000-0000000000aa"}'
     'group exists'   = $GroupExists
     'group show'     = "{`"name`":`"rg-cix-dev`",`"tags`":$GroupTags}"
     'group list'     = $GroupList
@@ -207,6 +207,7 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     'cosmosdb keys'  = "{`"primaryReadonlyMasterKey`": `"$sample`"}"
     'deployment sub create' = '{"properties":{"outputs":{"accountName":{"value":"cosmos-shared-x"},"cosmosAccountName":{"value":"cosmos-shared-x"},"cosmosEndpoint":{"value":"https://cosmos-shared-x.documents.azure.com:443/"},"staticWebAppName":{"value":"stapp-cix-dev"},"dashboardUrl":{"value":"https://dash.example"}}}}'
   }
+  foreach ($k in $Extra.Keys) { $answers[$k] = $Extra[$k] }
   if ($onWindows) {
     $lines = @('@echo off', 'echo WARNING: fake az writes to stderr 1>&2')
     foreach ($k in $answers.Keys) {
@@ -403,6 +404,36 @@ Check 'provision.ps1 full run (-Yes) with no shared account: creates it, then CI
   foreach ($expected in @('Shared account: cosmos-shared-x', "==> CIX (rg-cix-dev, database 'cix')", 'Dashboard:          https://dash.example')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
+}
+
+Check 'setup-ci-deploy.ps1 (-Yes) creates the identity, a main-only credential and the role, then prints the variables' {
+  $extra = @{
+    'staticwebapp show'           = '{"id":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev","name":"stapp-cix-dev"}'
+    'ad app list'                 = '[]'
+    'ad app create'               = '{"appId":"11111111-1111-1111-1111-111111111111"}'
+    'ad sp list'                  = '[]'
+    'ad sp create'                = '{"id":"22222222-2222-2222-2222-222222222222"}'
+    'ad app federated-credential' = '[]'
+    'role definition'             = '[]'
+    'role assignment'             = '[]'
+  }
+  $r = Invoke-WithFakeAz @{ Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment dev -Repository 'owner/repo' -Yes }
+  if ($r.Error) { throw $r.Error }
+  foreach ($expected in @('trusted only for repo:owner/repo:ref:refs/heads/main', 'Trusts repo:owner/repo:ref:refs/heads/main.', 'Assigned.',
+      'AZURE_CLIENT_ID = 11111111-1111-1111-1111-111111111111', 'AZURE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa', 'DASHBOARD_ENVIRONMENT = dev')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+
+Check 'setup-ci-deploy.ps1 refuses an identity that also trusts other branches or pull requests' {
+  $extra = @{
+    'staticwebapp show'           = '{"id":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev"}'
+    'ad app list'                 = '[{"appId":"11111111-1111-1111-1111-111111111111"}]'
+    'ad sp list'                  = '[{"id":"22222222-2222-2222-2222-222222222222"}]'
+    'ad app federated-credential' = '[{"subject":"repo:owner/repo:pull_request"}]'
+  }
+  $r = Invoke-WithFakeAz @{ Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment dev -Repository 'owner/repo' -Yes }
+  if (-not $r.Error -or -not $r.Error.Contains('also trusts repo:owner/repo:pull_request')) { throw "got: $($r.Error)" }
 }
 
 Check 'provision.ps1 refuses a database that exists but no CIX environment claims' {

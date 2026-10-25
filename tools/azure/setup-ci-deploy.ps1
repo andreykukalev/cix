@@ -1,0 +1,164 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+  One-time setup so CI can publish the dashboard without any secret stored in GitHub (ADR-0010).
+
+.DESCRIPTION
+  Creates (or reuses) in Microsoft Entra ID and Azure:
+    1. an app registration and service principal, cix-dashboard-deploy-<Environment>;
+    2. a federated credential that trusts GitHub Actions tokens only for pushes to main of this repository
+       (subject repo:<owner>/<repo>:ref:refs/heads/main): pull requests, other branches and forks can't use it;
+    3. a custom role, "CIX dashboard deployer (<Environment>)", that may only read a Static Web App and its deployment
+       token, assigned on this environment's Static Web App alone.
+  Then prints the three repository variables CI needs (IDs, not secrets), and sets them with the GitHub CLI if you pass
+  -SetGitHubVariables and gh is installed and signed in.
+
+  Each change is shown and confirmed first. Running it again changes nothing that is already in place.
+  Needs rights to create app registrations and role assignments (Owner on the subscription is enough).
+
+.EXAMPLE
+  .\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id>
+.EXAMPLE
+  .\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id> -SetGitHubVariables
+#>
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory)][ValidatePattern('^[a-z0-9-]{2,12}$')][string]$Environment,
+  [ValidatePattern('^[0-9a-fA-F-]{36}$')][string]$SubscriptionId,
+  [ValidatePattern('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')][string]$Repository,
+  [switch]$SetGitHubVariables,
+  [switch]$Yes
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'CixAzure.psm1') -Force
+
+function Confirm-Step([string]$Question) {
+  if ($Yes) { return }
+  $answer = Read-Host "    $Question [y/N]"
+  if ($answer -notmatch '^(y|yes)$') { Write-CixWarn 'Stopped: not confirmed (type y to go ahead). Nothing more was changed.'; exit 1 }
+}
+
+function Write-CixTempJson([object]$Value) {
+  # Passed to az as @file: inline JSON doesn't survive Windows PowerShell 5.1's native argument quoting.
+  $path = Join-Path ([IO.Path]::GetTempPath()) "cix-$([guid]::NewGuid().ToString('N')).json"
+  [IO.File]::WriteAllText($path, ($Value | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding $false))
+  return $path
+}
+
+Write-CixStep 'Checking prerequisites'
+Assert-CixAzureCli
+if (-not $Repository) {
+  $remote = Invoke-CixNative { & git -C (Get-CixRepoRoot) remote get-url origin 2>&1 }
+  if ($LASTEXITCODE -ne 0 -or "$remote" -notmatch 'github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(\.git)?$') {
+    throw "Couldn't tell the GitHub repository from git's origin; pass -Repository owner/repo."
+  }
+  $Repository = $Matches[1]
+}
+$subject = "repo:${Repository}:ref:refs/heads/main"
+
+Write-CixStep "Environment '$Environment'"
+$settings = Read-CixEnvironment -Name $Environment
+$appName = "stapp-$($settings.namePrefix)-$($settings.environmentName)"
+$identityName = "cix-dashboard-deploy-$Environment"
+$roleName = "CIX dashboard deployer ($Environment)"
+Write-CixInfo "Static Web App:  $appName in $($settings.resourceGroup)"
+Write-CixInfo "Identity:        $identityName, trusted only for $subject"
+
+Write-CixStep 'Signing in'
+$account = Connect-CixAzure -Settings $settings -SubscriptionId $SubscriptionId
+$site = Invoke-CixAz @('staticwebapp', 'show', '--name', $appName, '--resource-group', $settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+if (-not $site) { throw "Static Web App $appName not found in $($settings.resourceGroup); run provision.ps1 first." }
+
+Write-CixStep 'App registration and service principal'
+$app = @(Invoke-CixAz @('ad', 'app', 'list', '--display-name', $identityName, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+if ($app.Count -gt 1) { throw "More than one app registration is named $identityName; remove the extras first." }
+if ($app.Count -eq 1) { $app = $app[0]; Write-CixInfo "Using $identityName ($($app.appId))." }
+else {
+  Confirm-Step "Create the app registration ${identityName}?"
+  $app = Invoke-CixAz @('ad', 'app', 'create', '--display-name', $identityName, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+  Write-CixInfo "Created $identityName ($($app.appId))."
+}
+$sp = @(Invoke-CixAz @('ad', 'sp', 'list', '--filter', "appId eq '$($app.appId)'", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+if ($sp.Count -eq 0) {
+  $sp = Invoke-CixAz @('ad', 'sp', 'create', '--id', $app.appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+  Write-CixInfo 'Created its service principal.'
+}
+else { $sp = $sp[0] }
+
+Write-CixStep 'Federated credential (GitHub Actions, main only)'
+$credentials = @(Invoke-CixAz @('ad', 'app', 'federated-credential', 'list', '--id', $app.appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+$others = @($credentials | Where-Object { $_.subject -ne $subject })
+if ($others.Count -gt 0) {
+  throw "$identityName also trusts $(($others | ForEach-Object { $_.subject }) -join ', '). Remove those in the Azure portal (App registrations, Certificates & secrets) first: only main may deploy."
+}
+if (@($credentials | Where-Object { $_.subject -eq $subject }).Count -eq 1) { Write-CixInfo "Already trusts $subject." }
+else {
+  Confirm-Step "Let GitHub Actions on main of $Repository sign in as ${identityName}?"
+  $file = Write-CixTempJson ([ordered]@{
+      name        = 'github-main'
+      issuer      = 'https://token.actions.githubusercontent.com'
+      subject     = $subject
+      audiences   = @('api://AzureADTokenExchange')
+      description = 'CI publishes the CIX dashboard from main (tools/azure/setup-ci-deploy.ps1).'
+    })
+  try { Invoke-CixAz @('ad', 'app', 'federated-credential', 'create', '--id', $app.appId, '--parameters', "@$file", '--only-show-errors', '-o', 'none') | Out-Null }
+  finally { Remove-Item $file -ErrorAction SilentlyContinue }
+  Write-CixInfo "Trusts $subject."
+}
+
+Write-CixStep 'Role: read this Static Web App and its deployment token, nothing else'
+$groupId = "/subscriptions/$($account.id)/resourceGroups/$($settings.resourceGroup)"
+$role = @(Invoke-CixAz @('role', 'definition', 'list', '--name', $roleName, '--custom-role-only', 'true', '--scope', $groupId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+if ($role.Count -eq 0) {
+  Confirm-Step "Create the custom role '$roleName' (Microsoft.Web/staticSites read and listSecrets only)?"
+  $file = Write-CixTempJson ([ordered]@{
+      Name             = $roleName
+      Description      = 'Reads one CIX Static Web App and its deployment token, to publish the dashboard from CI.'
+      Actions          = @('Microsoft.Web/staticSites/read', 'Microsoft.Web/staticSites/listSecrets/action')
+      NotActions       = @()
+      AssignableScopes = @($groupId)
+    })
+  try { Invoke-CixAz @('role', 'definition', 'create', '--role-definition', "@$file", '--only-show-errors', '-o', 'none') | Out-Null }
+  finally { Remove-Item $file -ErrorAction SilentlyContinue }
+  Write-CixInfo 'Created.'
+}
+else { Write-CixInfo 'Exists.' }
+
+$assigned = @(Invoke-CixAz @('role', 'assignment', 'list', '--assignee', $sp.id, '--scope', $site.id, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+    Where-Object { $_.roleDefinitionName -eq $roleName })
+if ($assigned.Count -gt 0) { Write-CixInfo "Already assigned on $appName." }
+else {
+  Confirm-Step "Assign '$roleName' to $identityName on $appName only?"
+  # A new role definition can take a minute to become assignable.
+  for ($attempt = 1; ; $attempt++) {
+    try {
+      Invoke-CixAz @('role', 'assignment', 'create', '--assignee-object-id', $sp.id, '--assignee-principal-type', 'ServicePrincipal',
+        '--role', $roleName, '--scope', $site.id, '--only-show-errors', '-o', 'none') | Out-Null
+      break
+    }
+    catch {
+      if ($attempt -ge 6) { throw }
+      Write-CixInfo 'Waiting for the new role to become assignable...'
+      Start-Sleep -Seconds 20
+    }
+  }
+  Write-CixInfo 'Assigned.'
+}
+
+Write-CixStep 'GitHub repository variables (IDs, not secrets)'
+$variables = [ordered]@{ AZURE_CLIENT_ID = $app.appId; AZURE_TENANT_ID = $account.tenantId; AZURE_SUBSCRIPTION_ID = $account.id; DASHBOARD_ENVIRONMENT = $Environment }
+if ($SetGitHubVariables) {
+  Assert-CixCommand -Name 'gh' -Hint 'Install the GitHub CLI (winget install GitHub.cli) and run gh auth login, or set the variables by hand.'
+  foreach ($k in $variables.Keys) {
+    Invoke-CixNative { & gh variable set $k --repo $Repository --body $variables[$k] } | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "gh variable set $k failed." }
+    Write-CixInfo "Set $k."
+  }
+}
+else {
+  Write-CixInfo "Set these in GitHub: $Repository, Settings, Secrets and variables, Actions, Variables:"
+  foreach ($k in $variables.Keys) { Write-CixInfo ("  {0} = {1}" -f $k, $variables[$k]) }
+  Write-CixInfo 'Or run this script again with -SetGitHubVariables (needs the GitHub CLI, signed in).'
+}
+Write-CixInfo 'Then run CI on main by hand once (Actions, CI, Run workflow) to check it publishes.'

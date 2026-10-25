@@ -120,15 +120,26 @@ This installs the API's one dependency, `@azure/functions` (pinned, with install
 
 ### Publishing from CI
 
-After this first publish, CI publishes the dashboard by itself: the `deploy-dashboard` job in `.github/workflows/ci.yml` runs after every push to `main` that changes `dashboard/` (once the dashboard tests and the secret scan pass), and on a manual run (*Actions*, *CI*, *Run workflow* on `main`). It uses the same pinned Static Web Apps CLI as the script. Until the token below is set, the job skips with a notice.
+After this first publish, CI publishes the dashboard by itself after every push to `main`, once the dashboard tests and the secret scan pass. You can also start it by hand: *Actions*, *CI*, *Run workflow* on `main`. A run that is no longer the tip of `main` leaves publishing to the newer one. Until the setup below is done, pushes skip publishing with a notice, and a manual run fails, so a manual run really checks the setup.
 
-Set it up once:
-1. In GitHub, open the repository's *Settings*, then *Environments*, and create an environment named `dashboard`. Under *Deployment branches and tags*, choose *Selected branches and tags* and add `main`. Only jobs running on `main` can then use its secrets, so a pull request can't read the token, even one that edits the workflow.
-2. Copy the deployment token: in the Azure portal, open `stapp-cix-dev`, then *Overview*, then *Manage deployment token*.
-3. In the `dashboard` environment, add the secret `AZURE_STATIC_WEB_APPS_API_TOKEN` with that token. Use an environment secret, not a repository secret: a repository secret is readable by pull-request workflows.
-4. Run *CI* on `main` once by hand to check it publishes.
+**No secret is stored in GitHub** ([ADR-0010](adr/0010-dashboard-ci-deploy-oidc.md)). This matters because the repository is private on GitHub Free, which has no environment secrets limited to a branch: a repository secret would be readable by workflows on any branch, including branches agents push.
+- The `deploy-dashboard` job signs in to Azure as a dedicated identity, `cix-dashboard-deploy-dev`, through a GitHub OIDC token. That identity trusts tokens only for pushes to `main` of this repository; pull requests, other branches and forks can't use it.
+- The identity's only right is to read this Static Web App and its deployment token. The job reads the token at run time and publishes with it.
+- npm packages, including the pinned Static Web Apps CLI, are installed in a separate job with no Azure access, so their install scripts never run where credentials are in reach.
 
-The token can only publish this one Static Web App; it can't read the database or change anything else in Azure. To rotate it, use *Reset deployment token* on the same portal page, then update the secret.
+Set it up once (needs Owner on the subscription):
+
+```powershell
+.\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id>
+```
+
+The script:
+- creates the identity, its `main`-only federated credential, and a custom role (`Microsoft.Web/staticSites` read and listSecrets only) assigned on `stapp-cix-dev` alone, asking before each change;
+- prints four repository variables: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` and `DASHBOARD_ENVIRONMENT`. They are IDs, not secrets.
+
+Add those variables in GitHub: *Settings*, *Secrets and variables*, *Actions*, *Variables*. Or add `-SetGitHubVariables` to the script, which sets them with the GitHub CLI (`gh`, signed in). Then run *CI* on `main` once by hand to check it publishes.
+
+What the identity could still do, if a workflow on `main` misused it: read the deployment token, publish other code as the dashboard, and that code would run with the dashboard's settings, including the shared account's read-only key (which can read every project's database there). `main` has no branch protection on GitHub Free, so this trusts everyone who can push to `main`. If you suspect misuse, remove the identity's role assignment, reset the deployment token (portal: `stapp-cix-dev`, *Manage deployment token*, *Reset*), and regenerate the account's read-only keys, then run `provision.ps1` again to update the dashboard's settings.
 
 The script command above still works for publishing by hand.
 
