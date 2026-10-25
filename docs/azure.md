@@ -101,6 +101,7 @@ Trading mode doesn't change. It stays paper unless you set live yourself (CLAUDE
 This installs the API's one dependency, `@azure/functions` (pinned, with install scripts disabled), into `dashboard/api`. It then publishes `dashboard/app` and `dashboard/api` with the Static Web Apps CLI, using the app's deployment token. The token is read into an environment variable for that command only, and never printed. Run the same command again after changing the dashboard.
 
 The dashboard shows:
+- **Market briefing** (at the top, for stepping in by hand): the analyst's latest view (from the last 24 hours) and reasoning, up to five highlights (the most important news and scheduled events, each marked risk, opportunity or watch, with its coins and a source link), and a short **Needs attention** list picked from the latest scan: buy and sell signals, moves of 5% or more in 24 hours or 2% in an hour, volume at 2.5 times its usual level, an hourly range of 2% or more, coins the scanner excluded as too volatile, too thin or without fresh data, and coins the analyst said to avoid. A falling coin you hold ranks higher. The full scan of every coin is one click away. Highlights are only as fresh as the analyst's last run (every `ANALYST_INTERVAL_HOURS`, 6 by default); a shorter interval gives fresher news at the cost of more Opus runs.
 - **Engine:** running, or not responding when the heartbeat is older than 3 minutes. Also its strategy, and the kill switch with who engaged it and why, as a category.
 - **Mode:** paper or live, a toggle at the top. Live shows data only if a live engine has written it.
 - **Market:** the analyst's market view, how fresh the prices are, and the last sync with the exchange and with the database.
@@ -111,7 +112,8 @@ The dashboard shows:
 
 It is **read-only and public** (anyone with the URL can open it):
 - Its API can only `GET`, and it reads with the account's read-only key, kept in the app's settings on the server.
-- It shows **no prices at all**: no entry, stop, target or fill prices, and no limits of resting orders. In free text (summaries, the agents' reasoning) every number that could be a price is masked as `…`. Holdings show their value, and whether a stop is set. The journal in Cosmos DB keeps everything.
+- It shows **no order levels**: no entry, stop, target or fill prices, and no limits of resting orders. In the journal's free text (summaries, the trader's reasoning) every number that could be a price is masked as `…`. Holdings show their value, and whether a stop is set. The journal in Cosmos DB keeps everything.
+- The briefing shows the analyst's own text unmasked: the analyst never sees the account's positions, stops or targets, so its text can't hold them, though it may quote public market prices. It is written from web pages, so the page shows it as plain text only, and opens only `https` source links (each must be one of the view's sources), in a new tab without access back to the dashboard. The coins' moves are percentages, never prices.
 - Responses are cached for 20 seconds, and identical requests share one database read. The journal browser accepts only the last 14 days, known kinds and three page sizes, so heavy traffic can't use up the database throughput the engine needs.
 - To make it private later, add `"allowedRoles": ["owner"]` to the `/*` and `/api/*` routes in `dashboard/app/staticwebapp.config.json`, then invite yourself under *Role management* in the Azure portal (the Free plan supports this).
 

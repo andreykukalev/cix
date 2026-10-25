@@ -16,6 +16,10 @@ function fakeReader({ failStatus = false } = {}) {
     },
     async query(container, sql, options = {}) {
       queries.push({ container, sql, ...options });
+      if (container === 'journal' && options.maxItems === 1 && options.partitionKey === '2026-10-24') {
+        return [{ id: 'v1', day: '2026-10-24', entry: { id: 'v1', at: '2026-10-24T20:00:00+00:00', kind: 'market-view', actor: 'analyst', runId: 'a', summary: 'Quiet overnight.', data: { regime: 'neutral', validUntil: '2026-10-25T02:00:00+00:00' } } }];
+      }
+      if (container === 'journal' && options.maxItems === 1) return [];
       if (container === 'journal' && options.partitionKey === '2026-10-25') {
         return [{ id: 'j1', day: '2026-10-25', entry: { id: 'j1', at: '2026-10-25T12:00:00+00:00', kind: 'tool-call', actor: 'trader', runId: 'r', summary: 'scan_market' } }];
       }
@@ -28,13 +32,17 @@ test('reads today and yesterday as single-partition queries and the state list',
   const reader = fakeReader();
   const view = await loadDashboard(reader, 'paper', NOW);
 
-  assert.deepEqual(reader.queries.filter((q) => q.container === 'journal').map((q) => q.partitionKey), ['2026-10-25', '2026-10-24']);
+  assert.deepEqual(reader.queries.filter((q) => q.container === 'journal').map((q) => q.partitionKey), ['2026-10-25', '2026-10-24', '2026-10-25', '2026-10-24']);
+  const views = reader.queries.filter((q) => q.container === 'journal' && q.maxItems === 1);
+  assert.equal(views.length, 2);
+  assert.ok(views.every((q) => q.sql.startsWith('SELECT TOP 1 * FROM c WHERE c.entry.kind = @kind') && q.parameters[0].value === 'market-view'));
   assert.ok(reader.queries.filter((q) => q.container === 'journal').every((q) => q.sql.includes('ORDER BY')));
   const stateList = reader.queries.find((q) => q.container === 'state');
   assert.equal(stateList.partitionKey, undefined);
   assert.ok(!stateList.sql.includes('ORDER BY'), 'a cross-partition query must stay simple for the REST gateway');
   assert.equal(view.activity.length, 1);
   assert.equal(view.engine.halted, false);
+  assert.equal(view.briefing.analyst.summary, 'Quiet overnight.', "yesterday's view comes from its own query, not the recent entries");
 });
 
 test('a failed read is reported, the rest still shows', async () => {

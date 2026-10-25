@@ -36,6 +36,25 @@
       <article class="tile" id="tile-sync"><h2>Last sync</h2><p class="value">–</p><p class="sub">–</p></article>
     </section>
 
+    <section class="panel briefing" aria-labelledby="h-briefing">
+      <div class="panel-head"><h2 id="h-briefing">Market briefing</h2><span id="briefing-meta" class="muted small"></span></div>
+      <div class="split">
+        <div>
+          <h3>From the analyst</h3>
+          <p id="analyst-summary" class="summary muted">–</p>
+          <ul id="highlights" class="cards"></ul>
+        </div>
+        <div>
+          <h3>Needs attention</h3>
+          <ul id="attention" class="cards"></ul>
+        </div>
+      </div>
+      <details id="market-details">
+        <summary>All coins in the latest scan</summary>
+        <table id="market"><thead><tr><th>Coin</th><th class="num">Rank</th><th>Trend</th><th class="num">1h</th><th class="num">24h</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Note</th></tr></thead><tbody></tbody></table>
+      </details>
+    </section>
+
     <section class="panel" aria-labelledby="h-portfolio">
       <div class="panel-head"><h2 id="h-portfolio">Portfolio</h2><span id="valued-at" class="muted small"></span></div>
       <div class="figures" id="figures"></div>
@@ -107,7 +126,8 @@
   </main>
 
   <footer class="muted small">
-    Read-only. This page can't place, change or cancel orders. It shows no prices or stop levels (numbers in notes are masked as …); the journal keeps them.
+    Read-only. This page can't place, change or cancel orders. It shows no order levels: no entry, stop, target or fill prices (numbers in journal notes are masked as …); the journal keeps them.
+    News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.
   </footer>
 </body>
 </html>

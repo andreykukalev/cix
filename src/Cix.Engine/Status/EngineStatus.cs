@@ -38,7 +38,28 @@ public sealed record EngineStatus(
     IReadOnlyList<string> UnquotedSymbols,
     PortfolioStatus? Portfolio);
 
-public sealed record ScanStatus(DateTimeOffset At, int Ranked, int Excluded, int EntrySignals, int ExitSignals, string SignalKey);
+/// <param name="Market">Every scanned symbol from the latest scan, for the owner's market overview.</param>
+public sealed record ScanStatus(
+    DateTimeOffset At, int Ranked, int Excluded, int EntrySignals, int ExitSignals, string SignalKey, IReadOnlyList<MarketRow> Market);
+
+/// <summary>
+/// One symbol in the latest scan: how it moved and what the scanner made of it. Moves and volatility are fractions
+/// (0.05 = 5%); no prices. Excluded symbols carry only the reason.
+/// </summary>
+/// <param name="Volatility">Hourly ATR as a fraction of the price.</param>
+/// <param name="VolumeRatio">The last hour's volume against the 24h hourly average.</param>
+/// <param name="Signal"><c>buy</c>, <c>sell (stop|target|trend-down)</c>, or null.</param>
+/// <param name="Note">Why there is no entry (for example <c>trend down</c>), or why the symbol was excluded.</param>
+public sealed record MarketRow(
+    string Symbol,
+    int? Rank,
+    string? Trend,
+    decimal? Return1h,
+    decimal? Return24h,
+    decimal? Volatility,
+    decimal? VolumeRatio,
+    string? Signal,
+    string? Note);
 
 public sealed record MarketViewStatus(string Regime, DateTimeOffset RecordedAt, DateTimeOffset ValidUntil, bool Active, IReadOnlyList<string> Avoid);
 
@@ -140,6 +161,24 @@ public sealed partial class EngineStatusService(
         _ => "Halted.",
     };
 
+    /// <summary>The latest scan, one row per symbol: ranked ones by rank, then the excluded ones.</summary>
+    public static IReadOnlyList<MarketRow> MarketRows(Cix.Domain.Scanning.ScanResult scan)
+    {
+        ArgumentNullException.ThrowIfNull(scan);
+        var buys = scan.Entries.Select(e => e.Symbol).ToHashSet(StringComparer.Ordinal);
+        var sells = scan.Exits.GroupBy(x => x.Symbol, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First().Reason, StringComparer.Ordinal);
+        string? Signal(string symbol) => buys.Contains(symbol) ? "buy" : sells.TryGetValue(symbol, out var reason) ? $"sell ({reason})" : null;
+        static decimal? Round(decimal? value, int digits = 4) => value is { } v ? Math.Round(v, digits, MidpointRounding.AwayFromZero) : null;
+
+        return scan.Ranked.OrderBy(r => r.Rank)
+            .Select(r => new MarketRow(
+                r.Symbol, r.Rank, r.Trend.ToString().ToLowerInvariant(), Round(r.Return1h), Round(r.Return24h), Round(r.AtrFraction),
+                Round(r.VolumeRatio, 2), Signal(r.Symbol), r.NoEntryReason))
+            .Concat(scan.Excluded.OrderBy(x => x.Symbol, StringComparer.Ordinal)
+                .Select(x => new MarketRow(x.Symbol, null, null, null, null, null, null, Signal(x.Symbol), x.Reason)))
+            .ToList();
+    }
+
     /// <summary>The status from what the engine holds in memory: no exchange call, no state change.</summary>
     public EngineStatus Build()
     {
@@ -164,7 +203,7 @@ public sealed partial class EngineStatusService(
             reconcile?.ReconciledAt,
             reconcile?.AttemptedAt,
             reconcile?.Problem,
-            scan is null ? null : new ScanStatus(scan.AsOf, scan.Ranked.Count, scan.Excluded.Count, scan.Entries.Count, scan.Exits.Count, scanner!.SignalKey),
+            scan is null ? null : new ScanStatus(scan.AsOf, scan.Ranked.Count, scan.Excluded.Count, scan.Entries.Count, scan.Exits.Count, scanner!.SignalKey, MarketRows(scan)),
             view is null
                 ? null
                 : new MarketViewStatus(view.Regime.ToString(), view.RecordedAt, view.ValidUntil, view.IsActive(now), view.Flags.Select(f => f.Symbol).ToList()),
