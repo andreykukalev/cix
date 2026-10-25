@@ -20,9 +20,6 @@ param enableFreeTier bool = true
 @description('Public IP ranges allowed to reach the account, for example ["203.0.113.7"]. Empty allows any address; the account key is then the protection.')
 param allowedIpRanges array = []
 
-@description('With allowedIpRanges set, also accept Azure datacenters (dashboards\' managed APIs have no fixed address).')
-param allowAzureServices bool = true
-
 @description('Extra tags.')
 param tags object = {}
 
@@ -36,7 +33,7 @@ var name = empty(accountName) ? 'cosmos-shared-${uniqueString(subscription().id,
 resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
-  tags: union(tags, { 'shared-role': 'shared' })
+  tags: union(tags, { 'shared-role': 'shared' }) // replaces the group's tags on every deployment: shared.json owns them
 }
 
 module account 'modules/cosmos-account.bicep' = {
@@ -47,11 +44,9 @@ module account 'modules/cosmos-account.bicep' = {
     location: location
     enableFreeTier: enableFreeTier
     allowedIpRanges: allowedIpRanges
-    allowAzureServices: allowAzureServices && !empty(allowedIpRanges)
+    allowAzureServices: !empty(allowedIpRanges) // dashboards' managed APIs have no fixed address
     tags: allTags
   }
 }
 
-output resourceGroupName string = group.name
 output accountName string = account.outputs.accountName
-output endpoint string = account.outputs.endpoint

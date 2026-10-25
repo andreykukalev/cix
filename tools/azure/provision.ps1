@@ -37,10 +37,12 @@ param(
   [switch]$SkipEngineConfig,
   [switch]$DeployDashboard,
   [switch]$UpdateShared,
+  [switch]$AllowProtectedInSharedAccount,
   [switch]$Yes
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($WhatIfOnly) { $SkipEngineConfig = $true; $DeployDashboard = $false } # a preview changes nothing, here either
 Import-Module (Join-Path $PSScriptRoot 'CixAzure.psm1') -Force
 
 # Pinned: this code runs with the dashboard's deployment token in its environment. Update deliberately.
@@ -66,7 +68,13 @@ Write-CixInfo "Settings:        $($settings.path)"
 Write-CixInfo "Shared account:  resource group $($shared.resourceGroup) ($($shared.location)), free tier $($shared.enableFreeTier) ($($shared.path))"
 Write-CixInfo "CIX:             resource group $($settings.resourceGroup) ($($settings.location)), database '$($settings.cosmos.databaseName)' at $($settings.cosmos.databaseThroughput) RU/s"
 Write-CixInfo "Dashboard:       $(if ($settings.deployDashboard) { "Static Web App (Free) in $($settings.dashboardLocation)" } else { 'not deployed' })"
-if ($settings.protected) { Write-CixWarn 'This environment is marked protected (live money). Deploying changes its infrastructure.' }
+if ($settings.protected) {
+  # The shared account's keys reach every project's database (ADR-0009): fine for paper and tests, not for live money.
+  if (-not $AllowProtectedInSharedAccount) {
+    throw "Environment '$Environment' is protected (live money), and its database would live in the shared account, whose keys every project holds. Revisit ADR-0009 first (a separate account, or per-project access), or pass -AllowProtectedInSharedAccount."
+  }
+  Write-CixWarn 'This environment is marked protected (live money). Deploying changes its infrastructure.'
+}
 
 Write-CixStep 'Signing in'
 $account = Connect-CixAzure -Settings $settings -SubscriptionId $SubscriptionId
@@ -79,8 +87,9 @@ if (-not $SkipInfrastructure) {
     $sharedName = $existing.name
   }
   else {
-    if ($existing) { Write-CixWarn "Updating $($existing.name), which other projects may use too." }
-    Invoke-CixDeployment -Settings $settings -Shared -WhatIf | Out-Null
+    $target = if ($existing) { $existing.name } else { '' }
+    if ($existing) { Write-CixWarn "Updating $target, which other projects may use too. Its settings and tags become those in $($shared.path)." }
+    Invoke-CixDeployment -Settings $settings -Shared -SharedAccountName $target -WhatIf | Out-Null
     if ($WhatIfOnly) {
       if (-not $existing) { Write-CixInfo "Preview only: nothing was changed. CIX's own preview needs the shared account; it shows once that exists."; return }
       $sharedName = $existing.name
@@ -88,12 +97,13 @@ if (-not $SkipInfrastructure) {
     else {
       Write-CixWarn 'Cosmos DB free tier: one account per subscription. If another account already has it, this fails: use another subscription, or set enableFreeTier to false in the shared settings and expect charges (docs/azure.md).'
       Confirm-Step "Deploy the shared account to $($shared.resourceGroup) (subscription $($account.name))?"
-      $sharedName = (Invoke-CixDeployment -Settings $settings -Shared).accountName.value
+      $sharedName = (Invoke-CixDeployment -Settings $settings -Shared -SharedAccountName $target).accountName.value
       Write-CixInfo "Shared account: $sharedName"
     }
   }
 
   Write-CixStep "CIX ($($settings.resourceGroup), database '$($settings.cosmos.databaseName)')"
+  Assert-CixDatabaseClaim -Settings $settings -AccountName $sharedName
   Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -WhatIf | Out-Null
   if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed.'; return }
   Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to $sharedName?"

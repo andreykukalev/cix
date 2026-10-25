@@ -17,8 +17,9 @@
 
   Safeguards:
     - The environment must have a settings file in infra/environments, and must not be marked "protected" there (live money).
-    - CIX's resource group must be tagged cix-environment=<Environment> and cix-protected=false (set by infra/main.bicep),
-      and the database must exist in the single shared account.
+    - CIX's resource group must be tagged cix-environment=<Environment>, cix-protected=false, and cix-database and
+      cix-cosmos-account naming this database and account (all set by infra/main.bicep); no other group may claim the
+      database; and it must exist in the single shared account.
     - It refuses while the engine is running (its status heartbeat is under 3 minutes old) unless -IgnoreRunningEngine.
     - It lists what it would remove first; nothing is deleted without -Apply and the typed confirmation.
     - It is never run by deployment, the engine, or the dashboard.
@@ -73,7 +74,9 @@ if (-not $tags.PSObject.Properties['cix-protected'] -or $tags.'cix-protected' -n
 }
 $cosmos = Get-CixCosmosAccount -Settings $settings
 $database = $settings.cosmos.databaseName
-Assert-CixDatabase -Settings $settings -AccountName $cosmos.name
+# The database must be this environment's alone: claimed by its group's tags and by no other group.
+Assert-CixDatabaseClaim -Settings $settings -AccountName $cosmos.name -RequireOwn
+if (-not (Test-CixDatabase -Settings $settings -AccountName $cosmos.name)) { throw "Database '$database' doesn't exist in $($cosmos.name)." }
 $endpoint = $cosmos.documentEndpoint
 Write-CixInfo "Account:  $($cosmos.name) (shared) in $($settings.shared.resourceGroup) (subscription $($account.name))"
 Write-CixInfo "Database: $database; containers: $($containers -join ', ')"

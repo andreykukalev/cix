@@ -170,7 +170,8 @@ function Reply([int]$Status, [string]$Body = '', [string]$Extra = '') {
   return "HTTP/1.1 $Status $reason`r`nContent-Type: application/json`r`n$($Extra)Content-Length: $($Body.Length)`r`nConnection: close`r`n`r`n$Body"
 }
 
-function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'false', [string]$GroupTags = '{}') {
+function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'false', [string]$GroupTags = '{}',
+  [string]$GroupList = '[]', [bool]$DatabaseExists = $true) {
   <# A directory holding a fake az (az.cmd on Windows); put it first on PATH. #>
   $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-fake-az-$([guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $dir | Out-Null
@@ -181,6 +182,7 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     'account show'   = '{"id":"00000000-0000-0000-0000-000000000001","name":"Enabled one"}'
     'group exists'   = $GroupExists
     'group show'     = "{`"name`":`"rg-cix-dev`",`"tags`":$GroupTags}"
+    'group list'     = $GroupList
     'cosmosdb list'  = $CosmosAccounts
     'cosmosdb keys'  = "{`"primaryReadonlyMasterKey`": `"$sample`"}"
   }
@@ -190,6 +192,7 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
       $match = if ($k.Contains(' ')) { '"%1 %2"' } else { '"%1"' }
       $lines += "if $match==`"$k`" echo $($answers[$k])& exit /b 0"
     }
+    if (-not $DatabaseExists) { $lines += 'if "%1 %2"=="cosmosdb sql" echo ERROR: (NotFound) Resource not found 1>&2& exit /b 3' }
     $lines += @('if "%1"=="fail" echo boom 1>&2& exit /b 3', 'exit /b 0')
     [IO.File]::WriteAllText((Join-Path $dir 'az.cmd'), ($lines -join "`r`n"), [Text.Encoding]::ASCII)
   }
@@ -199,12 +202,24 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
       $pattern = if ($k.Contains(' ')) { "'$k'" } else { "'$k '*" }
       $lines += "  $pattern) echo '$($answers[$k])' ;;"
     }
+    if (-not $DatabaseExists) { $lines += "  'cosmosdb sql') echo 'ERROR: (NotFound) Resource not found' >&2; exit 3 ;;" }
     $lines += @("  'fail '*) echo boom >&2; exit 3 ;;", 'esac')
     $script = Join-Path $dir 'az'
     [IO.File]::WriteAllText($script, (($lines -join "`n") + "`n"))
     chmod +x $script
   }
   return $dir
+}
+
+function Invoke-WithFakeAz([hashtable]$Fake, [scriptblock]$Script) {
+  <# Runs $Script with a fake az first on PATH; returns what it wrote (all streams) and the error, if any. #>
+  $dir = New-FakeAz @Fake
+  $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
+  $result = @{ Output = ''; Error = $null }
+  try { $result.Output = & $Script *>&1 | Out-String }
+  catch { $result.Error = $_.Exception.Message }
+  finally { $env:PATH = $savedPath; Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+  return $result
 }
 
 $savedPath = $env:PATH
@@ -286,6 +301,10 @@ Check 'Cosmos DB requests: headers, retry on 429, continuation, 404' {
   if ($seen[2] -notmatch '(?im)^x-ms-documentdb-partitionkey: \["engine-status-paper"\]$') { throw 'partition key header' }
 }
 
+$devTags = '{"cix-environment":"dev","cix-protected":"false","cix-database":"cix","cix-cosmos-account":"cosmos-shared-x"}'
+$ownClaim = "[{`"name`":`"rg-cix-dev`",`"tags`":$devTags}]"
+$sharedAccount = '[{"name":"cosmos-shared-x","documentEndpoint":"https://cosmos-shared-x.documents.azure.com:443/","tags":{"shared-role":"cosmos"}}]'
+
 Check 'reset-database.ps1 dry run end to end: finds the tagged account, reads the heartbeat, plans, deletes nothing' {
   $heartbeat = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
   $state = '{"Documents":[{"id":"engine-state-paper","type":"engine-state"},{"id":"spec-good@v1-abc","type":"strategy-spec"}],"_count":2}'
@@ -297,7 +316,7 @@ Check 'reset-database.ps1 dry run end to end: finds the tagged account, reads th
     (Reply 200 $journal))
   # An untagged account in the shared group must not trip StrictMode; only the one tagged shared-role=cosmos is used.
   $accounts = "[{`"name`":`"other`",`"tags`":{}},{`"name`":`"cosmos-shared-x`",`"documentEndpoint`":`"http://127.0.0.1:$($cosmos.Port)/`",`"tags`":{`"shared-role`":`"cosmos`"}}]"
-  $dir = New-FakeAz -CosmosAccounts $accounts -GroupExists 'true' -GroupTags '{"cix-environment":"dev","cix-protected":"false"}'
+  $dir = New-FakeAz -CosmosAccounts $accounts -GroupExists 'true' -GroupTags $devTags -GroupList $ownClaim
   $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
   $seen = @()
   try { $output = & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All 6>&1 | Out-String }
@@ -313,17 +332,62 @@ Check 'reset-database.ps1 dry run end to end: finds the tagged account, reads th
   if (@($seen | Where-Object { $_ -match '^DELETE ' }).Count -ne 0) { throw 'a dry run sent a DELETE' }
 }
 
+$prodClaim = '{"name":"rg-cix-prod","tags":{"cix-environment":"prod","cix-protected":"true","cix-database":"cix","cix-cosmos-account":"cosmos-shared-x"}}'
 foreach ($case in @(
-    @{ Tags = '{"cix-environment":"dev","cix-protected":"true"}'; Says = "isn't tagged cix-protected=false (it says 'true')" },
-    @{ Tags = '{"cix-protected":"false"}'; Says = "isn't tagged cix-environment=dev (it says 'nothing')" })) {
-  Check "reset-database.ps1 refuses when CIX's resource group says: $($case.Says)" {
-    $dir = New-FakeAz -GroupExists 'true' -GroupTags $case.Tags
-    $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
-    $message = $null
-    try { & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All 6>$null } catch { $message = $_.Exception.Message }
-    finally { $env:PATH = $savedPath; Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
-    if (-not $message -or -not $message.Contains($case.Says)) { throw "got: $message" }
+    @{ Fake = @{ GroupExists = 'true'; GroupTags = '{"cix-environment":"dev","cix-protected":"true"}' }; Says = "isn't tagged cix-protected=false (it says 'true')" },
+    @{ Fake = @{ GroupExists = 'true'; GroupTags = '{"cix-protected":"false"}' }; Says = "isn't tagged cix-environment=dev (it says 'nothing')" },
+    @{ Fake = @{ GroupExists = 'true'; GroupTags = '{"cix-environment":"dev","cix-protected":"false"}'; CosmosAccounts = $sharedAccount; GroupList = '[]' }; Says = "isn't tagged cix-database=cix and cix-cosmos-account=cosmos-shared-x" },
+    @{ Fake = @{ GroupExists = 'true'; GroupTags = $devTags; CosmosAccounts = $sharedAccount; GroupList = "[$($ownClaim.Trim('[', ']')),$prodClaim]" }; Says = "is claimed by resource group(s) rg-cix-prod" })) {
+  Check "reset-database.ps1 refuses: $($case.Says)" {
+    $r = Invoke-WithFakeAz $case.Fake { & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All }
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
   }
+}
+
+Check 'provision.ps1 rerun: uses the existing shared account untouched and previews CIX (new database)' {
+  $r = Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $false } {
+    & (Join-Path $azureTools 'provision.ps1') -Environment dev -WhatIfOnly
+  }
+  if ($r.Error) { throw $r.Error }
+  foreach ($expected in @('Using cosmos-shared-x; left unchanged', "==> CIX (rg-cix-dev, database 'cix')", 'Preview only: nothing was changed.')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+
+Check 'provision.ps1 refuses a database that exists but no CIX environment claims' {
+  $r = Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $true } {
+    & (Join-Path $azureTools 'provision.ps1') -Environment dev -WhatIfOnly
+  }
+  if (-not $r.Error -or -not $r.Error.Contains("already exists in cosmos-shared-x but no CIX environment claims it")) { throw "got: $($r.Error)" }
+}
+
+Check 'provision.ps1 refuses to create the shared account over an untagged one' {
+  $r = Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = '[{"name":"someone-elses","tags":{}}]' } {
+    & (Join-Path $azureTools 'provision.ps1') -Environment dev -WhatIfOnly
+  }
+  if (-not $r.Error -or -not $r.Error.Contains('none tagged shared-role=cosmos')) { throw "got: $($r.Error)" }
+}
+
+Check 'provision.ps1 refuses a protected environment in the shared account' {
+  $prod = Join-CixPath $repo 'infra' 'environments' 'prodtest.json'
+  $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'prod.example.json') -Raw).Replace('"prod"', '"prodtest"')
+  [IO.File]::WriteAllText($prod, $json)
+  try {
+    $r = Invoke-WithFakeAz @{} { & (Join-Path $azureTools 'provision.ps1') -Environment prodtest -WhatIfOnly }
+    if (-not $r.Error -or -not $r.Error.Contains('-AllowProtectedInSharedAccount')) { throw "got: $($r.Error)" }
+  }
+  finally { Remove-Item $prod -Force }
+}
+
+Check 'two environment files sharing one database are refused' {
+  $copy = Join-CixPath $repo 'infra' 'environments' 'devcopy.json'
+  [IO.File]::WriteAllText($copy, (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"devcopy"'))
+  try {
+    $message = $null
+    try { Read-CixEnvironment -Name dev | Out-Null } catch { $message = $_.Exception.Message }
+    if (-not $message -or -not $message.Contains("is also used by devcopy.json")) { throw "got: $message" }
+  }
+  finally { Remove-Item $copy -Force }
 }
 
 Write-Host ''

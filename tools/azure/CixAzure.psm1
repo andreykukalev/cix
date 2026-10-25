@@ -79,6 +79,15 @@ function Read-CixEnvironment {
   if ($s.subscriptionId -and $s.subscriptionId -notmatch '^[0-9a-fA-F-]{36}$') { throw "${path}: subscriptionId must be a GUID or empty." }
   $s['path'] = $path
   $s['shared'] = Read-CixSharedSettings -Name $s.sharedCosmos
+  # Two environments in one shared account must not share a database (a reset of one would empty the other).
+  foreach ($other in Get-ChildItem (Split-Path $path) -Filter *.json) {
+    if ($other.FullName -eq (Resolve-Path $path).Path -or $other.Name -like '*.example.json') { continue }
+    $o = Get-Content $other.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($o.PSObject.Properties['sharedCosmos'] -and $o.sharedCosmos -eq $s.sharedCosmos -and $o.PSObject.Properties['cosmos'] -and
+        $o.cosmos.PSObject.Properties['databaseName'] -and $o.cosmos.databaseName -eq $s.cosmos.databaseName) {
+      throw "${path}: database '$($s.cosmos.databaseName)' is also used by $($other.Name) in the same shared account. Give each environment its own."
+    }
+  }
   if ($s.shared.resourceGroup -eq $s.resourceGroup) { throw "${path}: the shared Cosmos DB account needs its own resource group, not $($s.resourceGroup)." }
   return $s
 }
@@ -203,6 +212,7 @@ function Get-CixDeploymentValues {
     otherwise CIX's resources (infra/main.bicep), which need the shared account's name.
   #>
   param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Shared, [string]$SharedAccountName)
+  # -Shared with -SharedAccountName: update that existing account rather than the name the template would derive.
   $tags = if ($Settings.ContainsKey('tags')) { $Settings.tags } else { @{} }
   if ($Shared) {
     $sh = $Settings.shared
@@ -213,7 +223,7 @@ function Get-CixDeploymentValues {
       Values   = [ordered]@{
         resourceGroupName = $sh.resourceGroup
         location          = $sh.location
-        accountName       = [string]$sh.accountName
+        accountName       = if ($SharedAccountName) { $SharedAccountName } else { [string]$sh.accountName }
         enableFreeTier    = [bool]$sh.enableFreeTier
         allowedIpRanges   = @($sh.allowedIpRanges)
         tags              = if ($sh.ContainsKey('tags')) { $sh.tags } else { @{} }
@@ -270,17 +280,22 @@ function Invoke-CixDeployment {
 function Find-CixSharedCosmos {
   <#
     The shared Cosmos DB account: the one tagged shared-role=cosmos in the shared resource group (and named accountName when
-    the settings give one). Returns $null if there is none yet; refuses to guess between several.
+    the settings give one). Returns $null only when the group doesn't exist or holds no Cosmos DB account at all, so an
+    untagged or misnamed account is never mistaken for "none yet" and overwritten. Refuses to guess between several.
   #>
   param([Parameter(Mandatory)][hashtable]$Settings)
   $sh = $Settings.shared
   if ((Invoke-CixAz @('group', 'exists', '--name', $sh.resourceGroup)) -ne 'true') { return $null }
-  $accounts = @(Invoke-CixAz @('cosmosdb', 'list', '--resource-group', $sh.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
-      Where-Object { $_.tags -and $_.tags.PSObject.Properties['shared-role'] -and $_.tags.'shared-role' -eq 'cosmos' })
+  $all = @(Invoke-CixAz @('cosmosdb', 'list', '--resource-group', $sh.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+  $accounts = @($all | Where-Object { $_.tags -and $_.tags.PSObject.Properties['shared-role'] -and $_.tags.'shared-role' -eq 'cosmos' })
   if ($sh.accountName) { $accounts = @($accounts | Where-Object { $_.name -eq $sh.accountName }) }
   if ($accounts.Count -gt 1) { throw "More than one Cosmos DB account in $($sh.resourceGroup) is tagged shared-role=cosmos; set accountName in $($sh.path)." }
-  if ($accounts.Count -eq 0) { return $null }
-  return $accounts[0]
+  if ($accounts.Count -eq 1) { return $accounts[0] }
+  if ($all.Count -gt 0) {
+    $wanted = if ($sh.accountName) { " named $($sh.accountName)" } else { '' }
+    throw "Resource group $($sh.resourceGroup) has Cosmos DB account(s) ($(($all | ForEach-Object { $_.name }) -join ', ')) but none tagged shared-role=cosmos$wanted. Tag the shared one or fix accountName in $($sh.path); refusing to create or overwrite an account."
+  }
+  return $null
 }
 
 function Get-CixCosmosAccount {
@@ -293,19 +308,46 @@ function Get-CixCosmosAccount {
   return $account
 }
 
-function Assert-CixDatabase {
-  <# Fails unless CIX's database exists in the shared account. #>
+function Test-CixDatabase {
+  <# Whether CIX's database exists in the shared account. Fails on any error other than "not found". #>
   param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$AccountName)
-  Invoke-CixAz @('cosmosdb', 'sql', 'database', 'show', '--account-name', $AccountName, '--resource-group', $Settings.shared.resourceGroup,
-    '--name', $Settings.cosmos.databaseName, '--only-show-errors', '-o', 'none') | Out-Null
+  $output = Invoke-CixNative { & az cosmosdb sql database show --account-name $AccountName --resource-group $Settings.shared.resourceGroup `
+      --name $Settings.cosmos.databaseName --only-show-errors -o none 2>&1 }
+  if ($LASTEXITCODE -eq 0) { return $true }
+  if ((($output | ForEach-Object { "$_" }) -join ' ') -match 'NotFound|not found|does not exist') { return $false }
+  throw "Couldn't check whether database '$($Settings.cosmos.databaseName)' exists in $AccountName."
 }
 
 function Get-CixEnvironmentTags {
-  <# The tags on CIX's resource group (set by infra/main.bicep): cix-environment and cix-protected. $null if it doesn't exist. #>
+  <# The tags on CIX's resource group (set by infra/main.bicep). $null if the group doesn't exist. #>
   param([Parameter(Mandatory)][hashtable]$Settings)
   if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return $null }
   $group = Invoke-CixAz @('group', 'show', '--name', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
   return $group.tags
+}
+
+function Assert-CixDatabaseClaim {
+  <#
+    The database belongs to this environment and no other: no other resource group claims it (tags cix-database and
+    cix-cosmos-account, set by infra/main.bicep). With -RequireOwn, this environment's group must claim it too (resets).
+    For a deployment, a database that already exists must already be this environment's, so a settings typo can't take
+    over another project's or environment's database.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$AccountName, [switch]$RequireOwn)
+  $db = $Settings.cosmos.databaseName
+  $claims = @(Invoke-CixAz @('group', 'list', '--tag', "cix-database=$db", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+      Where-Object { $_.tags -and $_.tags.PSObject.Properties['cix-cosmos-account'] -and $_.tags.'cix-cosmos-account' -eq $AccountName })
+  $others = @($claims | Where-Object { $_.name -ne $Settings.resourceGroup })
+  if ($others.Count -gt 0) {
+    throw "Database '$db' in $AccountName is claimed by resource group(s) $(($others | ForEach-Object { $_.name }) -join ', '), not only $($Settings.resourceGroup). Refusing."
+  }
+  $own = @($claims | Where-Object { $_.name -eq $Settings.resourceGroup }).Count -eq 1
+  if ($RequireOwn -and -not $own) {
+    throw "Resource group $($Settings.resourceGroup) isn't tagged cix-database=$db and cix-cosmos-account=$AccountName. Refusing."
+  }
+  if (-not $own -and (Test-CixDatabase -Settings $Settings -AccountName $AccountName)) {
+    throw "Database '$db' already exists in $AccountName but no CIX environment claims it (it may be another project's). Choose another cosmos.databaseName in $($Settings.path). Refusing."
+  }
 }
 
 function Get-CixCosmosKey {

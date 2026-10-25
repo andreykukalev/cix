@@ -1,5 +1,5 @@
 {
-  "$comment": "Template for a production (live-money) environment. Copy to prod.json and fill in. protected: true makes reset-database.ps1 refuse to touch it. Its database must differ from dev's when both share one account.",
+  "$comment": "Template for a production (live-money) environment. Copy to prod.json and fill in. protected: true makes reset-database.ps1 refuse to touch it. Its database must differ from dev's when both share one account. Before live money, revisit ADR-0009: the shared account's keys reach every project's database (provision.ps1 refuses a protected environment there without -AllowProtectedInSharedAccount).",
   "environmentName": "prod",
   "protected": true,
   "subscriptionId": "",

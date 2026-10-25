@@ -24,8 +24,10 @@ param dashboardLocation string = 'westeurope'
 @maxLength(8)
 param namePrefix string = 'cix'
 
-@description('The shared Cosmos DB account\'s resource group and name (from infra/shared/main.bicep).')
+@description('The shared Cosmos DB account\'s resource group (from infra/shared/main.bicep).')
 param sharedResourceGroupName string
+
+@description('The shared Cosmos DB account\'s name.')
 param sharedAccountName string
 
 @description('CIX\'s database in the shared account; the engine uses Cosmos:Database.')
@@ -45,10 +47,14 @@ param deployDashboard bool = true
 @description('Extra tags for CIX\'s resources.')
 param tags object = {}
 
+// cix-database and cix-cosmos-account claim the database for this environment: the scripts refuse to deploy over, or
+// reset, a database that no group or another group claims.
 var allTags = union(tags, {
   'cix-environment': environmentName
   'cix-component': 'cix'
   'cix-protected': protectedEnvironment ? 'true' : 'false'
+  'cix-database': databaseName
+  'cix-cosmos-account': sharedAccountName
 })
 
 resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
@@ -78,12 +84,9 @@ module dashboard 'modules/dashboard.bicep' = if (deployDashboard) {
     databaseName: databaseName
     tags: allTags
   }
-  dependsOn: [database]
 }
 
-output resourceGroupName string = group.name
 output cosmosAccountName string = sharedAccountName
 output cosmosEndpoint string = database.outputs.endpoint
-output databaseName string = databaseName
 output staticWebAppName string = deployDashboard ? dashboard!.outputs.name : ''
 output dashboardUrl string = deployDashboard ? dashboard!.outputs.url : ''

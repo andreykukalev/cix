@@ -29,7 +29,7 @@ Nothing in this guide runs by itself. You provision, switch and reset, each with
 | Data sent from Azure to your PC | | Well under the free 100 GB a month |
 
 Charges you could see:
-- **More than 1000 RU/s across all databases in the shared account.** The part over 1000 is billed, about $5.80 a month per 100 RU/s. A database needs at least 400 RU/s, so CIX plus one more project at 400 stay free, and a third project adds about $23 a month.
+- **More than 1000 RU/s across all databases in the shared account.** The part over 1000 is billed, about $5.80 a month per 100 RU/s. A database needs at least 400 RU/s, so CIX plus one more database at 400 stay free (a CIX prod environment counts as one), and a third adds about $12 a month (the 200 RU/s over 1000).
 - **Another free-tier account already exists in the subscription.** Only one account per subscription can have the free tier, so the first deployment of the shared account fails. Use another subscription, or set `enableFreeTier` to `false` in `infra/shared/shared.json` and expect about $23 a month for CIX's 400 RU/s.
 - **Storage over 25 GB**, at about $0.25 per GB a month. The journal grows by a few MB a day.
 
@@ -143,7 +143,7 @@ It is **read-only and public** (anyone with the URL can open it):
 | What the key can do | Read and write documents. It can't create or delete containers: key-based metadata writes are disabled, and schema changes go through Azure Resource Manager with your Azure sign-in. |
 | Dashboard API to Cosmos DB | The read-only key, in the Static Web App's settings, used server side only. |
 | Your scripts | Your Azure CLI sign-in (`az login`). The scripts read keys into memory when needed and never print them. |
-| Rotating the engine's key | `az cosmosdb keys regenerate --kind primary ...`, then run `provision.ps1 -Environment dev` again (it rewrites `secrets/cosmos_key`), then `docker compose ... restart engine`. The key belongs to the shared account, so every project using it needs the new key. |
+| Rotating the engine's key | `az cosmosdb keys regenerate --kind primary ...`, then run `provision.ps1 -Environment dev -SkipInfrastructure` (it only rewrites `secrets/cosmos_key`), then `docker compose ... restart engine`. The key belongs to the shared account, so every project using it needs the new key. |
 
 ## Reliability
 
@@ -187,6 +187,7 @@ docker compose -f docker-compose.yml -f docker-compose.azure.yml up -d
 
 Safeguards:
 - It refuses environments marked `protected`, in the settings file or in the `cix-protected` tag on CIX's resource group (set by the template from the same setting). The group must also be tagged `cix-environment=<environment>`.
+- The database must be this environment's alone: its group's `cix-database` and `cix-cosmos-account` tags must name it, and no other group may claim it. So a copied or mistyped settings file can't point a reset (or a deployment) at another environment's or project's database. Two environment files sharing one database name are refused outright.
 - Agents can't run it: a hook blocks the script for every Claude agent, along with deleting Cosmos DB resources, regenerating keys, or `docker compose down -v`. It is the one thing allowed to delete journal entries, an owner-approved exception to the append-only rule ([ADR-0008](adr/0008-azure-database-local-agents-dashboard.md)).
 - It acts only on CIX's database (`cosmos.databaseName`) in the single shared account (tagged `shared-role=cosmos` in the shared resource group), and checks the database exists first. Other projects' databases are never touched.
 - It touches only the `journal` and `state` containers. It never deletes the database or the shared account.
@@ -198,6 +199,7 @@ The local emulator is reset differently: `docker compose down -v` removes its vo
 ## Limits
 
 - **One free-tier account per subscription** (see costs), which is why it is shared.
+- **A live (protected) environment doesn't belong in the shared account while keys are account-wide**: `provision.ps1` refuses one there unless you pass `-AllowProtectedInSharedAccount`. Revisit ADR-0009 first.
 - **The shared account's keys reach every project's database in it.** CIX's key (and the dashboard's read-only key) could read, and CIX's key write, other projects' data, and theirs CIX's. Acceptable while every project is yours and on paper or test data. Per-project access would need Cosmos DB role-based access with an Entra identity per project ([ADR-0009](adr/0009-shared-cosmos-account.md)).
 - **Other projects** add their own database to the shared account from their own templates (as `infra/modules/cosmos-database.bicep` does), with `existing` references to the account, and must keep the total throughput within 1000 RU/s to stay free.
 - **No managed identity.** Static Web Apps managed functions can't use one, so the dashboard holds the read-only key in its settings. A separate Function App on the Consumption plan could use a managed identity if that ever matters.

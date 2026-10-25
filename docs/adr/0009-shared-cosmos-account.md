@@ -17,10 +17,13 @@ One Cosmos DB account, with a generic name (`cosmos-shared-<suffix>`), lives in 
   - Settings: `infra/shared/shared.json` and `infra/environments/<env>.json`.
 - **Provisioning.**
   - `provision.ps1` deploys the shared account only when it doesn't exist yet, or with `-UpdateShared`. Otherwise it leaves the account as it is, because other projects may depend on it.
-  - The scripts find the account by its `shared-role=cosmos` tag in the shared group, never by name alone.
-- **Protection moves to CIX's resource group.** The `cix-environment` and `cix-protected` tags are now on `rg-cix-<env>` rather than on the account. The reset script checks them, then touches only CIX's database. It never deletes a database or the account.
+  - The scripts find the account by its `shared-role=cosmos` tag in the shared group, never by name alone. A shared group that holds accounts but none tagged is refused, so an untagged account is never overwritten.
+  - `-UpdateShared` updates the account it found, by name, so it can't create a second one.
+- **Protection moves to CIX's resource group.** The `cix-environment` and `cix-protected` tags are now on `rg-cix-<env>` rather than on the account. The reset script checks them and the database claim (below), then touches only that database's two containers. It never deletes a database or the account.
 - **Keys stay account-wide (the owner's choice).** The engine uses the shared account's key, and the dashboard the read-only key. Either key reaches every project's database in the account. That is acceptable while every project is the owner's and on paper or test data.
-- **Throughput.** The free tier's 1000 RU/s covers CIX's 400 plus one more 400 RU/s project. A third project costs about $23 a month.
+- **Throughput.** The free tier's 1000 RU/s covers CIX's 400 plus one more 400 RU/s database (another project, or a CIX prod environment). A third costs about $12 a month (the 200 RU/s over 1000).
+- **Ownership is tagged.** CIX's resource group carries `cix-database` and `cix-cosmos-account`. Provisioning refuses to deploy over a database that exists but isn't this environment's, and the reset script refuses a database that its group doesn't claim, or that another group claims too. Two environment files sharing a database name are refused.
+- **Live money stays out while keys are shared.** `provision.ps1` refuses a protected environment in the shared account without `-AllowProtectedInSharedAccount`; before going live, move it to its own account or adopt per-project access.
 
 ## Alternatives considered
 
