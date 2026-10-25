@@ -191,7 +191,7 @@ public sealed partial class ScannerFilterRecorder(IScannerFilterStore store, IJo
         var now = JsonSerializer.SerializeToElement(after, Json);
         return now.EnumerateObject()
             .Where(p => !old.TryGetProperty(p.Name, out var o) || !JsonElement.DeepEquals(o, p.Value))
-            .Select(p => $"{p.Name} {(old.TryGetProperty(p.Name, out var o) ? o.ToString() : "unset")} → {p.Value}")
+            .Select(p => $"{p.Name} {(old.TryGetProperty(p.Name, out var o) ? o.GetRawText() : "unset")} → {p.Value.GetRawText()}") // JSON text: true, not True
             .ToList();
     }
 
