@@ -11,8 +11,51 @@ permissions:
   # gitleaks-action lists a pull request's commits through the API.
   pull-requests: read
 
+# A new push to a pull request cancels its run still in progress: only the latest commit's result matters. Other runs
+# (main, manual) each get their own group, so none is ever cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Which jobs this run needs (tools/ci/plan.sh), to save Actions minutes: only the parts the change touches, and
+  # nothing again for a merge a green pull request already tested exactly. Changes to CI itself run everything.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # which pull request a merge came from
+      issues: read # whether its base ever changed (the pull request's timeline)
+      actions: read # whether its CI run's jobs passed
+    outputs:
+      dotnet: ${{ steps.plan.outputs.dotnet }}
+      containers: ${{ steps.plan.outputs.containers }}
+      azure: ${{ steps.plan.outputs.azure }}
+      windows: ${{ steps.plan.outputs.windows }}
+      secrets: ${{ steps.plan.outputs.secrets }}
+      dashboard: ${{ steps.plan.outputs.dashboard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci/plan.sh
+
   build-test:
+    needs: plan
+    if: needs.plan.outputs.dotnet == 'true'
     runs-on: ubuntu-latest
     services:
       # Cosmos DB emulator for the persistence tests (they skip themselves when it isn't configured).
@@ -72,6 +115,8 @@ jobs:
 
   # The Compose images build, and the engine starts in its container against the emulator (paper, no exchange keys).
   containers:
+    needs: plan
+    if: needs.plan.outputs.containers == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -130,6 +175,8 @@ jobs:
 
   # The dashboard API's tests, and that the Azure templates and scripts are valid. Nothing here touches Azure.
   azure-and-dashboard:
+    needs: plan
+    if: needs.plan.outputs.azure == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -157,7 +204,10 @@ jobs:
         run: ./tests/azure/CixAzure.Tests.ps1
 
   azure-scripts-windows-powershell:
-    # The owner runs the Azure scripts in Windows PowerShell 5.1, which has no 7-only syntax or parameters.
+    # The owner runs the Azure scripts in Windows PowerShell 5.1, which has no 7-only syntax or parameters. Windows
+    # minutes count double, so this runs only when the Azure scripts, their tests or the templates change.
+    needs: plan
+    if: needs.plan.outputs.windows == 'true'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -172,6 +222,8 @@ jobs:
         run: ./tests/azure/CixAzure.Tests.ps1
 
   secret-scan:
+    needs: plan
+    if: needs.plan.outputs.secrets == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -183,10 +235,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   dashboard-bundle:
-    # Step 1 of publishing the dashboard (after every push to main, or a manual run on main): install the API's
+    # Step 1 of publishing the dashboard (after a push to main that changes it, or a manual run on main): install the API's
     # dependency and the pinned Static Web Apps CLI here, in a job with no Azure access, so no npm install script ever
     # runs where credentials are in reach. Hands the result to deploy-dashboard as an artifact.
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    # Published when the dashboard or its settings changed, or on a manual run.
+    needs: plan
+    if: >-
+      github.ref == 'refs/heads/main'
+      && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.plan.outputs.dashboard == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -207,13 +263,19 @@ jobs:
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           TOKEN: ${{ github.token }}
         run: |
-          # Runs can finish out of order; an older one must not publish over a newer one (which publishes itself).
-          tip=$(git -c "http.extraheader=AUTHORIZATION: bearer $TOKEN" ls-remote "$REPO_URL" refs/heads/main | cut -f1)
+          # Runs can finish out of order; an older one must not publish over a newer dashboard. A newer push that didn't
+          # change the dashboard doesn't publish, so an older run still publishes when its dashboard (and the workflow that
+          # deploys it) is the tip's.
+          git() { command git -c "http.extraheader=AUTHORIZATION: bearer $TOKEN" "$@"; }
+          tip=$(git ls-remote "$REPO_URL" refs/heads/main | cut -f1)
           if [ "$tip" = "$GITHUB_SHA" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif git fetch -q --depth=1 --no-tags "$REPO_URL" "$tip" && git diff --quiet "$GITHUB_SHA" "$tip" -- dashboard infra .github/workflows; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::main has moved on, but its dashboard is this one; publishing."
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::main has moved on; the newer run publishes the dashboard."
+            echo "::notice::main has moved on with dashboard changes; the newer run publishes the dashboard."
           fi
 
       - uses: actions/setup-node@v4
@@ -244,7 +306,11 @@ jobs:
     # GitHub; the repository variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID are IDs, not secrets.
     # Set up once with tools/azure/setup-ci-deploy.ps1 (docs/azure.md, ADR-0010).
     needs: [azure-and-dashboard, secret-scan, dashboard-bundle]
-    if: needs.dashboard-bundle.outputs.publish == 'true'
+    # The checks may have been skipped (they passed on this exact content in the pull request); none may have failed,
+    # and cancelling the run stops the publish.
+    if: >-
+      !cancelled() && needs.dashboard-bundle.outputs.publish == 'true'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -277,11 +343,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }} # this step only; the publish step below doesn't get it
         run: |
-          # Checked again inside the concurrency group: an older run waiting behind a newer one must not publish.
-          if [ "$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" = "$GITHUB_SHA" ]; then
+          # Checked again inside the concurrency group: an older run waiting behind a newer one must not publish over a
+          # newer dashboard (one the tip changed since this commit).
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$tip" = "$GITHUB_SHA" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
+          # Only a tip strictly ahead of this commit, with the full file list (the API lists at most 300), and no change
+          # to the dashboard or to the workflow that deploys it. Anything else leaves publishing to the newer run.
+          elif changed=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$tip" --jq '
+                 if .status == "ahead" and (.files | length) < 300
+                 then [.files[].filename | select(startswith("dashboard/") or startswith("infra/") or startswith(".github/workflows/"))] | length
+                 else -1 end') && [ "$changed" = 0 ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"; echo "::notice::main has moved on, but its dashboard is this one; publishing."
           else
-            echo "publish=false" >> "$GITHUB_OUTPUT"; echo "::notice::main has moved on; the newer run publishes the dashboard."
+            echo "publish=false" >> "$GITHUB_OUTPUT"; echo "::notice::main has moved on with dashboard changes; the newer run publishes the dashboard."
           fi
 
       - uses: actions/download-artifact@v4

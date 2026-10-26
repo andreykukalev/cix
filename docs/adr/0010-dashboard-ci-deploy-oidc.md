@@ -18,7 +18,7 @@ No secret in GitHub. CI signs in to Azure with GitHub OIDC as a dedicated identi
   - The deploy job verifies the bundle's hash, which it gets from the bundle job's output, before unpacking it.
   - It signs out of Azure, and removes the OIDC request variables, before running the pinned SWA CLI. This is hygiene, not a boundary: code running on the runner could still reach the runner's secrets. The real limit is the identity's role, which grants no more than the deployment token the CLI holds anyway.
   - The CLI's transitive dependencies and the API's are not locked yet: no lockfile could be generated where this was built (follow-up #61).
-- **Order.** A run that is no longer the tip of `main` doesn't publish, so an older run can't overwrite a newer dashboard. This is checked in the bundle job, and again just before publishing.
+- **Order.** An older run can't overwrite a newer dashboard. A run that is no longer the tip of `main` publishes only when `dashboard/`, `infra/` and `.github/workflows/` are unchanged between it and the tip (amended in #73: since CI skips publishing on pushes that don't change the dashboard, the run that did change it must still publish when it finishes after one of those). This is checked in the bundle job, and again just before publishing.
 - **Setup.** `tools/azure/setup-ci-deploy.ps1` checks everything before it changes anything, and creates the trust for `main` last.
   - It refuses to reuse an identity with any other way in: secrets, certificates or other owners on the app registration or its service principal; API permissions or directory roles; another subject, issuer or audience; a broader same-named role; or other role assignments.
   - It asks before each change.
