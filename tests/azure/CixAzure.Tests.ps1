@@ -883,6 +883,7 @@ $agentsFake = @{
   'ad app show'           = '{"appRoles":[]}'
   'ad sp show'            = '{"id":"66666666-6666-6666-6666-666666666666","appRoleAssignmentRequired":false}'
   'rest --method get'     = '{"value":[]}'
+  'ad sp owner'           = '[]'
   'ad sp list'            = '[]'
   'acr repository list'   = '["cix-engine","cix-trader"]'
   'acr repository show-tags' = '["abc123","def456"]'
@@ -940,6 +941,16 @@ Check 'provision.ps1 agents apps leaves the engine''s app role alone when it is 
   $r = Invoke-AgentsProvision @{ 'ad app show' = $role; 'ad sp show' = $sp; 'rest --method get' = $stranger } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
   if (-not $r.Error -or -not $r.Error.Contains('someone (99999999-9999-9999-9999-999999999999)')) { throw "got: $($r.Error)" }
   if ($r.Calls.Contains('rest --method post --url https://graph')) { throw 'assigned the role anyway' }
+  # Refused too, before any change: another owner of the service principal, more than one page of assignments, and any
+  # assignment from before the role existed (a job identity's default access included).
+  foreach ($case in @(
+      @{ Overrides = @{ 'ad sp owner' = "[{`"id`":`"$ownerId`"},{`"id`":`"88888888-8888-8888-8888-888888888888`"}]" }; Says = 'other owners (88888888-8888-8888-8888-888888888888)' },
+      @{ Overrides = @{ 'rest --method get' = '{"value":[],"@odata.nextLink":"https://graph.microsoft.com/next"}' }; Says = 'more assignments than one page lists' },
+      @{ Overrides = @{ 'rest --method get' = '{"value":[{"principalId":"aaaaaaaa-0000-0000-0000-000000000001","appRoleId":"00000000-0000-0000-0000-000000000000","principalDisplayName":"job1"}]}' }; Says = 'job1 (aaaaaaaa-0000-0000-0000-000000000001)' })) {
+    $r = Invoke-AgentsProvision $case.Overrides @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
+    foreach ($never in @('--app-roles', 'ad sp update', 'rest --method post --url https://graph')) { if ($r.Calls.Contains($never)) { throw "ran '$never' before refusing ($($case.Says))" } }
+  }
 }
 
 Check 'provision.ps1 agents deletes the cosmos-key an earlier template left in Key Vault, and the engine''s access to it' {
@@ -1009,7 +1020,8 @@ $engineApp = '[{"appId":"55555555-5555-5555-5555-555555555555","displayName":"ci
 Check 'provision.ps1 agents apps adopts an engine app registration that is yours alone' {
   $r = Invoke-AgentsProvision @{ 'ad app list' = $engineApp; 'ad sp list' = '[{"id":"sp"}]' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
-  foreach ($never in @('ad app create', 'ad app update', 'ad sp create')) { if ($r.Calls.Contains($never)) { throw "ran '$never'" } }
+  # The app role is set up on it as on a new one (--app-roles); its identifier URI is left alone.
+  foreach ($never in @('ad app create', 'ad app update --id 55555555-5555-5555-5555-555555555555 --identifier-uris', 'ad sp create')) { if ($r.Calls.Contains($never)) { throw "ran '$never'" } }
   if (-not $r.Calls.Contains('ad app owner list --id 55555555-5555-5555-5555-555555555555')) { throw "owners not checked: $($r.Calls)" }
 }
 

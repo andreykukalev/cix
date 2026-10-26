@@ -221,8 +221,6 @@ if (-not $SkipInfrastructure) {
     Write-CixInfo "Key Vault: $($outputs.keyVaultName.value)"
     if ($agents -eq 'apps') {
       Write-CixInfo "Engine app: $($outputs.engineAppName.value); jobs: $(@($outputs.agentJobNames.value) -join ', ')"
-      # Who may get a token for the engine at all: the three job identities, by app role assignment.
-      Set-CixEngineAppRole -Audience $agentValues.engineAudience -JobPrincipalIds @($outputs.agentJobPrincipalIds.value)
     }
     # The template before the engine signed in with its identity copied the shared account's read-write key into Key Vault
     # as cosmos-key, readable by the engine. A deployment doesn't remove what a template no longer has: do it here.
@@ -232,6 +230,10 @@ if (-not $SkipInfrastructure) {
       Confirm-Step "Delete cosmos-key from $vaultName, and the engine's access to it?"
       Remove-CixVaultSecretAndAccess -Vault $vaultName -Name 'cosmos-key'
       Write-CixWarn "Deleted. If the engine app ever ran while it was there, an image CI deployed could have read the key: regenerate the shared account's primary key (docs/azure.md, 'If you suspect misuse')."
+    }
+    if ($agents -eq 'apps') {
+      # Who may get a token for the engine at all: the three job identities, by app role assignment.
+      Set-CixEngineAppRole -Audience $agentValues.engineAudience -JobPrincipalIds @($outputs.agentJobPrincipalIds.value) -OwnerId $me.Id -Ask { param($Question) Confirm-Step $Question }
     }
   }
 }
