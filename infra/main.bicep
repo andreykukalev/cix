@@ -1,6 +1,8 @@
 // CIX in Azure: its own resource group with the read-only dashboard (Static Web Apps, Free), and its own database in the
-// shared Cosmos DB account (infra/shared/main.bicep, deployed first). The engine and the agents keep running in Docker on
-// the owner's PC and connect to the database over HTTPS with the account key.
+// shared Cosmos DB account (infra/shared/main.bicep, deployed first). Until agents is 'apps', the engine and the agents run
+// in Docker on the owner's PC and connect to the database over HTTPS with the account key.
+// agents (ADR-0013): 'platform' adds what the engine and the agent jobs run on (modules/agents-platform.bicep); 'apps'
+// also deploys the paper engine and the three jobs (modules/agents-apps.bicep). 'none', the default, adds neither.
 // Deploy with tools/azure/provision.ps1, which reads infra/environments/<name>.json. See docs/azure.md and ADR-0009.
 targetScope = 'subscription'
 
@@ -47,6 +49,41 @@ param deployDashboard bool = true
 @description('Extra tags for CIX\'s resources.')
 param tags object = {}
 
+@description('The engine and agents in Azure: none, platform (what they run on) or apps (the paper engine and the three jobs too).')
+@allowed(['none', 'platform', 'apps'])
+param agents string = 'none'
+
+@description('Region for the engine, the jobs and what they run on: the Cosmos DB account\'s region (Poland Central).')
+param agentsLocation string = location
+
+@description('agents apps: the engine\'s application ID URI in Entra (api://<app ID>), created by tools/azure/provision.ps1.')
+param engineAudience string = ''
+
+@description('agents apps: the image tag to run (the commit SHA CI built). provision.ps1 keeps the one running unless told otherwise.')
+param imageTag string = ''
+
+@description('agents apps: run the engine. False keeps it stopped (no replica), as until the cutover.')
+param startEngine bool = false
+
+@description('agents apps: the trader\'s model (an alias like sonnet, or a full model name).')
+param traderModel string = 'sonnet'
+
+@description('agents apps: the analyst\'s model.')
+param analystModel string = 'opus'
+
+@description('agents apps: when the Claude setup token expires (YYYY-MM-DD, not a secret). Empty: no check.')
+param claudeTokenExpires string = ''
+
+@description('agents: monthly budget for CIX\'s resource group, in the billing currency.')
+@minValue(1)
+param monthlyBudget int = 40
+
+@description('agents: the budget\'s first month (YYYY-MM-01); it can\'t be moved once the budget exists.')
+param budgetStartDate string = '2026-11-01'
+
+@description('agents: where budget alerts go (provision.ps1 passes your sign-in address; it isn\'t kept in the repo). Empty: no budget.')
+param budgetContactEmail string = ''
+
 // cix-database and cix-cosmos-account claim the database for this environment: the scripts refuse to deploy over, or
 // reset, a database that no group or another group claims.
 var allTags = union(tags, {
@@ -86,7 +123,55 @@ module dashboard 'modules/dashboard.bicep' = if (deployDashboard) {
   }
 }
 
+module agentsPlatform 'modules/agents-platform.bicep' = if (agents != 'none') {
+  name: 'cix-${environmentName}-agents-platform'
+  scope: group
+  params: {
+    namePrefix: namePrefix
+    environmentName: environmentName
+    location: agentsLocation
+    tags: allTags
+    cosmosAccountName: sharedAccountName
+    cosmosResourceGroupName: sharedResourceGroupName
+    monthlyBudget: monthlyBudget
+    budgetStartDate: budgetStartDate
+    budgetContactEmail: budgetContactEmail
+  }
+}
+
+module agentsApps 'modules/agents-apps.bicep' = if (agents == 'apps') {
+  name: 'cix-${environmentName}-agents-apps'
+  scope: group
+  params: {
+    namePrefix: namePrefix
+    environmentName: environmentName
+    location: agentsLocation
+    tags: allTags
+    environmentId: agentsPlatform!.outputs.environmentId
+    registryServer: agentsPlatform!.outputs.registryServer
+    queueEndpoint: agentsPlatform!.outputs.queueEndpoint
+    storageAccountName: agentsPlatform!.outputs.storageAccountName
+    keyVaultName: agentsPlatform!.outputs.keyVaultName
+    keyVaultUri: agentsPlatform!.outputs.keyVaultUri
+    engineIdentity: agentsPlatform!.outputs.engineIdentity
+    jobIdentities: agentsPlatform!.outputs.jobIdentities
+    cosmosEndpoint: database.outputs.endpoint
+    databaseName: databaseName
+    engineAudience: engineAudience
+    imageTag: imageTag
+    startEngine: startEngine
+    traderModel: traderModel
+    analystModel: analystModel
+    claudeTokenExpires: claudeTokenExpires
+  }
+}
+
 output cosmosAccountName string = sharedAccountName
 output cosmosEndpoint string = database.outputs.endpoint
 output staticWebAppName string = deployDashboard ? dashboard!.outputs.name : ''
 output dashboardUrl string = deployDashboard ? dashboard!.outputs.url : ''
+output registryName string = agents != 'none' ? agentsPlatform!.outputs.registryName : ''
+output registryServer string = agents != 'none' ? agentsPlatform!.outputs.registryServer : ''
+output keyVaultName string = agents != 'none' ? agentsPlatform!.outputs.keyVaultName : ''
+output engineAppName string = agents == 'apps' ? agentsApps!.outputs.engineAppName : ''
+output agentJobNames array = agents == 'apps' ? agentsApps!.outputs.jobNames : []

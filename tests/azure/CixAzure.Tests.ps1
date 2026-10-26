@@ -121,6 +121,47 @@ Check 'deployment parameters: valid JSON, no byte-order mark, arrays stay arrays
   }
 }
 
+Check 'agents settings: dev keeps them off, dates stay text, and they reach the template as its parameters' {
+  $s = Read-CixEnvironment -Name dev
+  Expect $s.agents.deploy 'none' 'agents.deploy in dev.json (on only when the owner says so)'
+  Expect ($s.agents.budgetStartDate -is [string]) $true 'budgetStartDate is text'
+  Expect $s.agents.budgetStartDate '2026-11-01' 'budgetStartDate'
+  $s.agents.deploy = 'platform'
+  $d = Get-CixDeploymentValues -Settings $s -SharedAccountName 'cosmos-shared-test' -Agents @{ budgetContactEmail = 'owner@example.com' }
+  Expect $d.Values.agents 'platform' 'agents'
+  Expect $d.Values.agentsLocation 'polandcentral' 'agentsLocation'
+  Expect $d.Values.startEngine $false 'startEngine'
+  Expect $d.Values.monthlyBudget 40 'monthlyBudget'
+  Expect $d.Values.budgetContactEmail 'owner@example.com' 'budgetContactEmail'
+  if ($d.Values.Contains('imageTag')) { throw 'imageTag given without a value' }
+  $template = [IO.File]::ReadAllText($d.Template)
+  foreach ($name in $d.Values.Keys) { if ($template -notmatch "(?m)^param $name ") { throw "$name isn't a template parameter" } }
+}
+
+foreach ($case in @(
+    @{ Change = { param($a) $a.deploy = 'all' }; Says = 'agents.deploy must be none, platform or apps' },
+    @{ Change = { param($a) $a.startEngine = 'yes' }; Says = 'agents.startEngine must be true or false' },
+    @{ Change = { param($a) $a.traderModel = 'Sonnet; rm' }; Says = 'agents.traderModel must be a model alias' },
+    @{ Change = { param($a) $a.budgetStartDate = '2026-11-15' }; Says = 'first of a month' },
+    @{ Change = { param($a) $a.Remove('location') }; Says = "agents is missing 'location'" })) {
+  Check "agents settings refused: $($case.Says)" {
+    $s = Read-CixEnvironment -Name dev
+    & $case.Change $s.agents
+    $message = $null
+    try { Assert-CixAgentSettings -Settings $s -Path 'dev.json' } catch { $message = $_.Exception.Message }
+    if (-not $message -or -not $message.Contains($case.Says)) { throw "got: $message" }
+  }
+}
+
+Check 'agents stay off in a protected (live-money) environment' {
+  $s = Read-CixEnvironment -Name dev
+  $s.protected = $true
+  $s.agents.deploy = 'platform'
+  $message = $null
+  try { Assert-CixAgentSettings -Settings $s -Path 'prod.json' } catch { $message = $_.Exception.Message }
+  if (-not $message -or -not $message.Contains('must stay none in a protected')) { throw "got: $message" }
+}
+
 Check 'ConvertFrom-CixJson sends array items one by one' {
   Expect (@('[{"a":1},{"a":2},{"a":3}]' | ConvertFrom-CixJson | Where-Object { $_.a -ge 2 }).Count) 2 'filtered items'
   Expect (@('[]' | ConvertFrom-CixJson).Count) 0 'empty array'
@@ -666,6 +707,72 @@ Check 'two environment files sharing one database are refused' {
     if (-not $message -or -not $message.Contains("is also used by devcopy.json")) { throw "got: $message" }
   }
   finally { Remove-Item $copy -Force }
+}
+
+# The engine and agents in Azure (agents.deploy apps), against a fake az: an environment file of its own, removed after.
+$agentsFake = @{
+  'bicep'                 = 'Bicep CLI version 0.33.0'
+  'provider show'         = '{"resourceTypes":[{"resourceType":"jobs","locations":["Poland Central"]},{"resourceType":"managedEnvironments","locations":["Poland Central","Germany West Central"]}]}'
+  'ad signed-in-user'     = '{"userPrincipalName":"owner@example.com"}'
+  'keyvault list'         = '[{"name":"kvother","tags":{}},{"name":"kvcixcitest1","tags":{"cix-environment":"citest"}}]'
+  'acr list'              = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}}]'
+  'keyvault secret list'  = '[{"name":"cosmos-key","id":"https://kvcixcitest1.vault.azure.net/secrets/cosmos-key"},{"name":"claude-token","id":"https://kvcixcitest1.vault.azure.net/secrets/claude-token"}]'
+  'ad app list'           = '[]'
+  'ad app create'         = '44444444-4444-4444-4444-444444444444'
+  'ad sp list'            = '[]'
+  'acr repository'        = '["abc123","def456"]'
+  'containerapp list'     = '[]'
+  'deployment sub create' = '{"properties":{"outputs":{"cosmosAccountName":{"value":"cosmos-shared-x"},"cosmosEndpoint":{"value":"https://cosmos-shared-x.documents.azure.com:443/"},"staticWebAppName":{"value":"stapp-cix-citest"},"dashboardUrl":{"value":"https://dash.example"},"registryServer":{"value":"crcixcitest1.azurecr.io"},"keyVaultName":{"value":"kvcixcitest1"},"engineAppName":{"value":"ca-cix-citest-engine"},"agentJobNames":{"value":["caj-cix-citest-trader","caj-cix-citest-requests","caj-cix-citest-analyst"]}}}}'
+}
+function Invoke-AgentsProvision([hashtable]$Overrides, [hashtable]$Arguments) {
+  $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
+  $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest').Replace('"databaseName": "cix"', '"databaseName": "cix-citest"').Replace('"deploy": "none"', '"deploy": "apps"')
+  [IO.File]::WriteAllText($file, $json)
+  $extra = @{}; foreach ($k in $agentsFake.Keys) { $extra[$k] = $agentsFake[$k] }
+  foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
+  try {
+    return Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $false; Extra = $extra } {
+      & (Join-Path $azureTools 'provision.ps1') -Environment citest @Arguments
+    }
+  }
+  finally { Remove-Item $file -Force }
+}
+
+Check 'provision.ps1 agents apps (-Yes): creates the engine''s Entra app, checks both images, deploys and reports the apps' {
+  $r = Invoke-AgentsProvision @{} @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($expected in @('Engine and agents (apps, in polandcentral)', 'Images: crcixcitest1, tag abc123. Engine: stopped', 'Created the Entra app registration cix-engine-citest',
+      'Engine app: ca-cix-citest-engine; jobs: caj-cix-citest-trader, caj-cix-citest-requests, caj-cix-citest-analyst')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+  foreach ($call in @('ad app update --id 44444444-4444-4444-4444-444444444444 --identifier-uris api://44444444-4444-4444-4444-444444444444', 'ad sp create --id 44444444-4444-4444-4444-444444444444',
+      'acr repository show-tags --name crcixcitest1 --repository cix-engine', 'acr repository show-tags --name crcixcitest1 --repository cix-trader')) {
+    if (-not $r.Calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
+  }
+  if ($r.Calls.Contains('keyvault secret set')) { throw 'uploaded claude-token although the vault has it' }
+  if ($r.Calls -match 'keyvault secret show') { throw 'read a secret value' }
+}
+
+Check 'provision.ps1 agents apps preview creates nothing in Entra' {
+  $r = Invoke-AgentsProvision @{} @{ WhatIfOnly = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($never in @('ad app create', 'ad app update', 'ad sp create', 'deployment sub create', 'keyvault secret set')) {
+    if ($r.Calls.Contains($never)) { throw "a preview ran '$never'" }
+  }
+  if (-not $r.Output.Contains('the preview uses a placeholder')) { throw "no placeholder note in: $($r.Output)" }
+}
+
+foreach ($case in @(
+    @{ Overrides = @{ 'keyvault list' = '[]' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = "Deploy with agents.deploy 'platform' first" },
+    @{ Overrides = @{}; Arguments = @{ Yes = $true; SkipEngineConfig = $true }; Says = 'pass -ImageTag' },
+    @{ Overrides = @{}; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'nope' }; Says = 'has no cix-engine image tagged nope' },
+    @{ Overrides = @{ 'provider show' = '{"resourceTypes":[{"resourceType":"managedEnvironments","locations":["Germany West Central"]}]}' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'Set agents.location to germanywestcentral' },
+    @{ Overrides = @{ 'bicep' = 'Bicep CLI version 0.31.1' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = "run 'az bicep upgrade'" })) {
+  Check "provision.ps1 agents apps refuses: $($case.Says)" {
+    $r = Invoke-AgentsProvision $case.Overrides $case.Arguments
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
+    if ($r.Calls.Contains('deployment sub create')) { throw 'deployed anyway' }
+  }
 }
 
 Write-Host ''

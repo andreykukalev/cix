@@ -89,7 +89,38 @@ function Read-CixEnvironment {
     }
   }
   if ($s.shared.resourceGroup -eq $s.resourceGroup) { throw "${path}: the shared Cosmos DB account needs its own resource group, not $($s.resourceGroup)." }
+  if ($s.ContainsKey('agents')) { Assert-CixAgentSettings -Settings $s -Path $path }
   return $s
+}
+
+function Assert-CixAgentSettings {
+  <#
+    Checks the optional 'agents' block: the engine and the agent jobs in Azure (ADR-0013). deploy is none, platform (what they
+    run on) or apps (the paper engine and the three jobs too). Dates are kept as YYYY-MM-DD text whatever the JSON reader made
+    of them (PowerShell 7 may read them as dates).
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$Path)
+  $a = $Settings.agents
+  if ($a -isnot [hashtable]) { throw "${Path}: 'agents' must be an object." }
+  foreach ($key in 'deploy', 'location', 'startEngine', 'traderModel', 'analystModel', 'monthlyBudget', 'budgetStartDate') {
+    if (-not $a.ContainsKey($key)) { throw "${Path}: agents is missing '$key'." }
+  }
+  foreach ($key in 'budgetStartDate', 'claudeTokenExpires') {
+    if ($a.ContainsKey($key) -and $a[$key] -is [datetime]) { $a[$key] = $a[$key].ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) }
+  }
+  if (@('none', 'platform', 'apps') -notcontains $a.deploy) { throw "${Path}: agents.deploy must be none, platform or apps." }
+  if ($a.location -notmatch '^[a-z0-9]{3,40}$') { throw "${Path}: agents.location must be an Azure region name, like polandcentral." }
+  if ($a.startEngine -isnot [bool]) { throw "${Path}: agents.startEngine must be true or false." }
+  foreach ($key in 'traderModel', 'analystModel') {
+    if ("$($a[$key])" -notmatch '^[a-z0-9][a-z0-9.-]{1,63}(\[1m\])?$') { throw "${Path}: agents.$key must be a model alias or name, like sonnet." }
+  }
+  if (-not ($a.monthlyBudget -is [int] -or $a.monthlyBudget -is [long]) -or $a.monthlyBudget -lt 1) { throw "${Path}: agents.monthlyBudget must be a positive whole number." }
+  if ("$($a.budgetStartDate)" -notmatch '^\d{4}-\d{2}-01$') { throw "${Path}: agents.budgetStartDate must be the first of a month (YYYY-MM-01)." }
+  if ($a.ContainsKey('claudeTokenExpires') -and $a.claudeTokenExpires -and "$($a.claudeTokenExpires)" -notmatch '^\d{4}-\d{2}-\d{2}$') {
+    throw "${Path}: agents.claudeTokenExpires must be a date (YYYY-MM-DD) or empty."
+  }
+  # The templates deploy a paper engine only. The live engine gets its own resource group, Key Vault and template.
+  if ($Settings.protected -and $a.deploy -ne 'none') { throw "${Path}: agents.deploy must stay none in a protected (live-money) environment; the live engine gets its own setup (docs/research/azure-hosting.md)." }
 }
 
 function Read-CixSharedSettings {
@@ -221,8 +252,9 @@ function Get-CixDeploymentValues {
     The template and parameter values for one deployment: -Shared for the shared Cosmos DB account (infra/shared/main.bicep),
     otherwise CIX's resources (infra/main.bicep), which need the shared account's name.
   #>
-  param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Shared, [string]$SharedAccountName)
+  param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Shared, [string]$SharedAccountName, [hashtable]$Agents = @{})
   # -Shared with -SharedAccountName: update that existing account rather than the name the template would derive.
+  # -Agents: values found at run time for the agents' deployment (engineAudience, imageTag, budgetContactEmail).
   $tags = if ($Settings.ContainsKey('tags')) { $Settings.tags } else { @{} }
   if ($Shared) {
     $sh = $Settings.shared
@@ -241,34 +273,50 @@ function Get-CixDeploymentValues {
     }
   }
   if (-not $SharedAccountName) { throw 'The shared Cosmos DB account must exist before CIX is deployed.' }
+  $values = [ordered]@{
+    environmentName         = $Settings.environmentName
+    resourceGroupName       = $Settings.resourceGroup
+    location                = $Settings.location
+    dashboardLocation       = $Settings.dashboardLocation
+    namePrefix              = $Settings.namePrefix
+    sharedResourceGroupName = $Settings.shared.resourceGroup
+    sharedAccountName       = $SharedAccountName
+    databaseName            = $Settings.cosmos.databaseName
+    databaseThroughput      = [int]$Settings.cosmos.databaseThroughput
+    protectedEnvironment    = [bool]$Settings.protected
+    deployDashboard         = [bool]$Settings.deployDashboard
+    tags                    = $tags
+  }
+  if ($Settings.ContainsKey('agents')) {
+    $a = $Settings.agents
+    $values['agents'] = [string]$a.deploy
+    $values['agentsLocation'] = [string]$a.location
+    $values['startEngine'] = [bool]$a.startEngine
+    $values['traderModel'] = [string]$a.traderModel
+    $values['analystModel'] = [string]$a.analystModel
+    $values['monthlyBudget'] = [int]$a.monthlyBudget
+    $values['budgetStartDate'] = [string]$a.budgetStartDate
+    if ($a.ContainsKey('claudeTokenExpires')) { $values['claudeTokenExpires'] = [string]$a.claudeTokenExpires }
+    foreach ($key in 'engineAudience', 'imageTag', 'budgetContactEmail') {
+      if ($Agents.ContainsKey($key)) { $values[$key] = [string]$Agents[$key] }
+    }
+  }
   return @{
     Template = Join-CixPath $script:RepoRoot 'infra' 'main.bicep'
     Location = $Settings.location
     Label    = "cix-$($Settings.environmentName)"
-    Values   = [ordered]@{
-      environmentName         = $Settings.environmentName
-      resourceGroupName       = $Settings.resourceGroup
-      location                = $Settings.location
-      dashboardLocation       = $Settings.dashboardLocation
-      namePrefix              = $Settings.namePrefix
-      sharedResourceGroupName = $Settings.shared.resourceGroup
-      sharedAccountName       = $SharedAccountName
-      databaseName            = $Settings.cosmos.databaseName
-      databaseThroughput      = [int]$Settings.cosmos.databaseThroughput
-      protectedEnvironment    = [bool]$Settings.protected
-      deployDashboard         = [bool]$Settings.deployDashboard
-      tags                    = $tags
-    }
+    Values   = $values
   }
 }
 
 function Invoke-CixDeployment {
   <#
     Deploys a subscription-scope template (it creates its own resource group) and returns its outputs. -WhatIf previews
-    only. -Shared deploys the shared Cosmos DB account; otherwise CIX's resources, in the shared account -SharedAccountName.
+    only. -Shared deploys the shared Cosmos DB account; otherwise CIX's resources, in the shared account -SharedAccountName,
+    with -Agents (see Get-CixDeploymentValues).
   #>
-  param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Shared, [string]$SharedAccountName, [switch]$WhatIf)
-  $d = Get-CixDeploymentValues -Settings $Settings -Shared:$Shared -SharedAccountName $SharedAccountName
+  param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Shared, [string]$SharedAccountName, [hashtable]$Agents = @{}, [switch]$WhatIf)
+  $d = Get-CixDeploymentValues -Settings $Settings -Shared:$Shared -SharedAccountName $SharedAccountName -Agents $Agents
   $parameters = New-CixParametersFile -Values $d.Values -Label $d.Label
   try {
     if ($WhatIf) {
@@ -397,6 +445,128 @@ function Write-CixSecretFile {
   if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to $path; the key was not written." }
   [IO.File]::WriteAllText($path, $Value, $script:Utf8NoBom)
   return $path
+}
+
+# --- The engine and agents in Azure (agents.deploy platform or apps; ADR-0013) ---
+
+function Assert-CixAgentsTools {
+  <# Bicep 0.32 or later: the templates use deployer() to give you Key Vault Secrets Officer on the vault. #>
+  $line = "$(@(Invoke-CixNative { & az bicep version 2>&1 } | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) | Select-Object -First 1)"
+  if ($line -notmatch '(\d+)\.(\d+)\.(\d+)') { throw "Couldn't read the Bicep version ($line); run 'az bicep upgrade'." }
+  if ([version]"$($Matches[1]).$($Matches[2]).$($Matches[3])" -lt [version]'0.32.0') { throw "Bicep $($Matches[0]) is too old for the agents' templates; run 'az bicep upgrade' (0.32 or later)." }
+}
+
+function Assert-CixAppsRegion {
+  <#
+    Container Apps environments must be offered in the region (owner decision, 2026-10-26: Poland Central, where the database
+    is, else Germany West Central). Stops rather than switching by itself: a region can't be changed once things exist there.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings)
+  $wanted = $Settings.agents.location
+  # Filtered here rather than with --query: quotes inside native arguments don't survive Windows PowerShell 5.1.
+  $provider = Invoke-CixAz @('provider', 'show', '--namespace', 'Microsoft.App', '-o', 'json') | ConvertFrom-CixJson
+  $types = @($provider.resourceTypes | Where-Object { $_.resourceType -eq 'managedEnvironments' })
+  $regions = @($types | ForEach-Object { $_.locations } | ForEach-Object { ("$_" -replace '\s', '').ToLowerInvariant() })
+  if ($regions -notcontains $wanted) {
+    $hint = if ($regions -contains 'germanywestcentral') { ' Set agents.location to germanywestcentral (the agreed fallback)' } else { ' Choose another region for agents.location' }
+    throw "Container Apps environments aren't offered in $wanted.$hint in $($Settings.path), and check the prices there."
+  }
+}
+
+function Get-CixSignedInEmail {
+  <# Your sign-in address, for the budget's alerts. Used only as a deployment parameter; never written to the repo. #>
+  $me = Invoke-CixAz @('ad', 'signed-in-user', 'show', '-o', 'json') | ConvertFrom-CixJson
+  $candidates = foreach ($field in 'mail', 'userPrincipalName') { if ($me.PSObject.Properties[$field]) { $me.$field } }
+  foreach ($candidate in @($candidates)) { if ("$candidate" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { return "$candidate" } }
+  return ''
+}
+
+function Find-CixAgentsResource {
+  <#
+    The agents' Key Vault (-Kind keyvault) or container registry (-Kind acr) in CIX's resource group, tagged with this
+    environment; $null before agents.deploy platform has created it.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][ValidateSet('keyvault', 'acr')][string]$Kind)
+  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return $null }
+  $all = @(Invoke-CixAz @($Kind, 'list', '--resource-group', $Settings.resourceGroup, '-o', 'json') | ConvertFrom-CixJson)
+  $found = @($all | Where-Object { Test-CixEnvironmentTag -Resource $_ -Settings $Settings })
+  if ($found.Count -gt 1) { throw "More than one $Kind in $($Settings.resourceGroup) is tagged cix-environment=$($Settings.environmentName); refusing to guess." }
+  if ($found.Count -eq 1) { return "$($found[0].name)" }
+  return $null
+}
+
+function Test-CixEnvironmentTag {
+  <# Whether an az resource (with .tags) is tagged cix-environment=<this environment>. Checked here, not in a --query: quotes
+     inside native arguments don't survive Windows PowerShell 5.1. #>
+  param([Parameter(Mandatory)][object]$Resource, [Parameter(Mandatory)][hashtable]$Settings)
+  return [bool]($Resource.PSObject.Properties['tags'] -and $Resource.tags -and $Resource.tags.PSObject.Properties['cix-environment'] -and
+    $Resource.tags.'cix-environment' -eq $Settings.environmentName)
+}
+
+function Test-CixVaultSecret {
+  <# Whether the vault holds the secret. Lists names only: a secret's value is never read. #>
+  param([Parameter(Mandatory)][string]$Vault, [Parameter(Mandatory)][string]$Name)
+  $secrets = @(Invoke-CixAz @('keyvault', 'secret', 'list', '--vault-name', $Vault, '-o', 'json') | ConvertFrom-CixJson)
+  return @($secrets | Where-Object { $_.PSObject.Properties['name'] -and $_.name -eq $Name }).Count -gt 0
+}
+
+function Set-CixVaultSecretFromFile {
+  <# Stores a file's content as a secret. The value goes from the file to az directly: never through a variable or argument. #>
+  param([Parameter(Mandatory)][string]$Vault, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Path)
+  Invoke-CixAz -Quiet @('keyvault', 'secret', 'set', '--vault-name', $Vault, '--name', $Name, '--file', $Path, '--encoding', 'utf-8',
+    '--content-type', 'Claude setup token or API key', '--query', 'name', '-o', 'tsv') | Out-Null
+}
+
+function Get-CixEngineAudience {
+  <#
+    The engine's application ID URI (api://<app ID>), from its Entra app registration cix-engine-<environment>. -Create makes
+    the registration (single tenant, no secrets, no permissions) and its service principal when missing; without -Create a
+    missing one returns ''. The jobs ask for tokens for this audience; the engine accepts only their identities.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Create)
+  $name = "cix-engine-$($Settings.environmentName)"
+  $apps = @(Invoke-CixAz @('ad', 'app', 'list', '--display-name', $name, '-o', 'json') | ConvertFrom-CixJson)
+  if ($apps.Count -gt 1) { throw "More than one Entra app registration is named $name; delete the extra ones or rename them." }
+  if ($apps.Count -eq 1) { $appId = "$($apps[0].appId)" }
+  elseif (-not $Create) { return '' }
+  else {
+    $appId = "$(Invoke-CixAz @('ad', 'app', 'create', '--display-name', $name, '--sign-in-audience', 'AzureADMyOrg', '--query', 'appId', '-o', 'tsv'))".Trim()
+    Write-CixInfo "Created the Entra app registration $name ($appId)."
+  }
+  if ($appId -notmatch '^[0-9a-fA-F-]{36}$') { throw "Unexpected app ID for $name." }
+  $audience = "api://$appId"
+  # Finished here when it was left half made (no identifier URI, no service principal); a preview only reports it.
+  if ($apps.Count -eq 0 -or -not $apps[0].PSObject.Properties['identifierUris'] -or @($apps[0].identifierUris) -notcontains $audience) {
+    if (-not $Create) { return '' }
+    Invoke-CixAz @('ad', 'app', 'update', '--id', $appId, '--identifier-uris', $audience) | Out-Null
+  }
+  $principals = @(Invoke-CixAz @('ad', 'sp', 'list', '--filter', "appId eq '$appId'", '-o', 'json') | ConvertFrom-CixJson)
+  if ($principals.Count -eq 0) {
+    if (-not $Create) { return '' }
+    Invoke-CixAz @('ad', 'sp', 'create', '--id', $appId, '--query', 'id', '-o', 'tsv') | Out-Null
+  }
+  return $audience
+}
+
+function Get-CixRunningImageTag {
+  <# The image tag the engine app runs now (CI deploys new ones), or '' before it exists. #>
+  param([Parameter(Mandatory)][hashtable]$Settings)
+  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return '' }
+  $all = @(Invoke-CixAz @('containerapp', 'list', '--resource-group', $Settings.resourceGroup, '-o', 'json') | ConvertFrom-CixJson)
+  $engines = @($all | Where-Object { "$($_.name)" -like '*-engine' -and (Test-CixEnvironmentTag -Resource $_ -Settings $Settings) })
+  if ($engines.Count -ne 1) { return '' }
+  $image = "$(@($engines[0].properties.template.containers)[0].image)"
+  if ($image -notmatch '/cix-engine:([A-Za-z0-9._-]{1,128})$') { return '' }
+  return $Matches[1]
+}
+
+function Assert-CixImages {
+  <# Both images (cix-engine and cix-trader) must be in the registry with this tag before the apps are pointed at it. #>
+  param([Parameter(Mandatory)][string]$Registry, [Parameter(Mandatory)][string]$Tag)
+  foreach ($repository in 'cix-engine', 'cix-trader') {
+    $tags = @(Invoke-CixAz @('acr', 'repository', 'show-tags', '--name', $Registry, '--repository', $repository, '-o', 'json') | ConvertFrom-CixJson)
+    if ($tags -notcontains $Tag) { throw "$Registry has no $repository image tagged $Tag. CI pushes images on merge to main (or pass -ImageTag with one it pushed)." }
+  }
 }
 
 function Get-CixStaticSiteSettings {
