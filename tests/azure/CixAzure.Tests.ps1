@@ -566,7 +566,7 @@ Check 'setup-dashboard-requests.ps1 run again changes nothing that is already in
   $r = Invoke-SetupWriter $existingWriter
   if ($r.Error) { throw "failed: $($r.Error)" }
   if ($r.Calls -match '(?m)\bcreate\b|credential reset|--method put|users invite') { throw "it changed something: $($r.Calls)" }
-  if ($r.Output -notmatch 'already has the owner role') { throw "no owner line: $($r.Output)" }
+  if ($r.Output -notmatch 'is the confirmed owner') { throw "no owner line: $($r.Output)" }
 }
 
 Check 'setup-dashboard-requests.ps1 -RotateSecret replaces the secret only' {
