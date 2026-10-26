@@ -603,7 +603,7 @@ Check 'setup-ci-deploy.ps1 -For agents (-Yes), platform: its own identity, AcrPu
   $onGroup = @($assigned | Where-Object { $_ -match "--scope $([regex]::Escape($agentsGroupId))(\s|$)" })
   if ($onGroup.Count -gt 0) { throw "assigned something on the whole group: $($onGroup -join '; ')" }
   foreach ($expected in @('AGENTS_AZURE_CLIENT_ID = 66666666-6666-6666-6666-666666666666', 'AGENTS_REGISTRY = crcixcitest1', 'AGENTS_ENVIRONMENT = citest',
-      'Assigned AcrPush on crcixcitest1.', 'run this again to let it update the engine and the jobs')) {
+      'Assigned AcrPush on crcixcitest1.', 'run this again.')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   if ($r.Output.Contains('DASHBOARD_ENVIRONMENT') -or $calls.Contains('staticwebapp')) { throw 'set up the dashboard instead' }

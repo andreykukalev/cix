@@ -286,6 +286,6 @@ else {
   Write-CixInfo 'Or run this script again with -SetGitHubVariables (needs the GitHub CLI, signed in).'
 }
 if ($For -eq 'agents' -and $settings.agents.deploy -ne 'apps') {
-  Write-CixInfo 'CI can push images now. Once provision.ps1 has deployed agents.deploy apps, run this again to let it update the engine and the jobs.'
+  Write-CixInfo 'CI can push images now. After provision.ps1 deploys agents.deploy apps, run this again.'
 }
 Write-CixInfo "Then run CI on main by hand once (Actions, CI, Run workflow) to check it deploys the $For."
