@@ -962,6 +962,7 @@ Check 'provision.ps1 agents apps (-Yes): creates the engine''s Entra app, deploy
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   foreach ($call in @('ad app update --id 44444444-4444-4444-4444-444444444444 --identifier-uris api://44444444-4444-4444-4444-444444444444', 'ad sp create --id 44444444-4444-4444-4444-444444444444',
+      "ad app owner add --id 44444444-4444-4444-4444-444444444444 --owner-object-id $ownerId",
       'acr repository show-tags --name crcixcitest1 --repository cix-engine', 'acr repository show-tags --name crcixcitest1 --repository cix-trader',
       'acr repository show --name crcixcitest1 --image cix-engine:abc123 --query digest', 'acr repository show --name crcixcitest1 --image cix-trader:abc123 --query digest')) {
     if (-not $r.Calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
@@ -1068,7 +1069,7 @@ Check 'provision.ps1 agents apps adopts an engine app registration that is yours
   $r = Invoke-AgentsProvision @{ 'ad app list' = $engineApp; 'ad sp list' = '[{"id":"sp"}]' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   # The app role is set up on it as on a new one (--app-roles); its identifier URI is left alone.
-  foreach ($never in @('ad app create', 'ad app update --id 55555555-5555-5555-5555-555555555555 --identifier-uris', 'ad sp create')) { if ($r.Calls.Contains($never)) { throw "ran '$never'" } }
+  foreach ($never in @('ad app create', 'ad app update --id 55555555-5555-5555-5555-555555555555 --identifier-uris', 'ad sp create', 'ad app owner add')) { if ($r.Calls.Contains($never)) { throw "ran '$never'" } }
   if (-not $r.Calls.Contains('ad app owner list --id 55555555-5555-5555-5555-555555555555')) { throw "owners not checked: $($r.Calls)" }
 }
 
@@ -1085,6 +1086,7 @@ foreach ($case in @(
     @{ Overrides = @{ 'provider show' = '{"resourceTypes":[{"resourceType":"managedEnvironments","locations":["Germany West Central"]}]}' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'Set agents.location to germanywestcentral' },
     @{ Overrides = @{ 'bicep' = 'Bicep CLI version 0.31.1' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = "run 'az bicep upgrade'" },
     @{ Overrides = @{ 'ad app list' = $engineApp; 'ad app owner' = "[{`"id`":`"$ownerId`"},{`"id`":`"someone-else`"}]" }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'has other owners (someone-else)' },
+    @{ Overrides = @{ 'ad app list' = $engineApp; 'ad app owner' = '[]' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = "has no owner. Refusing to use it: make yourself its owner (az ad app owner add --id 55555555-5555-5555-5555-555555555555 --owner-object-id $ownerId)" },
     @{ Overrides = @{ 'ad signed-in-user' = '{"userPrincipalName":"ci@example.com"}' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'Sign in to Azure as a user' },
     @{ Overrides = @{ 'acr repository list' = '[]' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'has no cix-engine images yet' },
     @{ Overrides = @{ 'acr repository show' = 'not-a-digest' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'has no image cix-engine:abc123' })) {
