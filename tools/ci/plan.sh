@@ -90,10 +90,11 @@ if [[ "$EVENT" == "push" && "$ci_changed" == false ]]; then
   [[ "${number:-}" =~ ^[0-9]+$ && "${pr_head:-}" =~ ^[0-9a-f]{40}$ ]] || pr=""
   if [[ -n "$pr" ]]; then
     if ! git cat-file -e "$pr_head^{commit}" 2>/dev/null; then
-      # The job's token as actions/checkout sends it (basic, x-access-token): GitHub refuses a bearer header for git.
+      # The job's token as actions/checkout sends it (basic, x-access-token); a bearer header didn't work here.
       auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
       echo "::add-mask::$auth"
-      git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch -q --no-tags origin "refs/pull/$number/head" 2>/dev/null || true
+      git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch -q --no-tags origin "refs/pull/$number/head" 2>/dev/null \
+        || echo "::notice::Couldn't fetch pull request #$number's head; testing here." 
     fi
   fi
   # A base changed at any time (for example from a stacked branch to main) means a run may have tested another merge, with

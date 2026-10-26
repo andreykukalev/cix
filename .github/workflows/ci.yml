@@ -269,19 +269,21 @@ jobs:
         run: |
           # Runs can finish out of order; an older one must not publish over a newer dashboard. A newer push that didn't
           # change the dashboard doesn't publish, so an older run still publishes when its dashboard (and the workflow that
-          # deploys it) is the tip's. Asked through the API, as the deploy job does: git over https with the job's token
-          # (a bearer header) couldn't read this private repository, so no run ever published.
+          # deploys it) is the tip's. Asked through the API, as the deploy job does: reading it with git and a bearer header
+          # didn't work here (silently), so no run published after #76.
           if ! tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || [ -z "$tip" ]; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "::error::Couldn't read the tip of main, so the dashboard isn't published."
             exit 1
           fi
           if [ "$tip" = "$GITHUB_SHA" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
-          elif changed=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$tip" --jq '
+          elif ! changed=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$tip" --jq '
                  if .status == "ahead" and (.files | length) < 300
                  then [.files[].filename | select(startswith("dashboard/") or startswith("infra/") or startswith(".github/workflows/"))] | length
-                 else -1 end') && [ "$changed" = 0 ]; then
+                 else -1 end'); then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Couldn't compare this commit with the tip of main ($tip); not publishing. The newer run publishes."
+          elif [ "$changed" = 0 ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "::notice::main has moved on, but its dashboard is this one; publishing."
           else
