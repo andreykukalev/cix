@@ -106,6 +106,12 @@ public sealed partial class ExecutionService
     private readonly Queue<string> _runOrder = new();
     private const int RunsRemembered = 50;
 
+    /// <summary>Agent buys without a run ID count together, so leaving out <c>X-Cix-Run</c> doesn't lift the per-run limit.</summary>
+    private const string NoRun = "(no run)";
+
+    /// <summary>The order source of agents' buys, the only ones the strategy's limits count.</summary>
+    private const string AgentSource = "place_order";
+
     public ExecutionService(
         IExchangeClient exchange,
         RiskGate gate,
@@ -141,9 +147,13 @@ public sealed partial class ExecutionService
         _usedClientOrderIds.UnionWith(store.Current.Known);
         foreach (var sent in store.Current.SentOrders.Where(o => o.VenueOrderId is not null))
             _tracked[sent.ClientOrderId] = new TrackedOrder(ToIntent(sent), sent.VenueOrderId!, Restored: true);
-        _lastBuyAt = store.Current.SentOrders.Where(o => o.Side == "buy").Select(o => (DateTimeOffset?)o.SentAt)
+        // The strategy's cooldown and per-run count go on from the agents' buys the state still holds.
+        var agentBuys = store.Current.SentOrders.Where(o => o.Side == "buy" && o.Source == AgentSource).OrderBy(o => o.SentAt).ToList();
+        _lastBuyAt = agentBuys.Select(o => (DateTimeOffset?)o.SentAt)
             .Concat(store.Current.Plans.Values.Select(p => (DateTimeOffset?)p.Since))
             .Max();
+        foreach (var buy in agentBuys)
+            CountBuy(buy.RunId);
     }
 
     /// <summary>When the engine last sent a buy, if it knows (see <see cref="StrategyActivity"/>).</summary>
@@ -156,10 +166,10 @@ public sealed partial class ExecutionService
         }
     }
 
-    private StrategyActivity ActivityFor(string? runId)
+    internal StrategyActivity ActivityFor(string? runId)
     {
         lock (_buysByRun)
-            return new StrategyActivity(_lastBuyAt, runId is null ? 0 : _buysByRun.GetValueOrDefault(runId));
+            return new StrategyActivity(_lastBuyAt, _buysByRun.GetValueOrDefault(runId ?? NoRun));
     }
 
     private void NoteBuySent(string? runId, DateTimeOffset at)
@@ -167,16 +177,20 @@ public sealed partial class ExecutionService
         lock (_buysByRun)
         {
             _lastBuyAt = at;
-            if (runId is null)
-                return;
-            if (!_buysByRun.TryGetValue(runId, out var count))
-            {
-                _runOrder.Enqueue(runId);
-                if (_runOrder.Count > RunsRemembered)
-                    _buysByRun.Remove(_runOrder.Dequeue());
-            }
-            _buysByRun[runId] = count + 1;
+            CountBuy(runId);
         }
+    }
+
+    private void CountBuy(string? runId)
+    {
+        var key = runId ?? NoRun;
+        if (!_buysByRun.TryGetValue(key, out var count))
+        {
+            _runOrder.Enqueue(key);
+            if (_runOrder.Count > RunsRemembered)
+                _buysByRun.Remove(_runOrder.Dequeue());
+        }
+        _buysByRun[key] = count + 1;
     }
 
     /// <summary>Whether this engine holds the engine lease for its mode, and so may act on the exchange (ADR-0013).</summary>
@@ -306,7 +320,7 @@ public sealed partial class ExecutionService
             // Whether the symbol is still held decides if an open position plan applies to this order (see EngineState.WithSent).
             var holdsPosition = portfolio.PositionQuoteBySymbol.GetValueOrDefault(rounded.Symbol) >= Math.Max(pair.MinOrderSizeQuote, 0.00000001m);
             var result = await SendAsync(order, verdict, postOnly, context, holdsPosition, cancellationToken).ConfigureAwait(false);
-            if (rounded.Side == OrderSide.Buy && result.Status is ExecutionStatus.Placed or ExecutionStatus.Uncertain)
+            if (strategy is not null && rounded.Side == OrderSide.Buy && result.Status is ExecutionStatus.Placed or ExecutionStatus.Uncertain)
                 NoteBuySent(context?.RunId, now);
             return result;
         }

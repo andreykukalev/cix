@@ -243,8 +243,9 @@ public static partial class StrategySchema
         if (spec.Parameters.TryGetValue("timeframe", out var timeframe) && !(timeframe.ValueKind == JsonValueKind.String && timeframe.GetString() == "1h"))
             errors.Add("parameters.timeframe must be \"1h\": the scanner works on hourly candles.");
         if (spec.Parameters.TryGetValue("symbols", out var symbols)
-            && (symbols.ValueKind != JsonValueKind.Array || symbols.GetArrayLength() > 20 || symbols.EnumerateArray().Any(s => s.ValueKind != JsonValueKind.String)))
-            errors.Add("parameters.symbols must be a list of at most 20 symbols.");
+            && (symbols.ValueKind != JsonValueKind.Array || symbols.GetArrayLength() > 20
+                || symbols.EnumerateArray().Any(s => s.ValueKind != JsonValueKind.String || !limits.AllowedSymbols.Contains(s.GetString()!, StringComparer.Ordinal))))
+            errors.Add("parameters.symbols must be a list of at most 20 symbols from the mandatory allowlist.");
 
         if (spec.Parameters.TryGetValue(Scanner, out var scanner))
         {

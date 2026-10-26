@@ -110,15 +110,17 @@ public sealed partial class MarketScanService(
 
     private ScannerParameters ParametersFor(StrategySpec? spec)
     {
-        var cached = _parameters;
-        if (cached is not null && cached.Value.Label == spec?.Label)
-            return cached.Value.Parameters;
+        var cached = Volatile.Read(ref _parameters);
+        if (cached is not null && cached.Label == spec?.Label)
+            return cached.Parameters;
         var resolved = FromSpec(spec, options.Parameters);
-        _parameters = (spec?.Label, resolved);
+        Volatile.Write(ref _parameters, new CachedParameters(spec?.Label, resolved));
         return resolved;
     }
 
-    private (string? Label, ScannerParameters Parameters)? _parameters;
+    private sealed record CachedParameters(string? Label, ScannerParameters Parameters);
+
+    private CachedParameters? _parameters;
 
     /// <summary>
     /// A short, stable description of the latest scan's signals (for example <c>buy:SOL-EUR|sell:BTC-EUR:stop</c>), empty when

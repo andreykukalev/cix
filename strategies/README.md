@@ -37,7 +37,7 @@ At startup the engine adds every paper spec in this folder to the database as `s
   "value": { "name": "balanced", "version": 1, "requestedBy": "owner", "requestedAt": "2026-10-27T09:00:00Z", "note": "why" } }
 ```
 
-Within 30 seconds the engine reads it, validates the version against the schema and the mandatory limits, waits for any trader run in progress to end, journals the switch (kind `strategy`) and applies it. A refused version leaves the running strategy as it is, and the reason is in the journal and in `strategySelection` on the engine status. Change `requestedAt` to have the same selection read again.
+Within 30 seconds the engine reads it, validates the version against the schema and the mandatory limits, waits for any trader run in progress to end, journals the switch (kind `strategy`) and applies it. A version written by hand may change parameters within the schema, but its instructions must be those of a file here, and `strategy-safe-v1` and the like must match their file exactly: instructions change only through a pull request. A refused version leaves the running strategy as it is, and the reason is in the journal and in `strategySelection` on the engine status. Change `requestedAt` to have the same selection read again.
 
 What a switch affects:
 - New trades, from the next scan and trader run: order size, limits, filters, entry rules, stop and target distances.

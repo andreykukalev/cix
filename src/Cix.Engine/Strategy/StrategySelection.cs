@@ -53,6 +53,9 @@ public sealed class InMemoryStrategyRepository : IStrategyRepository
     /// <summary>When set, every read throws it: a database outage.</summary>
     public Exception? Failure { get; set; }
 
+    /// <summary>When set, reading a version throws it: a document that doesn't deserialize, for example.</summary>
+    public Exception? VersionFailure { get; set; }
+
     public IReadOnlyCollection<StrategySpec> Versions => _versions.Values;
 
     /// <summary>Stores a version as a document would hold it, replacing any (the engine itself never replaces one).</summary>
@@ -67,6 +70,8 @@ public sealed class InMemoryStrategyRepository : IStrategyRepository
     public Task<StrategySpec?> ReadVersionAsync(string name, int version, CancellationToken cancellationToken)
     {
         ThrowIfFailing();
+        if (VersionFailure is { } malformed)
+            throw malformed;
         return Task.FromResult(_versions.TryGetValue(Key(name, version), out var spec) ? StrategyHash.WithHash(spec) : null);
     }
 
@@ -146,6 +151,16 @@ public sealed partial class StrategySelectionService(
 
     private StrategySelectionStatus _status = new("config", null, null, null, [], null, null);
 
+    /// <summary>
+    /// Hashes of the instructions in the reviewed spec files (the configured spec and those <see cref="SeedAsync"/> read):
+    /// a version from the database must use one of them, so text that never went through a pull request can't reach the
+    /// trader's prompt. Parameters may differ; the schema checks them.
+    /// </summary>
+    private readonly HashSet<string> _reviewedInstructions = specs.Active is { } configured ? [InstructionsHash(configured)] : [];
+
+    /// <summary>The canonical hash of each spec file by <c>name@vN</c>: a database version with the same name must match it.</summary>
+    private readonly Dictionary<string, string> _fileHashes = new(StringComparer.Ordinal);
+
     public StrategySelectionStatus Status => Volatile.Read(ref _status);
 
     /// <summary>
@@ -194,11 +209,34 @@ public sealed partial class StrategySelectionService(
                 continue;
             }
 
+            var key = string.Create(CultureInfo.InvariantCulture, $"{spec.Name}@v{spec.Version}");
+            lock (_fileHashes)
+            {
+                _reviewedInstructions.Add(InstructionsHash(spec));
+                _fileHashes[key] = StrategyHash.Of(spec);
+            }
+
             if (await repository.TryAddVersionAsync(spec with { Hash = string.Empty }, cancellationToken).ConfigureAwait(false))
                 added++;
+            else
+                await WarnIfDifferentAsync(spec, key, cancellationToken).ConfigureAwait(false);
         }
 
         return added;
+    }
+
+    private async Task WarnIfDifferentAsync(StrategySpec file, string key, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var stored = await repository.ReadVersionAsync(file.Name, file.Version, cancellationToken).ConfigureAwait(false);
+            if (stored is not null && stored.Hash != StrategyHash.Of(file))
+                LogSeedDiffers(logger, key);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            LogReadFailed(logger, ex.GetType().Name);
+        }
     }
 
     /// <summary>
@@ -245,11 +283,17 @@ public sealed partial class StrategySelectionService(
         }
 
         StrategySpec? spec;
+        var malformed = false;
         try
         {
             spec = selection.Version is >= 1 and <= 9999 && !string.IsNullOrEmpty(selection.Name)
                 ? await repository.ReadVersionAsync(selection.Name, selection.Version, cancellationToken).ConfigureAwait(false)
                 : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            spec = null;
+            malformed = true; // a document edited by hand into something that isn't a spec: refused, not retried as an outage
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
@@ -259,10 +303,13 @@ public sealed partial class StrategySelectionService(
         }
 
         var current = specs.Active;
-        IReadOnlyList<string> problems = spec is null
+        IReadOnlyList<string> problems = malformed
+            ? [$"The document for {requested} isn't a valid strategy version."]
+            : spec is null
             ? [$"There is no strategy version {requested} in the database."]
             : spec.Name != selection.Name || spec.Version != selection.Version
             ? [$"The document for {requested} declares {StrategySchema.Clip(spec.Name)}@v{spec.Version}."]
+            : Reviewed(spec) is { } unreviewed ? [unreviewed]
             : StrategySchema.Validate(spec, limits, trading.Mode);
         if (problems.Count > 0)
         {
@@ -282,9 +329,21 @@ public sealed partial class StrategySelectionService(
             return false;
         }
 
+        // A run may have been claimed while the version was read: check again, just before the switch.
+        if (runs?.TraderRunInProgress == true)
+        {
+            SetStatus(new StrategySelectionStatus("pending", requested, requestedBy, selection.RequestedAt,
+                ["Waiting for the trader run in progress to end; the switch happens before the next run."], now, specs.ActivatedAt));
+            return false;
+        }
+
         // Journal first: a switch the journal doesn't record doesn't happen.
         if (!await AppendAsync("activated", $"Strategy {current?.Label ?? "none"} -> {selected.Label}", current, selected, selection, requestedBy, []).ConfigureAwait(false))
             return false;
+        specs.Activate(selected, now);
+        _handled = token;
+        LogActivated(logger, current?.Label ?? "none", selected.Label);
+        SetStatus(new StrategySelectionStatus("active", requested, requestedBy, selection.RequestedAt, [], now, now));
         try
         {
             await repository.ArchiveAsync(selected, cancellationToken).ConfigureAwait(false);
@@ -294,10 +353,6 @@ public sealed partial class StrategySelectionService(
             LogArchiveFailed(logger, selected.Label, ex.GetType().Name); // the version document still holds it; archived again at the next switch
         }
 
-        specs.Activate(selected, now);
-        _handled = token;
-        LogActivated(logger, current?.Label ?? "none", selected.Label);
-        SetStatus(new StrategySelectionStatus("active", requested, requestedBy, selection.RequestedAt, [], now, now));
         return true;
     }
 
@@ -350,6 +405,24 @@ public sealed partial class StrategySelectionService(
         }
     }
 
+    /// <summary>Why a database version may not run although its values are valid; null when it may.</summary>
+    private string? Reviewed(StrategySpec spec)
+    {
+        var key = string.Create(CultureInfo.InvariantCulture, $"{spec.Name}@v{spec.Version}");
+        lock (_fileHashes)
+        {
+            if (_fileHashes.TryGetValue(key, out var file) && file != spec.Hash)
+                return $"The database copy of {StrategySchema.Clip(key)} differs from the reviewed file strategies/{StrategySchema.Clip(spec.Name)}.v{spec.Version}.json; give a changed strategy a new version.";
+            if (!_reviewedInstructions.Contains(InstructionsHash(spec)))
+                return $"The instructions of {StrategySchema.Clip(key)} match no reviewed spec file in strategies/; instructions change only through a pull request.";
+        }
+
+        return null;
+    }
+
+    private static string InstructionsHash(StrategySpec spec) =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(spec.Instructions ?? string.Empty)));
+
     private void SetStatus(StrategySelectionStatus status) => Volatile.Write(ref _status, status);
 
     /// <summary>Free text from the selection document: one plain line, no control or format characters, bounded.</summary>
@@ -379,6 +452,9 @@ public sealed partial class StrategySelectionService(
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Journal write failed for a strategy switch: {Detail}; retried at the next poll")]
     private static partial void LogJournalFailed(ILogger logger, string detail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Strategy {Version} in the database differs from its file; selecting it is refused")]
+    private static partial void LogSeedDiffers(ILogger logger, string version);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Strategy file {File} not added to the database: {Problem}")]
     private static partial void LogSeedSkipped(ILogger logger, string file, string problem);

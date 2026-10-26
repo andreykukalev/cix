@@ -11,9 +11,10 @@ The engine ran one strategy spec, chosen in configuration and loaded from a file
 
 **Strategy versions are documents in the `state` container, and the owner selects one per mode.**
 - `strategy-<name>-v<N>` holds a version. The engine seeds the paper specs in `strategies/` at startup and never overwrites a version: a change is a new version, so the journal's `name@vN#hash` stays true.
+- **Instructions change only through a pull request.** A version from the database runs only if its instructions are those of a reviewed spec file in `strategies/`, and a version that shares a file's name and number must match that file exactly. Parameters may differ (overrides, #104); the schema bounds them.
 - `strategy-selection-paper` names the version to run. The engine polls it, validates the version against a parameter schema and the mandatory limits in `config/risk-limits.json`, journals the switch (kind `strategy`) before applying it, and applies it between trader runs. A refused version changes nothing and is journaled once.
 - `strategy-schema-paper` describes every parameter (explanation, range, unit, whether it applies to open positions, which mandatory limit bounds it) for the dashboard (#108).
-- **The engine enforces the strategy's own limits** (`StrategyGate`, before the risk gate): order size, per-coin position, total exposure, daily loss stop, new positions per run and cooldown. They can only reduce or refuse a buy; sells always pass. The risk gate remains final and unchanged.
+- **The engine enforces the strategy's own limits** (`StrategyGate`, before the risk gate): order size, per-coin position, total exposure, daily loss stop, new positions per run and cooldown. They can only reduce or refuse a buy; sells always pass. They count the agents' buys only: the owner's requests are not governed by the strategy. Buys without a run ID share one count. The risk gate remains final and unchanged.
 - Each scan and each `place_order` reads the active spec once, so one decision never mixes two versions.
 - **Live is out of scope.** Validation refuses live mode and live-status versions, and the selection service runs in paper only. Live strategy changes, with explicit confirmation, come with #71.
 
@@ -31,5 +32,6 @@ The engine ran one strategy spec, chosen in configuration and loaded from a file
 - The owner switches paper strategies with one document, and each switch and refusal is in the journal.
 - Strategy limits are now engine-enforced; `config/risk-limits.json` and the risk gate are untouched.
 - The order-size hook in the trader container still reads the configured spec's `orderQuote` (5.5 EUR with `good` v1). It needs the owner's change to allow Balanced and Risky orders above that.
-- After a restart, the cooldown knows only buys still working or with an open plan.
+- After a restart, the cooldown and the per-run counts know only buys still working or with an open plan.
+- Version documents hold parameters as JSON numbers, which Cosmos DB stores as doubles, unlike the engine's own documents (strings). Today's values (whole euros, short fractions) round-trip exactly, and the hash would show any change. The engine reads them into `decimal`.
 - Editing a version document in place is ignored until the selection is saved again; editing one is against the rule anyway.
