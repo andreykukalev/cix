@@ -22,9 +22,9 @@ The shared account's read-write key reaches every project's database.
 - The role alone isn't enough: whoever redeems an invitation link gets it. After the owner accepts, the setup script stores that account's user ID in the app's settings (`DASHBOARD_OWNER_USER_ID`), and the API takes only that ID, with the role, as the owner. With none stored, nobody is. The invitation expires in 2 hours, and the script refuses to continue while anyone else holds the role.
 - `staticwebapp.config.json` allows `/api/owner/*` only for that role and blocks GitHub sign-in.
 - Every owner handler checks the role again, from the `x-ms-client-principal` header, which the platform sets and a browser can't.
-- The public page and API stay as they are, prices masked. The owner's views (decisions with levels, request history, activity amounts) are served only from `/api/owner/*`, with `no-store`.
-- Public activity is counts only: amounts by period next to the public trade sizes would give fill prices away.
-- Explanations on the public page show a part of the trader's free text only when it has the exact shape the engine writes (a coin, a small rank, a ratio, a percentage); anything else is masked. The owner's note on a request stays with the owner and the trader.
+- *(Superseded by 0014: there is no public page any more.)* The public page and API stay as they are, prices masked. The owner's views (decisions with levels, request history, activity amounts) are served only from `/api/owner/*`, with `no-store`.
+- *(Superseded by 0014.)* Public activity is counts only: amounts by period next to the public trade sizes would give fill prices away.
+- *(Superseded by 0014.)* Explanations on the public page show a part of the trader's free text only when it has the exact shape the engine writes (a coin, a small rank, a ratio, a percentage); anything else is masked. The owner's note on a request stays with the owner and the trader.
 
 **Writes.** A dedicated service principal, `cix-dashboard-writer-<env>`, with one client secret.
 - Its only right is a Cosmos DB data-plane custom role: `readMetadata` and `items/create`, scoped to `<database>/requests`.

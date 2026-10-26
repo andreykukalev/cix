@@ -8,7 +8,7 @@ const REFRESH_MS = 30_000;
 const POLL_MS = 3_000;
 const POLL_FOR_MS = 15 * 60_000;
 const V = window.CixView;
-const state = { mode: 'paper', journal: null, period: 'day', viewer: { signedIn: false, owner: false, name: null }, view: null, pending: new Map() };
+const state = { mode: 'paper', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null };
 const SIGN_IN = '/.auth/login/aad?post_login_redirect_uri=/';
 
 function el(tag, props = {}, ...children) {
@@ -323,12 +323,20 @@ async function getJson(url) {
   return body;
 }
 
+/** The session is over: stop reading, and take the figures off the screen rather than leave them up as if current. */
 function signedOut() {
+  state.signedOut = true;
+  clearInterval(state.timer);
+  for (const p of state.pending.values()) clearInterval(p.timer);
+  state.pending.clear();
+  document.getElementById('request-dialog').close();
+  for (const node of document.querySelectorAll('main > :not(#banner)')) node.hidden = true;
   banner('Your sign-in has ended.', true, { href: SIGN_IN, text: 'Sign in again' });
   document.getElementById('updated').textContent = 'Signed out';
 }
 
 async function refresh() {
+  if (state.signedOut) return;
   try {
     const view = await getJson(`/api/dashboard?mode=${encodeURIComponent(state.mode)}`);
     state.view = view;
@@ -348,7 +356,7 @@ async function refresh() {
     banner(`Couldn't load the dashboard: ${error.message}`, true);
     document.getElementById('updated').textContent = 'Update failed';
   }
-  await Promise.all([refreshActivity(), refreshRequests()]);
+  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests()]);
 }
 
 // --- Trading activity -------------------------------------------------------------------------------------------------------
@@ -363,6 +371,7 @@ function svg(tag, attrs, text) {
 }
 
 async function refreshActivity() {
+  if (state.signedOut) return;
   const meta = document.getElementById('volume-meta');
   if (state.mode !== 'paper') {
     meta.textContent = 'Activity is counted for paper trading only for now.';
@@ -373,6 +382,7 @@ async function refreshActivity() {
   try {
     renderVolume(await getJson(`/api/activity?period=${encodeURIComponent(state.period)}`));
   } catch (error) {
+    if (error instanceof SignedOut) { signedOut(); return; }
     meta.textContent = `Couldn't load trading activity: ${error.message}`;
   }
 }
@@ -438,7 +448,7 @@ async function refreshRequests() {
     const history = await getJson('/api/owner/requests');
     renderRequests(history.requests);
   } catch (error) {
-    if (error instanceof SignedOut) return; // the dashboard's own read says so
+    if (error instanceof SignedOut) { signedOut(); return; }
     rows('requests', [], () => [], `Couldn't load your requests: ${error.message}`);
   }
 }
@@ -522,6 +532,7 @@ async function sendRequest(event) {
     document.getElementById('request-dialog').close();
     track(answer.request);
   } catch (e) {
+    if (e instanceof SignedOut) { signedOut(); return; }
     error.textContent = `Not confirmed: ${e.message} Send again to retry: it stays the same, single request. To change it, cancel and start a new one.`;
     error.hidden = false;
     send.disabled = false;
@@ -560,7 +571,9 @@ function track(item) {
       if (response.status === 404) return; // not readable yet
       if (!response.ok) return; // try again next time
       if (show(await response.json())) stop();
-    } catch { /* offline for a moment: try again */ }
+    } catch (error) {
+      if (error instanceof SignedOut) signedOut(); // else offline for a moment: try again
+    }
   }, POLL_MS);
 }
 
@@ -617,5 +630,5 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('request-cancel').addEventListener('click', () => document.getElementById('request-dialog').close());
   await loadViewer();
   setMode(saved);
-  setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
+  state.timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
 });

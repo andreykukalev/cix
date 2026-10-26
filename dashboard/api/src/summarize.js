@@ -93,7 +93,6 @@ function decisions(entries) {
       status: d.status ?? null,
       rule: d.rule ?? null,
       rationale: d.rationale ?? null,
-      hasStop: d.stopLoss !== undefined,
       stopLoss: d.stopLoss ?? null,
       takeProfit: d.takeProfit ?? null,
       clientOrderId: d.clientOrderId ?? null,
@@ -128,7 +127,7 @@ function problems(entries, status, readErrors) {
     if (e.kind === 'tool-denied') list.push({ at: e.at, source: e.actor, kind: 'tool-denied', message: e.summary ?? null });
     else if (e.kind === 'kill-switch' && d.action !== 'released') list.push({ at: e.at, source: e.actor, kind: 'kill-switch', message: e.summary ?? null });
     else if (e.kind === 'order' && ERROR_ORDER_STATUSES.has(d.status)) {
-      list.push({ at: e.at, source: e.actor, kind: `order-${d.status}`, message: d.reason ? `${e.summary ?? ''}: ${d.reason}` : e.summary ?? null });
+      list.push({ at: e.at, source: e.actor, kind: `order-${d.status}`, message: [e.summary, d.reason].filter(Boolean).join(': ') || null });
     }
   }
   if (status?.lastReconcileProblem) {

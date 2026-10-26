@@ -245,11 +245,12 @@ The dashboard shows:
 - **Requests:** Buy and Sell buttons on each coin (paper), your requests and where each stands (see [Owner requests](#owner-requests)).
 
 It is **private** ([ADR-0014](adr/0014-private-dashboard.md)): every page and API route needs your Microsoft sign-in, as the confirmed owner (see the setup below).
-- Signed out, any page sends you to the Microsoft sign-in. Signed in with another account, you get a page that says the dashboard is private, with Sign in and Sign out. That page and its stylesheet are the only things anyone can open.
+- Signed out, any page sends you to the Microsoft sign-in. Signed in with an account without the `owner` role, you get a page that says the dashboard is private, with Sign in and Sign out. That page and its stylesheet are the only things anyone can open. An account with the role that isn't the confirmed owner (someone who redeemed an invitation link) loads the empty page, and the API refuses it everything.
 - The API checks again, in every function: a Microsoft sign-in with the `owner` role and the user ID the setup script confirmed (`DASHBOARD_OWNER_USER_ID`). Anything else gets `403` and nothing is read. With no confirmed ID, nobody gets in, you included: finish the setup below first.
 - **Sign out** is at the top of the page. It ends the dashboard's session; your browser may still be signed in to your Microsoft account, so signing in again may not ask for a password. When the session ends while the page is open, it says so and offers to sign in again.
 - It shows everything as recorded: entry, stop, target and fill prices, resting orders' limits, fees, and the journal's own text. Answers are never cached by a browser (`no-store`).
 - The reads use the account's read-only key, kept in the app's settings on the server; the API keeps answers 20 seconds (activity a minute), and the journal browser accepts only the last 14 days, known kinds and three page sizes, so the page can't use up the database throughput the engine needs.
+- **After a deployment that changes the sign-in rules,** check once in a private window: `/` sends you to the Microsoft sign-in and back to the page; `/api/dashboard` without signing in gets a redirect, not data; Sign out lands on the signed-out page.
 - The briefing shows the analyst's text from web pages as plain text only, and opens only `https` source links (each must be one of the view's sources), in a new tab without access back to the dashboard.
 
 ## Owner requests

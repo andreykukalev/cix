@@ -94,11 +94,9 @@ test('this period against the previous one', () => {
   assert.equal(V.versus('3', '0').text, 'none before');
 });
 
-test('only a Microsoft sign-in with the owner role sees the owner controls', () => {
-  assert.deepEqual(V.viewer({ clientPrincipal: { identityProvider: 'aad', userDetails: 'me@example.com', userRoles: ['anonymous', 'authenticated', 'owner'] } }), { signedIn: true, owner: true, name: 'me@example.com' });
-  assert.equal(V.viewer({ clientPrincipal: { identityProvider: 'github', userRoles: ['owner'] } }).owner, false);
-  assert.equal(V.viewer({ clientPrincipal: { identityProvider: 'aad', userRoles: ['authenticated'] } }).owner, false);
-  assert.deepEqual(V.viewer({ clientPrincipal: null }), { signedIn: false, owner: false, name: null });
+test('the header names whoever is signed in', () => {
+  assert.deepEqual(V.viewer({ clientPrincipal: { identityProvider: 'aad', userDetails: 'me@example.com', userRoles: ['anonymous', 'authenticated', 'owner'] } }), { signedIn: true, name: 'me@example.com' });
+  assert.deepEqual(V.viewer({ clientPrincipal: null }), { signedIn: false, name: null });
   assert.equal(V.viewer(null).signedIn, false);
 });
 

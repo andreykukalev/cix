@@ -173,12 +173,10 @@
     return null;
   }
 
-  /** Who is signed in, from /.auth/me: owner only with a Microsoft sign-in and the owner role. */
+  /** Who is signed in, from /.auth/me, for the header. Who may see what is decided by the platform and the API, not here. */
   function viewer(me) {
     const p = me?.clientPrincipal ?? null;
-    if (!p) return { signedIn: false, owner: false, name: null };
-    const roles = Array.isArray(p.userRoles) ? p.userRoles : [];
-    return { signedIn: true, owner: p.identityProvider === 'aad' && roles.includes('owner'), name: p.userDetails ?? null };
+    return p ? { signedIn: true, name: p.userDetails ?? null } : { signedIn: false, name: null };
   }
 
   return { change, coins, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS };

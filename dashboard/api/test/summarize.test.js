@@ -67,6 +67,7 @@ test('summarises portfolio, trades, decisions, problems, agents and sync', () =>
   assert.equal(view.trades[0].filledSize, '4.3');
   assert.deepEqual(view.decisions.map((d) => d.status), ['rejected', 'placed']);
   assert.deepEqual(view.problems.map((p) => p.kind), ['order-rejected', 'kill-switch']);
+  assert.equal(view.problems[0].message, 'Buy 1 SOL-EUR @ 150: Rejected (max-order): Order is above the limit.');
   assert.equal(view.agents.trader.lastRun.runId, 'run-2');
   assert.equal(view.agents.trader.runsToday, 2);
   assert.equal(view.agents.analyst.runsToday, 0);
