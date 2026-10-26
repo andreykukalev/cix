@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Decides which CI jobs a run needs, to save GitHub Actions minutes (#73). Writes `name=true|false` lines to
-# $GITHUB_OUTPUT (or stdout) for: dotnet, containers, azure, windows, secrets, dashboard.
+# $GITHUB_OUTPUT (or stdout) for: dotnet, containers, azure, windows, secrets, dashboard; and, when $GITHUB_STEP_SUMMARY
+# is set, the commit and the plan to the run's summary page.
 #
 #   pull_request       the jobs for the files the pull request changes (against its base)
 #   push to main       the jobs for the files the push changes, minus those the merged pull request already passed on
@@ -16,7 +17,28 @@ set -euo pipefail
 
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 jobs_of=(dotnet containers azure windows secrets)
-emit() { for k in "${jobs_of[@]}" dashboard; do echo "$k=${!k}" >> "$out"; done; }
+emit() { for k in "${jobs_of[@]}" dashboard; do echo "$k=${!k}" >> "$out"; done; summary; }
+
+# The commit this run tests, and the jobs it runs, on the run's summary page (the run list shows only its name).
+summary() {
+  [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+  local tested="${HEAD_SHA:-${SHA:-}}" line k
+  {
+    if [[ "${EVENT:-}" == pull_request ]]; then
+      echo "### Head commit (tested merged into \`${BASE_SHA:0:7}\`)"
+    else
+      echo "### Commit tested"
+    fi
+    if [[ -n "$tested" ]] && line=$(git log -1 --format='`%h` %s (%an, %ad)' --date=format:'%Y-%m-%d %H:%M' "$tested" 2>/dev/null); then
+      echo "$line"
+    else
+      echo "\`${tested:-unknown}\`"
+    fi
+    echo
+    echo "### Jobs"
+    for k in "${jobs_of[@]}" dashboard; do echo "- $k: ${!k}"; done
+  } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Couldn't write the job summary."
+}
 all() { dotnet=true containers=true azure=true windows=true secrets=true dashboard=true; }
 dotnet=false containers=false azure=false windows=false secrets=true dashboard=false
 ci_changed=false unknown=false
