@@ -20,6 +20,7 @@ namespace Cix.Engine.Status;
 /// <param name="LastReconcileProblem">A code from <see cref="ReconcileStatus"/>, or null.</param>
 /// <param name="OldestQuoteAt">The oldest latest quote among the tradable coins that have one.</param>
 /// <param name="UnquotedSymbols">Tradable coins with no quote yet.</param>
+/// <param name="StrategySelection">What the engine made of the strategy selected in the database (#105); null when switching is off.</param>
 public sealed record EngineStatus(
     string Mode,
     DateTimeOffset UpdatedAt,
@@ -38,7 +39,8 @@ public sealed record EngineStatus(
     IReadOnlyList<string> UnquotedSymbols,
     PortfolioStatus? Portfolio,
     FiltersStatus? Filters = null,
-    ManualRequestsStatus? ManualRequests = null);
+    ManualRequestsStatus? ManualRequests = null,
+    StrategySelectionStatus? StrategySelection = null);
 
 /// <summary>
 /// The coin filters the scanner applies, from the active strategy spec (a change is a new spec version). Fractions as
@@ -169,7 +171,8 @@ public sealed partial class EngineStatusService(
     MarketScanService? scanner = null,
     MarketViewStore? views = null,
     IStrategySpecStore? specs = null,
-    Manual.ManualRequestService? manual = null) : BackgroundService
+    Manual.ManualRequestService? manual = null,
+    StrategySelectionService? selection = null) : BackgroundService
 {
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
@@ -236,7 +239,8 @@ public sealed partial class EngineStatusService(
             tradable.Where(s => !quoteTimes.ContainsKey(s)).ToList(),
             Portfolio(),
             Filters(),
-            manual is null ? null : new ManualRequestsStatus(manual.State, manual.Pending.Count, manual.LastPollAt));
+            manual is null ? null : new ManualRequestsStatus(manual.State, manual.Pending.Count, manual.LastPollAt),
+            selection?.Status);
     }
 
     private FiltersStatus? Filters()

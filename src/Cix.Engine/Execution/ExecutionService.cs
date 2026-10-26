@@ -98,6 +98,20 @@ public sealed partial class ExecutionService
     private int _consecutiveRejects;
     private int _streakTripped;
 
+    /// <summary>When the engine last sent a buy, for the strategy's cooldown. After a restart: the latest working buy or open plan.</summary>
+    private DateTimeOffset? _lastBuyAt;
+
+    /// <summary>Buys sent per agent run, for the strategy's positions-per-run limit. Only the latest runs are kept.</summary>
+    private readonly Dictionary<string, int> _buysByRun = new(StringComparer.Ordinal);
+    private readonly Queue<string> _runOrder = new();
+    private const int RunsRemembered = 50;
+
+    /// <summary>Agent buys without a run ID count together, so leaving out <c>X-Cix-Run</c> doesn't lift the per-run limit.</summary>
+    private const string NoRun = "(no run)";
+
+    /// <summary>The order source of agents' buys, the only ones the strategy's limits count.</summary>
+    private const string AgentSource = "place_order";
+
     public ExecutionService(
         IExchangeClient exchange,
         RiskGate gate,
@@ -133,6 +147,50 @@ public sealed partial class ExecutionService
         _usedClientOrderIds.UnionWith(store.Current.Known);
         foreach (var sent in store.Current.SentOrders.Where(o => o.VenueOrderId is not null))
             _tracked[sent.ClientOrderId] = new TrackedOrder(ToIntent(sent), sent.VenueOrderId!, Restored: true);
+        // The strategy's cooldown and per-run count go on from the agents' buys the state still holds.
+        var agentBuys = store.Current.SentOrders.Where(o => o.Side == "buy" && o.Source == AgentSource).OrderBy(o => o.SentAt).ToList();
+        _lastBuyAt = agentBuys.Select(o => (DateTimeOffset?)o.SentAt)
+            .Concat(store.Current.Plans.Values.Select(p => (DateTimeOffset?)p.Since))
+            .Max();
+        foreach (var buy in agentBuys)
+            CountBuy(buy.RunId);
+    }
+
+    /// <summary>When the engine last sent a buy, if it knows (see <see cref="StrategyActivity"/>).</summary>
+    public DateTimeOffset? LastBuyAt
+    {
+        get
+        {
+            lock (_buysByRun)
+                return _lastBuyAt;
+        }
+    }
+
+    internal StrategyActivity ActivityFor(string? runId)
+    {
+        lock (_buysByRun)
+            return new StrategyActivity(_lastBuyAt, _buysByRun.GetValueOrDefault(runId ?? NoRun));
+    }
+
+    private void NoteBuySent(string? runId, DateTimeOffset at)
+    {
+        lock (_buysByRun)
+        {
+            _lastBuyAt = at;
+            CountBuy(runId);
+        }
+    }
+
+    private void CountBuy(string? runId)
+    {
+        var key = runId ?? NoRun;
+        if (!_buysByRun.TryGetValue(key, out var count))
+        {
+            _runOrder.Enqueue(key);
+            if (_runOrder.Count > RunsRemembered)
+                _buysByRun.Remove(_runOrder.Dequeue());
+        }
+        _buysByRun[key] = count + 1;
     }
 
     /// <summary>Whether this engine holds the engine lease for its mode, and so may act on the exchange (ADR-0013).</summary>
@@ -164,10 +222,15 @@ public sealed partial class ExecutionService
     /// shouldn't halt everything. Agents' orders always count.
     /// </param>
     /// <param name="context">Why the order is sent and its stop and target, kept with it (see <see cref="OrderContext"/>).</param>
+    /// <param name="strategy">
+    /// The active strategy's own limits, for an agent's buy: checked with <see cref="StrategyGate"/> before the risk gate, which
+    /// stays final. Null for orders the strategy doesn't govern (protective sells, the owner's requests).
+    /// </param>
     public async Task<ExecutionResult> PlaceAsync(
-        OrderIntent intent, bool postOnly, CancellationToken cancellationToken, bool countsTowardRejectStreak = true, OrderContext? context = null)
+        OrderIntent intent, bool postOnly, CancellationToken cancellationToken, bool countsTowardRejectStreak = true, OrderContext? context = null,
+        StrategyLimits? strategy = null)
     {
-        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, context, cancellationToken).ConfigureAwait(false);
+        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, context, strategy, cancellationToken).ConfigureAwait(false);
 
         // Engaging takes the placement lock, so it runs after the placement released it.
         // Only a gate rejection made by this call can trip the streak (engine-side rejects never count).
@@ -183,7 +246,7 @@ public sealed partial class ExecutionService
     }
 
     private async Task<ExecutionResult> PlaceLockedAsync(
-        OrderIntent intent, bool postOnly, bool countsTowardRejectStreak, OrderContext? context, CancellationToken cancellationToken)
+        OrderIntent intent, bool postOnly, bool countsTowardRejectStreak, OrderContext? context, StrategyLimits? strategy, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
         intent = intent with { Symbol = MarketDataPoller.NormaliseSymbol(intent.Symbol) };
@@ -228,7 +291,22 @@ public sealed partial class ExecutionService
                 return Reject("portfolio-unavailable", ex.Message);
             }
 
+            // The strategy's limits only tighten, and never replace the gate: a buy they allow (or reduce) still goes to it.
+            StrategyVerdict? strategyCheck = null;
+            if (strategy is not null && rounded.Side == OrderSide.Buy)
+            {
+                strategyCheck = StrategyGate.CheckBuy(rounded, portfolio, strategy, ActivityFor(context?.RunId), now, pair.BaseStep);
+                if (strategyCheck.Order is not { } allowed)
+                {
+                    LogRejected(_logger, intent.ClientOrderId ?? string.Empty, strategyCheck.Rule, strategyCheck.Reason);
+                    return Reject(strategyCheck.Rule, strategyCheck.Reason); // the strategy's refusal, not the gate's: no reject streak
+                }
+                rounded = allowed;
+            }
+
             var verdict = _gate.Evaluate(rounded, portfolio, _market.Snapshot(rounded.Symbol), pair);
+            if (verdict is { Outcome: RiskOutcome.Accepted } && strategyCheck is { Resized: true })
+                verdict = verdict with { Outcome = RiskOutcome.Resized, Rule = strategyCheck.Rule, Reason = strategyCheck.Reason };
             if (verdict.Order is not { } order)
             {
                 if (countsTowardRejectStreak
@@ -241,7 +319,10 @@ public sealed partial class ExecutionService
 
             // Whether the symbol is still held decides if an open position plan applies to this order (see EngineState.WithSent).
             var holdsPosition = portfolio.PositionQuoteBySymbol.GetValueOrDefault(rounded.Symbol) >= Math.Max(pair.MinOrderSizeQuote, 0.00000001m);
-            return await SendAsync(order, verdict, postOnly, context, holdsPosition, cancellationToken).ConfigureAwait(false);
+            var result = await SendAsync(order, verdict, postOnly, context, holdsPosition, cancellationToken).ConfigureAwait(false);
+            if (strategy is not null && rounded.Side == OrderSide.Buy && result.Status is ExecutionStatus.Placed or ExecutionStatus.Uncertain)
+                NoteBuySent(context?.RunId, now);
+            return result;
         }
         finally
         {

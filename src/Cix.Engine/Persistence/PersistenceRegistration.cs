@@ -151,6 +151,13 @@ public static class PersistenceRegistration
         services.AddSingleton<IEngineLease>(sp => sp.GetRequiredService<EngineLease>());
         if (mode == TradingMode.Paper)
         {
+            // Strategies switched from the database (#105): paper only until live switching comes with #71.
+            services.AddSingleton<Strategy.IStrategyRepository>(sp => new Strategy.CosmosStrategyRepository(
+                sp.GetRequiredService<CosmosDb>(), sp.GetRequiredService<CosmosSpecArchive>()));
+            services.AddSingleton(sp => ActivatorUtilities.CreateInstance<Strategy.StrategySelectionService>(
+                sp, sp.GetRequiredService<IStrategySpecStore>() as Strategy.RuntimeStrategySpecs
+                    ?? throw new InvalidOperationException("Strategy switching needs the run-time spec store (AddCixToolServer).")));
+            services.AddHostedService(sp => sp.GetRequiredService<Strategy.StrategySelectionService>());
             services.AddSingleton<IPaperAccountStore, CosmosPaperAccountStore>();
             services.AddSingleton<PaperAccountSaver>();
             services.AddHostedService(sp => sp.GetRequiredService<PaperAccountSaver>());
@@ -176,6 +183,11 @@ public static class PersistenceRegistration
         _ = services.GetRequiredService<IEngineStateStore>(); // reads the saved engine state now, so a failure here is retried too
         if (services.GetService<IStrategySpecStore>()?.Active is { } spec)
             await services.GetRequiredService<CosmosSpecArchive>().ArchiveAsync(spec, cancellationToken).ConfigureAwait(false);
+        if (services.GetService<Strategy.StrategySelectionService>() is { } selection)
+        {
+            var strategy = services.GetRequiredService<StrategyOptions>();
+            await selection.InitializeAsync(strategy.Directory, cancellationToken).ConfigureAwait(false); // the saved selection runs from the first scan
+        }
         if (services.GetService<PaperAccountSaver>() is { } saver)
             await saver.RestoreAsync(cancellationToken).ConfigureAwait(false);
     }

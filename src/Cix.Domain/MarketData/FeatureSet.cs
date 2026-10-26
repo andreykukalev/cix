@@ -98,7 +98,8 @@ public static class FeatureCalculator
             HourlyCandles: hourly.Count);
     }
 
-    private static Trend TrendOf(decimal? fast, decimal? slow)
+    /// <summary>Up, down or flat from a fast and a slow moving average; unknown without both.</summary>
+    public static Trend TrendOf(decimal? fast, decimal? slow)
     {
         if (fast is null || slow is null || slow == 0)
             return Trend.Unknown;

@@ -374,4 +374,76 @@ public sealed class ScannerTests
         Assert.Equal("stop", Assert.Single(flagged.Exits).Reason);
         Assert.Single(expired.Entries);
     }
+
+    /// <summary>
+    /// <paramref name="count"/> hourly candles ending at 11:00 whose closes move by <paramref name="step"/> an hour and end at
+    /// 100, so a fast EMA sits above a slow one when rising and below it when falling.
+    /// </summary>
+    private static List<Candle> Trending(int count, decimal step) =>
+        Enumerable.Range(0, count)
+            .Select(i =>
+            {
+                var close = 100m - ((count - 1 - i) * step);
+                return new Candle(new DateTimeOffset(2026, 10, 23, 11, 0, 0, TimeSpan.Zero).AddHours(i - count + 1), close, close + 1m, close - 1m, close, 100m);
+            })
+            .ToList();
+
+    [Fact]
+    public void OtherEmaPeriods_TakeTheTrendFromTheCandles_InsteadOfTheFeatures()
+    {
+        // The features (EMA 20 and 50) say down; the candles rise, so EMA 10 is above EMA 30.
+        var input = Input(Features(trend: Trend.Down), Trending(41, 0.25m));
+        var custom = Defaults with { FastEmaPeriod = 10, SlowEmaPeriod = 30, EntryMaxAboveEma20Atr = 2m };
+
+        var standard = Scan([input], Defaults with { EntryMaxAboveEma20Atr = 2m });
+        var result = Scan([input], custom);
+
+        Assert.Equal("trend down", Assert.Single(standard.Ranked).NoEntryReason);
+        Assert.Equal(Trend.Up, Assert.Single(result.Ranked).Trend);
+        Assert.Equal("SOL-EUR", Assert.Single(result.Entries).Symbol);
+    }
+
+    [Fact]
+    public void OtherEmaPeriods_DriveTrendExits_ForHeldCoinsToo()
+    {
+        var input = Input(Features(trend: Trend.Up), Trending(41, -0.25m)); // falling closes
+        var held = new HeldPosition("SOL-EUR", 0.05m, 90m, 120m);
+
+        var result = Scan([input], Defaults with { FastEmaPeriod = 10, SlowEmaPeriod = 30 }, held: [held]);
+
+        var exit = Assert.Single(result.Exits);
+        Assert.Equal("trend-down", exit.Reason);
+        Assert.Empty(Scan([input], held: [held]).Exits); // the features' own trend is up
+    }
+
+    [Fact]
+    public void TooFewCandlesForTheSlowEma_LeaveTheTrendUnknown_SoNothingIsBought()
+    {
+        var result = Scan([Input(hourly: Trending(24, 0.25m))], Defaults with { FastEmaPeriod = 10, SlowEmaPeriod = 30 });
+
+        var row = Assert.Single(result.Ranked);
+        Assert.Equal((Trend.Unknown, "trend unknown"), (row.Trend, row.NoEntryReason));
+        Assert.Empty(result.Entries);
+    }
+
+    [Theory]
+    [InlineData(2, 50)]
+    [InlineData(20, 20)]
+    [InlineData(30, 20)]
+    [InlineData(20, 56)]
+    public void EmaPeriods_MustBeFastBelowSlow_WithinTheCandlesAvailable(int fast, int slow) =>
+        Assert.Throws<InvalidOperationException>(() => (Defaults with { FastEmaPeriod = fast, SlowEmaPeriod = slow }).Validate());
+
+    [Fact]
+    public void EntriesPausedByTheStrategy_SuggestNoBuys_ButKeepRankingAndExits()
+    {
+        var held = new HeldPosition("BTC-EUR", 0.001m, 99_000m, 110_000m);
+        var btc = Input(Features("BTC-EUR", bid: 98_000m, price: 98_000m), pair: Pair("BTC-EUR"));
+
+        var result = MarketScanner.Scan([Input(), btc], [held], Defaults, Now, entriesPausedReason: "cooldown until 13:00 UTC");
+
+        Assert.Empty(result.Entries);
+        Assert.Equal("cooldown until 13:00 UTC", Assert.Single(result.Ranked, r => r.Symbol == "SOL-EUR").NoEntryReason);
+        Assert.Equal("stop", Assert.Single(result.Exits).Reason);
+    }
 }

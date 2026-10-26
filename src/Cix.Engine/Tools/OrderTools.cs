@@ -74,9 +74,12 @@ public sealed class OrderTools(
 
         // The engine names the order, so an agent can't collide with or impersonate another order's ID.
         var clientOrderId = Guid.NewGuid().ToString();
+        // Read once: the spec can switch between runs (#105), and this order's label and limits must come from the same one.
+        var spec = context.Spec;
         var result = await execution.PlaceAsync(
             new OrderIntent(normalised, orderSide, baseSize, limitPrice, clientOrderId), postOnly, cancellationToken,
-            context: new OrderContext("place_order", stopLoss, takeProfit, context.RunId, context.Spec?.Label)).ConfigureAwait(false);
+            context: new OrderContext("place_order", stopLoss, takeProfit, context.RunId, spec?.Label),
+            strategy: Strategy.StrategySchema.LimitsOf(spec, limits)).ConfigureAwait(false);
 
         var inv = CultureInfo.InvariantCulture;
         var data = new Dictionary<string, string>

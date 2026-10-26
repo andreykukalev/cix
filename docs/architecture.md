@@ -9,7 +9,7 @@ The full design discussion, with alternatives, sources and cost estimates, is in
 - You allocate capital to a dedicated Revolut X sub-account.
 - A trader agent decides and trades within that allocation without asking.
 - You review afterwards using the decision journal, a daily report and questions to the tool server.
-- You retune the strategy by editing a versioned **strategy spec** (prompt and parameters), not code.
+- You retune the strategy by choosing or adding a versioned **strategy spec** (prompt and parameters), not code. Safe, Balanced and Risky are the built-in choices; paper trading switches between versions at run time ([strategies/README.md](../strategies/README.md)).
 
 ## Components
 
@@ -55,8 +55,9 @@ flowchart LR
 | Market analyst | Claude agent | Every 6 h: market data plus news; records a regime view (risk-on, neutral, risk-off) and symbols to avoid. It expires and can only block new entries, never exits (ADR-0007) |
 | Trader | Claude agent | Only when the scanner signals (plus a slow heartbeat): reads signals, positions and the spec; places and cancels orders through tools |
 | Daily reviewer | Claude agent | Reads the journal, writes a daily report, proposes a new spec version |
-| Strategy spec store | Versioned files, archived in Cosmos DB | Instructions, parameters (including scanner settings) and allowed tools; versions go draft → paper → live |
+| Strategy spec store | Versioned documents in Cosmos DB, seeded from files | Instructions, parameters (scanner settings and the strategy's own limits) and allowed tools; versions go draft → paper → live. The owner selects a version per mode; the engine validates it against the parameter schema and the mandatory limits, journals the switch and applies it between trader runs (ADR-0015) |
 | Risk gate | Deterministic, final authority | Allocation cap, drawdown halt, per-order and daily-loss caps, order rate, price band, symbol allowlist, kill switch |
+| Strategy limits | Deterministic, before the risk gate | The active spec's own, tighter limits on buys: order size, per-coin position, total exposure, daily loss stop, new positions per run, cooldown between buys. They can only reduce or refuse a buy; sells always pass, and the risk gate still decides last |
 | Order execution | Deterministic | Idempotent client order IDs, pair filters (step sizes, min size), partial fills, retries |
 | Paper execution | Deterministic | Simulates fills from live Revolut X prices and fees; the default until go-live |
 | Portfolio | Deterministic | Built from polled orders and fills; reconciled with balances; halts on mismatch |
