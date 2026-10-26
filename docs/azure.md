@@ -126,36 +126,52 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
   - uploads `secrets/claude_token` to Key Vault as `claude-token` if it isn't there yet, straight from the file without showing it. Pass `-UploadClaudeToken` after renewing it;
   - creates the engine's Entra app registration, `cix-engine-<environment>`, if missing. It is single tenant, with no secrets and no permissions, and its application ID URI `api://<app ID>` is the audience the jobs' tokens are for. An existing one is used only if you are its only owner;
 
-  Deploy `platform` first, set up CI's deploy identity (below), then deploy `apps` once CI has pushed images. The jobs' access to `claude-token` is granted in the same deployment that creates them and takes a few minutes to apply, so the first `apps` deployment can fail on it; run it again shortly.
+  Deploy `platform` first, set up CI's deploy identity (below), then deploy `apps` once CI has pushed images, and run the setup again. The jobs' access to `claude-token` is granted in the same deployment that creates them and takes a few minutes to apply, so the first `apps` deployment can fail on it; run it again shortly.
 
   While `startEngine` is false the engine has no replica, but a request to its internal address would start one for a few minutes. Nothing in the environment calls it until the cutover.
 
 ### Deploying the engine and the agents from CI
 
-After a push to `main` that changes what goes into the images (`src/`, `config/`, `strategies/`, `docker/`, `tools/trader/`, `.claude/`), or a manual run of *CI* on `main`, CI deploys them once the .NET tests, the container checks and the secret scan pass (or already passed in the pull request):
+Once its deploy identity is set up (below), CI deploys after a push to `main` that changes what goes into the images (`src/`, `config/`, `strategies/`, `docker/`, `tools/trader/`, `.claude/agents/`, `.claude/hooks/`, `.claude/settings.json`), or on a manual run of *CI* on `main`, once the .NET tests, the container checks and the secret scan pass (or already passed in the pull request):
 
 1. `agents-images` builds `cix-engine` and `cix-trader` in a job with no Azure access, and hands them on as an artifact, with their hashes as job outputs.
 2. `deploy-agents` signs in as `cix-agents-deploy-<environment>`, checks the hashes, and runs `tools/ci/deploy-agents.sh`:
    - it pushes both images to the environment's registry, tagged with the commit SHA;
    - with `agents.deploy` at `platform` it stops there: run `provision.ps1 -ImageTag <that SHA>` with `apps` to create the engine and the jobs from them;
-   - with `apps`, it points the engine at its new image and, while `startEngine` is true, waits up to 12 minutes for the new revision to be healthy (its startup and readiness probes passed). Then it points the three jobs at the new agent image;
-   - if anything fails after the engine changed, it puts the engine and the jobs back on the images they ran before and fails the run. If even that fails, the run says so: check the engine's revisions in the portal.
+   - with `apps`, it points the engine at its new image and, while the engine runs a replica (`startEngine` true), waits up to 12 minutes for the new revision to be healthy (its startup and readiness probes passed). Then it points the three jobs at the new agent image. It changes only the containers' images, through the management API;
+   - if anything fails after the engine changed, it puts the engine and the jobs back on the images they ran before and fails the run. A run cancelled halfway does the same in its last step. If even that fails, the run says so: check the engine's revisions and the jobs in the portal, or run `provision.ps1` again;
+   - an engine you stopped (no active revision, or stopped with `az containerapp stop`) is left alone, with a warning, and nothing is deployed. Run *CI* by hand once it runs again.
 
-A run that is no longer the tip of `main` still deploys when nothing that goes into the images, `infra/` or CI changed since; otherwise the newer run deploys. Runs deploy one at a time. Until the identity is set up, pushes skip with a notice and a manual run fails. CI never deploys infrastructure, settings or roles: those stay with `provision.ps1`. It never deploys a protected environment.
+A run that is no longer the tip of `main` still deploys when the newer commits changed nothing that goes into the images or CI; otherwise the newer run deploys. Runs deploy one at a time. Nothing deploys while `agents.deploy` is `none` or `AGENTS_AZURE_CLIENT_ID` isn't set. CI never deploys infrastructure, settings or roles: those stay with `provision.ps1`. It never deploys a protected environment. The image artifact is kept for a day, so re-running only the deploy job later than that fails; run the whole workflow instead.
 
-Set it up once, after `provision.ps1` has deployed `agents.deploy` `platform` (needs Owner on the subscription):
+**Set it up** once `provision.ps1` has deployed `agents.deploy` `platform` (needs Owner on the subscription), and again after it has deployed `apps`:
 
 ```powershell
 .\tools\azure\setup-ci-deploy.ps1 -For agents -Environment dev -SubscriptionId <id>
 ```
 
 It works like the dashboard's setup above, with its own identity and role:
-- `AcrPush` on the environment's registry, and a custom role, `CIX agents deployer (<environment>)`, on the resource group: read and update Container Apps and jobs (and their revisions and secrets, which an update sends back unchanged), join the Container Apps environment, assign the existing managed identities, and read the registry and the group. It can't create role assignments, Key Vault secrets or other resources;
-- it prints `AGENTS_AZURE_CLIENT_ID` and `AGENTS_ENVIRONMENT` (with `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`, the same as the dashboard's). Add them as repository variables, or pass `-SetGitHubVariables`.
+- `AcrPush` on the environment's registry, and a custom role, `CIX agents deployer (<environment>)`: read and update Container Apps and jobs, join the Container Apps environment, assign managed identities, and read the registry. It is assigned on the registry and, once `apps` exists, on the engine, the three jobs, their four identities and the Container Apps environment, never on the resource group. So it can't create apps, jobs or any other resource, nor role assignments, and it can't read Key Vault, storage or the database itself;
+- it prints `AGENTS_AZURE_CLIENT_ID`, `AGENTS_REGISTRY` and `AGENTS_ENVIRONMENT` (with `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`, the same as the dashboard's). Add them as repository variables, or pass `-SetGitHubVariables`.
 
-Optionally set the repository variable `CLAUDE_CODE_VERSION` to pin the Claude Code version in the agent image (otherwise the latest).
+Optionally set the repository variable `CLAUDE_CODE_VERSION` to pin the Claude Code version in the agent image (otherwise each build takes the latest).
 
-What the identity could still do, if a workflow on `main` misused it: run any image as the engine or a job, and change their settings, including the trading mode, since Azure has no role action that allows changing only the image. Anyone who can push to `main` can already change what runs through the code itself. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group and Key Vault, where CI has no role. (The engine also refuses Live outside the `Production` environment, but this identity could change that setting too.) If you suspect misuse, remove the identity's role assignments, then run `provision.ps1` again, which puts the apps' settings back.
+**What the identity could still do**, if a workflow on `main` misused it. `main` has no branch protection here, so this trusts everyone who can push to `main`, merge into it or start a workflow on it, including the Claude coding agents (see the dashboard's paragraph above).
+- Run any image as the engine or a job, with their settings changed, since Azure has no right that allows changing only the image. That image runs with the engine's or the job's managed identity, so it can do whatever they can:
+  - read `cosmos-key`, the shared Cosmos DB account's read-write key. With it, it can write and delete anywhere in that account: CIX's journal (which the engine itself only appends to), its state, including the kill switch and halts, and other projects' databases;
+  - read `claude-token`, through a job's identity, and use the subscription it belongs to;
+  - send run messages on the queues.
+- Change the trading mode and the environment name. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group and Key Vault, where CI has no role, and must not share a database or Cosmos DB account this key reaches (see the hosting memo).
+
+Anyone who can push to `main` can already reach most of this through the code the engine runs. Moving the engine to Cosmos DB data-plane roles instead of the account key, scoped to its database and without delete on the journal, removes the widest part of it; it is the first item to do before the cutover ([hosting memo](research/azure-hosting.md), "Code changes", item 6).
+
+If you suspect misuse:
+1. Remove the identity's role assignments, or delete `AGENTS_AZURE_CLIENT_ID`.
+2. Regenerate the shared account's primary key (anything else that uses it needs the new one), then run `provision.ps1` again. That copies the new key to Key Vault and puts the apps' settings back.
+3. Renew `claude-token` (`claude setup-token`, then `provision.ps1 -UploadClaudeToken`).
+4. Check the registry's tags and the engine's revisions.
+
+**To stop the engine in an emergency,** deactivate its revision (portal: the engine app, *Revisions*, *Deactivate*). CI then leaves it stopped. Remove `AGENTS_AZURE_CLIENT_ID` too if you don't want any image pushed meanwhile.
 
 The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode, `Production` or an exchange setting. A protected environment must keep `agents.deploy` at `none`; the template deploys no agents there whatever the parameters say.
 

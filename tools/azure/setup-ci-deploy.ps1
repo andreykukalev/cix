@@ -12,10 +12,12 @@
     3. its roles, and no others:
        - dashboard: a custom role, "CIX dashboard deployer (<Environment>)", that may only read a Static Web App and its
          deployment token, assigned on this environment's Static Web App alone;
-       - agents: AcrPush on the environment's registry, and a custom role, "CIX agents deployer (<Environment>)", on CIX's
-         resource group, that may read and update container apps and jobs (to change their image) and nothing else: no
-         role assignments, Key Vault, storage, database or other resource types. Its scope is the group, so it covers
-         the paper engine and the jobs; the live engine gets a resource group of its own (docs/research/azure-hosting.md).
+       - agents: AcrPush on the environment's registry, and a custom role, "CIX agents deployer (<Environment>)", that
+         may read and update container apps and jobs, assigned only on the registry (to find it) and, once
+         agents.deploy is apps, on the paper engine, the three jobs, their managed identities and the Container Apps
+         environment (which an update refers to). It can't create resources (it holds no right on the resource group),
+         role assignments, or reach Key Vault, storage or the database directly; the live engine gets a resource group
+         of its own (docs/research/azure-hosting.md). With agents.deploy platform, run this again after deploying apps.
   Then prints the repository variables CI needs (IDs, not secrets), and sets them with the GitHub CLI if you pass
   -SetGitHubVariables and gh is installed and signed in.
 
@@ -87,16 +89,14 @@ if ($For -eq 'dashboard') {
   Write-CixInfo "Static Web App:  $appName in $($settings.resourceGroup)"
 }
 else {
-  # Reading and updating the apps and jobs (az containerapp update --image) and the references an update carries: the
-  # environment and the user-assigned identities. listSecrets is how the CLI keeps their Key Vault references (names and
-  # URLs, never values) on an update.
+  # Reading and updating the engine and the jobs (tools/ci/deploy-agents.sh patches their images through the management
+  # API) and the references an update carries: the environment and the user-assigned identities. Each right applies only
+  # where the role is assigned: on those resources and the registry, never on the group.
   $roleActions = @(
-    'Microsoft.App/containerApps/listSecrets/action', 'Microsoft.App/containerApps/read', 'Microsoft.App/containerApps/revisions/read',
-    'Microsoft.App/containerApps/write', 'Microsoft.App/jobs/listSecrets/action', 'Microsoft.App/jobs/read', 'Microsoft.App/jobs/write',
-    'Microsoft.App/managedEnvironments/join/action', 'Microsoft.App/managedEnvironments/read', 'Microsoft.ContainerRegistry/registries/read',
-    'Microsoft.ManagedIdentity/userAssignedIdentities/assign/action', 'Microsoft.ManagedIdentity/userAssignedIdentities/read',
-    'Microsoft.Resources/subscriptions/resourceGroups/read') | Sort-Object
-  $roleDescription = 'Reads and updates the CIX paper engine and agent jobs in one resource group, to deploy new images from CI.'
+    'Microsoft.App/containerApps/read', 'Microsoft.App/containerApps/revisions/read', 'Microsoft.App/containerApps/write',
+    'Microsoft.App/jobs/read', 'Microsoft.App/jobs/write', 'Microsoft.App/managedEnvironments/join/action',
+    'Microsoft.ContainerRegistry/registries/read', 'Microsoft.ManagedIdentity/userAssignedIdentities/assign/action') | Sort-Object
+  $roleDescription = 'Reads and updates the CIX paper engine and agent jobs it is assigned on, to deploy new images from CI.'
   $limit = 'push images and update the paper engine and the jobs'
   if ($settings.agents.deploy -eq 'none') { throw "agents.deploy is none in $($settings.path): run provision.ps1 with agents.deploy platform first (it creates the registry)." }
   Write-CixInfo "Resource group:  $($settings.resourceGroup) (the paper engine and the agent jobs)"
@@ -115,7 +115,23 @@ else {
   $registry = Find-CixAgentsResource -Settings $settings -Kind acr
   if (-not $registry) { throw "No container registry for $Environment in $($settings.resourceGroup); run provision.ps1 with agents.deploy platform first." }
   $registryId = "$(Invoke-CixAz @('acr', 'show', '--name', $registry, '--query', 'id', '-o', 'tsv', '--only-show-errors'))".Trim()
-  $assignments = @(@{ Role = $roleName; Scope = $groupId; Label = $settings.resourceGroup }, @{ Role = 'AcrPush'; Scope = $registryId; Label = $registry })
+  $assignments = @(@{ Role = 'AcrPush'; Scope = $registryId; Label = $registry }, @{ Role = $roleName; Scope = $registryId; Label = $registry })
+  if ($settings.agents.deploy -eq 'apps') {
+    # The names infra/modules/agents-names.bicep gives them; each must exist (provision.ps1 creates them).
+    $p = "$($settings.namePrefix)-$($settings.environmentName)"
+    $take = { param([string]$Text, [int]$Length) if ($Text.Length -gt $Length) { $Text.Substring(0, $Length) } else { $Text } }
+    $targets = @("Microsoft.App/containerApps/$(& $take "ca-$p-engine" 32)") +
+      @('trader', 'requests', 'analyst' | ForEach-Object { "Microsoft.App/jobs/$(& $take "caj-$p-$_" 32)" }) +
+      @("Microsoft.App/managedEnvironments/cae-$p") +
+      @('engine', 'trader', 'requests', 'analyst' | ForEach-Object { "Microsoft.ManagedIdentity/userAssignedIdentities/id-$p-$_" })
+    $existing = @(Invoke-CixAz @('resource', 'list', '--resource-group', $settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+        ForEach-Object { "$($_.id)" })
+    foreach ($target in $targets) {
+      $id = "$groupId/providers/$target"
+      if ($existing -notcontains $id) { throw "$($target.Split('/')[-1]) isn't in $($settings.resourceGroup); run provision.ps1 with agents.deploy apps first." }
+      $assignments += @{ Role = $roleName; Scope = $id; Label = $target.Split('/')[-1] }
+    }
+  }
 }
 
 # --- Check everything first: nothing is created or changed until a reused identity has passed every check. -----------------
@@ -203,7 +219,7 @@ if (-not $sp) {
 
 Write-CixStep "Roles: $limit, nothing else"
 if ($role.Count -eq 0) {
-  Confirm-Step "Create the custom role '$roleName' ($($roleActions -join ', '), on $($settings.resourceGroup) only)?"
+  Confirm-Step "Create the custom role '$roleName' ($($roleActions -join ', '), assignable within $($settings.resourceGroup) only)?"
   $file = Write-CixTempJson ([ordered]@{
       Name             = $roleName
       Description      = $roleDescription
@@ -255,7 +271,7 @@ else {
 }
 
 Write-CixStep 'GitHub repository variables (IDs, not secrets)'
-$variables = if ($For -eq 'dashboard') { [ordered]@{ AZURE_CLIENT_ID = $app.appId } } else { [ordered]@{ AGENTS_AZURE_CLIENT_ID = $app.appId } }
+$variables = if ($For -eq 'dashboard') { [ordered]@{ AZURE_CLIENT_ID = $app.appId } } else { [ordered]@{ AGENTS_AZURE_CLIENT_ID = $app.appId; AGENTS_REGISTRY = $registry } }
 $variables['AZURE_TENANT_ID'] = $account.tenantId
 $variables['AZURE_SUBSCRIPTION_ID'] = $account.id
 $variables[$(if ($For -eq 'dashboard') { 'DASHBOARD_ENVIRONMENT' } else { 'AGENTS_ENVIRONMENT' })] = $Environment
@@ -271,5 +287,8 @@ else {
   Write-CixInfo "Set these in GitHub: $Repository, Settings, Secrets and variables, Actions, Variables:"
   foreach ($k in $variables.Keys) { Write-CixInfo ("  {0} = {1}" -f $k, $variables[$k]) }
   Write-CixInfo 'Or run this script again with -SetGitHubVariables (needs the GitHub CLI, signed in).'
+}
+if ($For -eq 'agents' -and $settings.agents.deploy -ne 'apps') {
+  Write-CixInfo 'CI can push images now. Once provision.ps1 has deployed agents.deploy apps, run this again to let it update the engine and the jobs.'
 }
 Write-CixInfo "Then run CI on main by hand once (Actions, CI, Run workflow) to check it deploys the $For."

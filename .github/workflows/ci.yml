@@ -419,11 +419,11 @@ jobs:
 
   agents-images:
     # Step 1 of deploying the paper engine and the agent jobs to Azure Container Apps (after a push to main that changes
-    # them, or a manual run on main): build both images here, in a job with no Azure access, so nothing the build installs
-    # runs where credentials are in reach. Hands them to deploy-agents as an artifact.
+    # them, or a manual run on main), once their deploy identity is set up: build both images here, in a job with no Azure
+    # access, so nothing the build installs runs where credentials are in reach. Hands them to deploy-agents as an artifact.
     needs: plan
     if: >-
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' && vars.AGENTS_AZURE_CLIENT_ID != ''
       && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.plan.outputs.images == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -438,9 +438,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Is this still the tip of main?
+      - name: Anything to deploy to, and still the tip of main?
         id: tip
         env:
+          SETTINGS: infra/environments/${{ vars.AGENTS_ENVIRONMENT || 'dev' }}.json
           GH_TOKEN: ${{ github.token }} # this step only
         run: bash tools/ci/agents-tip.sh
 
@@ -470,19 +471,19 @@ jobs:
 
   deploy-agents:
     # Step 2: sign in to Azure as the agents' deploy identity, which trusts only workflows on main of this repository (an
-    # OIDC federated credential, as for the dashboard: ADR-0010) and may only push images to this environment's registry
-    # and point the existing engine and jobs at them. It can't change their settings' meaning beyond that: provision.ps1
-    # (the owner) creates them, paper only. tools/ci/deploy-agents.sh pushes the images, waits for the engine's new
-    # revision to be healthy, then updates the jobs, and goes back to the previous images if anything fails.
-    # Set up once with tools/azure/setup-ci-deploy.ps1 -For agents (docs/azure.md).
+    # OIDC federated credential, as for the dashboard: ADR-0010). It may push images to this environment's registry and
+    # update the existing engine app and jobs; it can't create resources or role assignments, nor read Key Vault. An update
+    # could change more than the image (Azure has no narrower right); tools/ci/deploy-agents.sh sends only the containers'
+    # images. It waits for the engine's new revision to be healthy, then updates the jobs, and goes back to the previous
+    # images if anything fails. Set up once with tools/azure/setup-ci-deploy.ps1 -For agents (docs/azure.md).
     needs: [build-test, containers, secret-scan, agents-images]
     # The checks may have been skipped (they passed on this exact content in the pull request); none may have failed,
-    # and cancelling the run stops the deployment.
+    # and cancelling the run stops the deployment (the last step rolls back a half-done one).
     if: >-
       !cancelled() && needs.agents-images.outputs.deploy == 'true'
       && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write # for the Azure sign-in; only this job and deploy-dashboard have it
@@ -493,28 +494,22 @@ jobs:
       AGENTS_AZURE_CLIENT_ID: ${{ vars.AGENTS_AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      AGENTS_ENVIRONMENT: ${{ vars.AGENTS_ENVIRONMENT || 'dev' }}
+      AGENTS_REGISTRY: ${{ vars.AGENTS_REGISTRY }}
+      SETTINGS: infra/environments/${{ vars.AGENTS_ENVIRONMENT || 'dev' }}.json
     steps:
       - name: Is the deploy identity set up?
-        id: setup
         run: |
-          if [ -n "$AGENTS_AZURE_CLIENT_ID" ] && [ -n "$AZURE_TENANT_ID" ] && [ -n "$AZURE_SUBSCRIPTION_ID" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0
+          if [ -z "$AZURE_TENANT_ID" ] || [ -z "$AZURE_SUBSCRIPTION_ID" ] || [ -z "$AGENTS_REGISTRY" ]; then
+            echo "::error::Set the repository variables AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID and AGENTS_REGISTRY too (tools/azure/setup-ci-deploy.ps1 -For agents)."
+            exit 1
           fi
-          echo "ready=false" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "::error::Set the repository variables AGENTS_AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID (tools/azure/setup-ci-deploy.ps1 -For agents)."; exit 1
-          fi
-          echo "::notice::The agents' deploy identity isn't set up yet; skipping (docs/azure.md)."
 
       - uses: actions/checkout@v4
-        if: steps.setup.outputs.ready == 'true'
         with:
           persist-credentials: false
 
       - name: Still the tip of main?
         id: tip
-        if: steps.setup.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }} # this step only; the deploy step below doesn't get it
         # Checked again inside the concurrency group: an older run waiting behind a newer one must not deploy over newer
@@ -522,24 +517,35 @@ jobs:
         run: bash tools/ci/agents-tip.sh
 
       - uses: actions/download-artifact@v4
-        if: steps.setup.outputs.ready == 'true' && steps.tip.outputs.deploy == 'true'
+        if: steps.tip.outputs.deploy == 'true'
         with:
           name: agents-images
 
       - uses: azure/login@v2
-        if: steps.setup.outputs.ready == 'true' && steps.tip.outputs.deploy == 'true'
+        if: steps.tip.outputs.deploy == 'true'
         with:
           client-id: ${{ vars.AGENTS_AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy the engine and the agents
-        if: steps.setup.outputs.ready == 'true' && steps.tip.outputs.deploy == 'true'
+        if: steps.tip.outputs.deploy == 'true'
         env:
           ENGINE_SHA256: ${{ needs.agents-images.outputs.engine_sha256 }}
           TRADER_SHA256: ${{ needs.agents-images.outputs.trader_sha256 }}
         run: |
-          printf '%s  engine.tar.gz\n%s  trader.tar.gz\n' "$ENGINE_SHA256" "$TRADER_SHA256" | sha256sum -c --quiet -
-          az extension add --name containerapp --upgrade --only-show-errors
-          SETTINGS="infra/environments/${AGENTS_ENVIRONMENT}.json" TAG="$GITHUB_SHA" \
-            ENGINE_ARCHIVE=engine.tar.gz TRADER_ARCHIVE=trader.tar.gz bash tools/ci/deploy-agents.sh
+          for h in "$ENGINE_SHA256" "$TRADER_SHA256"; do
+            [[ "$h" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::The images' hashes are missing."; exit 1; }
+          done
+          printf '%s  engine.tar.gz\n%s  trader.tar.gz\n' "$ENGINE_SHA256" "$TRADER_SHA256" | sha256sum -c --strict --quiet -
+          SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" REGISTRY="$AGENTS_REGISTRY" TAG="$GITHUB_SHA" \
+            ENGINE_ARCHIVE=engine.tar.gz TRADER_ARCHIVE=trader.tar.gz ROLLBACK_FILE="$RUNNER_TEMP/agents-rollback.json" \
+            bash tools/ci/deploy-agents.sh
+
+      - name: Roll back an interrupted deployment
+        # Only does something when the deploy step stopped halfway (cancelled, or timed out) and left the previous images
+        # in the rollback file.
+        if: (cancelled() || failure()) && steps.tip.outputs.deploy == 'true'
+        run: |
+          SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" ROLLBACK_FILE="$RUNNER_TEMP/agents-rollback.json" \
+            bash tools/ci/deploy-agents.sh --roll-back
