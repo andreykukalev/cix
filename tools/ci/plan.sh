@@ -64,6 +64,8 @@ if [[ "$EVENT" == "push" && "$ci_changed" == false ]]; then
     --jq "[.[] | select(.merged_at != null and .merge_commit_sha == \"$SHA\" and .base.ref == \"main\")][0] // empty | \"\(.number) \(.head.ref) \(.head.sha)\"" \
     2>/dev/null || true)
   read -r number pr_branch pr_head <<<"${pr:-}" || true
+  # gh prints an HTTP error's body on stdout: anything that isn't a pull request number and a commit is no pull request.
+  [[ "${number:-}" =~ ^[0-9]+$ && "${pr_head:-}" =~ ^[0-9a-f]{40}$ ]] || pr=""
   if [[ -n "$pr" ]]; then
     git cat-file -e "$pr_head^{commit}" 2>/dev/null || git -c "http.extraheader=AUTHORIZATION: bearer $GH_TOKEN" fetch -q --no-tags origin "refs/pull/$number/head" 2>/dev/null || true
   fi
