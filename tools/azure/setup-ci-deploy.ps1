@@ -8,7 +8,9 @@
   Creates (or reuses) in Microsoft Entra ID and Azure:
     1. an app registration and service principal: cix-dashboard-deploy-<Environment> or cix-agents-deploy-<Environment>;
     2. a federated credential that trusts GitHub Actions tokens only for pushes to main of this repository
-       (subject repo:<owner>/<repo>:ref:refs/heads/main): pull requests, other branches and forks can't use it;
+       (GitHub's immutable subject repo:<owner>@<owner id>/<repo>@<repo id>:ref:refs/heads/main, which a renamed or
+       recreated repository can't match): pull requests, other branches and forks can't use it. It replaces, after
+       asking, the name-only trust (repo:<owner>/<repo>:ref:refs/heads/main) an earlier version of this script made;
     3. its roles, and no others:
        - dashboard: a custom role, "CIX dashboard deployer (<Environment>)", that may only read a Static Web App and its
          deployment token, assigned on this environment's Static Web App alone;
@@ -30,12 +32,15 @@
   .\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id> -SetGitHubVariables
 .EXAMPLE
   .\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id> -For agents   # after provision.ps1 with agents.deploy platform
+.PARAMETER RepositoryIds
+  <owner id>/<repository id>, GitHub's numeric IDs for the trust. Without it they are read with the GitHub CLI (gh).
 #>
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][ValidatePattern('^[a-z0-9-]{2,12}$')][string]$Environment,
   [ValidatePattern('^[0-9a-fA-F-]{36}$')][string]$SubscriptionId,
   [ValidatePattern('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')][string]$Repository,
+  [ValidatePattern('^\d+/\d+$')][string]$RepositoryIds,
   [ValidateSet('dashboard', 'agents')][string]$For = 'dashboard',
   [switch]$SetGitHubVariables,
   [switch]$Yes
@@ -74,7 +79,24 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
     $Repository = "$canonical"
   }
 }
-$subject = "repo:${Repository}:ref:refs/heads/main"
+# GitHub's immutable subject: the only one its tokens carry for repositories created, renamed or transferred since 15 July 2026, or that opted in
+# (the repository's OIDC settings). The IDs never change, so a repository renamed or recreated under this name can't match.
+if (-not $RepositoryIds) {
+  $ids = @()
+  if (Get-Command gh -ErrorAction SilentlyContinue) {
+    # Two plain queries: quotes inside native arguments don't survive Windows PowerShell 5.1.
+    foreach ($query in '.owner.id', '.id') {
+      $value = Invoke-CixNative { & gh api "repos/$Repository" --jq $query 2>$null }
+      if ($LASTEXITCODE -eq 0 -and "$value".Trim() -match '^\d+$') { $ids += "$value".Trim() }
+    }
+  }
+  if ($ids.Count -ne 2) { throw "Couldn't read the IDs of $Repository with the GitHub CLI: sign in (gh auth login), or pass -RepositoryIds <owner id>/<repository id>." }
+  $RepositoryIds = $ids -join '/'
+}
+$repoOwner, $repoName = $Repository.Split('/')
+$ownerId, $repoId = $RepositoryIds.Split('/')
+$subject = "repo:$repoOwner@$ownerId/$repoName@${repoId}:ref:refs/heads/main"
+$legacySubject = "repo:${Repository}:ref:refs/heads/main" # what an earlier version of this script trusted
 
 Write-CixStep "Environment '$Environment'"
 $settings = Read-CixEnvironment -Name $Environment
@@ -181,7 +203,7 @@ if ($app) {
   # It may trust GitHub Actions on main of this repository, and nothing else.
   $credentials = @(Invoke-CixAz @('ad', 'app', 'federated-credential', 'list', '--id', $app.appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
   $others = @($credentials | Where-Object {
-      $_.subject -cne $subject -or $_.issuer -ne 'https://token.actions.githubusercontent.com' -or
+      ($_.subject -cne $subject -and $_.subject -cne $legacySubject) -or $_.issuer -ne 'https://token.actions.githubusercontent.com' -or
       (@(& $field $_ 'audiences') -join ',') -ne 'api://AzureADTokenExchange' })
   if ($others.Count -gt 0) {
     throw "$identityName also trusts $(($others | ForEach-Object { "$($_.subject) (issuer $($_.issuer))" }) -join ', '). Remove those in the Azure portal (App registrations, Certificates & secrets) first: only main of $Repository may deploy."
@@ -256,7 +278,7 @@ if (@($credentials | Where-Object { $_.subject -ceq $subject }).Count -eq 1) { W
 else {
   Confirm-Step "Let GitHub Actions on main of $Repository sign in as ${identityName}?"
   $file = Write-CixTempJson ([ordered]@{
-      name        = 'github-main'
+      name        = 'github-main-immutable'
       issuer      = 'https://token.actions.githubusercontent.com'
       subject     = $subject
       audiences   = @('api://AzureADTokenExchange')
@@ -265,6 +287,13 @@ else {
   try { Invoke-CixAz @('ad', 'app', 'federated-credential', 'create', '--id', $app.appId, '--parameters', "@$file", '--only-show-errors', '-o', 'none') | Out-Null }
   finally { Remove-Item $file -ErrorAction SilentlyContinue }
   Write-CixInfo "Trusts $subject."
+}
+# The name-only trust an earlier version made: GitHub doesn't send that subject once the repository uses immutable ones.
+foreach ($legacy in @($credentials | Where-Object { $_.subject -ceq $legacySubject })) {
+  Write-CixInfo "CI can sign in afterwards only if GitHub sends $subject (automatic for repositories created since 15 July 2026; otherwise opt in under the repository's OIDC settings)."
+  Confirm-Step "Remove the name-only trust $legacySubject from $identityName (a repository renamed or recreated under this name would match it)?"
+  Invoke-CixAz @('ad', 'app', 'federated-credential', 'delete', '--id', $app.appId, '--federated-credential-id', "$(& $field $legacy 'id')", '--only-show-errors') | Out-Null
+  Write-CixInfo "Removed the trust for $legacySubject."
 }
 
 Write-CixStep 'GitHub repository variables (IDs, not secrets)'

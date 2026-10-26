@@ -549,7 +549,7 @@ $cleanApp = @{
 function Invoke-SetupCi([hashtable]$Overrides) {
   $extra = @{}; foreach ($k in $cleanApp.Keys) { $extra[$k] = $cleanApp[$k] }
   foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
-  return Invoke-WithFakeAz @{ Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment dev -Repository 'owner/repo' -Yes }
+  return Invoke-WithFakeAz @{ Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment dev -Repository 'owner/repo' -RepositoryIds '11/22' -Yes }
 }
 
 Check 'setup-ci-deploy.ps1 (-Yes) creates the identity, a main-only credential and the role, then prints the variables' {
@@ -557,13 +557,13 @@ Check 'setup-ci-deploy.ps1 (-Yes) creates the identity, a main-only credential a
   if ($r.Error) { throw $r.Error }
   $creates = @($r.Calls -split "`n" | Where-Object { $_ -match '\bcreate\b' })
   if ($creates.Count -eq 0 -or $creates[-1] -notmatch 'federated-credential create') { throw "the trust for main must be created last; creates were: $($creates -join '; ')" }
-  foreach ($expected in @('trusted only for repo:owner/repo:ref:refs/heads/main', 'Trusts repo:owner/repo:ref:refs/heads/main.', 'Assigned CIX dashboard deployer (dev) on stapp-cix-dev.',
+  foreach ($expected in @('trusted only for repo:owner@11/repo@22:ref:refs/heads/main', 'Trusts repo:owner@11/repo@22:ref:refs/heads/main.', 'Assigned CIX dashboard deployer (dev) on stapp-cix-dev.',
       'AZURE_CLIENT_ID = 11111111-1111-1111-1111-111111111111', 'AZURE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa', 'DASHBOARD_ENVIRONMENT = dev')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
 }
 
-$mainCredential = '[{"subject":"repo:owner/repo:ref:refs/heads/main","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]'
+$mainCredential = '[{"id":"new","subject":"repo:owner@11/repo@22:ref:refs/heads/main","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]'
 
 Check 'setup-ci-deploy.ps1 accepts a reused identity that is exactly as it should be, changing nothing' {
   $r = Invoke-SetupCi @{
@@ -572,14 +572,39 @@ Check 'setup-ci-deploy.ps1 accepts a reused identity that is exactly as it shoul
     'role assignment'             = '[{"roleDefinitionName":"CIX dashboard deployer (dev)","scope":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev"}]'
   }
   if ($r.Error) { throw $r.Error }
-  foreach ($expected in @('Already trusts repo:owner/repo:ref:refs/heads/main.', 'Exists, with exactly the expected actions.', 'Already assigned CIX dashboard deployer (dev) on stapp-cix-dev.')) {
+  foreach ($expected in @('Already trusts repo:owner@11/repo@22:ref:refs/heads/main.', 'Exists, with exactly the expected actions.', 'Already assigned CIX dashboard deployer (dev) on stapp-cix-dev.')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
 }
+Check 'setup-ci-deploy.ps1 replaces the name-only trust an earlier version made with the immutable one' {
+  $legacy = '[{"id":"old-trust","subject":"repo:owner/repo:ref:refs/heads/main","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]'
+  $r = Invoke-SetupCi @{ 'ad app federated-credential' = $legacy }
+  if ($r.Error) { throw $r.Error }
+  $calls = $r.Calls.Replace('"', '')
+  foreach ($call in @('ad app federated-credential create --id 11111111-1111-1111-1111-111111111111', 'ad app federated-credential delete --id 11111111-1111-1111-1111-111111111111 --federated-credential-id old-trust')) {
+    if (-not $calls.Contains($call)) { throw "no '$call' in: $calls" }
+  }
+  if ($calls.IndexOf('federated-credential delete') -lt $calls.IndexOf('federated-credential create')) { throw 'removed the old trust before adding the new one' }
+  if (-not $r.Output.Contains('Removed the trust for repo:owner/repo:ref:refs/heads/main.')) { throw "no note in: $($r.Output)" }
+}
+
+Check 'setup-ci-deploy.ps1 keeps an immutable trust made by hand and removes the name-only one beside it' {
+  $both = '[{"id":"new","subject":"repo:owner@11/repo@22:ref:refs/heads/main","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]},{"id":"old-trust","subject":"repo:owner/repo:ref:refs/heads/main","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]'
+  $r = Invoke-SetupCi @{ 'ad app federated-credential' = $both }
+  if ($r.Error) { throw $r.Error }
+  $calls = $r.Calls.Replace('"', '')
+  if ($calls -match 'federated-credential create') { throw "it created another trust: $calls" }
+  $deletes = @($calls -split "`n" | Where-Object { $_ -match 'federated-credential delete' })
+  if ($deletes.Count -ne 1 -or -not $deletes[0].Contains('--federated-credential-id old-trust')) { throw "expected one delete of old-trust, got: $($deletes -join '; ')" }
+  if (-not $r.Output.Contains('Already trusts repo:owner@11/repo@22:ref:refs/heads/main.')) { throw "no note in: $($r.Output)" }
+}
+
 foreach ($case in @(
     @{ Name = 'a client secret'; Overrides = @{ 'ad app show' = '{"appId":"1","passwordCredentials":[{"keyId":"k"}],"keyCredentials":[]}' }; Says = 'passwordCredentials' },
     @{ Name = 'another owner'; Overrides = @{ 'ad app owner' = '[{"id":"me"},{"id":"someone-else"}]' }; Says = 'other owners (someone-else)' },
     @{ Name = 'a pull-request credential'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:owner/repo:pull_request","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'also trusts repo:owner/repo:pull_request' },
+    @{ Name = 'a main credential for other repository IDs'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:owner@11/repo@99:ref:refs/heads/main","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'also trusts repo:owner@11/repo@99:ref:refs/heads/main' },
+    @{ Name = 'a main credential for another repository'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:other/repo:ref:refs/heads/main","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'also trusts repo:other/repo:ref:refs/heads/main' },
     @{ Name = 'a main credential from another issuer'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:owner/repo:ref:refs/heads/main","issuer":"https://evil.example","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'issuer https://evil.example' },
     @{ Name = 'a broader role of the same name'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants other rights than it should' },
     @{ Name = 'a same-named role with data actions'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/staticSites/read","Microsoft.Web/staticSites/listSecrets/action"],"notActions":[],"dataActions":["Microsoft.DocumentDB/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants other rights than it should' },
@@ -590,7 +615,7 @@ foreach ($case in @(
   Check "setup-ci-deploy.ps1 refuses a reused identity with $($case.Name), changing nothing" {
     $r = Invoke-SetupCi $case.Overrides
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
-    if ($r.Calls -match '(?m)\bcreate\b') { throw "it changed something before refusing: $(($r.Calls -split "`n" | Where-Object { $_ -match 'create' }) -join '; ')" }
+    if ($r.Calls -match '(?m)\b(create|delete)\b') { throw "it changed something before refusing: $(($r.Calls -split "`n" | Where-Object { $_ -match 'create|delete' }) -join '; ')" }
   }
 }
 
@@ -616,7 +641,7 @@ function Invoke-SetupAgentsCi([hashtable]$Overrides, [string]$Deploy = 'platform
   $extra['resource list'] = $agentsResources
   foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
   try {
-    return Invoke-WithFakeAz @{ GroupExists = 'true'; Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment citest -Repository 'owner/repo' -For agents -Yes }
+    return Invoke-WithFakeAz @{ GroupExists = 'true'; Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment citest -Repository 'owner/repo' -RepositoryIds '11/22' -For agents -Yes }
   }
   finally { Remove-Item $file -Force }
 }
@@ -665,7 +690,7 @@ Check 'setup-ci-deploy.ps1 -For agents accepts its own earlier setup, changing n
     'role assignment'             = "[{`"roleDefinitionName`":`"AcrPush`",`"scope`":`"$agentsRegistryId`"},{`"roleDefinitionName`":`"CIX agents deployer (citest)`",`"scope`":`"$agentsRegistryId`"}]"
   }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
-  foreach ($expected in @('Already trusts repo:owner/repo:ref:refs/heads/main.', 'Exists, with exactly the expected actions.', 'Already assigned AcrPush on crcixcitest1.', 'Already assigned CIX agents deployer (citest) on crcixcitest1.')) {
+  foreach ($expected in @('Already trusts repo:owner@11/repo@22:ref:refs/heads/main.', 'Exists, with exactly the expected actions.', 'Already assigned AcrPush on crcixcitest1.', 'Already assigned CIX agents deployer (citest) on crcixcitest1.')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   if ($r.Calls -match '(?m)\bcreate\b') { throw "it changed something: $($r.Calls)" }
