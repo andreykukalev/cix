@@ -9,7 +9,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:RepoRoot = (Resolve-Path (Join-Path (Join-Path $PSScriptRoot '..') '..')).Path
-$script:CixContainers = @('journal', 'state')
+$script:CixContainers = @('journal', 'state', 'requests')
 $script:OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $script:HttpClient = $null

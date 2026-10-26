@@ -303,32 +303,37 @@ Recovery works the same against Azure as against the emulator: [persistence.md](
 # 1. See what would go (always a dry run without -Apply)
 .\tools\azure\reset-database.ps1 -Environment dev -Target All
 
-# 2. Stop the engine and agents (the script refuses while the engine's heartbeat is fresh)
+# 2. Stop the engine (the script refuses while the engine's heartbeat is fresh), then wait 3 minutes.
+#    In Azure: deactivate the engine app's active revisions (the jobs then can't reach it either).
+$revisions = az containerapp revision list -n ca-cix-dev-engine -g rg-cix-dev --query "[?properties.active].name" -o tsv
+foreach ($r in $revisions) { az containerapp revision deactivate -n ca-cix-dev-engine -g rg-cix-dev --revision $r }
+#    Or, for the engine running locally against Azure:
 docker compose -f docker-compose.yml -f docker-compose.azure.yml stop engine trader analyst
 
 # 3. Reset, then type the confirmation it asks for ("reset dev")
 .\tools\azure\reset-database.ps1 -Environment dev -Target State -Apply      # bot state only (paper)
 .\tools\azure\reset-database.ps1 -Environment dev -Target Journal -Apply    # journal only
+.\tools\azure\reset-database.ps1 -Environment dev -Target All -Mode all -IncludeSpecArchive -IncludeRequests -Apply   # a fresh start
 
-# 4. Start again
-docker compose -f docker-compose.yml -f docker-compose.azure.yml up -d
+# 4. Start again: activate the same revisions (or run provision.ps1), or `docker compose ... up -d` locally
+foreach ($r in $revisions) { az containerapp revision activate -n ca-cix-dev-engine -g rg-cix-dev --revision $r }
 ```
 
 | Option | Effect |
 |---|---|
-| `-Target State` | Removes `engine-state-<mode>`, `engine-status-<mode>` and, for paper, `paper-account`. The engine then starts with a fresh paper account. |
+| `-Target State` | Removes every state document of the mode (`engine-state-<mode>`, `engine-status-<mode>`, `engine-lease-<mode>`, `agent-runs-<mode>`, `manual-requests-<mode>`, `scanner-filters-<mode>`: any `<name>-<mode>`) and, for paper, `paper-account`. The engine then starts with a fresh paper account. |
 | `-Target Journal` | Removes journal entries: all of them, or with `-JournalBefore 2026-10-20` only earlier days. |
 | `-Target All` | Both. |
 | `-Mode paper` (default), `live`, `all` | Which mode's state documents. Removing a live state makes the engine start halted until you confirm, and the confirmation to type becomes `reset dev including live state`. |
 | `-IncludeSpecArchive` | Also removes the archived strategy specs (`spec-*`). Kept by default, because journal entries refer to them. |
-| `-ResetSchema` | Deletes the selected containers and creates them again from `infra/main.bicep`, with the same partition keys and settings. Quicker for a big journal. Needs `-Mode all` with State. |
+| `-IncludeRequests` | Also removes your requests from the dashboard (the `requests` container) for the mode: `paper` takes those without a `tradingMode`. Kept by default. |
 
 Safeguards:
 - It refuses environments marked `protected`, in the settings file or in the `cix-protected` tag on CIX's resource group (set by the template from the same setting). The group must also be tagged `cix-environment=<environment>`.
 - The database must be this environment's alone: its group's `cix-database` and `cix-cosmos-account` tags must name it, and no other group may claim it (the group Azure makes for this environment's Container Apps environment, `ME_cae-...`, copies the tags and is ignored). So a copied or mistyped settings file can't point a reset (or a deployment) at another environment's or project's database. Two environment files sharing one database name are refused outright.
 - Agents can't run it: a hook blocks the script for every Claude agent, along with deleting Cosmos DB resources, regenerating keys, or `docker compose down -v`. It is the one thing allowed to delete journal entries, an owner-approved exception to the append-only rule ([ADR-0008](adr/0008-azure-database-local-agents-dashboard.md)).
 - It acts only on CIX's database (`cosmos.databaseName`) in the single shared account (tagged `shared-role=cosmos` in the shared resource group), and checks the database exists first. Other projects' databases are never touched.
-- It touches only the `journal` and `state` containers. It never deletes the database or the shared account, and never touches the owner's `requests`.
+- It touches only the `journal` and `state` containers, and the owner's `requests` only with `-IncludeRequests`. It deletes documents one by one and never a container, the database or the shared account, so it works with a delete lock on the account.
 - It refuses while the engine is running.
 - It deletes nothing without `-Apply` and the typed confirmation, and prints a summary of what was planned and what was done.
 

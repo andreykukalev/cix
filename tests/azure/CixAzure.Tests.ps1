@@ -424,12 +424,6 @@ Check 'az missing from PATH is a failure, not a stale success' {
     if ($output -notmatch 'Subscription: Enabled one') { throw "no subscription line: $output" }
     if ($output -notmatch "CIX's own preview needs the shared account") { throw "didn't stop after the shared preview: $output" }
   }
-
-  Check 'reset-database.ps1 refuses -ResetSchema on state without -Mode all, before touching Azure' {
-    $message = $null
-    try { & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target State -ResetSchema 6>$null } catch { $message = $_.Exception.Message }
-    if ($message -notmatch 'pass -Mode all') { throw "got: $message" }
-  }
 }
 finally {
   $env:PATH = $savedPath
@@ -478,6 +472,15 @@ $devTags = '{"cix-environment":"dev","cix-protected":"false","cix-database":"cix
 $ownClaim = "[{`"name`":`"rg-cix-dev`",`"tags`":$devTags}]"
 $sharedAccount = '[{"name":"cosmos-shared-x","documentEndpoint":"https://cosmos-shared-x.documents.azure.com:443/","tags":{"shared-role":"cosmos"}}]'
 
+# A delete lock on the shared account forbids deleting containers, and recreating them is provisioning's job: the reset
+# deletes documents only.
+Check 'reset-database.ps1 deletes documents only, never a container, the database or the account' {
+  $script = Get-Content (Join-Path $azureTools 'reset-database.ps1') -Raw
+  foreach ($pattern in @("'delete'", 'Invoke-CixDeployment', 'ResetSchema')) {
+    if ($script.Contains($pattern)) { throw "reset-database.ps1 contains $pattern" }
+  }
+}
+
 Check 'reset-database.ps1 dry run end to end: finds the tagged account, reads the heartbeat, plans, deletes nothing' {
   $heartbeat = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
   $state = '{"Documents":[{"id":"engine-state-paper","type":"engine-state"},{"id":"spec-good@v1-abc","type":"strategy-spec"}],"_count":2}'
@@ -502,6 +505,35 @@ Check 'reset-database.ps1 dry run end to end: finds the tagged account, reads th
       'would remove state/engine-state-paper', 'keeps state/spec-good@v1-abc', 'from 1 day(s): 2026-10-24 to 2026-10-24', 'Dry run: nothing was changed')) {
     if (-not $output.Contains($expected)) { throw "missing '$expected' in: $output" }
   }
+  if (@($seen | Where-Object { $_ -match '^DELETE ' }).Count -ne 0) { throw 'a dry run sent a DELETE' }
+}
+
+Check 'reset-database.ps1 State plans every document of the mode, and -IncludeRequests only that mode''s requests' {
+  $heartbeat = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
+  $state = '{"Documents":[{"id":"engine-state-paper","type":"engine-state"},{"id":"engine-lease-paper","type":"engine-lease"},{"id":"agent-runs-paper","type":"agent-runs"},{"id":"paper-account","type":"paper-account"},{"id":"agent-runs-live","type":"agent-runs"},{"id":"spec-x-paper","type":"strategy-spec"}],"_count":6}'
+  $requests = '{"Documents":[{"id":"r1","day":"2026-10-26"},{"id":"r2","day":"2026-10-26","tradingMode":"live"},{"id":"r3","day":"2026-10-25","tradingMode":"paper"}],"_count":3}'
+  $cosmos = Start-FakeCosmos @(
+    (Reply 200 "{`"id`":`"engine-status-paper`",`"updatedAt`":`"$heartbeat`"}"),
+    (Reply 404),
+    (Reply 200 $state),
+    (Reply 200 $requests))
+  $accounts = "[{`"name`":`"cosmos-shared-x`",`"documentEndpoint`":`"http://127.0.0.1:$($cosmos.Port)/`",`"tags`":{`"shared-role`":`"cosmos`"}}]"
+  $dir = New-FakeAz -CosmosAccounts $accounts -GroupExists 'true' -GroupTags $devTags -GroupList $ownClaim
+  $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
+  $seen = @()
+  try { Assert-FakeAzFirst $dir; $output = & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target State -IncludeRequests 6>&1 | Out-String }
+  finally {
+    $env:PATH = $savedPath
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    $seen = Stop-FakeCosmos $cosmos
+  }
+  foreach ($expected in @('containers: state, requests', 'would remove state/engine-state-paper', 'would remove state/engine-lease-paper',
+      'would remove state/agent-runs-paper', 'would remove state/paper-account', 'keeps state/agent-runs-live', 'keeps state/spec-x-paper',
+      'would remove 2 owner request(s)', 'keeps requests/r2 (live)', 'Dry run: nothing was changed')) {
+    if (-not $output.Contains($expected)) { throw "missing '$expected' in: $output" }
+  }
+  if ($output.Contains('would remove journal')) { throw "planned journal entries for -Target State: $output" }
+  if (@($seen | Where-Object { $_ -match '(?im)^POST /dbs/cix/colls/requests/docs HTTP/1\.1$' }).Count -ne 1) { throw 'never queried the requests container' }
   if (@($seen | Where-Object { $_ -match '^DELETE ' }).Count -ne 0) { throw 'a dry run sent a DELETE' }
 }
 
