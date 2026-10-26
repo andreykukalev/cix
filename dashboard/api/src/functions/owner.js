@@ -1,5 +1,5 @@
 'use strict';
-// The owner's part of the API, under /api/owner/: manual buy and sell requests (ADR-0011) and the decisions with prices
+// The owner's part of the API, under /api/owner/: manual buy and sell requests (ADR-0011, ADR-0012) and the decisions with prices
 // kept. Static Web Apps lets only the owner role through (staticwebapp.config.json); each handler checks again. Nothing
 // here is cached, by the platform or by a browser.
 //

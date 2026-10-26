@@ -395,6 +395,47 @@ function Write-CixSecretFile {
   return $path
 }
 
+function Get-CixStaticSiteSettings {
+  <#
+    A Static Web App's application settings as a hashtable of names and values. They include secrets (the read-only key, the
+    writer's secret): keep them in memory, never print them. Read through the management API, so no value is on a command line.
+  #>
+  param([Parameter(Mandatory)][ValidatePattern('^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Web/staticSites/[^/]+$')][string]$SiteId)
+  $json = Invoke-CixAz -Quiet @('rest', '--method', 'post', '--url', "https://management.azure.com$SiteId/listAppSettings?api-version=2024-04-01", '--only-show-errors', '-o', 'json')
+  $value = $json | ConvertFrom-CixJson
+  $table = @{}
+  if ($value -and $value.PSObject.Properties['properties'] -and $value.properties) {
+    foreach ($p in $value.properties.PSObject.Properties) { $table[$p.Name] = [string]$p.Value }
+  }
+  return $table
+}
+
+function Set-CixStaticSiteSettings {
+  <#
+    Replaces a Static Web App's application settings with $Settings: all of them, so pass the current ones with the change
+    merged in. The values go to the management API in a file only you can read (never on a command line, where other
+    programs could see them), and the file is deleted straight after.
+  #>
+  param(
+    [Parameter(Mandatory)][ValidatePattern('^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Web/staticSites/[^/]+$')][string]$SiteId,
+    [Parameter(Mandatory)][hashtable]$Settings
+  )
+  $path = Join-Path ([IO.Path]::GetTempPath()) "cix-$([guid]::NewGuid().ToString('N')).json"
+  try {
+    [IO.File]::WriteAllText($path, '', $script:Utf8NoBom)
+    if ($script:OnWindows) {
+      $me = "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+      Invoke-CixNative { icacls $path /inheritance:r /grant:r "${me}:(R,W,D)" | Out-Null }
+    }
+    else { Invoke-CixNative { chmod 600 $path } }
+    if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to a temporary file; the settings were not changed." }
+    [IO.File]::WriteAllText($path, (@{ properties = $Settings } | ConvertTo-Json -Depth 3), $script:Utf8NoBom)
+    Invoke-CixAz -Quiet @('rest', '--method', 'put', '--url', "https://management.azure.com$SiteId/config/appsettings?api-version=2024-04-01",
+      '--body', "@$path", '--only-show-errors', '-o', 'none') | Out-Null
+  }
+  finally { Remove-Item $path -Force -ErrorAction SilentlyContinue }
+}
+
 function Set-CixEnvValue {
   <# Sets KEY=value in the repository's .env (git-ignored; never holds secrets). #>
   param([Parameter(Mandatory)][ValidatePattern('^[A-Z_]+$')][string]$Key, [Parameter(Mandatory)][AllowEmptyString()][string]$Value)

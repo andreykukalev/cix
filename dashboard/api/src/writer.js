@@ -1,7 +1,7 @@
 'use strict';
 // The dashboard's only write: creating a request document in the requests container. It signs in to Microsoft Entra ID as
 // the dashboard's writer identity (a service principal, client credentials) and uses Cosmos DB role-based access, where
-// that identity's role allows exactly one thing: creating items in CIX's requests container (ADR-0011,
+// that identity's role allows exactly one thing: creating items in CIX's requests container (ADR-0012,
 // tools/azure/setup-dashboard-requests.ps1). It can't read, change or delete anything, here or in any other database of the
 // shared account. The secret stays in the app's settings on the server; nothing here ever logs it or a token.
 
