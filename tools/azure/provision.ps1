@@ -4,7 +4,7 @@
   Provisions CIX's Azure resources for one environment, in two resource groups:
     - the shared Cosmos DB account (free tier) in its own group, for example rg-shared, created once and reused by other
       projects (infra/shared/main.bicep, settings in infra/shared/<name>.json);
-    - CIX's own group, for example rg-cix-dev, with the read-only dashboard (Static Web Apps, Free), plus CIX's database in
+    - CIX's own group, for example rg-cix-dev, with the dashboard (Static Web Apps, Free), plus CIX's database in
       the shared account (infra/main.bicep, settings in infra/environments/<Environment>.json).
   The engine and agents keep running in Docker on this PC.
 
@@ -108,7 +108,30 @@ if (-not $SkipInfrastructure) {
   Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -WhatIf | Out-Null
   if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed.'; return }
   Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"
+  # The deployment sets the dashboard's settings to exactly what infra/ says, which would drop the writer identity's and the
+  # confirmed owner (setup-dashboard-requests.ps1): keep them in memory and put them back. They are never printed.
+  $writerSettings = @{}
+  $siteId = $null
+  if ($settings.deployDashboard) {
+    $found = Invoke-CixNative { & az staticwebapp show --name "stapp-$($settings.namePrefix)-$($settings.environmentName)" --resource-group $settings.resourceGroup --query id -o tsv --only-show-errors 2>$null }
+    if ($LASTEXITCODE -eq 0 -and "$found" -match '^/subscriptions/') {
+      $siteId = "$found".Trim()
+      try { $current = Get-CixStaticSiteSettings -SiteId $siteId }
+      catch { throw "Couldn't read the dashboard's settings (to keep the writer identity's through the deployment); nothing was deployed." }
+      foreach ($k in @($current.Keys | Where-Object { $_ -like 'COSMOS_WRITER_*' -or $_ -eq 'DASHBOARD_OWNER_USER_ID' })) { $writerSettings[$k] = $current[$k] }
+    }
+  }
   $outputs = Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName
+  if ($writerSettings.Count -gt 0) {
+    try {
+      $now = Get-CixStaticSiteSettings -SiteId $siteId
+      foreach ($k in $writerSettings.Keys) { $now[$k] = $writerSettings[$k] }
+      Set-CixStaticSiteSettings -SiteId $siteId -Settings $now
+      Write-CixInfo "Kept the dashboard's writer settings ($(($writerSettings.Keys | Sort-Object) -join ', '))."
+    }
+    catch { throw "Deployed, but couldn't put the dashboard's writer settings back; owner requests fail until you run tools/azure/setup-dashboard-requests.ps1 -Environment $Environment -OwnerAccount <you> -RotateSecret." }
+    finally { $writerSettings = $null; $now = $null; $current = $null }
+  }
   $cosmosAccount = $outputs.cosmosAccountName.value
   $cosmosEndpoint = $outputs.cosmosEndpoint.value
   $staticWebApp = $outputs.staticWebAppName.value
@@ -125,7 +148,7 @@ else {
 Write-CixStep 'Resources'
 Write-CixInfo "Cosmos DB account:  $cosmosAccount (shared, in $($shared.resourceGroup))"
 Write-CixInfo "Cosmos DB endpoint: $cosmosEndpoint"
-Write-CixInfo "Database:           $($settings.cosmos.databaseName) (containers: journal, state)"
+Write-CixInfo "Database:           $($settings.cosmos.databaseName) (containers: journal, state, requests)"
 if ($dashboardUrl) { Write-CixInfo "Dashboard:          $dashboardUrl" }
 
 if (-not $SkipEngineConfig) {

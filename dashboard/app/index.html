@@ -6,6 +6,7 @@
   <meta name="robots" content="noindex, nofollow">
   <title>CIX Dashboard</title>
   <link rel="stylesheet" href="styles.css">
+  <script src="view.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -22,6 +23,8 @@
       </div>
       <button type="button" id="refresh" class="ghost" title="Refresh now">Refresh</button>
       <span id="updated" class="muted small" aria-live="polite">Loading…</span>
+      <span id="who" class="small muted"></span>
+      <a id="sign-in" class="small" href="/.auth/login/aad?post_login_redirect_uri=/">Owner sign-in</a>
     </div>
   </header>
 
@@ -49,10 +52,38 @@
           <ul id="attention" class="cards"></ul>
         </div>
       </div>
-      <details id="market-details">
-        <summary>All coins in the latest scan</summary>
-        <table id="market"><thead><tr><th>Coin</th><th class="num">Rank</th><th>Trend</th><th class="num">1h</th><th class="num">24h</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Note</th></tr></thead><tbody></tbody></table>
-      </details>
+    </section>
+
+    <section class="panel" aria-labelledby="h-coins">
+      <div class="panel-head">
+        <h2 id="h-coins">Coins</h2>
+        <span id="coins-meta" class="muted small"></span>
+      </div>
+      <p id="request-status" class="request-status" role="status" aria-live="polite" hidden></p>
+      <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Note</th><th class="owner-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
+      <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan; prices are never shown here.</p>
+    </section>
+
+    <section class="panel owner-only" aria-labelledby="h-requests" hidden>
+      <div class="panel-head"><h2 id="h-requests">Your requests</h2><span class="muted small">last 7 days, paper · only you see this</span></div>
+      <table id="requests"><thead><tr><th>Sent</th><th>Request</th><th>How</th><th>Status</th><th>Outcome</th><th>Steps</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="panel" aria-labelledby="h-volume">
+      <div class="panel-head">
+        <h2 id="h-volume">Trading activity</h2>
+        <div class="segmented" role="group" aria-label="Period">
+          <button type="button" data-period="day" aria-pressed="true">Daily</button>
+          <button type="button" data-period="week" aria-pressed="false">Weekly</button>
+          <button type="button" data-period="month" aria-pressed="false">Monthly</button>
+        </div>
+      </div>
+      <p id="volume-meta" class="muted small"></p>
+      <div class="figures" id="volume-cards"></div>
+      <figure class="chart">
+        <svg id="volume-chart" role="img" aria-labelledby="volume-chart-title" viewBox="0 0 640 190" preserveAspectRatio="none"><title id="volume-chart-title">Buy and sell volume by period</title></svg>
+        <figcaption class="muted small"><span id="volume-unit">volume</span>: <span class="key buy"></span> bought <span class="key sell"></span> sold · executed trades only, UTC periods, weeks from Monday · fees not included</figcaption>
+      </figure>
     </section>
 
     <section class="panel" aria-labelledby="h-portfolio">
@@ -91,7 +122,7 @@
     </section>
 
     <section class="panel" aria-labelledby="h-decisions">
-      <div class="panel-head"><h2 id="h-decisions">Decisions</h2><span class="muted small">orders placed, refused or cancelled, with the agent's reasoning</span></div>
+      <div class="panel-head"><h2 id="h-decisions">Decisions</h2><span id="decisions-meta" class="muted small">orders placed, refused or cancelled: the reason first, the technical text under it</span></div>
       <table id="decisions"><thead><tr><th>Time</th><th>By</th><th>Action</th><th>Coin</th><th>Side</th><th class="num">Size</th><th>Status</th><th>Why</th></tr></thead><tbody></tbody></table>
     </section>
 
@@ -100,9 +131,9 @@
       <table id="problems"><thead><tr><th>Time</th><th>Source</th><th>Kind</th><th>What happened</th></tr></thead><tbody></tbody></table>
     </section>
 
-    <section class="panel" aria-labelledby="h-activity">
+    <details class="panel collapsible" id="journal-panel">
+      <summary><h2 id="h-activity">Journal activity</h2><span class="muted small">every entry, by day and kind</span></summary>
       <div class="panel-head">
-        <h2 id="h-activity">Journal activity</h2>
         <form id="journal-filter" class="inline">
           <label>Day <input type="date" id="journal-day"></label>
           <label>Kind
@@ -110,6 +141,7 @@
               <option value="">all</option>
               <option>order</option><option>fill</option><option>order-closed</option><option>tool-call</option>
               <option>tool-denied</option><option>kill-switch</option><option>scan-signal</option><option>market-view</option>
+              <option>manual-request</option><option>scanner-filters</option><option>scan-eligibility</option>
             </select>
           </label>
           <button type="submit" class="ghost">Show</button>
@@ -117,7 +149,7 @@
         </form>
       </div>
       <table id="activity"><thead><tr><th>Time</th><th>Kind</th><th>Actor</th><th>Run</th><th>Summary</th><th>Entry</th></tr></thead><tbody></tbody></table>
-    </section>
+    </details>
 
     <section class="panel" aria-labelledby="h-state">
       <div class="panel-head"><h2 id="h-state">State documents</h2><span class="muted small">what the engine knows now (see docs/persistence.md)</span></div>
@@ -125,8 +157,33 @@
     </section>
   </main>
 
+  <dialog id="request-dialog" aria-labelledby="request-title">
+    <form id="request-form" method="dialog">
+      <h2 id="request-title">Request</h2>
+      <fieldset id="sell-options">
+        <legend>How much</legend>
+        <label><input type="radio" name="portion" value="0.25"> 25%</label>
+        <label><input type="radio" name="portion" value="0.5"> 50%</label>
+        <label><input type="radio" name="portion" value="1"> All</label>
+      </fieldset>
+      <fieldset id="sell-mode">
+        <legend>How</legend>
+        <label><input type="radio" name="mode" value="direct"> Direct: sell at the bid now</label>
+        <label><input type="radio" name="mode" value="agent"> Ask the trader: it analyses first, may decline</label>
+      </fieldset>
+      <label id="buy-amount" class="field">Amount <input type="text" name="quoteAmount" inputmode="decimal" autocomplete="off" placeholder="25"> <span id="buy-quote" class="muted"></span></label>
+      <label class="field">Note for the trader <span class="muted small">(optional; only you and the trader see it)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
+      <p id="request-summary" class="summary"></p>
+      <p id="request-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" value="cancel" id="request-cancel" class="ghost">Cancel</button>
+        <button type="submit" value="send" id="request-send" class="primary">Send request</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer class="muted small">
-    Read-only. This page can't place, change or cancel orders. It shows no order levels: no entry, stop, target or fill prices (numbers in journal notes are masked as …); the journal keeps them.
+    Public view: read-only, with no order levels (no entry, stop, target or fill prices; numbers in journal notes are masked as …). The journal keeps them. Signed in as the owner, you can send paper buy and sell requests; the engine checks each one and every order goes through the risk gate.
     News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.
   </footer>
 </body>

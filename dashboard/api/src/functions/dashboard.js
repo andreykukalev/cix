@@ -5,9 +5,10 @@
 
 const { app } = require('@azure/functions');
 const { CosmosReader } = require('../cosmos');
-const { loadDashboard, loadJournalDay, journalRequest } = require('../data');
+const { loadDashboard, loadJournalDay, journalRequest, loadActivity } = require('../data');
 
 const CACHE_MS = 20_000;
+const ACTIVITY_CACHE_MS = 5 * 60_000; // a query across up to a year of day partitions: rarely
 const cache = new Map();
 let reader;
 
@@ -21,9 +22,9 @@ function getReader() {
 }
 
 // Concurrent requests for the same thing share one database read (the promise is cached, not just the result).
-async function cached(key, load) {
+async function cached(key, load, ttl = CACHE_MS) {
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_MS) return hit.body;
+  if (hit && Date.now() - hit.at < ttl) return hit.body;
   const body = load();
   cache.set(key, { at: Date.now(), body });
   if (cache.size > 200) cache.delete(cache.keys().next().value);
@@ -35,14 +36,14 @@ async function cached(key, load) {
   }
 }
 
-function respond(body, status = 200) {
-  const cacheControl = status === 200 ? `public, max-age=${CACHE_MS / 1000}` : 'no-store'; // never keep an error around
+function respond(body, status = 200, ttl = CACHE_MS) {
+  const cacheControl = status === 200 ? `public, max-age=${ttl / 1000}` : 'no-store'; // never keep an error around
   return { status, jsonBody: body, headers: { 'cache-control': cacheControl, 'x-content-type-options': 'nosniff' } };
 }
 
-async function handle(context, load) {
+async function handle(context, load, ttl = CACHE_MS) {
   try {
-    return respond(await load());
+    return respond(await load(), 200, ttl);
   } catch (error) {
     if (error instanceof RangeError) return respond({ error: error.message }, 400);
     context.error(`Dashboard read failed: ${error?.name ?? 'Error'} ${error?.status ?? ''}`); // never the key or the request
@@ -69,4 +70,15 @@ app.http('journal', {
     const r = journalRequest(request.query.get('day'), request.query.get('kind') ?? '', request.query.get('limit') ?? '100', now);
     return cached(r.key, () => loadJournalDay(getReader(), r.day, r.kind, String(r.top), now));
   }),
+});
+
+app.http('activity', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'activity',
+  handler: (request, context) => handle(context, () => {
+    const period = request.query.get('period') ?? 'day';
+    if (!['day', 'week', 'month'].includes(period)) throw new RangeError('period must be day, week or month');
+    return cached(`activity:${period}`, () => loadActivity(getReader(), period, Date.now()), ACTIVITY_CACHE_MS);
+  }, ACTIVITY_CACHE_MS),
 });

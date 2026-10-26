@@ -4,13 +4,32 @@
   },
   "routes": [
     {
+      "route": "/.auth/login/github",
+      "statusCode": 404
+    },
+    {
+      "route": "/.auth/login/twitter",
+      "statusCode": 404
+    },
+    {
+      "route": "/api/owner/*",
+      "allowedRoles": [
+        "owner"
+      ]
+    },
+    {
       "route": "/api/*",
-      "methods": ["GET"]
+      "methods": [
+        "GET"
+      ]
     }
   ],
   "navigationFallback": {
     "rewrite": "/index.html",
-    "exclude": ["/api/*", "*.{css,js,json,ico,png,svg}"]
+    "exclude": [
+      "/api/*",
+      "*.{css,js,json,ico,png,svg}"
+    ]
   },
   "globalHeaders": {
     "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",

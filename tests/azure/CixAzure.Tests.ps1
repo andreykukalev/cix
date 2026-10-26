@@ -216,7 +216,7 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
   if ($onWindows) {
     $lines = @('@echo off', 'echo %* >> "%~dp0calls.log"', 'echo WARNING: fake az writes to stderr 1>&2')
     foreach ($k in $answers.Keys) {
-      $match = switch (($k -split ' ').Count) { 1 { '"%1"' } 2 { '"%1 %2"' } default { '"%1 %2 %3"' } }
+      $match = switch (($k -split ' ').Count) { 1 { '"%1"' } 2 { '"%1 %2"' } 3 { '"%1 %2 %3"' } 4 { '"%~1 %~2 %~3 %~4"' } default { '"%~1 %~2 %~3 %~4 %~5"' } } # %~: an argument in quotes (--filter "appId eq ...") can't break the line
       $lines += "if $match==`"$k`" echo $($answers[$k])& exit /b 0"
     }
     if (-not $DatabaseExists) { $lines += 'if "%1 %2"=="cosmosdb sql" echo ERROR: (NotFound) Resource not found 1>&2& exit /b 3' }
@@ -224,7 +224,7 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
     [IO.File]::WriteAllText((Join-Path $dir 'az.cmd'), ($lines -join "`r`n"), [Text.Encoding]::ASCII)
   }
   else {
-    $lines = @('#!/bin/sh', 'echo "$*" >> "$(dirname "$0")/calls.log"', 'echo "WARNING: fake az writes to stderr" >&2', 'case "$1 $2 $3 " in')
+    $lines = @('#!/bin/sh', 'echo "$*" >> "$(dirname "$0")/calls.log"', 'echo "WARNING: fake az writes to stderr" >&2', 'case "$1 $2 $3 $4 $5 " in')
     foreach ($k in $answers.Keys) {
       $pattern = "'$k '*"
       $lines += "  $pattern) echo '$($answers[$k])' ;;"
@@ -485,6 +485,110 @@ foreach ($case in @(
     $r = Invoke-SetupCi $case.Overrides
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
     if ($r.Calls -match '(?m)\bcreate\b') { throw "it changed something before refusing: $(($r.Calls -split "`n" | Where-Object { $_ -match 'create' }) -join '; ')" }
+  }
+}
+
+# --- setup-dashboard-requests.ps1: the dashboard's create-only writer identity (ADR-0012) -------------------------------------
+$writerSite = '{"id":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev","name":"stapp-cix-dev","defaultHostname":"dash.example"}'
+$writerAccount = '[{"id":"/subscriptions/x/resourceGroups/rg-shared/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-shared-x","name":"cosmos-shared-x","documentEndpoint":"https://cosmos-shared-x.documents.azure.com:443/","tags":{"shared-role":"cosmos"}}]'
+$writerScope = '/subscriptions/x/resourceGroups/rg-shared/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-shared-x/dbs/cix/colls/requests'
+$writerRole = "[{`"id`":`"/role/r1`",`"name`":`"r1`",`"roleName`":`"CIX dashboard request writer (dev)`",`"assignableScopes`":[`"$writerScope`"],`"permissions`":[{`"dataActions`":[`"Microsoft.DocumentDB/databaseAccounts/readMetadata`",`"Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/create`"],`"notDataActions`":[]}]}]"
+$fakePassword = @('fake', 'writer', 'pass', '7f3a') -join '-' # built at run time; must never appear in output or on a command line
+$newWriter = @{
+  'staticwebapp show'                     = $writerSite
+  'ad signed-in-user'                     = '{"id":"me"}'
+  'ad app list'                           = '[]'
+  'ad app create'                         = '{"appId":"44444444-4444-4444-4444-444444444444"}'
+  'ad sp create'                          = '{"id":"55555555-5555-5555-5555-555555555555"}'
+  'cosmosdb sql role definition list'     = '[]'
+  'cosmosdb sql role definition create'   = '{"id":"/role/r1","name":"r1"}'
+  'ad app credential'                     = "{`"appId`":`"44444444-4444-4444-4444-444444444444`",`"password`":`"$fakePassword`"}"
+  'rest'                                  = '{"value":[],"properties":{"COSMOS_ENDPOINT":"https://cosmos-shared-x.documents.azure.com:443/"}}'
+  'staticwebapp users list'               = '[]'
+  'staticwebapp users invite'             = 'https://dash.example/.auth/invitations/abc'
+}
+$existingWriter = @{
+  'staticwebapp show'                     = $writerSite
+  'ad signed-in-user'                     = '{"id":"me"}'
+  'ad app list'                           = '[{"appId":"44444444-4444-4444-4444-444444444444","displayName":"cix-dashboard-writer-dev"}]'
+  'ad app show'                           = '{"appId":"44444444-4444-4444-4444-444444444444","passwordCredentials":[{"displayName":"cix-dashboard-requests"}],"keyCredentials":[]}'
+  'ad app federated-credential'           = '[]'
+  'ad app owner'                          = '[{"id":"me"}]'
+  'ad sp list'                            = '[{"id":"55555555-5555-5555-5555-555555555555"}]'
+  'ad sp show'                            = '{"id":"55555555-5555-5555-5555-555555555555","passwordCredentials":[],"keyCredentials":[]}'
+  'ad sp owner'                           = '[]'
+  'role assignment'                       = '[]'
+  'cosmosdb sql role definition list'     = $writerRole
+  'cosmosdb sql role assignment list'     = "[{`"principalId`":`"55555555-5555-5555-5555-555555555555`",`"roleDefinitionId`":`"/role/r1`",`"scope`":`"$writerScope`"},{`"principalId`":`"someone-else`",`"roleDefinitionId`":`"/role/other`",`"scope`":`"/`"}]"
+  'rest'                                  = '{"value":[],"properties":{"COSMOS_WRITER_TENANT_ID":"00000000-0000-0000-0000-0000000000aa","COSMOS_WRITER_CLIENT_ID":"44444444-4444-4444-4444-444444444444","COSMOS_WRITER_SECRET":"set","DASHBOARD_OWNER_USER_ID":"owner-uid"}}'
+  'staticwebapp users list'               = '[{"displayName":"owner@example.com","userId":"owner-uid","roles":"anonymous,authenticated,owner"}]'
+}
+function Invoke-SetupWriter([hashtable]$Base, [hashtable]$Overrides = @{}, [hashtable]$More = @{}) {
+  $extra = @{}; foreach ($k in $Base.Keys) { $extra[$k] = $Base[$k] }
+  foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
+  return Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $writerAccount; Extra = $extra } {
+    & (Join-Path $azureTools 'setup-dashboard-requests.ps1') -Environment dev -OwnerAccount 'owner@example.com' -Yes @More
+  }
+}
+
+Check 'setup-dashboard-requests.ps1 (-Yes) creates a create-only identity and stores its secret without ever showing it' {
+  $r = Invoke-SetupWriter $newWriter
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  foreach ($call in 'ad app create', 'ad sp create', 'cosmosdb sql role definition create', 'cosmosdb sql role assignment create', 'ad app credential reset', 'staticwebapp users invite') {
+    if ($r.Calls -notmatch [regex]::Escape($call)) { throw "no '$call' call: $($r.Calls)" }
+  }
+  if ($r.Calls -notmatch 'cosmosdb sql role assignment create .*--scope /dbs/cix/colls/requests') { throw 'the assignment is not scoped to the requests container' }
+  if ($r.Calls -notmatch 'rest --method put --url https://management\.azure\.com/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft\.Web/staticSites/stapp-cix-dev/config/appsettings\S* --body @') {
+    throw "the settings weren't written from a file: $($r.Calls)"
+  }
+  if ($r.Calls -match '--append') { throw 'an earlier secret would stay valid' }
+  if ($r.Output.Contains($fakePassword) -or $r.Calls.Contains($fakePassword)) { throw 'the secret was printed or put on a command line' }
+  if ($r.Output -notmatch 'auth/invitations/abc') { throw "the invitation link wasn't shown: $($r.Output)" }
+  if ($r.Calls -notmatch 'users invite .*--invitation-expiration-in-hours 2 ') { throw 'the invitation should expire in 2 hours' }
+  if ($r.Output -notmatch 'run this script again') { throw "it didn't say to run it again to confirm the owner: $($r.Output)" }
+}
+
+Check 'setup-dashboard-requests.ps1 confirms the owner by user ID once the invitation is accepted' {
+  $r = Invoke-SetupWriter $existingWriter @{ 'rest' = '{"value":[],"properties":{"COSMOS_WRITER_TENANT_ID":"00000000-0000-0000-0000-0000000000aa","COSMOS_WRITER_CLIENT_ID":"44444444-4444-4444-4444-444444444444","COSMOS_WRITER_SECRET":"set"}}' }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -notmatch '--method put') { throw "the owner wasn't stored: $($r.Calls)" }
+  if ($r.Calls -match '(?m)\bcreate\b|credential reset|users invite') { throw "it changed something else: $($r.Calls)" }
+  if ($r.Output -notmatch 'Confirmed') { throw "no confirmation: $($r.Output)" }
+}
+
+Check 'setup-dashboard-requests.ps1 refuses when someone else holds the owner role' {
+  $r = Invoke-SetupWriter $existingWriter @{ 'staticwebapp users list' = '[{"displayName":"owner@example.com","userId":"owner-uid","roles":"owner"},{"displayName":"stranger@example.com","userId":"x","roles":"anonymous,owner"}]' }
+  if (-not $r.Error -or -not $r.Error.Contains('stranger@example.com also hold(s) the owner role')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match '--method put|users invite') { throw "it changed the owner: $($r.Calls)" }
+}
+
+Check 'setup-dashboard-requests.ps1 run again changes nothing that is already in place' {
+  $r = Invoke-SetupWriter $existingWriter
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -match '(?m)\bcreate\b|credential reset|--method put|users invite') { throw "it changed something: $($r.Calls)" }
+  if ($r.Output -notmatch 'is the confirmed owner') { throw "no owner line: $($r.Output)" }
+}
+
+Check 'setup-dashboard-requests.ps1 -RotateSecret replaces the secret only' {
+  $r = Invoke-SetupWriter $existingWriter @{ 'ad app credential' = $newWriter['ad app credential'] } @{ RotateSecret = $true }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -notmatch 'ad app credential reset' -or $r.Calls -notmatch '--method put') { throw "the secret wasn't replaced: $($r.Calls)" }
+  if ($r.Calls -match '(?m)\bcreate\b') { throw 'it created something' }
+}
+
+foreach ($case in @(
+    @{ Name = 'a client secret it did not create'; Overrides = @{ 'ad app show' = '{"appId":"4","passwordCredentials":[{"displayName":"someone"}],"keyCredentials":[]}' }; Says = "client secrets this script didn't create" },
+    @{ Name = 'a second secret of the same name'; Overrides = @{ 'ad app show' = '{"appId":"4","passwordCredentials":[{"displayName":"cix-dashboard-requests"},{"displayName":"cix-dashboard-requests"}],"keyCredentials":[]}' }; Says = 'has 2 client secrets' },
+    @{ Name = 'the writer role assigned to someone else'; Overrides = @{ 'cosmosdb sql role assignment list' = "[{`"principalId`":`"55555555-5555-5555-5555-555555555555`",`"roleDefinitionId`":`"/role/r1`",`"scope`":`"$writerScope`"},{`"principalId`":`"intruder`",`"roleDefinitionId`":`"/role/r1`",`"scope`":`"$writerScope`"}]" }; Says = 'is also assigned to intruder' },
+    @{ Name = 'a federated credential'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:x/y:ref:refs/heads/main"}]' }; Says = 'trusts external tokens' },
+    @{ Name = 'an Azure role'; Overrides = @{ 'role assignment' = '[{"roleDefinitionName":"Reader","scope":"/subscriptions/x"}]' }; Says = 'holds Azure roles (Reader on /subscriptions/x)' },
+    @{ Name = 'a broader Cosmos DB role of the same name'; Overrides = @{ 'cosmosdb sql role definition list' = $writerRole.Replace('items/create', 'items/*') }; Says = 'allows more than creating items' },
+    @{ Name = 'a same-named role on the whole account'; Overrides = @{ 'cosmosdb sql role definition list' = $writerRole.Replace($writerScope, '/') }; Says = 'allows more than creating items' },
+    @{ Name = 'another Cosmos DB role assignment'; Overrides = @{ 'cosmosdb sql role assignment list' = '[{"principalId":"55555555-5555-5555-5555-555555555555","roleDefinitionId":"/role/data-contributor","scope":"/"}]' }; Says = 'other Cosmos DB role assignments' })) {
+  Check "setup-dashboard-requests.ps1 refuses a reused identity with $($case.Name), changing nothing" {
+    $r = Invoke-SetupWriter $existingWriter $case.Overrides @{ RotateSecret = $true }
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
+    if ($r.Calls -match '(?m)\bcreate\b|credential reset|--method put|users invite') { throw "it changed something before refusing: $($r.Calls)" }
   }
 }
 

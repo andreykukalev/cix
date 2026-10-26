@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { summarize, engineHealth, publicText } = require('../src/summarize');
+const { summarize, engineHealth, publicText, publicSummary } = require('../src/summarize');
 
 const NOW = Date.parse('2026-10-25T13:00:00Z');
 
@@ -99,4 +99,20 @@ test('masks prices in every text format the engine writes', () => {
   for (const text of engineTexts) assert.doesNotMatch(publicText(text), /\d+\.\d+|\d{3,}|\d+k|@ \d/, text);
   assert.equal(publicText('rank 1, 24h +3%'), 'rank 1, 24h +3%');
   assert.equal(publicText(null), null);
+});
+
+test('the engine section says whether owner requests are taken; a direct sell\'s note stays private', () => {
+  const view = summarize({ mode: 'paper', status: { updatedAt: new Date(NOW).toISOString(), manualRequests: { state: 'off', awaitingAgent: 0, lastPollAt: null } }, engineState: null, journal: [
+    { id: 'm', at: new Date(NOW).toISOString(), kind: 'order', actor: 'owner', summary: 'manual sell 1 LINK-EUR @ 10: placed (ok)', data: { tool: 'manual-direct', symbol: 'LINK-EUR', side: 'sell', status: 'placed', rule: 'ok', rationale: "Owner's direct sell: my secret plan" } },
+  ], stateDocs: [] }, NOW);
+  assert.deepEqual(view.engine.manualRequests, { state: 'off', awaitingAgent: 0, lastPollAt: null });
+  assert.ok(!JSON.stringify(view).includes('secret plan'));
+  assert.equal(summarize({ mode: 'paper', status: null, journal: [], stateDocs: [] }, NOW).engine.manualRequests, null);
+});
+
+test('a manual request in the public journal is built from its fields, never its summary (it carries the note)', () => {
+  const e = { kind: 'manual-request', actor: 'engine', summary: 'Owner request x: agent-assisted sell LINK-EUR, 0.5 of the position (worried about my divorce)', data: { mode: 'agent', side: 'sell', symbol: 'LINK-EUR', status: 'awaiting-agent', rule: 'sent-to-trader' } };
+  assert.equal(publicSummary(e), 'Owner request (trader sell LINK-EUR): awaiting-agent (sent-to-trader).');
+  assert.equal(publicSummary({ ...e, data: { mode: 'direct', side: 'sell', symbol: '<b>', status: 'Filled 64250', rule: 'x y' } }), 'Owner request (direct sell): update.');
+  assert.equal(publicSummary({ kind: 'manual-request', summary: 'note' }), 'Owner request: update.');
 });

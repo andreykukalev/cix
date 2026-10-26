@@ -153,7 +153,7 @@ The script:
 
 Add those variables in GitHub: *Settings*, *Secrets and variables*, *Actions*, *Variables*. Or add `-SetGitHubVariables` to the script, which sets them with the GitHub CLI (`gh`, signed in). Then run *CI* on `main` once by hand to check it publishes.
 
-What the identity could still do, if a workflow on `main` misused it: read the deployment token, publish other code as the dashboard, and that code would run with the dashboard's settings, including the shared account's read-only key (which can read every project's database there). `main` has no branch protection on GitHub Free, so this trusts everyone who can push to `main`, merge into it, or start a workflow on it. That includes the Claude coding agents: their GitHub access could merge pull requests or push to `main` directly (in this repository they have merged at the owner's request). Only the rules in CLAUDE.md, not GitHub, stop them. GitHub Pro with branch protection on `main` would make that a technical limit. If you suspect misuse, remove the identity's role assignment, reset the deployment token (portal: `stapp-cix-dev`, *Manage deployment token*, *Reset*), and regenerate the account's read-only keys, then run `provision.ps1` again to update the dashboard's settings.
+What the identity could still do, if a workflow on `main` misused it: read the deployment token, publish other code as the dashboard, and that code would run with the dashboard's settings, including the shared account's read-only key (which can read every project's database there) and the writer identity's secret (which can create paper requests the engine then checks). `main` has no branch protection on GitHub Free, so this trusts everyone who can push to `main`, merge into it, or start a workflow on it. That includes the Claude coding agents: their GitHub access could merge pull requests or push to `main` directly (in this repository they have merged at the owner's request). Only the rules in CLAUDE.md, not GitHub, stop them. GitHub Pro with branch protection on `main` would make that a technical limit. If you suspect misuse, remove the identity's role assignment, reset the deployment token (portal: `stapp-cix-dev`, *Manage deployment token*, *Reset*), and regenerate the account's read-only keys, then run `provision.ps1` again to update the dashboard's settings, and `setup-dashboard-requests.ps1 -RotateSecret`.
 
 The script command above still works for publishing by hand.
 
@@ -164,15 +164,40 @@ The dashboard shows:
 - **Market:** the analyst's market view, how fresh the prices are, and the last sync with the exchange and with the database.
 - **Portfolio:** equity, cash, today's P&L, peak, drawdown, exposure, holdings, and the paper account's balances.
 - **Trading cycle:** the last scan and its signals, orders still working (no prices), and the trader's and analyst's recent runs.
-- **History:** executed trades, decisions with the agent's reasoning, and errors and safety events.
-- **Records:** journal activity, browsable by day and kind, and the state documents with what each one is.
+- **Coins:** each scanned coin's move over the last hour and the last 24 hours (up or down, with the scan time as the reference), and whether you hold it.
+- **Activity:** executed trades only, by UTC day, week (Monday to Sunday) or calendar month: the number of trades, buys and sells and how many were owner requests, this period against the previous one, and a chart of the periods shown. Signed in as the owner you also get the amounts: buy and sell volume, turnover (their sum, fees apart) and fees. The public page has counts only, since amounts next to the public trade sizes would give fill prices away.
+- **History:** executed trades, decisions with a plain-language reason first (what triggered it, the evidence, the risk plan, what the risk gate did) and the technical text one click away, and errors and safety events.
+- **Records:** journal activity (collapsible, browsable by day and kind), and the state documents with what each one is.
+- **For the owner, signed in:** Buy and Sell buttons on each coin, your requests and where each stands, and decisions with their stops, targets and risk in figures (see [Owner requests](#owner-requests)).
 
-It is **read-only and public** (anyone with the URL can open it):
-- Its API can only `GET`, and it reads with the account's read-only key, kept in the app's settings on the server.
+It is **public** (anyone with the URL can open it), and **read-only for everyone but the owner**:
+- Its public API can only `GET`, and it reads with the account's read-only key, kept in the app's settings on the server.
 - It shows **no order levels**: no entry, stop, target or fill prices, and no limits of resting orders. In the journal's free text (summaries, the trader's reasoning) every number that could be a price is masked as `…`. Holdings show their value, and whether a stop is set. The journal in Cosmos DB keeps everything.
 - The briefing shows the analyst's own text unmasked: the analyst never sees the account's positions, stops or targets, so its text can't hold them, though it may quote public market prices. It is written from web pages, so the page shows it as plain text only, and opens only `https` source links (each must be one of the view's sources), in a new tab without access back to the dashboard. The coins' moves are percentages, never prices.
 - Responses are cached for 20 seconds, and identical requests share one database read. The journal browser accepts only the last 14 days, known kinds and three page sizes, so heavy traffic can't use up the database throughput the engine needs.
-- To make it private later, add `"allowedRoles": ["owner"]` to the `/*` and `/api/*` routes in `dashboard/app/staticwebapp.config.json`, then invite yourself under *Role management* in the Azure portal (the Free plan supports this).
+- To make it private later, add `"allowedRoles": ["owner"]` to the `/*` and `/api/*` routes in `dashboard/app/staticwebapp.config.json` (the owner role below already exists).
+
+## Owner requests
+
+The Buy and Sell buttons send manual requests to the engine ([ADR-0011](adr/0011-owner-manual-requests.md)). Only you can see or use them, signed in with your Microsoft account ([ADR-0012](adr/0012-dashboard-owner-sign-in-and-writer.md)):
+- **Sell:** pick 25%, 50% or 100% of the position, and **Direct** (the engine sells at the bid at once, no agent) or **Ask the trader** (the trader analyses it and may decline or sell less). **Buy** always asks the trader, with an amount in the quote currency; the trader sets the stop.
+- A confirmation shows exactly what will be sent. Each dialog has its own ID and is locked once sent, so a retry or a double click is still one request (also across midnight UTC), and the page follows it to the end: placed, filled, declined with the trader's reason, refused (by the engine or the risk gate, with the rule), expired.
+- The buttons pause, with the reason, when the engine isn't running or doesn't take requests (switched off, or the `requests` container missing).
+- Your note is for you and the trader: the public page shows "the owner's direct sell request", never the note.
+- Requests are paper only. The engine checks each one again, and every order still goes through the risk gate.
+
+One-time setup, per environment (needs rights to create app registrations and to manage Cosmos DB roles on the shared account):
+
+```powershell
+.\tools\azure\setup-dashboard-requests.ps1 -Environment dev -OwnerAccount you@example.com
+```
+
+It creates a **writer identity**, `cix-dashboard-writer-dev`, whose only right is a Cosmos DB role allowing it to create items in `cix/requests`: not to read, change or delete anything, there or in any other database of the shared account. Its client secret goes into the dashboard's server-side settings (`COSMOS_WRITER_*`) through a file only you can read, and is never shown. It then invites your Microsoft account to the dashboard's `owner` role: open the link it prints, signed in with that account, within 2 hours. **Then run the script again** with the same `-OwnerAccount`: it confirms that account as the owner by its user ID (`DASHBOARD_OWNER_USER_ID`). The API accepts only that account, so a link someone else redeemed gives them nothing, and the script refuses to go on while anyone else holds the role.
+
+- **Rotate the secret** within a year (the script prints the date): run it again with `-RotateSecret`. The old secret stops working at once.
+- **`provision.ps1`** keeps the writer settings through a deployment (a deployment replaces the app's settings); if it can't, it says so and you run the setup again with `-RotateSecret`.
+- **Who has the role:** Azure portal, the Static Web App, *Role management*. Remove anyone you don't recognise. The script warns if more than one account has it.
+- Until the setup is done, the buttons answer that the writer isn't set up; everything else works as before.
 
 ## How the PC connects to Azure
 
@@ -180,7 +205,7 @@ It is **read-only and public** (anyone with the URL can open it):
 |---|---|
 | Engine to Cosmos DB | HTTPS on port 443 in gateway mode, authenticated with the account key. The key is a Docker secret (`/run/secrets/Cosmos__AccountKey`, from `secrets/cosmos_key`), never in an image, `.env`, the repository or the logs. |
 | What the key can do | Read and write documents. It can't create or delete containers: key-based metadata writes are disabled, and schema changes go through Azure Resource Manager with your Azure sign-in. |
-| Dashboard API to Cosmos DB | The read-only key, in the Static Web App's settings, used server side only. |
+| Dashboard API to Cosmos DB | The read-only key for reading, and for your requests the writer identity (create in `requests` only, signed in with its secret), both in the Static Web App's settings, used server side only. |
 | Your scripts | Your Azure CLI sign-in (`az login`). The scripts read keys into memory when needed and never print them. |
 | Rotating the engine's key | `az cosmosdb keys regenerate --kind primary ...`, then run `provision.ps1 -Environment dev -SkipInfrastructure` (it only rewrites `secrets/cosmos_key`), then `docker compose ... restart engine`. The key belongs to the shared account, so every project using it needs the new key. |
 
