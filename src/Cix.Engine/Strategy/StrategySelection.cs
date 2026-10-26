@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Cix.Domain.Risk;
 using Cix.Engine.AgentRuns;
 using Cix.Engine.Journal;
+using Cix.Engine.Manual;
 using Cix.Engine.Persistence;
 using Cix.Engine.Tools;
 
@@ -37,6 +38,9 @@ public interface IStrategyRepository
     Task ArchiveAsync(StrategySpec spec, CancellationToken cancellationToken);
 
     Task SaveSchemaAsync(StrategySchemaDocument schema, CancellationToken cancellationToken);
+
+    /// <summary>Writes the selection for <paramref name="mode"/>: the owner's choice, taken from a dashboard request.</summary>
+    Task SaveSelectionAsync(TradingMode mode, StrategySelection selection, CancellationToken cancellationToken);
 }
 
 /// <summary>For tests, and to show the shape the Cosmos DB documents hold.</summary>
@@ -95,6 +99,13 @@ public sealed class InMemoryStrategyRepository : IStrategyRepository
         return Task.CompletedTask;
     }
 
+    public Task SaveSelectionAsync(TradingMode mode, StrategySelection selection, CancellationToken cancellationToken)
+    {
+        ThrowIfFailing();
+        Selections[mode] = selection;
+        return Task.CompletedTask;
+    }
+
     private void ThrowIfFailing()
     {
         if (Failure is { } failure)
@@ -139,8 +150,15 @@ public sealed partial class StrategySelectionService(
     TimeProvider time,
     ILogger<StrategySelectionService> logger,
     IEngineLease? lease = null,
-    AgentRunScheduler? runs = null) : BackgroundService
+    AgentRunScheduler? runs = null,
+    IManualRequestStore? requests = null) : BackgroundService
 {
+    /// <summary>The <c>type</c> of a dashboard request to switch strategy, in the <c>requests</c> container.</summary>
+    public const string RequestType = "strategy-selection";
+
+    /// <summary>A request older than this when the engine first sees it expires instead of switching on a stale intent.</summary>
+    public static readonly TimeSpan RequestMaxAge = TimeSpan.FromMinutes(5);
+
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
 
     public const string Kind = "strategy";
@@ -248,6 +266,7 @@ public sealed partial class StrategySelectionService(
         if (lease is { IsHeld: false })
             return false; // only the engine that trades acts on a selection
         var now = time.GetUtcNow();
+        await TakeRequestsAsync(now, cancellationToken).ConfigureAwait(false);
         StrategySelection? selection;
         try
         {
@@ -369,6 +388,104 @@ public sealed partial class StrategySelectionService(
         }
     }
 
+    /// <summary>
+    /// Turns the owner's dashboard requests (<see cref="RequestType"/> documents in the <c>requests</c> container, which the
+    /// dashboard can only create) into the selection: the newest valid one is saved as <c>strategy-selection-&lt;mode&gt;</c>
+    /// and then handled like any selection. Earlier ones are superseded; malformed or stale ones are refused. Each request's
+    /// document records what became of it. Saving the same request twice is harmless: a selection is acted on once.
+    /// </summary>
+    private async Task TakeRequestsAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        if (requests is null || requests.State != "ok")
+            return;
+        var mode = trading.Mode.ToString().ToLowerInvariant();
+        var today = DateOnly.FromDateTime(now.UtcDateTime);
+        IReadOnlyList<StoredRequest> found;
+        try
+        {
+            found = await requests.ListNewAsync(today.AddDays(-1), today.AddDays(1), mode, cancellationToken, RequestType).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            LogRequestsFailed(logger, ex.GetType().Name);
+            return;
+        }
+
+        if (found.Count == 0)
+            return;
+        var parsed = found.Select(r => (Stored: r, Parsed: ParseRequest(r.Document, now))).OrderBy(p => p.Parsed.CreatedAt ?? DateTimeOffset.MinValue)
+            .ThenBy(p => p.Stored.Id, StringComparer.Ordinal).ToList();
+        var newest = parsed.LastOrDefault(p => p.Parsed.Selection is not null).Stored;
+        foreach (var (stored, request) in parsed)
+        {
+            string status, detail;
+            if (request.Selection is null)
+            {
+                (status, detail) = (request.Expired ? ManualRequestStatus.Expired : ManualRequestStatus.Invalid, request.Problem!);
+            }
+            else if (!ReferenceEquals(stored, newest))
+            {
+                (status, detail) = ("superseded", "A newer strategy request replaced this one.");
+            }
+            else
+            {
+                try
+                {
+                    await repository.SaveSelectionAsync(trading.Mode, request.Selection, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    LogRequestsFailed(logger, ex.GetType().Name);
+                    continue; // still new: taken at the next poll
+                }
+
+                (status, detail) = ("accepted", $"Selected {request.Selection.Key}. The engine validates it and switches before the next trader run; the journal (kind strategy) and the engine status say what happened.");
+            }
+
+            try
+            {
+                // A document refused for its shape isn't copied back: only its id, day and type, with the outcome.
+                var basis = ManualRequestDocument.ShapeProblem(stored.Document) is null
+                    ? stored.Document
+                    : new System.Text.Json.Nodes.JsonObject { ["id"] = stored.Id, ["day"] = stored.Day, ["type"] = RequestType };
+                await requests.TryReplaceAsync(stored, ManualRequestDocument.WithStatus(basis, status, now, Actor, detail), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                LogRequestsFailed(logger, ex.GetType().Name); // read again next time; a saved selection is acted on once
+            }
+        }
+    }
+
+    internal sealed record ParsedRequest(StrategySelection? Selection, DateTimeOffset? CreatedAt, string? Problem, bool Expired = false);
+
+    /// <summary>A dashboard request as a selection, or why it can't be one. The engine trusts nothing in the document.</summary>
+    internal static ParsedRequest ParseRequest(System.Text.Json.Nodes.JsonObject document, DateTimeOffset now)
+    {
+        if (ManualRequestDocument.ShapeProblem(document) is { } shape)
+            return new ParsedRequest(null, null, shape);
+        var createdAt = ManualRequestDocument.Field(document, "createdAt") is { } text
+            && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at) ? at : (DateTimeOffset?)null;
+        if (createdAt is null)
+            return new ParsedRequest(null, null, "The request has no valid createdAt.");
+        if (now - createdAt > RequestMaxAge)
+            return new ParsedRequest(null, createdAt, "The request was more than 5 minutes old when the engine saw it; send it again.", Expired: true);
+        if (createdAt - now > TimeSpan.FromMinutes(1))
+            return new ParsedRequest(null, createdAt, "The request's time is in the future.");
+        var name = ManualRequestDocument.Field(document, "name");
+        if (name is null || !StrategyName().IsMatch(name))
+            return new ParsedRequest(null, createdAt, "name must be a strategy name (lowercase letters, digits and dashes).");
+        if (document["version"] is not System.Text.Json.Nodes.JsonValue v || !v.TryGetValue<int>(out var version) || version is < 1 or > 9999)
+            return new ParsedRequest(null, createdAt, "version must be a whole number from 1 to 9999.");
+        return new ParsedRequest(new StrategySelection(name, version, "owner", createdAt, Clean(ManualRequestDocument.Field(document, "note"), 280)), createdAt, null);
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex("^[a-z0-9-]{1,40}$")]
+    private static partial System.Text.RegularExpressions.Regex StrategyName();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Strategy requests could not be read or updated ({Error}); retried at the next poll")]
+    private static partial void LogRequestsFailed(ILogger logger, string error);
+
     private async Task<bool> AppendAsync(
         string action, string summary, StrategySpec? from, StrategySpec? to, StrategySelection selection, string? requestedBy, IReadOnlyList<string> problems)
     {
@@ -474,6 +591,8 @@ public sealed class CosmosStrategyRepository(CosmosDb db, CosmosSpecArchive arch
 
     public const string VersionAbout =
         "A strategy version: instructions, parameters and allowed tools. Created once; a change is a new version with a higher number. The engine activates the version strategy-selection-<mode> names.";
+    public const string SelectionAbout =
+        "Which strategy version this mode should run: the owner's choice, from the dashboard (through a request) or written by hand. The engine validates it and journals each switch.";
     public const string SchemaAbout =
         "What each strategy parameter means, its valid range, and the mandatory safety limits, written by the engine at startup for the dashboard.";
 
@@ -517,4 +636,7 @@ public sealed class CosmosStrategyRepository(CosmosDb db, CosmosSpecArchive arch
         var mode = Enum.Parse<TradingMode>(schema.Mode, ignoreCase: true);
         return CosmosDb.WriteStateAsync(db.State, SchemaId(mode), schema, SchemaType, SchemaAbout, cancellationToken);
     }
+
+    public Task SaveSelectionAsync(TradingMode mode, StrategySelection selection, CancellationToken cancellationToken) =>
+        CosmosDb.WriteStateAsync(db.State, SelectionId(mode), selection, SelectionType, SelectionAbout, cancellationToken);
 }

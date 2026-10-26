@@ -5,6 +5,7 @@ using Cix.Domain.Risk;
 using Cix.Engine.AgentRuns;
 using Cix.Engine.Execution;
 using Cix.Engine.Journal;
+using Cix.Engine.Manual;
 using Cix.Engine.Scanning;
 using Cix.Engine.Strategy;
 using Cix.Engine.Tools;
@@ -181,8 +182,25 @@ public sealed class StrategySelectionTests
             Journal = new FailingJournal(Entries);
             Specs = new RuntimeStrategySpecs(initial ?? StrategySchemaTests.Load("good", 1));
             Service = new StrategySelectionService(
-                Specs, Repository, StrategySchemaTests.Limits, new TradingContext(TradingMode.Paper), Journal, Time, NullLogger<StrategySelectionService>.Instance, lease, runs);
+                Specs, Repository, StrategySchemaTests.Limits, new TradingContext(TradingMode.Paper), Journal, Time, NullLogger<StrategySelectionService>.Instance, lease, runs, Requests);
         }
+
+        public InMemoryManualRequestStore Requests { get; } = new("ok");
+
+        /// <summary>A strategy request as the dashboard creates it, <paramref name="minute"/> minutes after T0.</summary>
+        public void Request(string id, string name, JsonNode? version, int minute = 0, string? note = null)
+        {
+            var at = Rig.T0.AddMinutes(minute);
+            Requests.Add(new JsonObject
+            {
+                ["id"] = id, ["day"] = at.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                ["createdAt"] = at.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+                ["type"] = StrategySelectionService.RequestType, ["name"] = name, ["version"] = version, ["note"] = note,
+                ["requestedBy"] = "owner", ["tradingMode"] = "paper", ["status"] = "new",
+            });
+        }
+
+        public string? RequestStatus(string id) => Requests.Find(id)?.Document["status"]?.GetValue<string>();
 
         public MutableTime Time { get; } = new(Rig.T0);
         public InMemoryJournal Entries { get; } = new();
@@ -359,6 +377,68 @@ public sealed class StrategySelectionTests
 
         Assert.Equal("refused", setup.Service.Status.State);
         Assert.Contains("isn't a valid strategy version", Assert.Single(setup.Switches).Data!["problems"], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ADashboardRequest_BecomesTheSelection_AndIsActedOnInTheSamePoll()
+    {
+        var setup = new Setup();
+        await setup.Service.SeedAsync("strategies", CancellationToken.None);
+        setup.Request("r-old", "risky", 2, minute: 0);
+        setup.Request("r-new", "safe", 1, minute: 1, note: "calmer\nplease");
+        setup.Time.Advance(TimeSpan.FromMinutes(2));
+
+        Assert.True(await setup.Poll());
+
+        Assert.Equal("safe", setup.Specs.Active!.Name);
+        var selection = setup.Repository.Selections[TradingMode.Paper];
+        Assert.Equal(("safe", 1, "owner", Rig.T0.AddMinutes(1), "calmer please"), (selection.Name, selection.Version, selection.RequestedBy, selection.RequestedAt, selection.Note));
+        Assert.Equal(("accepted", "superseded"), (setup.RequestStatus("r-new"), setup.RequestStatus("r-old")));
+        Assert.Equal("engine", setup.Requests.Find("r-new")!.Document["events"]![0]!["by"]!.GetValue<string>());
+
+        Assert.False(await setup.Poll()); // taken once: no longer new
+        Assert.Single(setup.Switches);
+    }
+
+    [Theory]
+    [InlineData("Safe", "1", "invalid")]
+    [InlineData("safe", "\"1\"", "invalid")]
+    [InlineData("safe", "1.5", "invalid")]
+    [InlineData("safe", "0", "invalid")]
+    public async Task AMalformedDashboardRequest_IsRefused_AndSwitchesNothing(string name, string version, string status)
+    {
+        var setup = new Setup();
+        await setup.Service.SeedAsync("strategies", CancellationToken.None);
+        setup.Request("r-bad", name, JsonNode.Parse(version));
+
+        Assert.False(await setup.Poll());
+
+        Assert.Equal(("good", status), (setup.Specs.Active!.Name, setup.RequestStatus("r-bad")));
+        Assert.Empty(setup.Repository.Selections);
+    }
+
+    [Fact]
+    public async Task AStaleDashboardRequest_Expires()
+    {
+        var setup = new Setup();
+        await setup.Service.SeedAsync("strategies", CancellationToken.None);
+        setup.Request("r-stale", "safe", 1);
+        setup.Time.Advance(TimeSpan.FromMinutes(6));
+
+        Assert.False(await setup.Poll());
+
+        Assert.Equal(("good", "expired"), (setup.Specs.Active!.Name, setup.RequestStatus("r-stale")));
+    }
+
+    [Fact]
+    public async Task StrategyRequests_AreNotManualRequests()
+    {
+        var setup = new Setup();
+        setup.Request("r-strategy", "safe", 1);
+        var today = DateOnly.FromDateTime(Rig.T0.UtcDateTime);
+
+        Assert.Empty(await setup.Requests.ListNewAsync(today, today, "paper", CancellationToken.None));
+        Assert.Single(await setup.Requests.ListNewAsync(today, today, "paper", CancellationToken.None, StrategySelectionService.RequestType));
     }
 
     [Fact]
