@@ -62,7 +62,8 @@ public sealed partial class ToolCallContext(
     ToolServerOptions options,
     TimeProvider time,
     ILogger<ToolCallContext> logger,
-    Analysis.IAnalystSpecStore? analystSpecs = null)
+    Analysis.IAnalystSpecStore? analystSpecs = null,
+    AgentRuns.AgentRunScheduler? runs = null)
 {
     /// <summary>Names that only the owner or the engine itself appear as in the journal; agents can't claim them.</summary>
     public static readonly IReadOnlySet<string> ReservedActors = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -127,7 +128,9 @@ public sealed partial class ToolCallContext(
         // Each agent keeps to its own tools, whatever its client allows: the analyst (which reads the web) never reaches
         // trading tools, and no other agent records market views.
         var isRequests = string.Equals(Agent, RequestsAgent, StringComparison.Ordinal);
-        var reason = analyst != isAnalyst
+        var reason = OutsideRun
+            ? OutsideRunReason
+            : analyst != isAnalyst
             ? analyst ? $"{tool} is for the market analyst only." : $"The market analyst can't use {tool}."
             : ManualTools.Names.Contains(tool) && !isRequests
             ? $"{tool} is for runs that answer owner requests only."
@@ -143,6 +146,28 @@ public sealed partial class ToolCallContext(
         await DenyAsync(tool, reason, cancellationToken).ConfigureAwait(false);
         throw new McpException(reason);
     }
+
+    /// <summary>
+    /// Throws unless the call belongs to a run in progress (see <see cref="OutsideRun"/>); a refusal is journaled first. For
+    /// the tools every spec allows, which skip <see cref="RequireAllowedAsync"/>.
+    /// </summary>
+    public async Task RequireRunAsync(string tool, CancellationToken cancellationToken)
+    {
+        if (!OutsideRun)
+            return;
+        await DenyAsync(tool, OutsideRunReason, cancellationToken).ConfigureAwait(false);
+        throw new McpException(OutsideRunReason);
+    }
+
+    private const string OutsideRunReason =
+        "This call isn't part of a run the engine started for this job (X-Cix-Run must be the claimed run).";
+
+    /// <summary>
+    /// When the engine schedules the runs (ADR-0013), a job's tool calls must belong to the run it claimed and hasn't
+    /// reported: the caps then bound what agents do, not only how often a job starts, and the journal's run IDs can be
+    /// trusted. Without the scheduler (Compose, or loopback) runs aren't tracked and this never applies.
+    /// </summary>
+    private bool OutsideRun => runs is not null && options.Auth == ToolServerAuth.Entra && !runs.IsRunInProgress(RunId, Agent);
 
     public async Task RequireOperatorAsync(string tool, CancellationToken cancellationToken)
     {

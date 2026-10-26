@@ -58,10 +58,11 @@ has_engine_network() {
 # Waits until the engine says it is ready (GET /healthz). After a reboot the engine may itself be waiting for the database,
 # so this logs once a minute instead of failing. Exits (and Docker restarts the container) only when waiting can't help:
 # the engine's network is gone, or nothing has answered for 10 minutes.
+# In Azure (CIX_ENGINE_URL) the engine is another app: nothing to restart here, so waiting just ends after 10 minutes.
 wait_for_engine() {
   local waited=0
-  until curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:5077/healthz" 2>/dev/null; do
-    if (( waited >= 30 )) && ! has_engine_network; then
+  until curl -fsS --max-time 5 -o /dev/null "${CIX_ENGINE_URL:-http://127.0.0.1:5077}/healthz" 2>/dev/null; do
+    if [[ -z "${CIX_ENGINE_URL:-}" ]] && (( waited >= 30 )) && ! has_engine_network; then
       say "The engine was restarted, so this container lost its network; exiting so Docker restarts the $agent_name with the new one."
       exit 1
     fi
@@ -82,6 +83,20 @@ wait_for_engine() {
 # Used by the scripts that source this file:
 # shellcheck disable=SC2034
 NOT_RUN=3
+
+# Where to read a failed run's output ($1: log directory, $2: run ID). In Compose, its files under logs/. A job's files go
+# with its container, so job mode prints the end of the run's stderr instead, for the job's log; anything shaped like a
+# Claude key or an access token is masked first.
+failure_details() {
+  if [[ "${CIX_JOB_MODE:-0}" != 1 ]]; then
+    say "See logs/$agent_name/$2.json and .err."
+    return 0
+  fi
+  [[ -s "$1/$2.err" ]] || { say "$2 wrote nothing to stderr."; return 0; }
+  say "$2 stderr (last 30 lines):"
+  tail -n 30 "$1/$2.err" | sed -E -e 's/sk-ant-[A-Za-z0-9_-]+/sk-ant-***/g' \
+    -e 's/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/<token>/g' -e 's/^/  | /'
+}
 
 # Succeeds if a run ($1: JSON log, $2: stderr) was refused for usage or rate limits before doing any work. Judged from the
 # structured result when there is one: an error that cost nothing and whose message names a limit. Text inside a run that

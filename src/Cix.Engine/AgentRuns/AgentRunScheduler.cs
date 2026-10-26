@@ -127,6 +127,15 @@ public sealed partial class AgentRunScheduler(
     /// <summary>The state as last saved, or null before it is loaded.</summary>
     public AgentRunState? State => Volatile.Read(ref _state);
 
+    /// <summary>
+    /// Whether <paramref name="runId"/> is a run of <paramref name="role"/>'s job that its job claimed and hasn't reported:
+    /// the only runs whose tool calls the tool server accepts in Azure. Never on an engine without the lease, whose state
+    /// may be stale. From memory, so a tool call costs no database read.
+    /// </summary>
+    public bool IsRunInProgress(string? runId, string? role) =>
+        IsActive && runId is not null && AgentRunKinds.ForRole(role) is { } kind
+        && State?.InFlight.Any(r => r.Id == runId && r.Kind == kind && r.ClaimedAt is not null) == true;
+
     /// <summary>One look at the signals and requests: queues the runs that are due. Returns how many were queued.</summary>
     public async Task<int> PollOnceAsync(CancellationToken cancellationToken)
     {

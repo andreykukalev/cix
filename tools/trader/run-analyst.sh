@@ -10,6 +10,9 @@
 # A run that couldn't use Claude (usage or rate limit, missing or expired credentials) is retried after
 # ANALYST_RETRY_MINUTES instead of waiting for the next slot.
 #
+# In Azure the engine keeps the cadence and retries (ADR-0013): with CIX_JOB_MODE=1 and CIX_JOB=analyst this script runs
+# one queued run and exits, as the cix-analyst job. See agent-job.sh.
+#
 # Settings (environment): ANALYST_INTERVAL_HOURS (6), ANALYST_RETRY_MINUTES (30), ANALYST_MODEL (opus),
 # ANALYST_MAX_TURNS (25), ANALYST_TIMEOUT_MINUTES (10), ANALYST_WEB_DOMAINS, ANALYST_RUN_ONCE (0), CLAUDE_TOKEN_FILE,
 # CLAUDE_TOKEN_EXPIRES.
@@ -56,7 +59,7 @@ denied="Bash,Read,Edit,Write,MultiEdit,NotebookEdit,Glob,Grep,LS,Task,TodoWrite,
 
 run_once() {
   local run_id log
-  run_id="analyst-$(date -u +%Y%m%d-%H%M%S)"
+  run_id="${job_run_id:-analyst-$(date -u +%Y%m%d-%H%M%S)}"   # job mode: the run the engine queued
   log="$logs/$run_id.json"
   export CIX_RUN_ID="$run_id"
 
@@ -67,7 +70,7 @@ run_once() {
 
   (cd "$dir" && timeout "${timeout_minutes}m" claude -p 'Assess the market now and record your view.' \
       --append-system-prompt "$instructions"$'\n\n'"$site_note" \
-      --mcp-config "$dir/tools/trader/analyst-mcp.json" --strict-mcp-config \
+      --mcp-config "$dir/tools/trader/$mcp" --strict-mcp-config \
       --allowedTools "$tools" --disallowedTools "$denied" \
       --model "$model" \
       --max-turns "$max_turns" \
@@ -84,13 +87,23 @@ run_once() {
     return "$NOT_RUN"
   fi
   if ! jq -e . "$log" >/dev/null 2>&1; then
-    say "$run_id failed (exit $code); see logs/analyst/$run_id.json and .err."
+    say "$run_id failed (exit $code)."
+    failure_details "$logs" "$run_id"
     return 1
   fi
   say "$run_id done. Models used: $(jq -r '(.modelUsage // {}) | keys | join(", ")' "$log"), cost: $(jq -r '.total_cost_usd // "?"' "$log") USD, turns: $(jq -r '.num_turns // "?"' "$log")"
   jq -r '.result // ""' "$log"
   [[ "$(jq -r '.is_error // false' "$log")" != "true" ]]
 }
+
+mcp="analyst-mcp.json"
+if [[ "${CIX_JOB_MODE:-0}" == "1" ]]; then
+  # shellcheck source=tools/trader/agent-job.sh
+  source "$dir/tools/trader/agent-job.sh"
+  mcp="mcp-azure.json"
+  job_main "analyst" run_once
+  exit $?
+fi
 
 if [[ "${ANALYST_RUN_ONCE:-0}" == "1" ]]; then
   run_once

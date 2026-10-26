@@ -119,6 +119,7 @@ public sealed class AgentTools(
     [Description("The active strategy spec: its version label, instructions, parameters and the tools it allows. Read it at the start of every run. Always allowed, so an agent can learn its own rules.")]
     public async Task<string> GetStrategySpec(CancellationToken cancellationToken)
     {
+        await context.RequireRunAsync("get_strategy_spec", cancellationToken).ConfigureAwait(false);
         if (context.Spec is not { } spec)
             throw new McpException("No strategy spec is active.");
         await context.JournalAsync("get_strategy_spec", spec.Label, null, cancellationToken).ConfigureAwait(false);

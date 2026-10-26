@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cix": {
+      "type": "http",
+      "url": "${CIX_ENGINE_URL}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CIX_ENGINE_TOKEN}",
+        "X-Cix-Run": "${CIX_RUN_ID}"
+      }
+    }
+  }
+}

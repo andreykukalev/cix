@@ -184,6 +184,52 @@ public sealed class ToolServerEntraTests
     }
 
     [Fact]
+    public async Task InAzure_ToolCallsMustBelongToTheClaimedRun()
+    {
+        var setup = new AgentRunSchedulerTests.Setup();
+        await setup.Scheduler.PollOnceAsync(CancellationToken.None);
+        var run = setup.Queue.Sent.Single().Run; // a trader heartbeat
+        var (app, address, tools) = await StartAsync(setup.Scheduler);
+        await using (app)
+        {
+            async Task<bool> RefusedAsync(string tool, string? runId, string? identity = null)
+            {
+                var headers = new Dictionary<string, string> { ["Authorization"] = "Bearer " + Token(identity ?? TraderId) };
+                if (runId is not null)
+                    headers[ToolServerOptions.RunHeader] = runId;
+                await using var client = await McpClient.CreateAsync(new HttpClientTransport(new HttpClientTransportOptions
+                {
+                    Endpoint = new Uri(address + ToolServerRegistration.Endpoint),
+                    AdditionalHeaders = headers,
+                }));
+                return (await client.CallToolAsync(tool, new Dictionary<string, object?>())).IsError == true;
+            }
+
+            Assert.True(await RefusedAsync("get_portfolio", run.Id)); // queued, not claimed yet
+            Assert.Equal(HttpStatusCode.OK, (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/claim", Token(TraderId))).Status);
+
+            Assert.False(await RefusedAsync("get_portfolio", run.Id));
+            Assert.False(await RefusedAsync("get_strategy_spec", run.Id));
+            Assert.True(await RefusedAsync("get_strategy_spec", null)); // no run named: even the tool every spec allows
+            Assert.True(await RefusedAsync("get_portfolio", "run-20990101-000000-abcdef")); // a run the engine never started
+            Assert.True(await RefusedAsync("get_portfolio", run.Id, RequestsId)); // another job's identity
+            setup.Lease.IsHeld = false; // another engine took over: this one's state may be stale
+            Assert.True(await RefusedAsync("get_portfolio", run.Id));
+            setup.Lease.IsHeld = true;
+
+            Assert.Equal(HttpStatusCode.NoContent,
+                (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/outcome", Token(TraderId), """{"outcome":"done"}""")).Status);
+            Assert.True(await RefusedAsync("get_portfolio", run.Id)); // reported: the run is over
+
+            Assert.Equal(2, tools.Journal.Entries.Count(e => e.Kind == "tool-call" && e.RunId == run.Id));
+            var denied = tools.Journal.Entries.Where(e => e.Kind == "tool-denied").ToList();
+            Assert.Equal(6, denied.Count);
+            Assert.All(denied, e => Assert.Contains("X-Cix-Run", e.Summary, StringComparison.Ordinal));
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
     public async Task TheRoleComesFromTheToken_NotFromTheHeader()
     {
         var (app, address, tools) = await StartAsync();
