@@ -576,13 +576,17 @@ function Get-CixEngineAudience {
     $others = @($owners | Where-Object { "$($_.id)" -ne $OwnerId })
     if ($others.Count -gt 0 -or $owners.Count -eq 0) {
       $who = if ($others.Count -gt 0) { "other owners ($(($others | ForEach-Object { $_.id }) -join ', '))" } else { 'no owner' }
-      throw "The Entra app registration $name has $who. Refusing to use it: make yourself its only owner, or delete it and run this again to create one."
+      $fix = if ($others.Count -gt 0) { 'make yourself its only owner' } else { "make yourself its owner (az ad app owner add --id $appId --owner-object-id $OwnerId)" }
+      throw "The Entra app registration $name has $who. Refusing to use it: $fix, or delete it and run this again to create one."
     }
   }
   elseif (-not $Create) { return '' }
   else {
     $appId = "$(Invoke-CixAz @('ad', 'app', 'create', '--display-name', $name, '--sign-in-audience', 'AzureADMyOrg', '--query', 'appId', '-o', 'tsv'))".Trim()
-    Write-CixInfo "Created the Entra app registration $name ($appId)."
+    if ($appId -notmatch '^[0-9a-fA-F-]{36}$') { throw "Unexpected app ID for $name." }
+    # az ad app create (Microsoft Graph) doesn't make the creator an owner: add yourself, so a later run can tell it's yours.
+    Invoke-CixAz @('ad', 'app', 'owner', 'add', '--id', $appId, '--owner-object-id', $OwnerId, '--only-show-errors') | Out-Null
+    Write-CixInfo "Created the Entra app registration $name ($appId), owned by you."
   }
   if ($appId -notmatch '^[0-9a-fA-F-]{36}$') { throw "Unexpected app ID for $name." }
   $audience = "api://$appId"
