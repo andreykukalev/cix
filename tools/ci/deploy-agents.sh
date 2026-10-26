@@ -5,6 +5,7 @@
 #   2. points the engine at its new image and, when it runs a replica (minimum replicas 1, set by agents.startEngine),
 #      waits for that revision to be healthy (its startup and readiness probes passed);
 #   3. points the three jobs at the new agent image.
+# The apps get the images by digest, as the registry gave them on the push: what runs can't change if a tag is pushed again.
 # If anything fails once the engine has changed, the engine and the jobs go back to the images they ran before, and the
 # run fails. An engine stopped or rolled back by hand (the emergency stop, the cutover) is left alone. Nothing here changes
 # infrastructure or settings: provision.ps1 (the owner) creates the apps, their settings and roles.
@@ -141,8 +142,8 @@ registry_json="$(az acr show --name "$REGISTRY" -o json)" || fail "Couldn't read
 [[ "$(jq -r '(.tags // {})["cix-environment"] // ""' <<<"$registry_json")" == "$env_name" ]] \
   || fail "The registry $REGISTRY isn't tagged cix-environment=$env_name; check AGENTS_REGISTRY and AGENTS_ENVIRONMENT."
 server="$(jq -er .loginServer <<<"$registry_json")"
-engine_image="$server/cix-engine:$TAG"
-agent_image="$server/cix-trader:$TAG"
+engine_tagged="$server/cix-engine:$TAG"
+agent_tagged="$server/cix-trader:$TAG"
 
 declare -A previous_job
 if [[ "$deploy" == apps ]]; then
@@ -162,28 +163,36 @@ if [[ "$deploy" == apps ]]; then
   for job in "${jobs[@]}"; do
     [[ "${previous_job[$job]}" == "$server/"* ]] || fail "$job runs ${previous_job[$job]}, not an image from $server; provision.ps1 sets it up."
   done
-  if [[ "$previous_engine" == "$engine_image" ]]; then
-    all_current=true
-    for job in "${jobs[@]}"; do [[ "${previous_job[$job]}" == "$agent_image" ]] || all_current=false; done
-    if [[ "$all_current" == true ]]; then say "Already running $TAG: nothing to deploy."; exit 0; fi
-  fi
-  say "Engine: $previous_engine -> $engine_image"
-  for job in "${jobs[@]}"; do say "Job $job: ${previous_job[$job]} -> $agent_image"; done
 fi
 
-# 1. The images, pushed under this commit's tag.
+# 1. The images, pushed under this commit's tag, and the digests the registry gave them: the apps run those.
 docker load --input "$ENGINE_ARCHIVE" >/dev/null
 docker load --input "$TRADER_ARCHIVE" >/dev/null
-docker tag cix-engine:ci "$engine_image"
-docker tag cix-trader:ci "$agent_image"
+docker tag cix-engine:ci "$engine_tagged"
+docker tag cix-trader:ci "$agent_tagged"
 az acr login --name "$REGISTRY" >/dev/null
-docker push --quiet "$engine_image" >/dev/null
-docker push --quiet "$agent_image" >/dev/null
-say "Pushed both images to $REGISTRY."
+docker push --quiet "$engine_tagged" >/dev/null
+docker push --quiet "$agent_tagged" >/dev/null
+digest_of() {
+  local ref
+  ref="$(docker image inspect --format '{{json .RepoDigests}}' "$1" | jq -er --arg p "$server/$2@" 'map(select(startswith($p))) | .[0]')" \
+    && [[ "$ref" =~ ^[^@]+@sha256:[0-9a-f]{64}$ ]] && printf '%s\n' "$ref"
+}
+engine_image="$(digest_of "$engine_tagged" cix-engine)" || fail "Pushed $engine_tagged, but docker has no digest for it in $server."
+agent_image="$(digest_of "$agent_tagged" cix-trader)" || fail "Pushed $agent_tagged, but docker has no digest for it in $server."
+say "Pushed both images to $REGISTRY: $engine_image and $agent_image."
 if [[ "$deploy" == platform ]]; then
   echo "::notice::agents.deploy is platform: the images are in $REGISTRY as $TAG. To run them, set agents.deploy to apps and run provision.ps1 -ImageTag $TAG."
   exit 0
 fi
+
+if [[ "$previous_engine" == "$engine_image" ]]; then
+  all_current=true
+  for job in "${jobs[@]}"; do [[ "${previous_job[$job]}" == "$agent_image" ]] || all_current=false; done
+  if [[ "$all_current" == true ]]; then say "Already running $TAG: nothing to deploy."; exit 0; fi
+fi
+say "Engine: $previous_engine -> $engine_image"
+for job in "${jobs[@]}"; do say "Job $job: ${previous_job[$job]} -> $agent_image"; done
 
 # From here on, a failure puts back what ran before. The previous images go in a file too, so that a run cancelled in the
 # middle, which may not get to finish this script's own rollback, is rolled back by the workflow's next step.

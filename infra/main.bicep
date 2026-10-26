@@ -61,8 +61,11 @@ param agentsLocation string = location
 @description('agents apps: the engine\'s application ID URI in Entra (api://<app ID>), created by tools/azure/provision.ps1.')
 param engineAudience string = ''
 
-@description('agents apps: the image tag to run (the commit SHA CI built). provision.ps1 keeps the one running unless told otherwise.')
-param imageTag string = ''
+@description('agents apps: the engine image\'s digest (sha256:...). provision.ps1 keeps the one running unless given a tag.')
+param engineImageDigest string = ''
+
+@description('agents apps: the agents\' image digest (sha256:...), resolved like the engine\'s.')
+param agentImageDigest string = ''
 
 @description('agents apps: run the engine. False keeps it stopped (no replica), as until the cutover.')
 param startEngine bool = false
@@ -173,7 +176,8 @@ module agentsApps 'modules/agents-apps.bicep' = if (agentsDeploy == 'apps') {
     cosmosResourceGroupName: sharedResourceGroupName
     databaseName: databaseName
     engineAudience: engineAudience
-    imageTag: imageTag
+    engineImageDigest: engineImageDigest
+    agentImageDigest: agentImageDigest
     startEngine: startEngine
     traderModel: traderModel
     analystModel: analystModel
@@ -190,3 +194,4 @@ output registryServer string = agentsDeploy != 'none' ? agentsPlatform!.outputs.
 output keyVaultName string = agentsDeploy != 'none' ? agentsPlatform!.outputs.keyVaultName : ''
 output engineAppName string = agentsDeploy == 'apps' ? agentsApps!.outputs.engineAppName : ''
 output agentJobNames array = agentsDeploy == 'apps' ? agentsApps!.outputs.jobNames : []
+output agentJobPrincipalIds array = agentsDeploy == 'apps' ? agentsApps!.outputs.jobPrincipalIds : []

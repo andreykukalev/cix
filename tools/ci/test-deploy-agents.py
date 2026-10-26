@@ -90,7 +90,7 @@ FAKE_AZ = textwrap.dedent(r'''
         out({"properties": props})
     else:
         rev = next((r for r in e["revisions"] if r["name"] == rest[1]), None) or sys.exit("ERROR: (NotFound) revision")
-        if rev["image"].endswith(s["new_tag"]):
+        if rev["image"] == s["new_engine"]:
             rev["polls"] += 1; save()
             if s["new_fails"]: health, running, provisioning = "Unhealthy", "Failed", "Succeeded"
             elif s["healthy_after"] is not None and rev["polls"] >= s["healthy_after"]: health, running, provisioning = "Healthy", s["running_value"], "Succeeded"
@@ -100,15 +100,30 @@ FAKE_AZ = textwrap.dedent(r'''
                             "healthState": health, "runningState": running, "provisioningState": provisioning}})
 ''').lstrip()
 
+# The apps run images by digest. Those running before this commit, and the ones its push gives (from before digests, the
+# apps ran tags: old_engine_tag and old_agent_tag).
+old_engine, new_engine = f"{SERVER}/cix-engine@sha256:{'c' * 64}", f"{SERVER}/cix-engine@sha256:{'e' * 64}"
+old_agent, new_agent = f"{SERVER}/cix-trader@sha256:{'d' * 64}", f"{SERVER}/cix-trader@sha256:{'a' * 64}"
+old_engine_tag, old_agent_tag = f"{SERVER}/cix-engine:{OLD}", f"{SERVER}/cix-trader:{OLD}"
+new_engine_tag, new_agent_tag = f"{SERVER}/cix-engine:{NEW}", f"{SERVER}/cix-trader:{NEW}"
+
+# The fake docker: records every call, and after a push knows the image by its digest in the registry (and, to be ignored,
+# in another one).
 FAKE_DOCKER = textwrap.dedent(r'''
     #!/bin/sh
     echo "docker $*" >> "$(dirname "$0")/calls.log"
     [ "$1" = push ] && [ -n "$FAIL_PUSH" ] && exit 1
+    if [ "$1 $2 $3" = "image inspect --format" ]; then
+      [ -n "$NO_DIGEST" ] && { echo '[]'; exit 0; }
+      case "$5" in
+        NEW_ENGINE_TAG) echo '["elsewhere.example/cix-engine@sha256:OTHER","NEW_ENGINE"]' ;;
+        NEW_AGENT_TAG) echo '["elsewhere.example/cix-trader@sha256:OTHER","NEW_AGENT"]' ;;
+        *) echo '[]' ;;
+      esac
+    fi
     exit 0
-''').lstrip()
-
-old_engine, new_engine = f"{SERVER}/cix-engine:{OLD}", f"{SERVER}/cix-engine:{NEW}"
-old_agent, new_agent = f"{SERVER}/cix-trader:{OLD}", f"{SERVER}/cix-trader:{NEW}"
+''').lstrip().replace("NEW_ENGINE_TAG", new_engine_tag).replace("NEW_AGENT_TAG", new_agent_tag) \
+    .replace("NEW_ENGINE", new_engine).replace("NEW_AGENT", new_agent).replace("OTHER", "f" * 64)
 
 
 def names(prefix, env):
@@ -118,7 +133,7 @@ def names(prefix, env):
 def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", registry_env=None, min_replicas=1,
         running_status=None, revisions=None, engine_image=None, job_images=None, missing_engine=False, healthy_after=2,
         running_value="Running", new_fails=False, fail_patch=None, rev_lag=0, prov_lag=1, stale=0, conflict_once=False,
-        flaky_every=0, fail_push=False,
+        flaky_every=0, fail_push=False, no_digest=False,
         timeout=5, update_timeout=20, args=(), rollback_state=None, expect_rc=0, expect_engine=None, expect_jobs=None, expect_in_output=(),
         expect_calls=(), never_calls=(), expect_rollback_file=False):
     engine, jobs = names(prefix, env)
@@ -134,7 +149,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
                        "runningStatus": running_status, "latest": "rev-1",
                        "revisions": revisions if revisions is not None else [{"name": "rev-1", "image": current, "active": True, "polls": 0}]},
             "jobs": job_images or {j: old_agent for j in jobs},
-            "healthy_after": healthy_after, "running_value": running_value, "new_fails": new_fails, "new_tag": NEW,
+            "healthy_after": healthy_after, "running_value": running_value, "new_fails": new_fails, "new_engine": new_engine,
             "fail_patch": fail_patch or {}, "rev_lag": rev_lag, "prov_lag": prov_lag, "stale": stale, "conflict_once": conflict_once,
             "flaky_every": flaky_every, "gets": 0,
         }
@@ -156,6 +171,8 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
                         UPDATE_TIMEOUT_SECONDS=str(update_timeout))
         if fail_push:
             env_vars["FAIL_PUSH"] = "1"
+        if no_digest:
+            env_vars["NO_DIGEST"] = "1"
         p = subprocess.run(["bash", SCRIPT, *args], env=env_vars, capture_output=True, text=True, timeout=60)
         out = p.stdout + p.stderr
         final = json.load(open(os.path.join(d, "state.json")))
@@ -207,7 +224,15 @@ engine_dev, jobs_dev = names("cix", "dev")
 results = [
     run("deploys the engine, waits for it to be healthy, then the jobs",
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["Engine revision rev-2 is healthy", f"Deployed {NEW}"],
-        expect_calls=[f"docker push --quiet {new_engine}", f"docker push --quiet {new_agent}", f"az acr login --name {REGISTRY}"]),
+        expect_calls=[f"docker push --quiet {new_engine_tag}", f"docker push --quiet {new_agent_tag}", f"az acr login --name {REGISTRY}"]),
+    run("apps that ran images by tag, from before digests, get digests",
+        engine_image=old_engine_tag, job_images={j: old_agent_tag for j in jobs_dev}, revisions=[{"name": "rev-1", "image": old_engine_tag, "active": True, "polls": 0}],
+        expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Engine: {old_engine_tag} -> {new_engine}", f"Deployed {NEW}"]),
+    run("... and the tags back if it fails", new_fails=True, expect_rc=1,
+        engine_image=old_engine_tag, job_images={j: old_agent_tag for j in jobs_dev}, revisions=[{"name": "rev-1", "image": old_engine_tag, "active": True, "polls": 0}],
+        expect_engine=old_engine_tag, expect_jobs=old_agent_tag, expect_in_output=["Rolled back"]),
+    run("a push docker has no digest for changes nothing", no_digest=True, expect_rc=1, expect_engine=old_engine, expect_jobs=old_agent,
+        expect_in_output=["docker has no digest for it"], never_calls=["--method patch"]),
     run("a single replica at its maximum (RunningAtMaxScale) is healthy too", running_value="RunningAtMaxScale",
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["rev-2 is healthy"]),
     run("the old revision being healthy doesn't count while Azure still reports it as the latest", rev_lag=3,
@@ -245,7 +270,7 @@ results = [
     run("a failed push changes nothing", fail_push=True, expect_rc=1, expect_engine=old_engine, expect_jobs=old_agent,
         never_calls=["--method patch"]),
     run("nothing to do when the commit already runs", engine_image=new_engine, job_images={j: new_agent for j in jobs_dev},
-        expect_in_output=["Already running"], never_calls=["docker", "--method patch"]),
+        expect_in_output=["Already running"], expect_calls=[f"docker push --quiet {new_engine_tag}"], never_calls=["--method patch"]),
     run("an engine whose latest revision was deactivated by hand is left alone",
         revisions=[{"name": "rev-1", "image": old_engine, "active": False, "polls": 0}],
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["CI leaves it alone"], never_calls=["docker", "--method patch"]),
@@ -259,7 +284,7 @@ results = [
         expect_rc=1, expect_in_output=["not an image from"], never_calls=["docker", "--method patch"]),
     run("agents.deploy platform only pushes the images, for provision.ps1 to create the apps from", deploy="platform",
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["provision.ps1 -ImageTag " + NEW],
-        expect_calls=[f"docker push --quiet {new_engine}", f"docker push --quiet {new_agent}"], never_calls=["az rest"]),
+        expect_calls=[f"docker push --quiet {new_engine_tag}", f"docker push --quiet {new_agent_tag}"], never_calls=["az rest"]),
     run("agents.deploy none deploys nothing", deploy="none", expect_in_output=["no registry in Azure"], never_calls=["az ", "docker"]),
     run("never a protected environment", protected=True, expect_rc=1, expect_in_output=["protected environment"],
         never_calls=["az ", "docker"]),

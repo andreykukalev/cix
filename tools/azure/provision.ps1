@@ -34,7 +34,8 @@
 .EXAMPLE
   .\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig -ImageTag <commit SHA>   # agents.deploy apps, first time
 .PARAMETER ImageTag
-  agents.deploy apps: the image tag to run. Without it, the tag the engine runs now is kept (CI deploys new ones).
+  agents.deploy apps: the images to run, by the tag CI gave them (the commit SHA). They are deployed by digest, so what runs
+  can't change if the tag is pushed again. Without it, the images the engine and the jobs run now are kept (CI deploys new ones).
 .PARAMETER UploadClaudeToken
   agents.deploy apps: upload secrets/claude_token to Key Vault even if claude-token is there already (after renewing it).
 .PARAMETER BudgetEmail
@@ -140,11 +141,14 @@ if (-not $SkipInfrastructure) {
       $registry = Find-CixAgentsResource -Settings $settings -Kind acr
       if (-not $vault -or -not $registry) { throw "Deploy with agents.deploy 'platform' first: the apps need its Key Vault (with claude-token) and its registry (with images from CI)." }
       # Checked before anything is changed: the images...
-      $tag = if ($ImageTag) { $ImageTag } else { Get-CixRunningImageTag -Settings $settings }
-      if (-not $tag) { throw 'Nothing runs yet, so there is no image to keep: pass -ImageTag with a tag CI pushed (the commit SHA).' }
-      Assert-CixImages -Registry $registry -Tag $tag
-      $agentValues['imageTag'] = $tag
-      Write-CixInfo "Images: $registry, tag $tag. Engine: $(if ($settings.agents.startEngine) { 'running (one replica)' } else { 'stopped (agents.startEngine false)' })."
+      $images = Resolve-CixImageDigests -Settings $settings -Registry $registry -Tag $ImageTag
+      if (-not $images) { throw 'Nothing runs yet, so there is no image to keep: pass -ImageTag with a tag CI pushed (the commit SHA).' }
+      $agentValues['engineImageDigest'] = $images.Engine
+      $agentValues['agentImageDigest'] = $images.Agent
+      $which = if ($ImageTag) { "tag $ImageTag" } else { 'the ones running now' }
+      Write-CixInfo "Images: $registry, $which. Engine: $(if ($settings.agents.startEngine) { 'running (one replica)' } else { 'stopped (agents.startEngine false)' })."
+      Write-CixInfo "  cix-engine@$($images.Engine)"
+      Write-CixInfo "  cix-trader@$($images.Agent)"
       # ...then the Claude credential: uploaded from secrets/claude_token (tools/setup-secrets.ps1 writes it) straight to Key Vault.
       if ($UploadClaudeToken -or -not (Test-CixVaultSecret -Vault $vault -Name 'claude-token')) {
         $local = Join-CixPath (Get-CixRepoRoot) 'secrets' 'claude_token'
@@ -217,7 +221,9 @@ if (-not $SkipInfrastructure) {
   if ($agents -ne 'none') {
     Write-CixInfo "Registry:  $($outputs.registryServer.value)"
     Write-CixInfo "Key Vault: $($outputs.keyVaultName.value)"
-    if ($agents -eq 'apps') { Write-CixInfo "Engine app: $($outputs.engineAppName.value); jobs: $(@($outputs.agentJobNames.value) -join ', ')" }
+    if ($agents -eq 'apps') {
+      Write-CixInfo "Engine app: $($outputs.engineAppName.value); jobs: $(@($outputs.agentJobNames.value) -join ', ')"
+    }
     # The template before the engine signed in with its identity copied the shared account's read-write key into Key Vault
     # as cosmos-key, readable by the engine. A deployment doesn't remove what a template no longer has: do it here.
     $vaultName = "$($outputs.keyVaultName.value)"
@@ -226,6 +232,10 @@ if (-not $SkipInfrastructure) {
       Confirm-Step "Delete cosmos-key from $vaultName, and the engine's access to it?"
       Remove-CixVaultSecretAndAccess -Vault $vaultName -Name 'cosmos-key'
       Write-CixWarn "Deleted. If the engine app ever ran while it was there, an image CI deployed could have read the key: regenerate the shared account's primary key (docs/azure.md, 'If you suspect misuse')."
+    }
+    if ($agents -eq 'apps') {
+      # Who may get a token for the engine at all: the three job identities, by app role assignment.
+      Set-CixEngineAppRole -Audience $agentValues.engineAudience -JobPrincipalIds @($outputs.agentJobPrincipalIds.value) -OwnerId $me.Id -Ask { param($Question) Confirm-Step $Question }
     }
   }
 }

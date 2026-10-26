@@ -70,9 +70,9 @@ flowchart LR
 | `ToolServer:Auth` | Where | Callers | Agent role from | Operator tools |
 | --- | --- | --- | --- | --- |
 | `Loopback` (default) | Docker Compose, `dotnet run` | Only processes sharing the engine's network (it listens on `127.0.0.1`) | The `X-Cix-Agent` header | With `X-Cix-Operator-Key` |
-| `Entra` | Azure Container Apps (ADR-0013) | Holders of an Entra access token for `ToolServer:Entra:Audience` from a managed identity listed in `ToolServer:Entra:Agents` (object ID → `trader`, `trader-requests` or `analyst`). It listens on all interfaces behind the environment's internal ingress. | The token's identity; the header is ignored | Off: `OperatorKey` must be unset |
+| `Entra` | Azure Container Apps (ADR-0013) | Holders of an Entra access token for `ToolServer:Entra:Audience` from a managed identity listed in `ToolServer:Entra:Agents` (object ID → `trader`, `trader-requests` or `analyst`), carrying the app role `CIX.Agent`, which only the three job identities hold. It listens on all interfaces behind the environment's internal ingress. | The token's identity; the header is ignored | Off: `OperatorKey` must be unset |
 
-With `Entra`, every request except `GET /healthz` (left open for the platform's probes) answers 401 without a valid token and 403 for an identity that isn't listed. Tokens are checked for the tenant's issuer (v1 or v2), the audience, the signature (Entra's published keys) and their lifetime. The deployment must also set `AllowedHosts` to the engine's internal host name, because the default allows only `localhost` and `127.0.0.1`. The platform's health probes then need a `Host` header with that name, or they get 400.
+With `Entra`, every request except `GET /healthz` (left open for the platform's probes) answers 401 without a valid token and 403 for an identity that isn't listed or whose token lacks the app role `CIX.Agent`. Tokens are checked for the tenant's issuer (v1 or v2), the audience, the signature (Entra's published keys) and their lifetime. The deployment must also set `AllowedHosts` to the engine's internal host name, because the default allows only `localhost` and `127.0.0.1`. The platform's health probes then need a `Host` header with that name, or they get 400.
 
 ### Agent runs in Azure
 

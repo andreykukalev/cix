@@ -194,9 +194,13 @@ Check 'agents settings: dev keeps them off, dates stay text, and they reach the 
   Expect $d.Values.monthlyBudget 40 'monthlyBudget'
   Expect $d.Values.budgetContactEmail 'owner@example.com' 'budgetContactEmail'
   Expect $d.Values.ownerObjectId $ownerId 'ownerObjectId'
-  if ($d.Values.Contains('imageTag')) { throw 'imageTag given without a value' }
+  foreach ($key in 'engineImageDigest', 'agentImageDigest') { if ($d.Values.Contains($key)) { throw "$key given without a value" } }
+  $digest = 'sha256:' + ('0' * 64)
+  $withApps = Get-CixDeploymentValues -Settings $s -SharedAccountName 'cosmos-shared-test' -Agents @{ engineAudience = 'api://x'; engineImageDigest = $digest; agentImageDigest = $digest }
+  Expect $withApps.Values.engineImageDigest $digest 'engineImageDigest'
+  Expect $withApps.Values.agentImageDigest $digest 'agentImageDigest'
   $template = [IO.File]::ReadAllText($d.Template)
-  foreach ($name in $d.Values.Keys) { if ($template -notmatch "(?m)^param $name ") { throw "$name isn't a template parameter" } }
+  foreach ($name in @($d.Values.Keys) + @($withApps.Values.Keys)) { if ($template -notmatch "(?m)^param $name ") { throw "$name isn't a template parameter" } }
 }
 
 foreach ($case in @(
@@ -876,12 +880,17 @@ $agentsFake = @{
   'keyvault secret list'  = '[{"name":"claude-token","id":"https://kvcixcitest1.vault.azure.net/secrets/claude-token"}]'
   'ad app list'           = '[]'
   'ad app create'         = '44444444-4444-4444-4444-444444444444'
+  'ad app show'           = '{"appRoles":[]}'
+  'ad sp show'            = '{"id":"66666666-6666-6666-6666-666666666666","appRoleAssignmentRequired":false}'
+  'rest --method get'     = '{"value":[]}'
+  'ad sp owner'           = '[]'
   'ad sp list'            = '[]'
   'acr repository list'   = '["cix-engine","cix-trader"]'
   'acr repository show-tags' = '["abc123","def456"]'
+  'acr repository show'   = "sha256:$('5' * 64)"
   'resource list'         = '[]'
   'consumption budget'    = '[{"name":"budget-cix-citest"}]'
-  'deployment sub create' = '{"properties":{"outputs":{"cosmosAccountName":{"value":"cosmos-shared-x"},"cosmosEndpoint":{"value":"https://cosmos-shared-x.documents.azure.com:443/"},"staticWebAppName":{"value":"stapp-cix-citest"},"dashboardUrl":{"value":"https://dash.example"},"registryServer":{"value":"crcixcitest1.azurecr.io"},"keyVaultName":{"value":"kvcixcitest1"},"engineAppName":{"value":"ca-cix-citest-engine"},"agentJobNames":{"value":["caj-cix-citest-trader","caj-cix-citest-requests","caj-cix-citest-analyst"]}}}}'
+  'deployment sub create' = '{"properties":{"outputs":{"cosmosAccountName":{"value":"cosmos-shared-x"},"cosmosEndpoint":{"value":"https://cosmos-shared-x.documents.azure.com:443/"},"staticWebAppName":{"value":"stapp-cix-citest"},"dashboardUrl":{"value":"https://dash.example"},"registryServer":{"value":"crcixcitest1.azurecr.io"},"keyVaultName":{"value":"kvcixcitest1"},"engineAppName":{"value":"ca-cix-citest-engine"},"agentJobNames":{"value":["caj-cix-citest-trader","caj-cix-citest-requests","caj-cix-citest-analyst"]},"agentJobPrincipalIds":{"value":["aaaaaaaa-0000-0000-0000-000000000001","aaaaaaaa-0000-0000-0000-000000000002","aaaaaaaa-0000-0000-0000-000000000003"]}}}}'
 }
 function Invoke-AgentsProvision([hashtable]$Overrides, [hashtable]$Arguments, [string]$Deploy = 'apps') {
   $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
@@ -897,20 +906,51 @@ function Invoke-AgentsProvision([hashtable]$Overrides, [hashtable]$Arguments, [s
   finally { Remove-Item $file -Force }
 }
 
-Check 'provision.ps1 agents apps (-Yes): creates the engine''s Entra app, checks both images, deploys and reports the apps' {
+$digest5 = "sha256:$('5' * 64)"
+Check 'provision.ps1 agents apps (-Yes): creates the engine''s Entra app, deploys both images by digest and reports the apps' {
   $r = Invoke-AgentsProvision @{} @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
-  foreach ($expected in @('Engine and agents (apps, in polandcentral)', 'Images: crcixcitest1, tag abc123. Engine: stopped', 'Created the Entra app registration cix-engine-citest',
+  foreach ($expected in @('Engine and agents (apps, in polandcentral)', 'Images: crcixcitest1, tag abc123. Engine: stopped', "cix-engine@$digest5", "cix-trader@$digest5", 'Created the Entra app registration cix-engine-citest',
       'Engine app: ca-cix-citest-engine; jobs: caj-cix-citest-trader, caj-cix-citest-requests, caj-cix-citest-analyst')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   foreach ($call in @('ad app update --id 44444444-4444-4444-4444-444444444444 --identifier-uris api://44444444-4444-4444-4444-444444444444', 'ad sp create --id 44444444-4444-4444-4444-444444444444',
-      'acr repository show-tags --name crcixcitest1 --repository cix-engine', 'acr repository show-tags --name crcixcitest1 --repository cix-trader')) {
+      'acr repository show-tags --name crcixcitest1 --repository cix-engine', 'acr repository show-tags --name crcixcitest1 --repository cix-trader',
+      'acr repository show --name crcixcitest1 --image cix-engine:abc123 --query digest', 'acr repository show --name crcixcitest1 --image cix-trader:abc123 --query digest')) {
     if (-not $r.Calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
   }
   if ($r.Calls.Contains('keyvault secret set')) { throw 'uploaded claude-token although the vault has it' }
   if ($r.Calls -match 'keyvault secret show') { throw 'read a secret value' }
   if ($r.Calls.Contains('keyvault secret delete') -or $r.Calls.Contains('role assignment delete')) { throw "deleted something: $($r.Calls)" }
+  # Only the three job identities may get a token for the engine.
+  foreach ($call in @('ad app update --id 44444444-4444-4444-4444-444444444444 --app-roles @', 'ad sp update --id 66666666-6666-6666-6666-666666666666 --set appRoleAssignmentRequired=true')) {
+    if (-not $r.Calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
+  }
+  Expect ([regex]::Matches($r.Calls, 'rest --method post --url https://graph\.microsoft\.com/v1\.0/servicePrincipals/66666666-6666-6666-6666-666666666666/appRoleAssignedTo')).Count 3 'app role assignments'
+  if ($r.Calls.IndexOf('ad app update --id 44444444-4444-4444-4444-444444444444 --app-roles') -lt $r.Calls.IndexOf('deployment sub create')) { throw 'set up the app role before the deployment made the jobs' }
+}
+
+Check 'provision.ps1 agents apps leaves the engine''s app role alone when it is set up, and refuses anyone else assigned to it' {
+  $role = '{"appRoles":[{"allowedMemberTypes":["Application"],"id":"77777777-7777-7777-7777-777777777777","isEnabled":true,"value":"CIX.Agent"}]}'
+  $sp = '{"id":"66666666-6666-6666-6666-666666666666","appRoleAssignmentRequired":true}'
+  $mine = '{"value":[' + ((1..3 | ForEach-Object { "{`"principalId`":`"aaaaaaaa-0000-0000-0000-00000000000$_`",`"appRoleId`":`"77777777-7777-7777-7777-777777777777`",`"principalDisplayName`":`"job$_`"}" }) -join ',') + ']}'
+  $r = Invoke-AgentsProvision @{ 'ad app show' = $role; 'ad sp show' = $sp; 'rest --method get' = $mine } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($never in @('--app-roles', 'ad sp update', 'rest --method post --url https://graph')) { if ($r.Calls.Contains($never)) { throw "ran '$never' although it was set up" } }
+  $stranger = $mine.Replace('aaaaaaaa-0000-0000-0000-000000000003', '99999999-9999-9999-9999-999999999999').Replace('job3', 'someone')
+  $r = Invoke-AgentsProvision @{ 'ad app show' = $role; 'ad sp show' = $sp; 'rest --method get' = $stranger } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains('someone (99999999-9999-9999-9999-999999999999)')) { throw "got: $($r.Error)" }
+  if ($r.Calls.Contains('rest --method post --url https://graph')) { throw 'assigned the role anyway' }
+  # Refused too, before any change: another owner of the service principal, more than one page of assignments, and any
+  # assignment from before the role existed (a job identity's default access included).
+  foreach ($case in @(
+      @{ Overrides = @{ 'ad sp owner' = "[{`"id`":`"$ownerId`"},{`"id`":`"88888888-8888-8888-8888-888888888888`"}]" }; Says = 'other owners (88888888-8888-8888-8888-888888888888)' },
+      @{ Overrides = @{ 'rest --method get' = '{"value":[],"@odata.nextLink":"https://graph.microsoft.com/next"}' }; Says = 'more assignments than one page lists' },
+      @{ Overrides = @{ 'rest --method get' = '{"value":[{"principalId":"aaaaaaaa-0000-0000-0000-000000000001","appRoleId":"00000000-0000-0000-0000-000000000000","principalDisplayName":"job1"}]}' }; Says = 'job1 (aaaaaaaa-0000-0000-0000-000000000001)' })) {
+    $r = Invoke-AgentsProvision $case.Overrides @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
+    foreach ($never in @('--app-roles', 'ad sp update', 'rest --method post --url https://graph')) { if ($r.Calls.Contains($never)) { throw "ran '$never' before refusing ($($case.Says))" } }
+  }
 }
 
 Check 'provision.ps1 agents deletes the cosmos-key an earlier template left in Key Vault, and the engine''s access to it' {
@@ -934,14 +974,23 @@ Check 'provision.ps1 agents apps preview creates nothing in Entra' {
   if (-not $r.Output.Contains('the preview uses a placeholder')) { throw "no placeholder note in: $($r.Output)" }
 }
 
-Check 'provision.ps1 agents apps keeps the image tag the engine runs, and sends budget alerts where -BudgetEmail says' {
+Check 'provision.ps1 agents apps keeps the images the engine and the jobs run, by digest, and sends budget alerts where -BudgetEmail says' {
+  $apps = '/subscriptions/x/resourceGroups/rg-cix-citest/providers/Microsoft.App'
+  $agentDigest = "sha256:$('7' * 64)"
   $running = @{
-    'resource list' = '[{"id":"/subscriptions/x/resourceGroups/rg-cix-citest/providers/Microsoft.App/containerApps/ca-cix-citest-engine","name":"ca-cix-citest-engine","tags":{"cix-environment":"citest"}}]'
-    'resource show' = '{"properties":{"template":{"containers":[{"image":"crcixcitest1.azurecr.io/cix-engine:def456"}]}}}'
+    # Also an app of another environment in the group, and a job whose name only ends the same: neither is read.
+    'resource list' = "[{`"id`":`"$apps/containerApps/ca-cix-citest-engine`",`"name`":`"ca-cix-citest-engine`",`"type`":`"Microsoft.App/containerApps`",`"tags`":{`"cix-environment`":`"citest`"}},{`"id`":`"$apps/containerApps/ca-cix-other-engine`",`"name`":`"ca-cix-other-engine`",`"type`":`"Microsoft.App/containerApps`",`"tags`":{`"cix-environment`":`"other`"}},{`"id`":`"$apps/jobs/caj-cix-citest-trader`",`"name`":`"caj-cix-citest-trader`",`"type`":`"Microsoft.App/jobs`",`"tags`":{`"cix-environment`":`"citest`"}},{`"id`":`"$apps/jobs/old-caj-cix-citest-trader`",`"name`":`"old-caj-cix-citest-trader`",`"type`":`"Microsoft.App/jobs`",`"tags`":{`"cix-environment`":`"citest`"}}]"
+    # The engine as deployed before digests (by tag), the trader job by digest.
+    'resource show' = "[{`"type`":`"Microsoft.App/containerApps`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixcitest1.azurecr.io/cix-engine:def456`"}]}}},{`"type`":`"Microsoft.App/jobs`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixcitest1.azurecr.io/cix-trader@$agentDigest`"}]}}}]"
   }
   $r = Invoke-AgentsProvision $running @{ Yes = $true; SkipEngineConfig = $true; BudgetEmail = 'alerts@example.com' }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
-  foreach ($expected in @('Images: crcixcitest1, tag def456.', 'alerts to alerts@example.com.')) { if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" } }
+  foreach ($expected in @('Images: crcixcitest1, the ones running now', 'alerts to alerts@example.com.')) { if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" } }
+  foreach ($call in @("resource show --ids $apps/containerApps/ca-cix-citest-engine $apps/jobs/caj-cix-citest-trader -o json",
+      'acr repository show --name crcixcitest1 --image cix-engine:def456 --query digest', "acr repository show --name crcixcitest1 --image cix-trader@$agentDigest --query digest")) {
+    if (-not $r.Calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
+  }
+  if ($r.Calls.Contains('show-tags')) { throw "looked for a tag although none was given: $($r.Calls)" }
   if ($r.Calls -cmatch '(^|\s)containerapp ') { throw "used the containerapp extension: $($r.Calls)" }
 }
 
@@ -971,7 +1020,8 @@ $engineApp = '[{"appId":"55555555-5555-5555-5555-555555555555","displayName":"ci
 Check 'provision.ps1 agents apps adopts an engine app registration that is yours alone' {
   $r = Invoke-AgentsProvision @{ 'ad app list' = $engineApp; 'ad sp list' = '[{"id":"sp"}]' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
-  foreach ($never in @('ad app create', 'ad app update', 'ad sp create')) { if ($r.Calls.Contains($never)) { throw "ran '$never'" } }
+  # The app role is set up on it as on a new one (--app-roles); its identifier URI is left alone.
+  foreach ($never in @('ad app create', 'ad app update --id 55555555-5555-5555-5555-555555555555 --identifier-uris', 'ad sp create')) { if ($r.Calls.Contains($never)) { throw "ran '$never'" } }
   if (-not $r.Calls.Contains('ad app owner list --id 55555555-5555-5555-5555-555555555555')) { throw "owners not checked: $($r.Calls)" }
 }
 
@@ -989,7 +1039,8 @@ foreach ($case in @(
     @{ Overrides = @{ 'bicep' = 'Bicep CLI version 0.31.1' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = "run 'az bicep upgrade'" },
     @{ Overrides = @{ 'ad app list' = $engineApp; 'ad app owner' = "[{`"id`":`"$ownerId`"},{`"id`":`"someone-else`"}]" }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'has other owners (someone-else)' },
     @{ Overrides = @{ 'ad signed-in-user' = '{"userPrincipalName":"ci@example.com"}' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'Sign in to Azure as a user' },
-    @{ Overrides = @{ 'acr repository list' = '[]' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'has no cix-engine images yet' })) {
+    @{ Overrides = @{ 'acr repository list' = '[]' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'has no cix-engine images yet' },
+    @{ Overrides = @{ 'acr repository show' = 'not-a-digest' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'has no image cix-engine:abc123' })) {
   Check "provision.ps1 agents apps refuses: $($case.Says)" {
     $r = Invoke-AgentsProvision $case.Overrides $case.Arguments
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }

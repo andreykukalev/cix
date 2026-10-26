@@ -23,9 +23,16 @@ param databaseName string
 @minLength(8)
 param engineAudience string
 
-@description('The image tag to run, the same for the engine and the agents (CI tags images with the commit SHA).')
-@minLength(1)
-param imageTag string
+// By digest, not tag: what runs is fixed, so pushing a tag again can't change it. CI and provision.ps1 resolve the digests.
+@description('The engine image\'s digest (sha256:...) in the registry\'s cix-engine repository.')
+@minLength(71)
+@maxLength(71)
+param engineImageDigest string
+
+@description('The agents\' image digest (sha256:...) in the registry\'s cix-trader repository.')
+@minLength(71)
+@maxLength(71)
+param agentImageDigest string
 
 @description('Run the engine (one replica). False keeps it stopped, as before the cutover.')
 param startEngine bool
@@ -72,8 +79,8 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
 var registryServer = registry.properties.loginServer
 var queueEndpoint = storage.properties.primaryEndpoints.queue
 var keyVaultUri = vault.properties.vaultUri
-var engineImage = '${registryServer}/cix-engine:${imageTag}'
-var agentImage = '${registryServer}/cix-trader:${imageTag}' // the trader image runs the analyst too, as in Compose
+var engineImage = '${registryServer}/cix-engine@${engineImageDigest}'
+var agentImage = '${registryServer}/cix-trader@${agentImageDigest}' // the trader image runs the analyst too, as in Compose
 
 // Set by the owner before the apps are deployed (tools/azure/provision.ps1 asks for it); never by a template.
 resource claudeToken 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
@@ -243,3 +250,4 @@ resource jobs 'Microsoft.App/jobs@2025-01-01' = [
 output engineAppName string = engine.name
 output engineUrl string = 'https://${engine.properties.configuration.ingress.fqdn}'
 output jobNames array = [for i in range(0, length(agentJobs)): jobs[i].name]
+output jobPrincipalIds array = [for i in range(0, length(agentJobs)): jobIdentities[i].properties.principalId] // given the engine's app role by provision.ps1
