@@ -19,7 +19,7 @@ Run the engine as a Container App and the agents as Container Apps Jobs. They sh
 
 - **Region.** Poland Central, next to Cosmos DB. If workload-profile environments aren't offered there, Germany West Central.
 - **Engine.** Exactly one replica in single-revision mode, with internal ingress only. `ASPNETCORE_ENVIRONMENT=Azure` and `Trading__Mode=Paper` are set explicitly.
-- **Lease.** The engine takes a lease per mode in `state` before any exchange-side or shared-state action. It renews the lease every 30 s, and the lease expires after 2 minutes. On taking the lease the engine reloads its state, and on shutdown it releases the lease.
+- **Lease.** The engine takes a lease per mode in `state` before any exchange-side or shared-state action. It renews the lease every 15 s, and the lease expires after 2 minutes. On taking the lease the engine reloads its state, and on shutdown it releases the lease.
 - **Agents.** There are three jobs, `cix-trader`, `cix-trader-requests` and `cix-analyst`. Each has its own managed identity and its own Storage queue, with `maxExecutions: 1` and no retries.
 - **Scheduling.** The engine schedules every run: the caps, gap, heartbeat, refunds and retries that live in the shell loops today. A job claims and deletes its message, checks with the engine that the run is still wanted, and reports how it ended.
 - **Tool server.** It accepts Entra tokens from the three identities only, and takes the agent role from the token rather than from `X-Cix-Agent`. No operator key is set in Azure. Loopback stays the default for Compose.

@@ -11,7 +11,10 @@ namespace Cix.Engine.Persistence;
 /// a second) resumes the same balances and orders. The engine state records each order before it is sent, so an order lost
 /// in that second is noticed as gone at the next reconciliation and its plan removed; nothing is placed twice.
 /// </summary>
-public sealed partial class PaperAccountSaver(PaperExchange paper, IPaperAccountStore store, TimeProvider time, ILogger<PaperAccountSaver> logger)
+/// <remarks>Saves only while this engine holds the engine lease, so an engine that lost it can't overwrite the account of the
+/// engine that took over (ADR-0013).</remarks>
+public sealed partial class PaperAccountSaver(
+    PaperExchange paper, IPaperAccountStore store, TimeProvider time, ILogger<PaperAccountSaver> logger, IEngineLease? lease = null)
     : BackgroundService
 {
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(1);
@@ -23,6 +26,8 @@ public sealed partial class PaperAccountSaver(PaperExchange paper, IPaperAccount
     /// <summary>Saves if anything changed since the last save. Returns whether it wrote.</summary>
     public async Task<bool> SaveIfChangedAsync(CancellationToken cancellationToken)
     {
+        if (lease is { IsHeld: false })
+            return false;
         var state = paper.ExportState();
         var json = JsonSerializer.Serialize(state, CosmosDb.Json);
         if (json == _lastSaved)
@@ -140,6 +145,9 @@ public static class PersistenceRegistration
         services.AddSingleton<Manual.IManualRequestStore>(sp => new Manual.CosmosManualRequestStore(sp.GetRequiredService<CosmosDb>()));
         services.AddSingleton<Manual.IManualLedgerStore>(sp => new CosmosManualLedgerStore(sp.GetRequiredService<CosmosDb>(), mode));
         services.AddSingleton<Scanning.IScannerFilterStore>(sp => new CosmosScannerFilterStore(sp.GetRequiredService<CosmosDb>(), mode));
+        services.AddSingleton(sp => new EngineLease(
+            new CosmosLeaseStore(sp.GetRequiredService<CosmosDb>(), mode), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<EngineLease>>()));
+        services.AddSingleton<IEngineLease>(sp => sp.GetRequiredService<EngineLease>());
         if (mode == TradingMode.Paper)
         {
             services.AddSingleton<IPaperAccountStore, CosmosPaperAccountStore>();
@@ -151,8 +159,9 @@ public static class PersistenceRegistration
     }
 
     /// <summary>
-    /// Before the engine starts: creates the database and containers, loads the engine state, archives the active strategy
-    /// spec, and restores the paper account. Does nothing when Cosmos DB is disabled. Every step can run again after a failure,
+    /// Before the engine starts: creates the database and containers, waits for the engine lease (another engine of the same
+    /// mode may still be running, ADR-0013), then loads the engine state, archives the active strategy spec, and restores the
+    /// paper account. Does nothing when Cosmos DB is disabled. Every step can run again after a failure,
     /// so startup can retry the whole thing while the database is still starting (see <see cref="StartupRetry"/>).
     /// </summary>
     public static async Task InitializeCixPersistenceAsync(this IServiceProvider services, CancellationToken cancellationToken)
@@ -162,6 +171,7 @@ public static class PersistenceRegistration
             return;
 
         await db.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await services.GetRequiredService<EngineLease>().AcquireAsync(cancellationToken).ConfigureAwait(false); // before reading any state
         _ = services.GetRequiredService<IEngineStateStore>(); // reads the saved engine state now, so a failure here is retried too
         if (services.GetService<IStrategySpecStore>()?.Active is { } spec)
             await services.GetRequiredService<CosmosSpecArchive>().ArchiveAsync(spec, cancellationToken).ConfigureAwait(false);

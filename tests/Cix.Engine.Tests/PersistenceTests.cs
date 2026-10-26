@@ -205,6 +205,34 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EngineLease_IsHeldByOneEngineAtATime_PerMode()
+    {
+        if (_db is null)
+            return;
+        var time = new MutableTime(new DateTimeOffset(2026, 10, 27, 9, 0, 0, TimeSpan.Zero));
+        EngineLease Lease(TradingMode mode, string holder) =>
+            new(new CosmosLeaseStore(_db, mode), time, NullLogger<EngineLease>.Instance, holder, (_, _) => Task.CompletedTask);
+        var first = Lease(TradingMode.Paper, "a");
+        var second = Lease(TradingMode.Paper, "b");
+        var live = Lease(TradingMode.Live, "c");
+
+        Assert.True(await first.TryAcquireAsync(CancellationToken.None));
+        Assert.False(await second.TryAcquireAsync(CancellationToken.None));
+        Assert.True(await live.TryAcquireAsync(CancellationToken.None)); // paper and live never block each other
+        Assert.True(await first.RenewAsync(CancellationToken.None));
+
+        var store = new CosmosLeaseStore(_db, TradingMode.Paper);
+        var stored = (await store.ReadAsync(CancellationToken.None))!;
+        Assert.Equal("a", stored.Record.Holder);
+        Assert.Null(await store.TryReplaceAsync(stored.Record with { Holder = "x" }, "\"stale\"", CancellationToken.None));
+        Assert.Null(await store.TryCreateAsync(stored.Record, CancellationToken.None));
+
+        await first.ReleaseAsync(CancellationToken.None);
+        Assert.True(await second.TryAcquireAsync(CancellationToken.None));
+        Assert.Equal("b", (await store.ReadAsync(CancellationToken.None))!.Record.Holder);
+    }
+
+    [Fact]
     public async Task OrdersAndPlans_RoundTripThroughCosmos_WithReadableMetadata()
     {
         if (_db is null)

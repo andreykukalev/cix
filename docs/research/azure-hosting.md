@@ -63,7 +63,7 @@ GitHub Actions ─OIDC─► ACR (images) ─► Container Apps environment: wor
    - Loopback stays the default for Compose.
 6. **Owner tools stay off the network in Azure.** `ToolServer:OperatorKey` is not set there, so any request carrying `X-Cix-Operator-Key` is refused. The owner works through the dashboard. The emergency stop is to deactivate the engine's revision and disable the jobs: open orders stay on the exchange, the saved state stays in Cosmos DB, and the kill switch and halts already persist across restarts. A Pause button on the dashboard comes with the live trading switch.
 7. **A single-engine lease, one per mode.** Revision changes, restarts and the PC-to-Azure cutover can briefly run two engines.
-   - **Holding it.** The engine holds a lease document in `state` (`engine-lease-<mode>`, with an ETag), renewed every 30 s and expiring after 2 minutes.
+   - **Holding it.** The engine holds a lease document in `state` (`engine-lease-<mode>`, with an ETag), renewed every 15 s and expiring after 2 minutes.
    - **What needs it.** Anything that acts on the exchange or on shared state: placing orders, direct manual sells, protective exits, reconciliation, claiming owner requests and publishing runs. A second engine of the same mode waits and does none of these.
    - **Handover.** After taking the lease, the engine reloads its state from Cosmos DB. On SIGTERM it releases the lease.
    - Paper and live have separate leases, so they never block each other.

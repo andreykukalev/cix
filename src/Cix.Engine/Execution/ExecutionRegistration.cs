@@ -56,7 +56,8 @@ public static class ExecutionRegistration
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<ILogger<ExecutionService>>(),
             safety: safety,
-            journal: sp.GetService<Journal.IJournal>()));
+            journal: sp.GetService<Journal.IJournal>(),
+            lease: sp.GetService<Persistence.IEngineLease>()));
         services.AddSingleton<SafetyMonitor>();
         services.AddHostedService(sp => sp.GetRequiredService<SafetyMonitor>());
         return services;
