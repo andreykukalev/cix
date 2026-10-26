@@ -152,6 +152,35 @@ Check 'the agents'' templates set what the engine and the job scripts read' {
   }
 }
 
+# The engine in Azure signs in to Cosmos DB with its identity: no account key anywhere in the agents' templates, and its
+# roles reach CIX's containers only, never delete, and leave the journal append-only.
+Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal append-only' {
+  $modules = Join-CixPath $repo 'infra' 'modules'
+  foreach ($name in 'agents-platform.bicep', 'agents-apps.bicep') {
+    $text = [IO.File]::ReadAllText((Join-CixPath $modules $name))
+    if ($text -match '(?i)listKeys\(\)\.primary(Master|Readonly)|AccountKey|cosmos-key') { throw "$name hands out the account key" }
+  }
+  $apps = [IO.File]::ReadAllText((Join-CixPath $modules 'agents-apps.bicep'))
+  if ($apps -notmatch "\{ name: 'Cosmos__ManagedIdentityClientId', value: engineIdentity\.properties\.clientId \}") { throw 'the engine is not given its identity for Cosmos DB' }
+  $access = [IO.File]::ReadAllText((Join-CixPath $modules 'cosmos-engine-access.bicep'))
+  if ($access -match '(?i)items/delete|\{item\}/delete|unmask|executeStoredProcedure|manageConflicts') { throw 'a role allows more than reading and writing items' }
+  if ($access -notmatch "var databaseScope = '\$\{account\.id\}/dbs/\$\{databaseName\}'") { throw 'the roles are not limited to CIX''s database' }
+  $perContainer = "'\$\{databaseScope\}/colls/\$\{a\.container\}'"
+  if (([regex]::Matches($access, "assignableScopes: \[$perContainer\]")).Count -ne 1 -or ([regex]::Matches($access, "(?m)^\s*scope: $perContainer")).Count -ne 1) { throw 'the roles are not assignable and assigned per container' }
+  # The shared pieces only read: item writes are spelled out per container below.
+  Expect ([regex]::Match($access, "(?m)^var item = '([^']+)'").Groups[1].Value) 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items' 'item actions'
+  Expect ([regex]::Match($access, "(?m)^var metadata = '([^']+)'").Groups[1].Value) 'Microsoft.DocumentDB/databaseAccounts/readMetadata' 'metadata action'
+  $query = @([regex]::Matches([regex]::Match($access, '(?s)var query = \[(.*?)\]').Groups[1].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+  Expect ($query -join ',') 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/executeQuery,Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/readChangeFeed' 'query actions'
+  if ($access -match '/\*') { throw 'a role uses a wildcard' }
+  $parts = @{}
+  foreach ($part in @(($access -split "container: '") | Select-Object -Skip 1)) { $parts[$part.Substring(0, $part.IndexOf("'"))] = $part }
+  Expect (($parts.Keys | Sort-Object) -join ',') 'journal,requests,state' 'containers'
+  if (([regex]::Matches($access, '\$\{item\}/')).Count -ne 7 -or ([regex]::Matches($access, "Microsoft\.DocumentDB/[^']*items")).Count -ne 1) { throw 'item actions written some other way than per container' }
+  if ($parts['journal'] -notmatch '\$\{item\}/create' -or $parts['journal'] -match '\$\{item\}/(replace|upsert)') { throw 'the journal role is not append-only' }
+  if ($parts['requests'] -match '\$\{item\}/(create|upsert)') { throw 'the engine may only update requests, not add them' }
+}
+
 Check 'agents settings: dev keeps them off, dates stay text, and they reach the template as its parameters' {
   $s = Read-CixEnvironment -Name dev
   Expect $s.agents.deploy 'none' 'agents.deploy in dev.json (on only when the owner says so)'
@@ -844,7 +873,7 @@ $agentsFake = @{
   'ad app owner'          = "[{`"id`":`"$ownerId`"}]"
   'keyvault list'         = '[{"name":"kvother","tags":{}},{"name":"kvcixcitest1","tags":{"cix-environment":"citest"}}]'
   'acr list'              = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}}]'
-  'keyvault secret list'  = '[{"name":"cosmos-key","id":"https://kvcixcitest1.vault.azure.net/secrets/cosmos-key"},{"name":"claude-token","id":"https://kvcixcitest1.vault.azure.net/secrets/claude-token"}]'
+  'keyvault secret list'  = '[{"name":"claude-token","id":"https://kvcixcitest1.vault.azure.net/secrets/claude-token"}]'
   'ad app list'           = '[]'
   'ad app create'         = '44444444-4444-4444-4444-444444444444'
   'ad sp list'            = '[]'
@@ -881,6 +910,19 @@ Check 'provision.ps1 agents apps (-Yes): creates the engine''s Entra app, checks
   }
   if ($r.Calls.Contains('keyvault secret set')) { throw 'uploaded claude-token although the vault has it' }
   if ($r.Calls -match 'keyvault secret show') { throw 'read a secret value' }
+  if ($r.Calls.Contains('keyvault secret delete') -or $r.Calls.Contains('role assignment delete')) { throw "deleted something: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents deletes the cosmos-key an earlier template left in Key Vault, and the engine''s access to it' {
+  $vaultId = '/subscriptions/x/resourceGroups/rg-cix-citest/providers/Microsoft.KeyVault/vaults/kvcixcitest1'
+  $r = Invoke-AgentsProvision @{ 'keyvault secret list' = '[{"name":"cosmos-key"},{"name":"claude-token"}]'; 'keyvault show' = $vaultId } @{ Yes = $true; SkipEngineConfig = $true } 'platform'
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($call in @("role assignment delete --scope $vaultId/secrets/cosmos-key --yes", 'keyvault secret delete --vault-name kvcixcitest1 --name cosmos-key')) {
+    if (-not $r.Calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
+  }
+  if ($r.Calls.IndexOf('keyvault secret delete') -lt $r.Calls.IndexOf('deployment sub create')) { throw 'deleted it before the deployment' }
+  if (-not $r.Output.Contains('still holds cosmos-key')) { throw "no warning in: $($r.Output)" }
+  if ($r.Calls -match 'keyvault secret show') { throw 'read a secret value' }
 }
 
 Check 'provision.ps1 agents apps preview creates nothing in Entra' {
@@ -908,7 +950,10 @@ Check 'provision.ps1 agents platform: no budget without an address that gets mai
   $r = Invoke-AgentsProvision @{ 'ad signed-in-user' = $guest } @{ Yes = $true; SkipEngineConfig = $true } 'platform'
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   if (-not $r.Output.Contains('no budget is created. Pass -BudgetEmail')) { throw "no warning in: $($r.Output)" }
-  foreach ($never in @('ad app', 'keyvault', 'acr ')) { if ($r.Calls.Contains($never)) { throw "platform ran '$never'" } }
+  foreach ($never in @('ad app', 'acr ')) { if ($r.Calls.Contains($never)) { throw "platform ran '$never'" } }
+  # Only the names in Key Vault are listed (for a cosmos-key an earlier template left): no secret is set, read or deleted.
+  $vaultCalls = @(($r.Calls -split "`n") | Where-Object { $_ -match 'keyvault' -and $_ -notmatch '^\s*keyvault secret list ' })
+  if ($vaultCalls.Count -gt 0) { throw "platform ran $($vaultCalls -join '; ')" }
 }
 
 Check 'a budget starting in a past month is refused only while it does not exist' {
@@ -956,7 +1001,7 @@ foreach ($case in @(
 # Without secrets/claude_token (it is never in the repo; skipped where a developer has one), a vault without claude-token stops.
 if (-not (Test-Path (Join-CixPath $repo 'secrets' 'claude_token'))) {
   Check 'provision.ps1 agents apps refuses: no claude-token in the vault and none to upload' {
-    $r = Invoke-AgentsProvision @{ 'keyvault secret list' = '[{"name":"cosmos-key"}]' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+    $r = Invoke-AgentsProvision @{ 'keyvault secret list' = '[{"name":"other-secret"}]' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
     if (-not $r.Error -or -not $r.Error.Contains('has no claude-token. Run tools/setup-secrets.ps1')) { throw "got: $($r.Error)" }
     if ($r.Calls.Contains('ad app create') -or $r.Calls.Contains('deployment sub create')) { throw 'went on anyway' }
   }

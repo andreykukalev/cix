@@ -114,7 +114,6 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
         allowInsecure: false
       }
       registries: [{ server: registryServer, identity: engineIdentity.id }]
-      secrets: [{ name: 'cosmos-key', keyVaultUrl: '${keyVaultUri}secrets/cosmos-key', identity: engineIdentity.id }]
     }
     template: {
       containers: [
@@ -132,7 +131,8 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
               { name: 'Cosmos__Emulator', value: 'false' }
               { name: 'Cosmos__Endpoint', value: cosmos.properties.documentEndpoint }
               { name: 'Cosmos__Database', value: databaseName }
-              { name: 'Cosmos__AccountKey', secretRef: 'cosmos-key' }
+              // No key: its identity, with roles on CIX's containers only (cosmos-engine-access.bicep).
+              { name: 'Cosmos__ManagedIdentityClientId', value: engineIdentity.properties.clientId }
               { name: 'ToolServer__Auth', value: 'Entra' }
               { name: 'ToolServer__Entra__TenantId', value: tenant().tenantId }
               { name: 'ToolServer__Entra__Audience', value: engineAudience }

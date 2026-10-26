@@ -5,7 +5,8 @@
 //     NAT gateway for a fixed outbound address can be added to this VNet later, without rebuilding the environment;
 //   - the container registry (Basic, no admin user: the apps pull with their identities);
 //   - the run queues (runs-trader, runs-requests, runs-analyst and runs-poison), in a storage account with shared keys off;
-//   - Key Vault (RBAC), holding cosmos-key (written here from the shared account) and claude-token (set by the owner);
+//   - Key Vault (RBAC), holding claude-token (set by the owner); the engine reaches the database with its identity
+//     (cosmos-engine-access.bicep, deployed by main.bicep into the shared resource group), so no account key is kept here;
 //   - one user-assigned identity each for the engine and the three jobs, with only the rights each one needs;
 //   - a monthly budget on CIX's resource group, when a contact address is given.
 // Deployed into CIX's resource group by infra/main.bicep (agents: platform or apps). Names come from agents-names.bicep.
@@ -19,9 +20,6 @@ param environmentName string
 param location string
 
 param tags object
-
-param cosmosAccountName string
-param cosmosResourceGroupName string
 
 @description('Monthly budget for CIX\'s resource group, in the billing currency.')
 param monthlyBudget int
@@ -146,22 +144,6 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
-  name: cosmosAccountName
-  scope: resourceGroup(cosmosResourceGroupName)
-}
-
-// The engine's database key, copied here so the engine reads it with its identity. Rewritten on every deployment, so a
-// rotated account key reaches the engine on the next one.
-resource cosmosKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: vault
-  name: 'cosmos-key'
-  properties: {
-    value: cosmos.listKeys().primaryMasterKey
-    contentType: 'Cosmos DB account key (shared account)'
-  }
-}
-
 resource engineIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${names.identityPrefix}engine'
   location: location
@@ -249,17 +231,8 @@ resource jobPoison 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   }
 ]
 
-// Secrets: the engine reads cosmos-key only. The jobs' access to claude-token is granted by agents-apps.bicep, once the
-// owner has set it, on that secret alone.
-resource engineSecret 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(cosmosKey.id, engineIdentity.id, roles.keyVaultSecretsUser)
-  scope: cosmosKey
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.keyVaultSecretsUser)
-    principalId: engineIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
+// Secrets: the engine reads none (it has no key to read). The jobs' access to claude-token is granted by agents-apps.bicep,
+// once the owner has set it, on that secret alone.
 
 // The owner, named explicitly (not whoever deploys: a CI identity must never get this), can set and rotate secrets:
 // claude-token is put there by hand, never by a template.
@@ -303,3 +276,4 @@ resource budget 'Microsoft.Consumption/budgets@2023-05-01' = if (!empty(budgetCo
 output registryName string = registry.name
 output registryServer string = registry.properties.loginServer
 output keyVaultName string = vault.name
+output enginePrincipalId string = engineIdentity.properties.principalId

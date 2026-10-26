@@ -536,6 +536,15 @@ function Test-CixVaultSecret {
   return @($secrets | Where-Object { $_.PSObject.Properties['name'] -and $_.name -eq $Name }).Count -gt 0
 }
 
+function Remove-CixVaultSecretAndAccess {
+  <# Deletes a secret (soft delete: the vault keeps it 7 days, recoverable only by you) and every role assignment on it. #>
+  param([Parameter(Mandatory)][string]$Vault, [Parameter(Mandatory)][string]$Name)
+  $vaultId = "$(Invoke-CixAz @('keyvault', 'show', '--name', $Vault, '--query', 'id', '-o', 'tsv'))".Trim()
+  if ($vaultId -notmatch '^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.KeyVault/vaults/[^/]+$') { throw "Couldn't find Key Vault $Vault's resource ID." }
+  Invoke-CixAz -Quiet @('role', 'assignment', 'delete', '--scope', "$vaultId/secrets/$Name", '--yes', '--only-show-errors') | Out-Null
+  Invoke-CixAz -Quiet @('keyvault', 'secret', 'delete', '--vault-name', $Vault, '--name', $Name, '--only-show-errors', '-o', 'none') | Out-Null
+}
+
 function Set-CixVaultSecretFromFile {
   <# Stores a file's content as a secret. The value goes from the file to az directly: never through a variable or argument. #>
   param([Parameter(Mandatory)][string]$Vault, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Path)
