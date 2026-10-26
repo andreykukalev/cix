@@ -873,6 +873,20 @@ Check 'provision.ps1 refuses a database that exists but no CIX environment claim
   if (-not $r.Error -or -not $r.Error.Contains("already exists in cosmos-shared-x but no CIX environment claims it")) { throw "got: $($r.Error)" }
 }
 
+$citestClaim = '{"name":"rg-cix-citest","managedBy":null,"tags":{"cix-database":"cix-citest","cix-cosmos-account":"cosmos-shared-x"}}'
+function Get-ManagedClaim([string]$Group) {
+  return "{`"name`":`"ME_cae-cix-citest_rg-cix-citest_polandcentral`",`"managedBy`":`"/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/$Group/providers/Microsoft.App/managedEnvironments/cae-cix-citest`",`"tags`":{`"cix-database`":`"cix-citest`",`"cix-cosmos-account`":`"cosmos-shared-x`"}}"
+}
+Check "provision.ps1 accepts the claim its own Container Apps environment's managed group copies" {
+  $r = Invoke-CitestProvision @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = "[$citestClaim,$(Get-ManagedClaim 'RG-CIX-CITEST')]"; DatabaseExists = $true } @{ WhatIfOnly = $true }
+  if ($r.Error) { throw $r.Error }
+  if (-not $r.Output.Contains('Preview only: nothing was changed.')) { throw "no preview in: $($r.Output)" }
+}
+Check "provision.ps1 refuses a claim from a group another environment's Container Apps environment manages" {
+  $r = Invoke-CitestProvision @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = "[$citestClaim,$(Get-ManagedClaim 'rg-cix-prod')]"; DatabaseExists = $true } @{ WhatIfOnly = $true }
+  if (-not $r.Error -or -not $r.Error.Contains('is claimed by resource group(s) ME_cae-cix-citest_rg-cix-citest_polandcentral')) { throw "got: $($r.Error)" }
+}
+
 Check 'provision.ps1 refuses to create the shared account over an untagged one' {
   $r = Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = '[{"name":"someone-elses","tags":{}}]' } {
     & (Join-Path $azureTools 'provision.ps1') -Environment dev -WhatIfOnly
