@@ -1,5 +1,9 @@
 name: CI
 
+# Pull request runs say which push they test: the PR, how many commits it has, and what happened (opened, synchronize for
+# a new push). The commit itself is in the run's summary (plan job). Other runs keep GitHub's default name.
+run-name: "${{ github.event_name == 'pull_request' && format('#{0} · commit {1} · {2} · {3}', github.event.pull_request.number, github.event.pull_request.commits, github.event.action, github.event.pull_request.title) || '' }}"
+
 on:
   push:
     branches: [main]

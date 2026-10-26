@@ -16,7 +16,24 @@ set -euo pipefail
 
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 jobs_of=(dotnet containers azure windows secrets)
-emit() { for k in "${jobs_of[@]}" dashboard; do echo "$k=${!k}" >> "$out"; done; }
+emit() { for k in "${jobs_of[@]}" dashboard; do echo "$k=${!k}" >> "$out"; done; summary; }
+
+# The commit this run tests, and the jobs it runs, on the run's summary page (the run list shows only its name).
+summary() {
+  [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+  local tested="${HEAD_SHA:-${SHA:-}}" line k
+  {
+    echo "### Commit tested"
+    if [[ -n "$tested" ]] && line=$(git log -1 --format='`%h` %s (%an, %ad)' --date=format:'%Y-%m-%d %H:%M' "$tested" 2>/dev/null); then
+      echo "$line"
+    else
+      echo "\`${tested:-unknown}\`"
+    fi
+    echo
+    echo "### Jobs"
+    for k in "${jobs_of[@]}" dashboard; do echo "- $k: ${!k}"; done
+  } >> "$GITHUB_STEP_SUMMARY"
+}
 all() { dotnet=true containers=true azure=true windows=true secrets=true dashboard=true; }
 dotnet=false containers=false azure=false windows=false secrets=true dashboard=false
 ci_changed=false unknown=false
