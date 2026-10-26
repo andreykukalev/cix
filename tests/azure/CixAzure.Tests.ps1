@@ -910,7 +910,7 @@ $digest5 = "sha256:$('5' * 64)"
 Check 'provision.ps1 agents apps (-Yes): creates the engine''s Entra app, deploys both images by digest and reports the apps' {
   $r = Invoke-AgentsProvision @{} @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
-  foreach ($expected in @('Engine and agents (apps, in polandcentral)', "Images: crcixcitest1, tag abc123 (cix-engine@$digest5, cix-trader@$digest5). Engine: stopped", 'Created the Entra app registration cix-engine-citest',
+  foreach ($expected in @('Engine and agents (apps, in polandcentral)', 'Images: crcixcitest1, tag abc123. Engine: stopped', "cix-engine@$digest5", "cix-trader@$digest5", 'Created the Entra app registration cix-engine-citest',
       'Engine app: ca-cix-citest-engine; jobs: caj-cix-citest-trader, caj-cix-citest-requests, caj-cix-citest-analyst')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }

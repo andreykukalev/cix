@@ -146,7 +146,9 @@ if (-not $SkipInfrastructure) {
       $agentValues['engineImageDigest'] = $images.Engine
       $agentValues['agentImageDigest'] = $images.Agent
       $which = if ($ImageTag) { "tag $ImageTag" } else { 'the ones running now' }
-      Write-CixInfo "Images: $registry, $which (cix-engine@$($images.Engine), cix-trader@$($images.Agent)). Engine: $(if ($settings.agents.startEngine) { 'running (one replica)' } else { 'stopped (agents.startEngine false)' })."
+      Write-CixInfo "Images: $registry, $which. Engine: $(if ($settings.agents.startEngine) { 'running (one replica)' } else { 'stopped (agents.startEngine false)' })."
+      Write-CixInfo "  cix-engine@$($images.Engine)"
+      Write-CixInfo "  cix-trader@$($images.Agent)"
       # ...then the Claude credential: uploaded from secrets/claude_token (tools/setup-secrets.ps1 writes it) straight to Key Vault.
       if ($UploadClaudeToken -or -not (Test-CixVaultSecret -Vault $vault -Name 'claude-token')) {
         $local = Join-CixPath (Get-CixRepoRoot) 'secrets' 'claude_token'
