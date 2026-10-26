@@ -8,3 +8,16 @@ useDefault = true
 description = "Code identifiers, not secrets"
 regexTarget = "match"
 regexes = ['''IEd25519Signer''']
+
+# Azure built-in role definition IDs: public, the same in every tenant (infra/modules/agents-*.bicep). Exact IDs only.
+[[allowlists]]
+description = "Azure built-in role definition IDs, not secrets"
+regexTarget = "match"
+regexes = [
+  '''7f951dda-4ed3-4680-a7ca-43fe172d538d''', # AcrPull
+  '''4633458b-17de-408a-b874-0445c86b69e6''', # Key Vault Secrets User
+  '''b86a8fe4-44ce-4948-aee5-eccb2c155cd7''', # Key Vault Secrets Officer
+  '''c6a89b2d-59bc-44d0-9896-0f6e12d7b80a''', # Storage Queue Data Message Sender
+  '''8a0f0c08-91a1-4084-bc3d-661d67233fed''', # Storage Queue Data Message Processor
+  '''19e7f393-937e-4f77-808e-94535e297925''', # Storage Queue Data Reader
+]

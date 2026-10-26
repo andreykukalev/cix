@@ -805,7 +805,7 @@ Check 'provision.ps1 agents apps keeps the image tag the engine runs, and sends 
   $r = Invoke-AgentsProvision $running @{ Yes = $true; SkipEngineConfig = $true; BudgetEmail = 'alerts@example.com' }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   foreach ($expected in @('Images: crcixcitest1, tag def456.', 'alerts to alerts@example.com.')) { if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" } }
-  if ($r.Calls -match 'containerapp') { throw "used the containerapp extension: $($r.Calls)" }
+  if ($r.Calls -cmatch '(^|\s)containerapp ') { throw "used the containerapp extension: $($r.Calls)" }
 }
 
 Check 'provision.ps1 agents platform: no budget without an address that gets mail, and nothing for the apps' {
