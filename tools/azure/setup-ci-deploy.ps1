@@ -1,16 +1,24 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  One-time setup so CI can publish the dashboard without any secret stored in GitHub (ADR-0010).
+  One-time setup so CI can deploy from main without any secret stored in GitHub (ADR-0010): the dashboard (-For
+  dashboard, the default) or the paper engine and the agent jobs (-For agents).
 
 .DESCRIPTION
   Creates (or reuses) in Microsoft Entra ID and Azure:
-    1. an app registration and service principal, cix-dashboard-deploy-<Environment>;
+    1. an app registration and service principal: cix-dashboard-deploy-<Environment> or cix-agents-deploy-<Environment>;
     2. a federated credential that trusts GitHub Actions tokens only for pushes to main of this repository
        (subject repo:<owner>/<repo>:ref:refs/heads/main): pull requests, other branches and forks can't use it;
-    3. a custom role, "CIX dashboard deployer (<Environment>)", that may only read a Static Web App and its deployment
-       token, assigned on this environment's Static Web App alone.
-  Then prints the three repository variables CI needs (IDs, not secrets), and sets them with the GitHub CLI if you pass
+    3. its roles, and no others:
+       - dashboard: a custom role, "CIX dashboard deployer (<Environment>)", that may only read a Static Web App and its
+         deployment token, assigned on this environment's Static Web App alone;
+       - agents: AcrPush on the environment's registry, and a custom role, "CIX agents deployer (<Environment>)", that
+         may read and update container apps and jobs, assigned only on the registry (to find it) and, once
+         agents.deploy is apps, on the paper engine and the three jobs. It can't create resources (it holds no right on
+         the resource group) or role assignments, move an identity or an app to another environment, or reach Key
+         Vault, storage or the database directly; the live engine gets a resource group
+         of its own (docs/research/azure-hosting.md). With agents.deploy platform, run this again after deploying apps.
+  Then prints the repository variables CI needs (IDs, not secrets), and sets them with the GitHub CLI if you pass
   -SetGitHubVariables and gh is installed and signed in.
 
   Each change is shown and confirmed first. Running it again changes nothing that is already in place.
@@ -20,12 +28,15 @@
   .\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id>
 .EXAMPLE
   .\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id> -SetGitHubVariables
+.EXAMPLE
+  .\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id> -For agents   # after provision.ps1 with agents.deploy platform
 #>
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][ValidatePattern('^[a-z0-9-]{2,12}$')][string]$Environment,
   [ValidatePattern('^[0-9a-fA-F-]{36}$')][string]$SubscriptionId,
   [ValidatePattern('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')][string]$Repository,
+  [ValidateSet('dashboard', 'agents')][string]$For = 'dashboard',
   [switch]$SetGitHubVariables,
   [switch]$Yes
 )
@@ -67,21 +78,62 @@ $subject = "repo:${Repository}:ref:refs/heads/main"
 
 Write-CixStep "Environment '$Environment'"
 $settings = Read-CixEnvironment -Name $Environment
-$appName = "stapp-$($settings.namePrefix)-$($settings.environmentName)"
-$identityName = "cix-dashboard-deploy-$Environment"
-$roleName = "CIX dashboard deployer ($Environment)"
-Write-CixInfo "Static Web App:  $appName in $($settings.resourceGroup)"
+if ($For -eq 'agents' -and $settings.protected) { throw "$Environment is protected (live money): CI never deploys there." }
+$identityName = "cix-$For-deploy-$Environment"
+$roleName = "CIX $For deployer ($Environment)"
+if ($For -eq 'dashboard') {
+  $appName = "stapp-$($settings.namePrefix)-$($settings.environmentName)"
+  $roleActions = @('Microsoft.Web/staticSites/listSecrets/action', 'Microsoft.Web/staticSites/read')
+  $roleDescription = 'Reads one CIX Static Web App and its deployment token, to publish the dashboard from CI.'
+  $limit = 'read this Static Web App and its deployment token'
+  Write-CixInfo "Static Web App:  $appName in $($settings.resourceGroup)"
+}
+else {
+  # Reading and updating the engine and the jobs: tools/ci/deploy-agents.sh patches only their containers through the
+  # management API, so the update carries no environment or identity, and needs no right on those. Each right applies
+  # only where the role is assigned: on those resources and the registry, never on the group.
+  $roleActions = @(
+    'Microsoft.App/containerApps/read', 'Microsoft.App/containerApps/revisions/read', 'Microsoft.App/containerApps/write',
+    'Microsoft.App/jobs/read', 'Microsoft.App/jobs/write', 'Microsoft.ContainerRegistry/registries/read') | Sort-Object
+  $roleDescription = 'Reads and updates the CIX paper engine and agent jobs it is assigned on, to deploy new images from CI.'
+  $limit = 'push images and update the paper engine and the jobs'
+  if ($settings.agents.deploy -eq 'none') { throw "agents.deploy is none in $($settings.path): run provision.ps1 with agents.deploy platform first (it creates the registry)." }
+  Write-CixInfo "Resource group:  $($settings.resourceGroup) (the paper engine and the agent jobs)"
+}
 Write-CixInfo "Identity:        $identityName, trusted only for $subject"
 
 Write-CixStep 'Signing in'
 $account = Connect-CixAzure -Settings $settings -SubscriptionId $SubscriptionId
-$site = Invoke-CixAz @('staticwebapp', 'show', '--name', $appName, '--resource-group', $settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
-if (-not $site) { throw "Static Web App $appName not found in $($settings.resourceGroup); run provision.ps1 first." }
+$groupId = "/subscriptions/$($account.id)/resourceGroups/$($settings.resourceGroup)"
+if ($For -eq 'dashboard') {
+  $site = Invoke-CixAz @('staticwebapp', 'show', '--name', $appName, '--resource-group', $settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+  if (-not $site) { throw "Static Web App $appName not found in $($settings.resourceGroup); run provision.ps1 first." }
+  $assignments = @(@{ Role = $roleName; Scope = $site.id; Label = $appName })
+}
+else {
+  $registry = Find-CixAgentsResource -Settings $settings -Kind acr
+  if (-not $registry) { throw "No container registry for $Environment in $($settings.resourceGroup); run provision.ps1 with agents.deploy platform first." }
+  $registryId = "$(Invoke-CixAz @('acr', 'show', '--name', $registry, '--query', 'id', '-o', 'tsv', '--only-show-errors'))".Trim()
+  $assignments = @(@{ Role = 'AcrPush'; Scope = $registryId; Label = $registry }, @{ Role = $roleName; Scope = $registryId; Label = $registry })
+  if ($settings.agents.deploy -eq 'apps') {
+    # The names infra/modules/agents-names.bicep gives them; each must exist (provision.ps1 creates them).
+    $p = "$($settings.namePrefix)-$($settings.environmentName)"
+    $take = { param([string]$Text, [int]$Length) if ($Text.Length -gt $Length) { $Text.Substring(0, $Length) } else { $Text } }
+    $targets = @("Microsoft.App/containerApps/$(& $take "ca-$p-engine" 32)") +
+      @('trader', 'requests', 'analyst' | ForEach-Object { "Microsoft.App/jobs/$(& $take "caj-$p-$_" 32)" })
+    $existing = @(Invoke-CixAz @('resource', 'list', '--resource-group', $settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+        ForEach-Object { "$($_.id)" })
+    foreach ($target in $targets) {
+      $id = "$groupId/providers/$target"
+      if ($existing -notcontains $id) { throw "$($target.Split('/')[-1]) isn't in $($settings.resourceGroup); run provision.ps1 with agents.deploy apps first." }
+      $assignments += @{ Role = $roleName; Scope = $id; Label = $target.Split('/')[-1] }
+    }
+  }
+}
 
 # --- Check everything first: nothing is created or changed until a reused identity has passed every check. -----------------
 Write-CixStep 'Checking what already exists'
 $field = { param($o, $n) if ($o -and $o.PSObject.Properties[$n]) { @($o.$n) } else { @() } } # absent fields are empty, not errors
-$groupId = "/subscriptions/$($account.id)/resourceGroups/$($settings.resourceGroup)"
 $me = (Invoke-CixAz @('ad', 'signed-in-user', 'show', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson).id
 
 # --display-name matches by prefix: keep exact names only.
@@ -115,13 +167,14 @@ if ($app) {
     if ($spOwners.Count -gt 0) { throw "The service principal of $identityName has other owners ($(($spOwners | ForEach-Object { $_.id }) -join ', ')). Refusing." }
     foreach ($relation in 'appRoleAssignments', 'memberOf') {
       $held = @(& $field (Invoke-CixAz @('rest', '--method', 'get', '--url', "https://graph.microsoft.com/v1.0/servicePrincipals/$($sp.id)/$relation", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson) 'value')
-      if ($held.Count -gt 0) { throw "The service principal of $identityName has $relation (API permissions or directory roles/groups). Remove them first: it may only read this Static Web App." }
+      if ($held.Count -gt 0) { throw "The service principal of $identityName has $relation (API permissions or directory roles/groups). Remove them first: it may only $limit." }
     }
-    # ...and no Azure role but ours, on this Static Web App.
+    # ...and no Azure role but ours, on our scopes.
+    $expected = @($assignments | ForEach-Object { "$($_.Role)|$($_.Scope)" })
     $strays = @(Invoke-CixAz @('role', 'assignment', 'list', '--assignee', $sp.id, '--all', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
-        Where-Object { $_.roleDefinitionName -ne $roleName -or $_.scope -ne $site.id })
+        Where-Object { $expected -notcontains "$($_.roleDefinitionName)|$($_.scope)" })
     if ($strays.Count -gt 0) {
-      throw "$identityName also holds $(($strays | ForEach-Object { "$($_.roleDefinitionName) on $($_.scope)" }) -join '; '). Remove those role assignments first: it may only read this Static Web App."
+      throw "$identityName also holds $(($strays | ForEach-Object { "$($_.roleDefinitionName) on $($_.scope)" }) -join '; '). Remove those role assignments first: it may only $limit."
     }
   }
 
@@ -135,15 +188,15 @@ if ($app) {
   }
 }
 
-# An existing role with this name must grant exactly the two actions, on this resource group only.
+# An existing role with this name must grant exactly the expected actions, on this resource group only.
 $role = @(Invoke-CixAz @('role', 'definition', 'list', '--name', $roleName, '--custom-role-only', 'true', '--scope', $groupId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
 if ($role.Count -gt 0) {
   $p = @(& $field $role[0] 'permissions')
   $actions = @($p | ForEach-Object { & $field $_ 'actions' } | Where-Object { $_ }) | Sort-Object
   $extra = @($p | ForEach-Object { @(& $field $_ 'notActions') + @(& $field $_ 'dataActions') + @(& $field $_ 'notDataActions') } | Where-Object { $_ })
-  if (($actions -join ',') -ne 'Microsoft.Web/staticSites/listSecrets/action,Microsoft.Web/staticSites/read' -or $extra.Count -gt 0 -or
+  if (($actions -join ',') -ne (($roleActions | Sort-Object) -join ',') -or $extra.Count -gt 0 -or
       ((& $field $role[0] 'assignableScopes') -join ',') -ne $groupId) {
-    throw "The existing role '$roleName' grants more than reading this Static Web App and its deployment token. Delete it first (az role definition delete --name `"$roleName`")."
+    throw "The existing role '$roleName' grants other rights than it should (it may only $limit). Delete it first (az role definition delete --name `"$roleName`")."
   }
 }
 Write-CixInfo 'All checks passed.'
@@ -161,13 +214,13 @@ if (-not $sp) {
   Write-CixInfo 'Created its service principal.'
 }
 
-Write-CixStep 'Role: read this Static Web App and its deployment token, nothing else'
+Write-CixStep "Roles: $limit, nothing else"
 if ($role.Count -eq 0) {
-  Confirm-Step "Create the custom role '$roleName' (Microsoft.Web/staticSites read and listSecrets only)?"
+  Confirm-Step "Create the custom role '$roleName' ($($roleActions -join ', '), assignable within $($settings.resourceGroup) only)?"
   $file = Write-CixTempJson ([ordered]@{
       Name             = $roleName
-      Description      = 'Reads one CIX Static Web App and its deployment token, to publish the dashboard from CI.'
-      Actions          = @('Microsoft.Web/staticSites/read', 'Microsoft.Web/staticSites/listSecrets/action')
+      Description      = $roleDescription
+      Actions          = @($roleActions)
       NotActions       = @()
       AssignableScopes = @($groupId)
     })
@@ -175,18 +228,18 @@ if ($role.Count -eq 0) {
   finally { Remove-Item $file -ErrorAction SilentlyContinue }
   Write-CixInfo 'Created.'
 }
-else { Write-CixInfo 'Exists, with exactly those two actions.' }
+else { Write-CixInfo 'Exists, with exactly the expected actions.' }
 
-$assigned = @(Invoke-CixAz @('role', 'assignment', 'list', '--assignee', $sp.id, '--scope', $site.id, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
-    Where-Object { $_.roleDefinitionName -eq $roleName })
-if ($assigned.Count -gt 0) { Write-CixInfo "Already assigned on $appName." }
-else {
-  Confirm-Step "Assign '$roleName' to $identityName on $appName only?"
+foreach ($assignment in $assignments) {
+  $assigned = @(Invoke-CixAz @('role', 'assignment', 'list', '--assignee', $sp.id, '--scope', $assignment.Scope, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+      Where-Object { $_.roleDefinitionName -eq $assignment.Role })
+  if ($assigned.Count -gt 0) { Write-CixInfo "Already assigned $($assignment.Role) on $($assignment.Label)."; continue }
+  Confirm-Step "Assign '$($assignment.Role)' to $identityName on $($assignment.Label) only?"
   # A new role definition can take a minute to become assignable.
   for ($attempt = 1; ; $attempt++) {
     try {
       Invoke-CixAz @('role', 'assignment', 'create', '--assignee-object-id', $sp.id, '--assignee-principal-type', 'ServicePrincipal',
-        '--role', $roleName, '--scope', $site.id, '--only-show-errors', '-o', 'none') | Out-Null
+        '--role', $assignment.Role, '--scope', $assignment.Scope, '--only-show-errors', '-o', 'none') | Out-Null
       break
     }
     catch {
@@ -195,7 +248,7 @@ else {
       Start-Sleep -Seconds 20
     }
   }
-  Write-CixInfo 'Assigned.'
+  Write-CixInfo "Assigned $($assignment.Role) on $($assignment.Label)."
 }
 
 Write-CixStep 'Federated credential (GitHub Actions, main only)'
@@ -207,7 +260,7 @@ else {
       issuer      = 'https://token.actions.githubusercontent.com'
       subject     = $subject
       audiences   = @('api://AzureADTokenExchange')
-      description = 'CI publishes the CIX dashboard from main (tools/azure/setup-ci-deploy.ps1).'
+      description = "CI deploys CIX ($For) from main (tools/azure/setup-ci-deploy.ps1)."
     })
   try { Invoke-CixAz @('ad', 'app', 'federated-credential', 'create', '--id', $app.appId, '--parameters', "@$file", '--only-show-errors', '-o', 'none') | Out-Null }
   finally { Remove-Item $file -ErrorAction SilentlyContinue }
@@ -215,7 +268,10 @@ else {
 }
 
 Write-CixStep 'GitHub repository variables (IDs, not secrets)'
-$variables = [ordered]@{ AZURE_CLIENT_ID = $app.appId; AZURE_TENANT_ID = $account.tenantId; AZURE_SUBSCRIPTION_ID = $account.id; DASHBOARD_ENVIRONMENT = $Environment }
+$variables = if ($For -eq 'dashboard') { [ordered]@{ AZURE_CLIENT_ID = $app.appId } } else { [ordered]@{ AGENTS_AZURE_CLIENT_ID = $app.appId; AGENTS_REGISTRY = $registry } }
+$variables['AZURE_TENANT_ID'] = $account.tenantId
+$variables['AZURE_SUBSCRIPTION_ID'] = $account.id
+$variables[$(if ($For -eq 'dashboard') { 'DASHBOARD_ENVIRONMENT' } else { 'AGENTS_ENVIRONMENT' })] = $Environment
 if ($SetGitHubVariables) {
   Assert-CixCommand -Name 'gh' -Hint 'Install the GitHub CLI (winget install GitHub.cli) and run gh auth login, or set the variables by hand.'
   foreach ($k in $variables.Keys) {
@@ -229,4 +285,7 @@ else {
   foreach ($k in $variables.Keys) { Write-CixInfo ("  {0} = {1}" -f $k, $variables[$k]) }
   Write-CixInfo 'Or run this script again with -SetGitHubVariables (needs the GitHub CLI, signed in).'
 }
-Write-CixInfo 'Then run CI on main by hand once (Actions, CI, Run workflow) to check it publishes.'
+if ($For -eq 'agents' -and $settings.agents.deploy -ne 'apps') {
+  Write-CixInfo 'CI can push images now. After provision.ps1 deploys agents.deploy apps, run this again.'
+}
+Write-CixInfo "Then run CI on main by hand once (Actions, CI, Run workflow) to check it deploys the $For."

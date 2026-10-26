@@ -52,4 +52,4 @@ Run the engine as a Container App and the agents as Container Apps Jobs. They sh
 - **Approval gate.** A merge to `main` deploys paper, and there is no auto-merge. The owner's merge is the gate, because GitHub Free has no required reviewers for deployments in a private repository.
 - **Infrastructure stays manual.** Infrastructure changes remain a manual, owner-run step.
 - **No NAT gateway yet.** The live engine's fixed outbound IP is decided with the live engine. The VNet is there from the start.
-- **Paper and live later** means a second engine app with its own lease, identity, Key Vault and resource group, which CI can't reach.
+- **Paper and live later** means a second engine app with its own lease, identity, Key Vault and resource group, which CI can't reach. It must also not share a database or Cosmos DB account with paper while the paper engine uses the account key, since CI's identity can reach that key by running an image as the paper engine.

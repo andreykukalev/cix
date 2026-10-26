@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Decides which CI jobs a run needs, to save GitHub Actions minutes (#73). Writes `name=true|false` lines to
-# $GITHUB_OUTPUT (or stdout) for: dotnet, containers, azure, windows, secrets, dashboard; and, when $GITHUB_STEP_SUMMARY
+# $GITHUB_OUTPUT (or stdout) for: dotnet, containers, azure, windows, secrets, dashboard, images; and, when $GITHUB_STEP_SUMMARY
 # is set, the commit and the plan to the run's summary page.
 #
 #   pull_request       the jobs for the files the pull request changes (against its base)
@@ -8,7 +8,7 @@
 #                      exactly this content: its CI run (this workflow) on a head that contained the previous tip of main,
 #                      with an identical tree, where each of those jobs succeeded (skipped doesn't count). Only when the
 #                      pull request's base was main all along: a run against another base tested a different merge.
-#                      `dashboard` (publish) follows the files either way.
+#                      `dashboard` (publish) and `images` (deploy the engine and agents) follow the files either way.
 #   workflow_dispatch  everything
 #
 # When in doubt, test: a change to CI itself, a file it can't classify, or a diff it can't compute runs everything.
@@ -17,7 +17,7 @@ set -euo pipefail
 
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 jobs_of=(dotnet containers azure windows secrets)
-emit() { for k in "${jobs_of[@]}" dashboard; do echo "$k=${!k}" >> "$out"; done; summary; }
+emit() { for k in "${jobs_of[@]}" dashboard images; do echo "$k=${!k}" >> "$out"; done; summary; }
 
 # The commit this run tests, and the jobs it runs, on the run's summary page (the run list shows only its name).
 summary() {
@@ -36,11 +36,11 @@ summary() {
     fi
     echo
     echo "### Jobs"
-    for k in "${jobs_of[@]}" dashboard; do echo "- $k: ${!k}"; done
+    for k in "${jobs_of[@]}" dashboard images; do echo "- $k: ${!k}"; done
   } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Couldn't write the job summary."
 }
-all() { dotnet=true containers=true azure=true windows=true secrets=true dashboard=true; }
-dotnet=false containers=false azure=false windows=false secrets=true dashboard=false
+all() { dotnet=true containers=true azure=true windows=true secrets=true dashboard=true images=true; }
+dotnet=false containers=false azure=false windows=false secrets=true dashboard=false images=false
 ci_changed=false unknown=false
 
 zero=0000000000000000000000000000000000000000
@@ -67,10 +67,10 @@ for f in "${files[@]}"; do
   case "$f" in
     .github/workflows/*|tools/ci/*) ci_changed=true ;;
     src/*|Cix.slnx|Directory.Build.props|global.json|NuGet.config|.editorconfig|config/*|strategies/*)
-      dotnet=true; containers=true ;;
+      dotnet=true; containers=true; images=true ;;
     tests/azure/*|tools/azure/*) azure=true; windows=true ;;
     tests/*) dotnet=true ;;
-    docker/*|docker-compose*.yml|.dockerignore|tools/trader/*|.claude/agents/*|.claude/hooks/*|.claude/settings.json) containers=true ;;
+    docker/*|docker-compose*.yml|.dockerignore|tools/trader/*|.claude/agents/*|.claude/hooks/*|.claude/settings.json) containers=true; images=true ;;
     infra/*) azure=true; windows=true; dashboard=true ;;
     dashboard/*) azure=true; dashboard=true ;;
     docs/*|*.md|.claude/skills/*|.gitleaks.toml|.gitignore|.gitattributes|LICENSE) ;;

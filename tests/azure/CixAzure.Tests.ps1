@@ -524,7 +524,7 @@ Check 'setup-ci-deploy.ps1 (-Yes) creates the identity, a main-only credential a
   if ($r.Error) { throw $r.Error }
   $creates = @($r.Calls -split "`n" | Where-Object { $_ -match '\bcreate\b' })
   if ($creates.Count -eq 0 -or $creates[-1] -notmatch 'federated-credential create') { throw "the trust for main must be created last; creates were: $($creates -join '; ')" }
-  foreach ($expected in @('trusted only for repo:owner/repo:ref:refs/heads/main', 'Trusts repo:owner/repo:ref:refs/heads/main.', 'Assigned.',
+  foreach ($expected in @('trusted only for repo:owner/repo:ref:refs/heads/main', 'Trusts repo:owner/repo:ref:refs/heads/main.', 'Assigned CIX dashboard deployer (dev) on stapp-cix-dev.',
       'AZURE_CLIENT_ID = 11111111-1111-1111-1111-111111111111', 'AZURE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa', 'DASHBOARD_ENVIRONMENT = dev')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
@@ -539,7 +539,7 @@ Check 'setup-ci-deploy.ps1 accepts a reused identity that is exactly as it shoul
     'role assignment'             = '[{"roleDefinitionName":"CIX dashboard deployer (dev)","scope":"/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev"}]'
   }
   if ($r.Error) { throw $r.Error }
-  foreach ($expected in @('Already trusts repo:owner/repo:ref:refs/heads/main.', 'Exists, with exactly those two actions.', 'Already assigned on stapp-cix-dev.')) {
+  foreach ($expected in @('Already trusts repo:owner/repo:ref:refs/heads/main.', 'Exists, with exactly the expected actions.', 'Already assigned CIX dashboard deployer (dev) on stapp-cix-dev.')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
 }
@@ -548,8 +548,8 @@ foreach ($case in @(
     @{ Name = 'another owner'; Overrides = @{ 'ad app owner' = '[{"id":"me"},{"id":"someone-else"}]' }; Says = 'other owners (someone-else)' },
     @{ Name = 'a pull-request credential'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:owner/repo:pull_request","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'also trusts repo:owner/repo:pull_request' },
     @{ Name = 'a main credential from another issuer'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:owner/repo:ref:refs/heads/main","issuer":"https://evil.example","audiences":["api://AzureADTokenExchange"]}]' }; Says = 'issuer https://evil.example' },
-    @{ Name = 'a broader role of the same name'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants more than reading' },
-    @{ Name = 'a same-named role with data actions'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/staticSites/read","Microsoft.Web/staticSites/listSecrets/action"],"notActions":[],"dataActions":["Microsoft.DocumentDB/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants more than reading' },
+    @{ Name = 'a broader role of the same name'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants other rights than it should' },
+    @{ Name = 'a same-named role with data actions'; Overrides = @{ 'ad app federated-credential' = $mainCredential; 'role definition' = '[{"permissions":[{"actions":["Microsoft.Web/staticSites/read","Microsoft.Web/staticSites/listSecrets/action"],"notActions":[],"dataActions":["Microsoft.DocumentDB/*"]}],"assignableScopes":["/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev"]}]' }; Says = 'grants other rights than it should' },
     @{ Name = 'another role assignment, before trusting main'; Overrides = @{ 'role assignment' = '[{"roleDefinitionName":"Contributor","scope":"/subscriptions/x"}]' }; Says = 'also holds Contributor on /subscriptions/x' },
     @{ Name = 'a service principal secret'; Overrides = @{ 'ad sp show' = '{"id":"2","passwordCredentials":[{"keyId":"k"}],"keyCredentials":[]}' }; Says = 'service principal of cix-dashboard-deploy-dev has passwordCredentials' },
     @{ Name = 'a service principal owner'; Overrides = @{ 'ad sp owner' = '[{"id":"someone-else"}]' }; Says = 'service principal of cix-dashboard-deploy-dev has other owners' },
@@ -558,6 +558,97 @@ foreach ($case in @(
     $r = Invoke-SetupCi $case.Overrides
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
     if ($r.Calls -match '(?m)\bcreate\b') { throw "it changed something before refusing: $(($r.Calls -split "`n" | Where-Object { $_ -match 'create' }) -join '; ')" }
+  }
+}
+
+# setup-ci-deploy.ps1 -For agents: the identity CI deploys the engine and the jobs with, on an environment with the platform.
+$agentsRegistryId = '/subscriptions/x/resourceGroups/rg-cix-citest/providers/Microsoft.ContainerRegistry/registries/crcixcitest1'
+$agentsGroupId = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-citest'
+$agentsTargets = @('Microsoft.App/containerApps/ca-cix-citest-engine', 'Microsoft.App/jobs/caj-cix-citest-trader', 'Microsoft.App/jobs/caj-cix-citest-requests',
+  'Microsoft.App/jobs/caj-cix-citest-analyst') | ForEach-Object { "$agentsGroupId/providers/$_" }
+$agentsOthers = @('Microsoft.App/managedEnvironments/cae-cix-citest', 'Microsoft.ManagedIdentity/userAssignedIdentities/id-cix-citest-engine',
+  'Microsoft.KeyVault/vaults/kvcixcitest1') | ForEach-Object { "$agentsGroupId/providers/$_" }
+$agentsResources = '[' + ((@($agentsTargets) + @($agentsOthers) | ForEach-Object { "{`"id`":`"$_`"}" }) -join ',') + ']'
+$agentsActions = '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/revisions/read","Microsoft.App/containerApps/write","Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.ContainerRegistry/registries/read"]'
+function Invoke-SetupAgentsCi([hashtable]$Overrides, [string]$Deploy = 'platform', [bool]$Protected = $false) {
+  $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
+  $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest').Replace('"databaseName": "cix"', '"databaseName": "cix-citest"').Replace('"deploy": "none"', "`"deploy`": `"$Deploy`"")
+  if ($Protected) { $json = $json.Replace('"protected": false', '"protected": true') }
+  [IO.File]::WriteAllText($file, $json)
+  $extra = @{}; foreach ($k in $cleanApp.Keys) { $extra[$k] = $cleanApp[$k] }
+  $extra['ad app list'] = '[]'; $extra['ad app create'] = '{"appId":"66666666-6666-6666-6666-666666666666"}'
+  $extra['ad sp list'] = '[]'; $extra['ad sp create'] = '{"id":"77777777-7777-7777-7777-777777777777"}'
+  $extra['acr list'] = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}}]'
+  $extra['acr show'] = $agentsRegistryId
+  $extra['resource list'] = $agentsResources
+  foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
+  try {
+    return Invoke-WithFakeAz @{ GroupExists = 'true'; Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment citest -Repository 'owner/repo' -For agents -Yes }
+  }
+  finally { Remove-Item $file -Force }
+}
+
+Check 'setup-ci-deploy.ps1 -For agents (-Yes), platform: its own identity, AcrPush and the deployer role on the registry only, trust last' {
+  $r = Invoke-SetupAgentsCi @{}
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  $calls = $r.Calls.Replace('"', '') # Windows logs arguments with spaces in quotes
+  $creates = @($calls -split "`n" | Where-Object { $_ -match '\bcreate\b' })
+  if ($creates[-1] -notmatch 'federated-credential create') { throw "the trust for main must be created last; creates were: $($creates -join '; ')" }
+  foreach ($call in @('ad app create --display-name cix-agents-deploy-citest', 'role definition create',
+      "--role AcrPush --scope $agentsRegistryId", "--role CIX agents deployer (citest) --scope $agentsRegistryId")) {
+    if (-not $calls.Contains($call)) { throw "no '$call' in: $calls" }
+  }
+  $assigned = @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' })
+  Expect $assigned.Count 2 'role assignments'
+  $onGroup = @($assigned | Where-Object { $_ -match "--scope $([regex]::Escape($agentsGroupId))(\s|$)" })
+  if ($onGroup.Count -gt 0) { throw "assigned something on the whole group: $($onGroup -join '; ')" }
+  foreach ($expected in @('AGENTS_AZURE_CLIENT_ID = 66666666-6666-6666-6666-666666666666', 'AGENTS_REGISTRY = crcixcitest1', 'AGENTS_ENVIRONMENT = citest',
+      'Assigned AcrPush on crcixcitest1.', 'run this again.')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+  if ($r.Output.Contains('DASHBOARD_ENVIRONMENT') -or $calls.Contains('staticwebapp')) { throw 'set up the dashboard instead' }
+}
+
+Check 'setup-ci-deploy.ps1 -For agents (-Yes), apps: the deployer role on the engine and the jobs, never the group' {
+  $r = Invoke-SetupAgentsCi @{} 'apps'
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  $calls = $r.Calls.Replace('"', '')
+  foreach ($scope in @($agentsTargets) + @($agentsRegistryId)) {
+    if (-not $calls.Contains("--role CIX agents deployer (citest) --scope $scope")) { throw "the deployer role isn't on $scope`: $($r.Calls)" }
+  }
+  $assigned = @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' })
+  Expect $assigned.Count 6 'role assignments (AcrPush, and the deployer role on the registry, the engine and the jobs)'
+  $beyond = @($assigned | Where-Object { $_ -match "--scope $([regex]::Escape($agentsGroupId))(\s|$)" -or $_ -match 'managedEnvironments|userAssignedIdentities|kvcixcitest1' })
+  if ($beyond.Count -gt 0) { throw "assigned something beyond those: $($beyond -join '; ')" }
+  if ($r.Output.Contains('run this again')) { throw 'asked to run again although apps is deployed' }
+}
+
+Check 'setup-ci-deploy.ps1 -For agents accepts its own earlier setup, changing nothing' {
+  $r = Invoke-SetupAgentsCi @{
+    'ad app list'                 = '[{"appId":"66666666-6666-6666-6666-666666666666","displayName":"cix-agents-deploy-citest"}]'
+    'ad sp list'                  = '[{"id":"77777777-7777-7777-7777-777777777777"}]'
+    'ad app federated-credential' = $mainCredential
+    'role definition'             = "[{`"permissions`":[{`"actions`":$agentsActions,`"notActions`":[],`"dataActions`":[],`"notDataActions`":[]}],`"assignableScopes`":[`"$agentsGroupId`"]}]"
+    'role assignment'             = "[{`"roleDefinitionName`":`"AcrPush`",`"scope`":`"$agentsRegistryId`"},{`"roleDefinitionName`":`"CIX agents deployer (citest)`",`"scope`":`"$agentsRegistryId`"}]"
+  }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($expected in @('Already trusts repo:owner/repo:ref:refs/heads/main.', 'Exists, with exactly the expected actions.', 'Already assigned AcrPush on crcixcitest1.', 'Already assigned CIX agents deployer (citest) on crcixcitest1.')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+  if ($r.Calls -match '(?m)\bcreate\b') { throw "it changed something: $($r.Calls)" }
+}
+
+foreach ($case in @(
+    @{ Name = 'agents.deploy none'; Deploy = 'none'; Overrides = @{}; Says = 'run provision.ps1 with agents.deploy platform first' },
+    @{ Name = 'a protected environment'; Deploy = 'none'; Protected = $true; Overrides = @{}; Says = 'is protected (live money)' },
+    @{ Name = 'apps not deployed yet'; Deploy = 'apps'; Overrides = @{ 'resource list' = '[]' }; Says = "ca-cix-citest-engine isn't in rg-cix-citest" },
+    @{ Name = 'an older, broader role of the same name'; Deploy = 'platform'; Overrides = @{ 'role definition' = "[{`"permissions`":[{`"actions`":[`"Microsoft.App/containerApps/listSecrets/action`",`"Microsoft.App/containerApps/write`"],`"notActions`":[],`"dataActions`":[],`"notDataActions`":[]}],`"assignableScopes`":[`"$agentsGroupId`"]}]" }; Says = 'grants other rights than it should' },
+    @{ Name = 'no registry yet'; Deploy = 'platform'; Overrides = @{ 'acr list' = '[]' }; Says = 'No container registry for citest' },
+    @{ Name = 'a reused identity holding another role'; Deploy = 'platform'; Overrides = @{ 'ad app list' = '[{"appId":"66666666-6666-6666-6666-666666666666","displayName":"cix-agents-deploy-citest"}]'; 'ad sp list' = '[{"id":"77777777-7777-7777-7777-777777777777"}]'; 'role assignment' = '[{"roleDefinitionName":"Owner","scope":"/subscriptions/x"}]' }; Says = 'also holds Owner on /subscriptions/x' })) {
+  Check "setup-ci-deploy.ps1 -For agents refuses: $($case.Name)" {
+    $r = Invoke-SetupAgentsCi $case.Overrides $case.Deploy ([bool]$case['Protected'])
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
+    if ($r.Calls -match '(?m)\bcreate\b') { throw 'it changed something before refusing' }
   }
 }
 
@@ -672,7 +763,7 @@ foreach ($case in @(
   }
 }
 
-Check 'only the deploy-dashboard job may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
+Check 'only the deploy-dashboard and deploy-agents jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
   # A guard against accidents, not a security control: anyone who can change main can change this test too (ADR-0010).
   $files = @(Get-ChildItem (Join-CixPath $repo '.github' 'workflows') -File | Where-Object { $_.Extension -in '.yml', '.yaml' })
   if ($files.Count -eq 0) { throw 'no workflows found' }
@@ -694,14 +785,18 @@ Check 'only the deploy-dashboard job may request Azure sign-in tokens, and workf
     if ($triggers.Count -eq 0) { throw "$($f.Name): couldn't read its triggers" }
     $unexpected = @($triggers | Where-Object { $_ -notin 'push', 'pull_request', 'workflow_dispatch' })
     if ($unexpected.Count -gt 0) { throw "$($f.Name) runs on $($unexpected -join ', '); only push, pull_request and workflow_dispatch are allowed" }
-    # id-token, in any spelling, only inside the deploy-dashboard job of ci.yml, once.
-    $grants = [regex]::Matches($text, 'id-token')
+    # id-token, in any spelling, only in ci.yml: once inside the deploy-dashboard job and once inside deploy-agents.
+    $grants = @([regex]::Matches($text, 'id-token'))
     if ($f.Name -ne 'ci.yml') { if ($grants.Count -gt 0) { throw "$($f.Name) mentions id-token" }; continue }
-    Expect $grants.Count 1 'id-token mentions in ci.yml'
-    $jobStart = $text.IndexOf("`n  deploy-dashboard:")
-    $next = [regex]::Match($text.Substring($jobStart + 1), '\n  [A-Za-z_-]+:')
-    $jobEnd = if ($next.Success) { $jobStart + 1 + $next.Index } else { $text.Length }
-    foreach ($g in $grants) { if ($g.Index -lt $jobStart -or $g.Index -gt $jobEnd) { throw 'id-token appears outside the deploy-dashboard job' } }
+    Expect $grants.Count 2 'id-token mentions in ci.yml'
+    foreach ($job in 'deploy-dashboard', 'deploy-agents') {
+      $jobStart = $text.IndexOf("`n  ${job}:")
+      if ($jobStart -lt 0) { throw "ci.yml has no $job job" }
+      $next = [regex]::Match($text.Substring($jobStart + 1), '\n  [A-Za-z_-]+:')
+      $jobEnd = if ($next.Success) { $jobStart + 1 + $next.Index } else { $text.Length }
+      $inside = @($grants | Where-Object { $_.Index -gt $jobStart -and $_.Index -lt $jobEnd })
+      Expect $inside.Count 1 "id-token mentions in the $job job"
+    }
   }
 }
 
