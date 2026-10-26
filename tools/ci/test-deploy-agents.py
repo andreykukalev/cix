@@ -119,7 +119,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
         running_status=None, revisions=None, engine_image=None, job_images=None, missing_engine=False, healthy_after=2,
         running_value="Running", new_fails=False, fail_patch=None, rev_lag=0, prov_lag=1, stale=0, conflict_once=False,
         flaky_every=0, fail_push=False,
-        timeout=5, args=(), rollback_state=None, expect_rc=0, expect_engine=None, expect_jobs=None, expect_in_output=(),
+        timeout=5, update_timeout=20, args=(), rollback_state=None, expect_rc=0, expect_engine=None, expect_jobs=None, expect_in_output=(),
         expect_calls=(), never_calls=(), expect_rollback_file=False):
     engine, jobs = names(prefix, env)
     with tempfile.TemporaryDirectory() as d:
@@ -151,7 +151,9 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
         env_vars = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], SETTINGS=settings, TAG=NEW, REGISTRY=REGISTRY,
                         SUBSCRIPTION_ID=SUB, ENGINE_ARCHIVE=os.path.join(d, "engine.tar.gz"),
                         TRADER_ARCHIVE=os.path.join(d, "trader.tar.gz"), ROLLBACK_FILE=rollback_file,
-                        HEALTH_TIMEOUT_SECONDS=str(timeout), UPDATE_TIMEOUT_SECONDS=str(timeout), POLL_SECONDS="0")
+                        HEALTH_TIMEOUT_SECONDS=str(timeout), POLL_SECONDS="0",
+                        # Updates get their own, longer timeout: a slow runner must not time out the update in a health test.
+                        UPDATE_TIMEOUT_SECONDS=str(update_timeout))
         if fail_push:
             env_vars["FAIL_PUSH"] = "1"
         p = subprocess.run(["bash", SCRIPT, *args], env=env_vars, capture_output=True, text=True, timeout=60)
