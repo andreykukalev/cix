@@ -32,6 +32,13 @@ public sealed class EntraToolServerOptions
         "trader", ToolCallContext.RequestsAgent, ToolCallContext.AnalystAgent,
     };
 
+    /// <summary>
+    /// The app role every caller's token must carry (its <c>roles</c> claim). The engine's app registration defines it and
+    /// requires an assignment, held by the three job identities only (tools/azure/provision.ps1), so no other identity in the
+    /// tenant can even get a token for the engine; the identity allowlist below is checked as well.
+    /// </summary>
+    public const string AppRole = "CIX.Agent";
+
     /// <summary>The Entra tenant (directory) ID; tokens from any other tenant are refused.</summary>
     public string? TenantId { get; set; }
 
@@ -67,9 +74,10 @@ public sealed class EntraToolServerOptions
         }
     }
 
-    /// <summary>The agent role of a validated token's identity, or null if that identity isn't listed.</summary>
+    /// <summary>The agent role of a validated token's identity, or null if that identity isn't listed or lacks <see cref="AppRole"/>.</summary>
     public string? RoleFor(ClaimsPrincipal? principal) =>
-        principal?.FindFirst("oid")?.Value is { } oid && Agents.TryGetValue(oid, out var role) ? role : null;
+        principal is not null && principal.HasClaim("roles", AppRole)
+        && principal.FindFirst("oid")?.Value is { } oid && Agents.TryGetValue(oid, out var role) ? role : null;
 
     /// <summary>Token validation: Entra's keys for the tenant, both token versions' issuers, the audience, and the lifetime.</summary>
     public void Configure(JwtBearerOptions options)

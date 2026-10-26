@@ -51,12 +51,13 @@ public sealed class ToolServerEntraTests
 
     /// <summary>A token like a managed identity's. Its lifetime spans any clock a test machine might have.</summary>
     private static string Token(
-        string oid, string? audience = Audience, string? issuer = null, SecurityKey? key = null, DateTime? expires = null) =>
+        string oid, string? audience = Audience, string? issuer = null, SecurityKey? key = null, DateTime? expires = null,
+        string[]? roles = null) =>
         new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
             Issuer = issuer ?? $"https://sts.windows.net/{Tenant}/",
             Audience = audience,
-            Claims = new Dictionary<string, object> { ["oid"] = oid, ["tid"] = Tenant },
+            Claims = new Dictionary<string, object> { ["oid"] = oid, ["tid"] = Tenant, ["roles"] = roles ?? [EntraToolServerOptions.AppRole] },
             IssuedAt = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc),
             NotBefore = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc),
             Expires = expires ?? new DateTime(2100, 1, 1, 0, 0, 0, DateTimeKind.Utc),
@@ -128,6 +129,8 @@ public sealed class ToolServerEntraTests
             Assert.Equal(HttpStatusCode.Unauthorized, await GetAsync(signals, Token(TraderId, key: new SymmetricSecurityKey(RandomNumberGenerator.GetBytes(32)))));
             Assert.Equal(HttpStatusCode.Unauthorized, await GetAsync(signals, Token(TraderId, expires: new DateTime(2001, 1, 1, 0, 0, 0, DateTimeKind.Utc))));
             Assert.Equal(HttpStatusCode.Forbidden, await GetAsync(signals, Token(Guid.NewGuid().ToString()))); // valid, but not one of ours
+            Assert.Equal(HttpStatusCode.Forbidden, await GetAsync(signals, Token(TraderId, roles: []))); // ours, but without the app role
+            Assert.Equal(HttpStatusCode.Forbidden, await GetAsync(signals, Token(TraderId, roles: ["Other.Role"])));
             Assert.Equal(HttpStatusCode.OK, await GetAsync(signals, Token(TraderId)));
             Assert.Equal(HttpStatusCode.OK, await GetAsync(signals, Token(TraderId, issuer: $"https://login.microsoftonline.com/{Tenant}/v2.0")));
             await app.StopAsync();
@@ -323,11 +326,13 @@ public sealed class ToolServerEntraTests
     }
 
     [Fact]
-    public void RoleFor_ReadsTheObjectId()
+    public void RoleFor_ReadsTheObjectId_AndNeedsTheAppRole()
     {
         var options = Options().Entra;
-        Assert.Equal("trader", options.RoleFor(new ClaimsPrincipal(new ClaimsIdentity([new Claim("oid", TraderId.ToUpperInvariant())]))));
-        Assert.Null(options.RoleFor(new ClaimsPrincipal(new ClaimsIdentity([new Claim("oid", Guid.NewGuid().ToString())]))));
+        var appRole = new Claim("roles", EntraToolServerOptions.AppRole);
+        Assert.Equal("trader", options.RoleFor(new ClaimsPrincipal(new ClaimsIdentity([new Claim("oid", TraderId.ToUpperInvariant()), appRole]))));
+        Assert.Null(options.RoleFor(new ClaimsPrincipal(new ClaimsIdentity([new Claim("oid", TraderId)]))));
+        Assert.Null(options.RoleFor(new ClaimsPrincipal(new ClaimsIdentity([new Claim("oid", Guid.NewGuid().ToString()), appRole]))));
         Assert.Null(options.RoleFor(new ClaimsPrincipal(new ClaimsIdentity())));
         Assert.Null(options.RoleFor(null));
     }

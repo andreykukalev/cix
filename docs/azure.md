@@ -123,9 +123,10 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
   Apart from the registry, nothing here costs anything until something runs. The names are fixed per resource group, and a deleted Key Vault is kept for 7 days: provisioning again within a week of deleting the group fails until you purge it (`az keyvault purge --name <vault>`). You get Key Vault Secrets Officer on the vault, so you can set `claude-token` yourself. `provision.ps1` grants it to your own sign-in by object ID, never to whoever runs the deployment, so a CI identity can't pick it up.
 - **`apps`** (`infra/modules/agents-apps.bicep`). This adds the paper engine (internal ingress only, at most one replica, stopped while `startEngine` is false) and the jobs `trader`, `requests` and `analyst`. Each job is started by a message on its own queue and runs one at a time. Before deploying, `provision.ps1` makes these checks and changes, in this order, asking before each change:
   - checks that Container Apps is offered in `agents.location`, and that Bicep is 0.32 or later;
-  - checks that the registry has both images with the tag: `-ImageTag <commit SHA>` the first time, and after that the tag the engine already runs;
+  - finds both images in the registry and their digests: with `-ImageTag <commit SHA>` (needed the first time) the images CI tagged with it, and without it the images the engine and the trader job run now. The apps get them by digest, so pushing a tag again can't change what runs;
   - uploads `secrets/claude_token` to Key Vault as `claude-token` if it isn't there yet, straight from the file without showing it. Pass `-UploadClaudeToken` after renewing it;
   - creates the engine's Entra app registration, `cix-engine-<environment>`, if missing. It is single tenant, with no secrets and no permissions, and its application ID URI `api://<app ID>` is the audience the jobs' tokens are for. An existing one is used only if you are its only owner;
+  - after the deployment, gives that app an app role, `CIX.Agent`, makes its service principal require an assignment, and assigns the role to the three job identities only. Entra then gives no other identity in the tenant a token for the engine, and the engine checks the role in each token as well as the identity's object ID. If anyone else holds the role, `provision.ps1` stops and names them: remove them in Entra (*Enterprise applications*, the engine's app, *Users and groups*), then run it again. A token is cached for up to 24 hours, so a job that got one before its assignment is refused by the engine until it gets a new one, and removing an assignment takes as long to apply;
 
   Deploy `platform` first, set up CI's deploy identity (below), then deploy `apps` once CI has pushed images, and run the setup again. The jobs' access to `claude-token` is granted in the same deployment that creates them and takes a few minutes to apply, so the first `apps` deployment can fail on it; run it again shortly.
 
@@ -137,7 +138,7 @@ Once its deploy identity is set up (below), CI deploys after a push to `main` th
 
 1. `agents-images` builds `cix-engine` and `cix-trader` in a job with no Azure access, and hands them on as an artifact, with their hashes as job outputs.
 2. `deploy-agents` signs in as `cix-agents-deploy-<environment>`, checks the hashes, and runs `tools/ci/deploy-agents.sh`:
-   - it pushes both images to the environment's registry, tagged with the commit SHA;
+   - it pushes both images to the environment's registry, tagged with the commit SHA, and takes their digests from the push: the apps run the images by digest, never by a tag that could be pushed again;
    - with `agents.deploy` at `platform` it stops there: run `provision.ps1 -ImageTag <that SHA>` with `apps` to create the engine and the jobs from them;
    - with `apps`, it points the engine at its new image and, while the engine runs a replica (`startEngine` true), waits up to 12 minutes for the new revision to be healthy (its startup and readiness probes passed). Then it points the three jobs at the new agent image. It sends only the containers, with their images changed, through the management API, and waits for Azure to apply each change;
    - if anything fails after the engine changed, it puts the engine and the jobs back on the images they ran before and fails the run. A run cancelled halfway does the same in its last step. If even that fails, the run says so: check the engine's revisions and the jobs in the portal, or run `provision.ps1` again;
@@ -170,7 +171,7 @@ If you suspect misuse:
 1. Remove the identity's role assignments, or delete `AGENTS_AZURE_CLIENT_ID`.
 2. Run `provision.ps1` again: it puts the apps' settings and the engine's Cosmos DB roles back. Then check the engine's state documents (the kill switch, halts, the paper account) and your requests for anything you didn't do. They may have been overwritten: the journal still has every entry the engine wrote, so rebuild from it, or ask Azure support to restore the account's periodic backup. Journal entries may have been added, but none changed or removed. If `cosmos-key` was ever in the vault while the engine app ran, regenerate the shared account's primary key too (`az cosmosdb keys regenerate --key-kind primary`), then run `provision.ps1` without `-SkipEngineConfig` so the PC's `secrets/cosmos_key` gets it, and give it to the other projects that use the account.
 3. Renew `claude-token` (`claude setup-token`, then `provision.ps1 -UploadClaudeToken`).
-4. Check the registry's tags and the engine's revisions.
+4. Check the images the engine and the jobs run (by digest) against the registry, and the engine's revisions.
 
 **To stop the engine in an emergency,** deactivate its revision (portal: the engine app, *Revisions*, *Deactivate*). CI then leaves it stopped. Remove `AGENTS_AZURE_CLIENT_ID` too if you don't want any image pushed meanwhile.
 
