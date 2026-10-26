@@ -31,7 +31,19 @@ public sealed record ScannerParameters
     public decimal VolumeWeight { get; init; } = 0.5m;
     public decimal CostWeight { get; init; } = 2m;
 
-    /// <summary>Entry only on a pullback: price at most this many ATRs above EMA 20.</summary>
+    /// <summary>
+    /// Hourly EMA periods that define the trend: up when the fast EMA is above the slow one, down when below (within
+    /// <see cref="FeatureCalculator.FlatBand"/> it is flat). 20 and 50 are the features agents see; other periods are
+    /// computed from the scan's hourly candles, so the slow one can't exceed <see cref="MaxEmaPeriod"/>.
+    /// </summary>
+    public int FastEmaPeriod { get; init; } = 20;
+
+    public int SlowEmaPeriod { get; init; } = 50;
+
+    /// <summary>Longest EMA the scan's hourly candles can support.</summary>
+    public const int MaxEmaPeriod = 55;
+
+    /// <summary>Entry only on a pullback: price at most this many ATRs above the fast EMA (EMA 20 by default).</summary>
     public decimal EntryMaxAboveEma20Atr { get; init; } = 0.5m;
 
     public decimal StopAtr { get; init; } = 1.5m;
@@ -69,6 +81,8 @@ public sealed record ScannerParameters
             throw new InvalidOperationException("Scanner entry, stop, reward and sizing values must be positive.");
         if (MaxEntrySignals is < 0 or > 10 || MinHourlyCandles24h is < 1 or > 24)
             throw new InvalidOperationException("Scanner MaxEntrySignals must be 0-10 and MinHourlyCandles24h 1-24.");
+        if (FastEmaPeriod < 3 || SlowEmaPeriod > MaxEmaPeriod || FastEmaPeriod >= SlowEmaPeriod)
+            throw new InvalidOperationException($"Scanner EMA periods must satisfy 3 <= fast < slow <= {MaxEmaPeriod}.");
     }
 }
 
@@ -135,17 +149,23 @@ public static class MarketScanner
     /// <summary>Momentum is the 24h return measured in hourly ATRs, clamped so one spike can't dominate.</summary>
     public const decimal MomentumClamp = 5m;
 
+    /// <param name="entriesPausedReason">
+    /// Why the strategy takes no new entries now (its cooldown, or its exposure cap is used up), or null. Ranking and exits
+    /// are unaffected.
+    /// </param>
     public static ScanResult Scan(
         IReadOnlyList<ScanInput> inputs,
         IReadOnlyList<HeldPosition> held,
         ScannerParameters parameters,
         DateTimeOffset now,
         bool allowEntries = true,
-        MarketView? view = null)
+        MarketView? view = null,
+        string? entriesPausedReason = null)
     {
         ArgumentNullException.ThrowIfNull(inputs);
         ArgumentNullException.ThrowIfNull(held);
         ArgumentNullException.ThrowIfNull(parameters);
+        inputs = inputs.Select(i => WithTrend(i, parameters)).ToList();
 
         var heldBySymbol = held.ToDictionary(h => h.Symbol, StringComparer.Ordinal);
         var excluded = new List<ScanExclusion>();
@@ -178,6 +198,8 @@ public static class MarketScanner
             string? noEntry;
             if (!allowEntries)
                 noEntry = "trading halted";
+            else if (entriesPausedReason is not null)
+                noEntry = entriesPausedReason;
             else if (view?.BlocksEntries(now) == true)
                 noEntry = "risk-off (market view)";
             else if (heldBySymbol.ContainsKey(input.Symbol))
@@ -208,6 +230,24 @@ public static class MarketScanner
             .ToList();
 
         return new ScanResult(now, ranked, excluded, entries, exits);
+    }
+
+    /// <summary>
+    /// The input with its trend, and the fast and slow EMAs in <see cref="FeatureSet.Ema20"/> and <see cref="FeatureSet.Ema50"/>,
+    /// recomputed from its hourly closes when the strategy uses other periods than the features' 20 and 50. Too few candles
+    /// leave the EMAs null, which excludes the symbol as insufficient history.
+    /// </summary>
+    internal static ScanInput WithTrend(ScanInput input, ScannerParameters p)
+    {
+        if (p.FastEmaPeriod == 20 && p.SlowEmaPeriod == 50)
+            return input;
+        var closes = input.Hourly.Select(c => c.Close).ToList();
+        var fast = Indicators.Ema(closes, p.FastEmaPeriod);
+        var slow = Indicators.Ema(closes, p.SlowEmaPeriod);
+        return input with
+        {
+            Features = input.Features with { Ema20 = Round(fast, 8), Ema50 = Round(slow, 8), Trend = FeatureCalculator.TrendOf(fast, slow) },
+        };
     }
 
     /// <summary>Taker fee both ways, the spread once (buy at the ask, sell at the bid) and slippage both ways.</summary>
@@ -326,7 +366,7 @@ public static class MarketScanner
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "target", Inv($"bid {bid} at or above target {target}"));
         // Without trend exits a position relies on its stop; one without a recorded stop still leaves on a downtrend.
         if ((trendExits || h.StopLoss is null) && f.Trend == Trend.Down)
-            return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "trend-down", "EMA20 crossed below EMA50");
+            return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "trend-down", "the fast EMA crossed below the slow EMA");
         return null;
     }
 

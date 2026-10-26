@@ -85,7 +85,8 @@ public sealed partial class MarketScanService(
     TimeProvider time,
     ILogger<MarketScanService> logger,
     Analysis.MarketViewStore? views = null,
-    ScannerFilterRecorder? filters = null)
+    ScannerFilterRecorder? filters = null,
+    Cix.Domain.Risk.RiskLimits? riskLimits = null)
 {
     public const string SignalKind = "scan-signal";
     public const string Actor = "scanner";
@@ -105,18 +106,16 @@ public sealed partial class MarketScanService(
     /// The scanner settings in force: the active spec's <c>scanner</c> parameters (with its <c>orderQuote</c>), or configuration
     /// when the spec has none. Program reads this at startup, so a bad spec stops the engine instead of trading on defaults.
     /// </summary>
-    public ScannerParameters Parameters
+    public ScannerParameters Parameters => ParametersFor(specs.Active);
+
+    private ScannerParameters ParametersFor(StrategySpec? spec)
     {
-        get
-        {
-            var spec = specs.Active;
-            var cached = _parameters;
-            if (cached is not null && cached.Value.Label == spec?.Label)
-                return cached.Value.Parameters;
-            var resolved = FromSpec(spec, options.Parameters);
-            _parameters = (spec?.Label, resolved);
-            return resolved;
-        }
+        var cached = _parameters;
+        if (cached is not null && cached.Value.Label == spec?.Label)
+            return cached.Value.Parameters;
+        var resolved = FromSpec(spec, options.Parameters);
+        _parameters = (spec?.Label, resolved);
+        return resolved;
     }
 
     private (string? Label, ScannerParameters Parameters)? _parameters;
@@ -200,11 +199,13 @@ public sealed partial class MarketScanService(
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var parameters = Parameters;
-            var result = await RunAsync(cancellationToken).ConfigureAwait(false);
-            await RecordNewSignalsAsync(result).ConfigureAwait(false);
+            // One read of the spec per scan: it can switch between scans (#105), never within one.
+            var spec = specs.Active;
+            var parameters = ParametersFor(spec);
+            var result = await RunAsync(spec, parameters, cancellationToken).ConfigureAwait(false);
+            await RecordNewSignalsAsync(result, spec).ConfigureAwait(false);
             Latest = result;
-            await RecordFiltersAsync(result, parameters).ConfigureAwait(false);
+            await RecordFiltersAsync(result, parameters, spec).ConfigureAwait(false);
             return result;
         }
         finally
@@ -217,13 +218,13 @@ public sealed partial class MarketScanService(
     public ScannerFilterState? RecordedFilters => filters?.Current;
 
     /// <summary>Records filter and eligibility changes; a failure is logged and retried at the next scan, never fails the scan.</summary>
-    private async Task RecordFiltersAsync(ScanResult result, ScannerParameters parameters)
+    private async Task RecordFiltersAsync(ScanResult result, ScannerParameters parameters, StrategySpec? spec)
     {
         if (filters is null)
             return;
         try
         {
-            await filters.RecordAsync(result, parameters, specs.Active?.Label, CancellationToken.None).ConfigureAwait(false);
+            await filters.RecordAsync(result, parameters, spec?.Label, CancellationToken.None).ConfigureAwait(false);
         }
 #pragma warning disable CA1031 // anything, timeouts included: a record that failed must never stop the scan or the protective exits after it
         catch (Exception ex)
@@ -236,7 +237,7 @@ public sealed partial class MarketScanService(
     [LoggerMessage(Level = LogLevel.Warning, Message = "Coin filter record not updated ({Error}): {Detail}; retried at the next scan")]
     private static partial void LogFiltersFailed(ILogger logger, string error, string detail);
 
-    private async Task<ScanResult> RunAsync(CancellationToken cancellationToken)
+    private async Task<ScanResult> RunAsync(StrategySpec? spec, ScannerParameters parameters, CancellationToken cancellationToken)
     {
         var plans = await PositionPlans.LoadAsync(execution, journal, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The portfolio can't be valued right now.");
@@ -256,7 +257,23 @@ public sealed partial class MarketScanService(
         }
 
         var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit)).ToList();
-        return MarketScanner.Scan(inputs, held, Parameters, now, allowEntries: !Halted, view: views?.Current);
+        return MarketScanner.Scan(inputs, held, parameters, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: EntriesPausedReason(spec, now));
+    }
+
+    /// <summary>
+    /// Why the strategy's own limits allow no buy now, so the scanner suggests none the engine would refuse: its cooldown
+    /// since the last buy, or its total exposure cap (from the safety monitor's latest valuation). Null when buys are open.
+    /// </summary>
+    private string? EntriesPausedReason(StrategySpec? spec, DateTimeOffset now)
+    {
+        if (riskLimits is null)
+            return null;
+        var limits = Strategy.StrategySchema.LimitsOf(spec, riskLimits);
+        if (limits.EntryCooldown is { } cooldown && execution.LastBuyAt is { } last && now - last < cooldown)
+            return Inv($"cooldown until {(last + cooldown).UtcDateTime:HH:mm} UTC");
+        if (limits.MaxExposureQuote is { } cap && execution.LatestSample?.Snapshot.TotalExposureQuote >= cap)
+            return "strategy exposure cap reached";
+        return null;
     }
 
     /// <summary>Exit reasons the engine acts on by itself: price levels set when the position was bought, no judgement needed.</summary>
@@ -400,7 +417,7 @@ public sealed partial class MarketScanService(
     private static partial void LogProtectiveExit(ILogger logger, string reason, string symbol, decimal size, decimal price, string status, string rule);
 
     /// <summary>One journal entry per signal when it first appears, so reports can compare signals taken and not taken.</summary>
-    private async Task RecordNewSignalsAsync(ScanResult result)
+    private async Task RecordNewSignalsAsync(ScanResult result, StrategySpec? active)
     {
         var current = new Dictionary<string, (string Summary, Dictionary<string, string> Data)>(StringComparer.Ordinal);
         foreach (var e in result.Entries)
@@ -417,7 +434,7 @@ public sealed partial class MarketScanService(
                 Data(x.Symbol, "sell", x.Reason, x.LimitPrice, x.BaseSize));
         }
 
-        var spec = specs.Active?.Label;
+        var spec = active?.Label;
         foreach (var (key, (summary, data)) in current.Where(c => !_lastSignals.Contains(c.Key)).ToList())
         {
             try

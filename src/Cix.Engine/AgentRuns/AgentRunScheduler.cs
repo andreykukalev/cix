@@ -138,6 +138,13 @@ public sealed partial class AgentRunScheduler(
         && State?.InFlight.Any(r => r.Id == runId && r.Kind == kind && r.ClaimedAt is not null) == true;
 
     /// <summary>
+    /// Whether a trader run (strategy or owner requests) has been claimed and hasn't ended: a strategy switch waits for it, so
+    /// one run never works under two specs. From memory.
+    /// </summary>
+    public bool TraderRunInProgress =>
+        IsActive && State?.InFlight.Any(r => r.Kind != AgentRunKind.Analyst && r.ClaimedAt is not null) == true;
+
+    /// <summary>
     /// Notes that a run in progress made a tool call, so a later <c>not-run</c> report for it counts as failed: a run that
     /// used tools can't be refunded, whatever its job says. In memory: after a restart, a report is taken as given.
     /// </summary>

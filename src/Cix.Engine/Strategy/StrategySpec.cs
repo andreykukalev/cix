@@ -26,7 +26,16 @@ public sealed record StrategySpec(
     IReadOnlyList<string> AllowedTools,
     string CreatedBy)
 {
-    /// <summary>First 12 hex characters of the SHA-256 of the file content.</summary>
+    /// <summary>What the strategy is for, in a sentence, for the owner's dashboard. Agents don't need it.</summary>
+    public string? Purpose { get; init; }
+
+    /// <summary>Its risk profile in plain words, for the dashboard: what it risks, never what it may earn.</summary>
+    public string? RiskProfile { get; init; }
+
+    /// <summary>
+    /// First 12 hex characters of a SHA-256: of the file content for a spec loaded from a file, or of
+    /// <see cref="StrategyHash.Canonical"/> for one read from the database.
+    /// </summary>
     [JsonIgnore]
     public string Hash { get; init; } = string.Empty;
 
@@ -35,6 +44,28 @@ public sealed record StrategySpec(
     public string Label => $"{Name}@v{Version}#{Hash}";
 
     public bool Allows(string tool) => AllowedTools.Contains(tool, StringComparer.Ordinal);
+}
+
+/// <summary>Content hashes for specs that don't come from a file: the same content always gives the same hash.</summary>
+public static class StrategyHash
+{
+    private static readonly JsonSerializerOptions Canonical = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    /// <summary>The spec as compact JSON (camelCase, parameters as written), without its hash.</summary>
+    public static byte[] CanonicalBytes(StrategySpec spec) => JsonSerializer.SerializeToUtf8Bytes(spec, Canonical);
+
+    public static string Of(StrategySpec spec)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        return Convert.ToHexStringLower(SHA256.HashData(CanonicalBytes(spec)))[..12];
+    }
+
+    /// <summary>The spec with <see cref="StrategySpec.Hash"/> set from its content.</summary>
+    public static StrategySpec WithHash(StrategySpec spec) => spec with { Hash = Of(spec) };
 }
 
 /// <summary>Bound from the "Strategy" section: which spec file is active.</summary>
@@ -54,6 +85,28 @@ public interface IStrategySpecStore
 {
     /// <summary>The spec the engine runs, or null if none is configured.</summary>
     StrategySpec? Active { get; }
+}
+
+/// <summary>
+/// The active spec, which can change while the engine runs: it starts with the configured file (or nothing) and the
+/// <see cref="StrategySelectionService"/> replaces it with a validated version from the database. Readers see one spec
+/// or the other, never half of each; each scan and each tool call reads it once.
+/// </summary>
+public sealed class RuntimeStrategySpecs(StrategySpec? initial) : IStrategySpecStore
+{
+    private StrategySpec? _active = initial;
+
+    public StrategySpec? Active => Volatile.Read(ref _active);
+
+    /// <summary>When the active spec last changed at run time, or null if it is still the one the engine started with.</summary>
+    public DateTimeOffset? ActivatedAt { get; private set; }
+
+    public void Activate(StrategySpec spec, DateTimeOffset at)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        Volatile.Write(ref _active, spec);
+        ActivatedAt = at;
+    }
 }
 
 /// <summary>

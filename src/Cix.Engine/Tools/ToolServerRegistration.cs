@@ -40,7 +40,12 @@ public static class ToolServerRegistration
     {
         ArgumentNullException.ThrowIfNull(strategy);
         ArgumentNullException.ThrowIfNull(journal);
-        return services.AddCixToolServer(options, new FileStrategySpecStore(strategy, mode), new FileJournal(journal.Resolve(mode)));
+        ArgumentNullException.ThrowIfNull(services);
+        // The configured file starts; with Cosmos DB in paper, a selection saved there can replace it at run time (#105).
+        var specs = new RuntimeStrategySpecs(new FileStrategySpecStore(strategy, mode).Active);
+        services.AddSingleton(strategy);
+        services.AddSingleton(specs);
+        return services.AddCixToolServer(options, specs, new FileJournal(journal.Resolve(mode)));
     }
 
     /// <summary>Registers the tool server over the given spec store and journal.</summary>
