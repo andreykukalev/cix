@@ -321,10 +321,10 @@ foreach ($r in $revisions) { az containerapp revision activate -n ca-cix-dev-eng
 
 | Option | Effect |
 |---|---|
-| `-Target State` | Removes every state document of the mode (`engine-state-<mode>`, `engine-status-<mode>`, `engine-lease-<mode>`, `agent-runs-<mode>`, `manual-requests-<mode>`, `scanner-filters-<mode>`: any `<name>-<mode>`) and, for paper, `paper-account`. The engine then starts with a fresh paper account. |
+| `-Target State` | Removes every state document of the mode (`engine-state-<mode>`, `engine-status-<mode>`, `engine-lease-<mode>`, `agent-runs-<mode>`, `manual-requests-<mode>`, `scanner-filters-<mode>`: any `<name>-<mode>`) and, for paper, `paper-account`. The engine then starts with a fresh paper account. It also forgets the requests it was handling, which then stay at their last status on the dashboard: add `-IncludeRequests` to remove them too. |
 | `-Target Journal` | Removes journal entries: all of them, or with `-JournalBefore 2026-10-20` only earlier days. |
 | `-Target All` | Both. |
-| `-Mode paper` (default), `live`, `all` | Which mode's state documents. Removing a live state makes the engine start halted until you confirm, and the confirmation to type becomes `reset dev including live state`. |
+| `-Mode paper` (default), `live`, `all` | Which mode's state documents (and requests, with `-IncludeRequests`). Removing a live state makes the engine start halted until you confirm, and the confirmation to type becomes `reset dev including live state`. |
 | `-IncludeSpecArchive` | Also removes the archived strategy specs (`spec-*`). Kept by default, because journal entries refer to them. |
 | `-IncludeRequests` | Also removes your requests from the dashboard (the `requests` container) for the mode: `paper` takes those without a `tradingMode`. Kept by default. |
 

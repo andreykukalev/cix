@@ -51,7 +51,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'CixAzure.psm1') -Force
 
-$containers = switch ($Target) { 'State' { @('state') } 'Journal' { @('journal') } 'All' { @('state', 'journal') } }
+# @(): a switch with one result returns it alone, and += would then join strings instead of adding a container.
+$containers = @(switch ($Target) { 'State' { 'state' } 'Journal' { 'journal' } 'All' { 'state', 'journal' } })
 if ($IncludeRequests) { $containers += 'requests' }
 
 Write-CixStep "Reset in environment '$Environment' ($(if ($Apply) { 'APPLY' } else { 'dry run' }))"
