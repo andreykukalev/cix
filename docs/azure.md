@@ -119,16 +119,16 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
   - one managed identity each for the engine and the three jobs, with only the roles each needs;
   - the budget.
 
-  Apart from the registry, nothing here costs anything until something runs. You get Key Vault Secrets Officer on the vault, so you can set `claude-token` yourself.
+  Apart from the registry, nothing here costs anything until something runs. You get Key Vault Secrets Officer on the vault, so you can set `claude-token` yourself. `provision.ps1` grants it to your own sign-in by object ID, never to whoever runs the deployment, so a CI identity can't pick it up.
 - **`apps`** (`infra/modules/agents-apps.bicep`). This adds the paper engine (internal ingress only, at most one replica, stopped while `startEngine` is false) and the jobs `trader`, `requests` and `analyst`. Each job is started by a message on its own queue and runs one at a time. Before deploying, `provision.ps1`:
   - checks that Container Apps is offered in `agents.location`, and that Bicep is 0.32 or later;
   - uploads `secrets/claude_token` to Key Vault as `claude-token` if it isn't there yet, straight from the file without showing it. Pass `-UploadClaudeToken` after renewing it;
-  - creates the engine's Entra app registration, `cix-engine-<environment>`, if missing. It is single tenant, with no secrets and no permissions, and its application ID URI `api://<app ID>` is the audience the jobs' tokens are for;
+  - creates the engine's Entra app registration, `cix-engine-<environment>`, if missing. It is single tenant, with no secrets and no permissions, and its application ID URI `api://<app ID>` is the audience the jobs' tokens are for. An existing one is used only if you are its only owner;
   - checks that the registry has both images with the tag: `-ImageTag <commit SHA>` the first time, and after that the tag the engine already runs.
 
   Deploy `platform` first, then `apps` once CI has pushed images.
 
-The engine's trading mode isn't a template parameter: these templates only deploy paper. A protected environment must keep `agents.deploy` at `none`.
+The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode, `Production` or an exchange setting. A protected environment must keep `agents.deploy` at `none`; the template deploys no agents there whatever the parameters say.
 
 ## 3. Switch the engine to Azure
 

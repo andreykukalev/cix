@@ -254,7 +254,7 @@ function Get-CixDeploymentValues {
   #>
   param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Shared, [string]$SharedAccountName, [hashtable]$Agents = @{})
   # -Shared with -SharedAccountName: update that existing account rather than the name the template would derive.
-  # -Agents: values found at run time for the agents' deployment (engineAudience, imageTag, budgetContactEmail).
+  # -Agents: values found at run time for the agents' deployment (engineAudience, imageTag, budgetContactEmail, ownerObjectId).
   $tags = if ($Settings.ContainsKey('tags')) { $Settings.tags } else { @{} }
   if ($Shared) {
     $sh = $Settings.shared
@@ -297,7 +297,7 @@ function Get-CixDeploymentValues {
     $values['monthlyBudget'] = [int]$a.monthlyBudget
     $values['budgetStartDate'] = [string]$a.budgetStartDate
     if ($a.ContainsKey('claudeTokenExpires')) { $values['claudeTokenExpires'] = [string]$a.claudeTokenExpires }
-    foreach ($key in 'engineAudience', 'imageTag', 'budgetContactEmail') {
+    foreach ($key in 'engineAudience', 'imageTag', 'budgetContactEmail', 'ownerObjectId') {
       if ($Agents.ContainsKey($key)) { $values[$key] = [string]$Agents[$key] }
     }
   }
@@ -450,7 +450,7 @@ function Write-CixSecretFile {
 # --- The engine and agents in Azure (agents.deploy platform or apps; ADR-0013) ---
 
 function Assert-CixAgentsTools {
-  <# Bicep 0.32 or later: the templates use deployer() to give you Key Vault Secrets Officer on the vault. #>
+  <# Bicep 0.32 or later: the version the agents' templates are written and linted against. #>
   $line = "$(@(Invoke-CixNative { & az bicep version 2>&1 } | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) | Select-Object -First 1)"
   if ($line -notmatch '(\d+)\.(\d+)\.(\d+)') { throw "Couldn't read the Bicep version ($line); run 'az bicep upgrade'." }
   if ([version]"$($Matches[1]).$($Matches[2]).$($Matches[3])" -lt [version]'0.32.0') { throw "Bicep $($Matches[0]) is too old for the agents' templates; run 'az bicep upgrade' (0.32 or later)." }
@@ -473,12 +473,19 @@ function Assert-CixAppsRegion {
   }
 }
 
-function Get-CixSignedInEmail {
-  <# Your sign-in address, for the budget's alerts. Used only as a deployment parameter; never written to the repo. #>
-  $me = Invoke-CixAz @('ad', 'signed-in-user', 'show', '-o', 'json') | ConvertFrom-CixJson
+function Get-CixSignedInUser {
+  <#
+    Your Entra object ID (Id: Key Vault Secrets Officer on the agents' vault, and the owner check on the engine's app
+    registration) and sign-in address (Email: the budget's alerts, '' when there is none). Both are deployment parameters
+    only; never written to the repo.
+  #>
+  $me = Invoke-CixAz @('ad', 'signed-in-user', 'show', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+  $id = if ($me -and $me.PSObject.Properties['id']) { "$($me.id)" } else { '' }
+  if ($id -notmatch '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { throw 'Sign in to Azure as a user (az login): the engine and agents are set up by their owner, not by a service principal.' }
   $candidates = foreach ($field in 'mail', 'userPrincipalName') { if ($me.PSObject.Properties[$field]) { $me.$field } }
-  foreach ($candidate in @($candidates)) { if ("$candidate" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { return "$candidate" } }
-  return ''
+  $email = ''
+  foreach ($candidate in @($candidates)) { if ("$candidate" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { $email = "$candidate"; break } }
+  return @{ Id = $id; Email = $email }
 }
 
 function Find-CixAgentsResource {
@@ -523,11 +530,22 @@ function Get-CixEngineAudience {
     the registration (single tenant, no secrets, no permissions) and its service principal when missing; without -Create a
     missing one returns ''. The jobs ask for tokens for this audience; the engine accepts only their identities.
   #>
-  param([Parameter(Mandatory)][hashtable]$Settings, [switch]$Create)
+  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$OwnerId, [switch]$Create)
   $name = "cix-engine-$($Settings.environmentName)"
-  $apps = @(Invoke-CixAz @('ad', 'app', 'list', '--display-name', $name, '-o', 'json') | ConvertFrom-CixJson)
+  # --display-name matches by prefix: keep exact names only.
+  $apps = @(Invoke-CixAz @('ad', 'app', 'list', '--display-name', $name, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+      Where-Object { $_.PSObject.Properties['displayName'] -and $_.displayName -ceq $name })
   if ($apps.Count -gt 1) { throw "More than one Entra app registration is named $name; delete the extra ones or rename them." }
-  if ($apps.Count -eq 1) { $appId = "$($apps[0].appId)" }
+  if ($apps.Count -eq 1) {
+    $appId = "$($apps[0].appId)"
+    # Adopted only when it is yours alone: anyone else who owns it could change what the engine trusts.
+    $owners = @(Invoke-CixAz @('ad', 'app', 'owner', 'list', '--id', $appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+    $others = @($owners | Where-Object { "$($_.id)" -ne $OwnerId })
+    if ($others.Count -gt 0 -or $owners.Count -eq 0) {
+      $who = if ($others.Count -gt 0) { "other owners ($(($others | ForEach-Object { $_.id }) -join ', '))" } else { 'no owner' }
+      throw "The Entra app registration $name has $who. Refusing to use it: make yourself its only owner, or delete it and run this again to create one."
+    }
+  }
   elseif (-not $Create) { return '' }
   else {
     $appId = "$(Invoke-CixAz @('ad', 'app', 'create', '--display-name', $name, '--sign-in-audience', 'AzureADMyOrg', '--query', 'appId', '-o', 'tsv'))".Trim()

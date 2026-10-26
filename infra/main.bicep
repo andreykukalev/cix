@@ -84,6 +84,13 @@ param budgetStartDate string = '2026-11-01'
 @description('agents: where budget alerts go (provision.ps1 passes your sign-in address; it isn\'t kept in the repo). Empty: no budget.')
 param budgetContactEmail string = ''
 
+@description('agents: your Entra object ID (provision.ps1 passes your sign-in\'s), given Key Vault Secrets Officer to set claude-token. Empty: no grant.')
+param ownerObjectId string = ''
+
+// A protected environment (real money) never gets this paper engine or its agents, whatever the parameters say: the live
+// engine has a template of its own. provision.ps1 refuses it too.
+var agentsDeploy = protectedEnvironment ? 'none' : agents
+
 // cix-database and cix-cosmos-account claim the database for this environment: the scripts refuse to deploy over, or
 // reset, a database that no group or another group claims.
 var allTags = union(tags, {
@@ -123,7 +130,7 @@ module dashboard 'modules/dashboard.bicep' = if (deployDashboard) {
   }
 }
 
-module agentsPlatform 'modules/agents-platform.bicep' = if (agents != 'none') {
+module agentsPlatform 'modules/agents-platform.bicep' = if (agentsDeploy != 'none') {
   name: 'cix-${environmentName}-agents-platform'
   scope: group
   params: {
@@ -136,10 +143,11 @@ module agentsPlatform 'modules/agents-platform.bicep' = if (agents != 'none') {
     monthlyBudget: monthlyBudget
     budgetStartDate: budgetStartDate
     budgetContactEmail: budgetContactEmail
+    ownerObjectId: ownerObjectId
   }
 }
 
-module agentsApps 'modules/agents-apps.bicep' = if (agents == 'apps') {
+module agentsApps 'modules/agents-apps.bicep' = if (agentsDeploy == 'apps') {
   name: 'cix-${environmentName}-agents-apps'
   scope: group
   params: {
@@ -170,8 +178,8 @@ output cosmosAccountName string = sharedAccountName
 output cosmosEndpoint string = database.outputs.endpoint
 output staticWebAppName string = deployDashboard ? dashboard!.outputs.name : ''
 output dashboardUrl string = deployDashboard ? dashboard!.outputs.url : ''
-output registryName string = agents != 'none' ? agentsPlatform!.outputs.registryName : ''
-output registryServer string = agents != 'none' ? agentsPlatform!.outputs.registryServer : ''
-output keyVaultName string = agents != 'none' ? agentsPlatform!.outputs.keyVaultName : ''
-output engineAppName string = agents == 'apps' ? agentsApps!.outputs.engineAppName : ''
-output agentJobNames array = agents == 'apps' ? agentsApps!.outputs.jobNames : []
+output registryName string = agentsDeploy != 'none' ? agentsPlatform!.outputs.registryName : ''
+output registryServer string = agentsDeploy != 'none' ? agentsPlatform!.outputs.registryServer : ''
+output keyVaultName string = agentsDeploy != 'none' ? agentsPlatform!.outputs.keyVaultName : ''
+output engineAppName string = agentsDeploy == 'apps' ? agentsApps!.outputs.engineAppName : ''
+output agentJobNames array = agentsDeploy == 'apps' ? agentsApps!.outputs.jobNames : []

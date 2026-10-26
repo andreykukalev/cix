@@ -30,9 +30,13 @@ param budgetStartDate string
 @description('Where budget alerts go. Empty: no budget.')
 param budgetContactEmail string
 
+@description('The owner\'s Entra object ID, given Key Vault Secrets Officer on the vault to set claude-token. Empty: no grant.')
+param ownerObjectId string
+
 var compact = replace(environmentName, '-', '')
 var suffix = take(uniqueString(resourceGroup().id), 6)
-var queueNames = ['runs-trader', 'runs-requests', 'runs-analyst', 'runs-poison']
+var poisonQueue = 'runs-poison'
+var queueNames = ['runs-trader', 'runs-requests', 'runs-analyst', poisonQueue] // roles below find each queue by name, not position
 
 // Built-in role definitions.
 var roles = {
@@ -204,9 +208,9 @@ resource jobPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 
 // The engine puts runs on the three job queues: send only, on each queue.
 resource engineSend 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for i in range(0, 3): {
-    name: guid(queues[i].id, engineIdentity.id, roles.queueMessageSender)
-    scope: queues[i]
+  for job in jobs: {
+    name: guid(queues[indexOf(queueNames, job.queue)].id, engineIdentity.id, roles.queueMessageSender)
+    scope: queues[indexOf(queueNames, job.queue)]
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.queueMessageSender)
       principalId: engineIdentity.properties.principalId
@@ -218,8 +222,8 @@ resource engineSend 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 // Each job reads (for its scale rule) and takes messages from its own queue only, and can park one on runs-poison.
 resource jobRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for i in range(0, length(jobs)): {
-    name: guid(queues[i].id, jobIdentities[i].id, roles.queueReader)
-    scope: queues[i]
+    name: guid(queues[indexOf(queueNames, jobs[i].queue)].id, jobIdentities[i].id, roles.queueReader)
+    scope: queues[indexOf(queueNames, jobs[i].queue)]
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.queueReader)
       principalId: jobIdentities[i].properties.principalId
@@ -230,8 +234,8 @@ resource jobRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 
 resource jobTake 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for i in range(0, length(jobs)): {
-    name: guid(queues[i].id, jobIdentities[i].id, roles.queueMessageProcessor)
-    scope: queues[i]
+    name: guid(queues[indexOf(queueNames, jobs[i].queue)].id, jobIdentities[i].id, roles.queueMessageProcessor)
+    scope: queues[indexOf(queueNames, jobs[i].queue)]
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.queueMessageProcessor)
       principalId: jobIdentities[i].properties.principalId
@@ -242,8 +246,8 @@ resource jobTake 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 
 resource jobPoison 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for i in range(0, length(jobs)): {
-    name: guid(queues[3].id, jobIdentities[i].id, roles.queueMessageSender)
-    scope: queues[3]
+    name: guid(queues[indexOf(queueNames, poisonQueue)].id, jobIdentities[i].id, roles.queueMessageSender)
+    scope: queues[indexOf(queueNames, poisonQueue)]
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.queueMessageSender)
       principalId: jobIdentities[i].properties.principalId
@@ -264,13 +268,15 @@ resource engineSecret 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-// Whoever deploys this (the owner) can set and rotate secrets: claude-token is put there by hand, never by a template.
-resource ownerSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(vault.id, deployer().objectId, roles.keyVaultSecretsOfficer)
+// The owner, named explicitly (not whoever deploys: a CI identity must never get this), can set and rotate secrets:
+// claude-token is put there by hand, never by a template.
+resource ownerSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(ownerObjectId)) {
+  name: guid(vault.id, ownerObjectId, roles.keyVaultSecretsOfficer)
   scope: vault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.keyVaultSecretsOfficer)
-    principalId: deployer().objectId
+    principalId: ownerObjectId
+    principalType: 'User'
   }
 }
 

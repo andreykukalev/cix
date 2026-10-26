@@ -123,7 +123,9 @@ if (-not $SkipInfrastructure) {
     Write-CixStep "Engine and agents ($agents, in $($settings.agents.location))"
     Assert-CixAgentsTools
     Assert-CixAppsRegion -Settings $settings
-    $agentValues['budgetContactEmail'] = Get-CixSignedInEmail
+    $me = Get-CixSignedInUser
+    $agentValues['ownerObjectId'] = $me.Id
+    $agentValues['budgetContactEmail'] = $me.Email
     if (-not $agentValues.budgetContactEmail) { Write-CixWarn 'Your sign-in has no email address, so no budget is created.' }
     else { Write-CixInfo "Budget: $($settings.agents.monthlyBudget) a month on $($settings.resourceGroup), alerts to your sign-in address." }
     if ($agents -eq 'apps') {
@@ -141,7 +143,7 @@ if (-not $SkipInfrastructure) {
           Write-CixInfo "Uploaded claude-token to $vault (not shown)."
         }
       }
-      $audience = Get-CixEngineAudience -Settings $settings -Create:(-not $WhatIfOnly)
+      $audience = Get-CixEngineAudience -Settings $settings -OwnerId $me.Id -Create:(-not $WhatIfOnly)
       if (-not $audience) {
         $audience = 'api://00000000-0000-0000-0000-000000000000'
         Write-CixInfo "The engine's Entra app (cix-engine-$($settings.environmentName)) is created when you deploy; the preview uses a placeholder."

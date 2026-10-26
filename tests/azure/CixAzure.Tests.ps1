@@ -121,18 +121,38 @@ Check 'deployment parameters: valid JSON, no byte-order mark, arrays stay arrays
   }
 }
 
+$ownerId = '11111111-2222-3333-4444-555555555555'
+
+# The agents' templates deploy a paper engine only (the live engine gets its own template, outside CI). The live-mode hook
+# doesn't read Bicep, so this holds the line: one way to set the mode, to Paper, and never Production or exchange keys.
+Check 'the Azure templates only ever run a paper engine' {
+  $files = @(Get-ChildItem (Join-CixPath $repo 'infra') -Recurse -Filter '*.bicep')
+  if ($files.Count -lt 3) { throw "found only $($files.Count) Bicep files" }
+  $modes = @()
+  foreach ($file in $files) {
+    $text = [IO.File]::ReadAllText($file.FullName)
+    foreach ($line in ($text -split "`n")) {
+      if ($line -match '(?i)trading(__|:)mode') { $modes += $line.Trim() }
+      if ($line -match '(?i)ASPNETCORE_ENVIRONMENT' -and $line -notmatch "value: 'Azure'") { throw "$($file.Name): $($line.Trim())" }
+      if ($line -match '(?i)revolut|\blive\b' -and $line -notmatch '^\s*//') { throw "$($file.Name) mentions the exchange or live trading outside a comment: $($line.Trim())" }
+    }
+  }
+  if ($modes.Count -ne 1 -or $modes[0] -ne "{ name: 'Trading__Mode', value: 'Paper' }") { throw "trading mode settings: $($modes -join ' | ')" }
+}
+
 Check 'agents settings: dev keeps them off, dates stay text, and they reach the template as its parameters' {
   $s = Read-CixEnvironment -Name dev
   Expect $s.agents.deploy 'none' 'agents.deploy in dev.json (on only when the owner says so)'
   Expect ($s.agents.budgetStartDate -is [string]) $true 'budgetStartDate is text'
   Expect $s.agents.budgetStartDate '2026-11-01' 'budgetStartDate'
   $s.agents.deploy = 'platform'
-  $d = Get-CixDeploymentValues -Settings $s -SharedAccountName 'cosmos-shared-test' -Agents @{ budgetContactEmail = 'owner@example.com' }
+  $d = Get-CixDeploymentValues -Settings $s -SharedAccountName 'cosmos-shared-test' -Agents @{ budgetContactEmail = 'owner@example.com'; ownerObjectId = $ownerId }
   Expect $d.Values.agents 'platform' 'agents'
   Expect $d.Values.agentsLocation 'polandcentral' 'agentsLocation'
   Expect $d.Values.startEngine $false 'startEngine'
   Expect $d.Values.monthlyBudget 40 'monthlyBudget'
   Expect $d.Values.budgetContactEmail 'owner@example.com' 'budgetContactEmail'
+  Expect $d.Values.ownerObjectId $ownerId 'ownerObjectId'
   if ($d.Values.Contains('imageTag')) { throw 'imageTag given without a value' }
   $template = [IO.File]::ReadAllText($d.Template)
   foreach ($name in $d.Values.Keys) { if ($template -notmatch "(?m)^param $name ") { throw "$name isn't a template parameter" } }
@@ -713,7 +733,8 @@ Check 'two environment files sharing one database are refused' {
 $agentsFake = @{
   'bicep'                 = 'Bicep CLI version 0.33.0'
   'provider show'         = '{"resourceTypes":[{"resourceType":"jobs","locations":["Poland Central"]},{"resourceType":"managedEnvironments","locations":["Poland Central","Germany West Central"]}]}'
-  'ad signed-in-user'     = '{"userPrincipalName":"owner@example.com"}'
+  'ad signed-in-user'     = "{`"id`":`"$ownerId`",`"userPrincipalName`":`"owner@example.com`"}"
+  'ad app owner'          = "[{`"id`":`"$ownerId`"}]"
   'keyvault list'         = '[{"name":"kvother","tags":{}},{"name":"kvcixcitest1","tags":{"cix-environment":"citest"}}]'
   'acr list'              = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}}]'
   'keyvault secret list'  = '[{"name":"cosmos-key","id":"https://kvcixcitest1.vault.azure.net/secrets/cosmos-key"},{"name":"claude-token","id":"https://kvcixcitest1.vault.azure.net/secrets/claude-token"}]'
@@ -762,12 +783,28 @@ Check 'provision.ps1 agents apps preview creates nothing in Entra' {
   if (-not $r.Output.Contains('the preview uses a placeholder')) { throw "no placeholder note in: $($r.Output)" }
 }
 
+$engineApp = '[{"appId":"55555555-5555-5555-5555-555555555555","displayName":"cix-engine-citest","identifierUris":["api://55555555-5555-5555-5555-555555555555"]}]'
+Check 'provision.ps1 agents apps adopts an engine app registration that is yours alone' {
+  $r = Invoke-AgentsProvision @{ 'ad app list' = $engineApp; 'ad sp list' = '[{"id":"sp"}]' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($never in @('ad app create', 'ad app update', 'ad sp create')) { if ($r.Calls.Contains($never)) { throw "ran '$never'" } }
+  if (-not $r.Calls.Contains('ad app owner list --id 55555555-5555-5555-5555-555555555555')) { throw "owners not checked: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents apps ignores app registrations whose name only starts the same' {
+  $r = Invoke-AgentsProvision @{ 'ad app list' = $engineApp.Replace('"cix-engine-citest"', '"cix-engine-citest-old"') } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if (-not $r.Calls.Contains('ad app create --display-name cix-engine-citest ')) { throw "didn't create its own: $($r.Calls)" }
+}
+
 foreach ($case in @(
     @{ Overrides = @{ 'keyvault list' = '[]' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = "Deploy with agents.deploy 'platform' first" },
     @{ Overrides = @{}; Arguments = @{ Yes = $true; SkipEngineConfig = $true }; Says = 'pass -ImageTag' },
     @{ Overrides = @{}; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'nope' }; Says = 'has no cix-engine image tagged nope' },
     @{ Overrides = @{ 'provider show' = '{"resourceTypes":[{"resourceType":"managedEnvironments","locations":["Germany West Central"]}]}' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'Set agents.location to germanywestcentral' },
-    @{ Overrides = @{ 'bicep' = 'Bicep CLI version 0.31.1' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = "run 'az bicep upgrade'" })) {
+    @{ Overrides = @{ 'bicep' = 'Bicep CLI version 0.31.1' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = "run 'az bicep upgrade'" },
+    @{ Overrides = @{ 'ad app list' = $engineApp; 'ad app owner' = "[{`"id`":`"$ownerId`"},{`"id`":`"someone-else`"}]" }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'has other owners (someone-else)' },
+    @{ Overrides = @{ 'ad signed-in-user' = '{"userPrincipalName":"ci@example.com"}' }; Arguments = @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }; Says = 'Sign in to Azure as a user' })) {
   Check "provision.ps1 agents apps refuses: $($case.Says)" {
     $r = Invoke-AgentsProvision $case.Overrides $case.Arguments
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
