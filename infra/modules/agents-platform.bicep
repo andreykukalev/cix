@@ -8,7 +8,9 @@
 //   - Key Vault (RBAC), holding cosmos-key (written here from the shared account) and claude-token (set by the owner);
 //   - one user-assigned identity each for the engine and the three jobs, with only the rights each one needs;
 //   - a monthly budget on CIX's resource group, when a contact address is given.
-// Deployed into CIX's resource group by infra/main.bicep (agents: platform or apps).
+// Deployed into CIX's resource group by infra/main.bicep (agents: platform or apps). Names come from agents-names.bicep.
+
+import { agentJobs, agentsNames, poisonQueue } from 'agents-names.bicep'
 
 param namePrefix string
 param environmentName string
@@ -33,9 +35,7 @@ param budgetContactEmail string
 @description('The owner\'s Entra object ID, given Key Vault Secrets Officer on the vault to set claude-token. Empty: no grant.')
 param ownerObjectId string
 
-var compact = replace(environmentName, '-', '')
-var suffix = take(uniqueString(resourceGroup().id), 6)
-var poisonQueue = 'runs-poison'
+var names = agentsNames(namePrefix, environmentName, resourceGroup().id)
 var queueNames = ['runs-trader', 'runs-requests', 'runs-analyst', poisonQueue] // roles below find each queue by name, not position
 
 // Built-in role definitions.
@@ -48,15 +48,8 @@ var roles = {
   queueReader: '19e7f393-937e-4f77-808e-94535e297925'
 }
 
-// Each job, the queue it takes runs from, and the role its identity has at the engine (ToolServer:Entra:Agents).
-var jobs = [
-  { key: 'trader', queue: 'runs-trader', role: 'trader' }
-  { key: 'requests', queue: 'runs-requests', role: 'trader-requests' }
-  { key: 'analyst', queue: 'runs-analyst', role: 'analyst' }
-]
-
 resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
-  name: 'log-${namePrefix}-${environmentName}'
+  name: names.logs
   location: location
   tags: tags
   properties: {
@@ -67,7 +60,7 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
 }
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
-  name: 'vnet-${namePrefix}-${environmentName}'
+  name: names.vnet
   location: location
   tags: tags
   properties: {
@@ -85,7 +78,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
 }
 
 resource appsEnvironment 'Microsoft.App/managedEnvironments@2025-01-01' = {
-  name: 'cae-${namePrefix}-${environmentName}'
+  name: names.appsEnvironment
   location: location
   tags: tags
   properties: {
@@ -105,7 +98,7 @@ resource appsEnvironment 'Microsoft.App/managedEnvironments@2025-01-01' = {
 }
 
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
-  name: take('cr${namePrefix}${compact}${suffix}', 50)
+  name: names.registry
   location: location
   tags: tags
   sku: { name: 'Basic' }
@@ -115,7 +108,7 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
 }
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: take('st${namePrefix}${compact}${suffix}', 24)
+  name: names.storage
   location: location
   tags: tags
   kind: 'StorageV2'
@@ -142,7 +135,7 @@ resource queues 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-
 ]
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
-  name: take('kv${namePrefix}${compact}${suffix}', 24)
+  name: names.vault
   location: location
   tags: tags
   properties: {
@@ -170,14 +163,14 @@ resource cosmosKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
 }
 
 resource engineIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-${namePrefix}-${environmentName}-engine'
+  name: '${names.identityPrefix}engine'
   location: location
   tags: tags
 }
 
 resource jobIdentities 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = [
-  for job in jobs: {
-    name: 'id-${namePrefix}-${environmentName}-${job.key}'
+  for job in agentJobs: {
+    name: '${names.identityPrefix}${job.key}'
     location: location
     tags: tags
   }
@@ -195,7 +188,7 @@ resource enginePull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 }
 
 resource jobPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for i in range(0, length(jobs)): {
+  for i in range(0, length(agentJobs)): {
     name: guid(registry.id, jobIdentities[i].id, roles.acrPull)
     scope: registry
     properties: {
@@ -208,7 +201,7 @@ resource jobPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 
 // The engine puts runs on the three job queues: send only, on each queue.
 resource engineSend 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for job in jobs: {
+  for job in agentJobs: {
     name: guid(queues[indexOf(queueNames, job.queue)].id, engineIdentity.id, roles.queueMessageSender)
     scope: queues[indexOf(queueNames, job.queue)]
     properties: {
@@ -221,9 +214,9 @@ resource engineSend 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 
 // Each job reads (for its scale rule) and takes messages from its own queue only, and can park one on runs-poison.
 resource jobRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for i in range(0, length(jobs)): {
-    name: guid(queues[indexOf(queueNames, jobs[i].queue)].id, jobIdentities[i].id, roles.queueReader)
-    scope: queues[indexOf(queueNames, jobs[i].queue)]
+  for i in range(0, length(agentJobs)): {
+    name: guid(queues[indexOf(queueNames, agentJobs[i].queue)].id, jobIdentities[i].id, roles.queueReader)
+    scope: queues[indexOf(queueNames, agentJobs[i].queue)]
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.queueReader)
       principalId: jobIdentities[i].properties.principalId
@@ -233,9 +226,9 @@ resource jobRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 ]
 
 resource jobTake 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for i in range(0, length(jobs)): {
-    name: guid(queues[indexOf(queueNames, jobs[i].queue)].id, jobIdentities[i].id, roles.queueMessageProcessor)
-    scope: queues[indexOf(queueNames, jobs[i].queue)]
+  for i in range(0, length(agentJobs)): {
+    name: guid(queues[indexOf(queueNames, agentJobs[i].queue)].id, jobIdentities[i].id, roles.queueMessageProcessor)
+    scope: queues[indexOf(queueNames, agentJobs[i].queue)]
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roles.queueMessageProcessor)
       principalId: jobIdentities[i].properties.principalId
@@ -245,7 +238,7 @@ resource jobTake 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 ]
 
 resource jobPoison 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for i in range(0, length(jobs)): {
+  for i in range(0, length(agentJobs)): {
     name: guid(queues[indexOf(queueNames, poisonQueue)].id, jobIdentities[i].id, roles.queueMessageSender)
     scope: queues[indexOf(queueNames, poisonQueue)]
     properties: {
@@ -281,7 +274,7 @@ resource ownerSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = if 
 }
 
 resource budget 'Microsoft.Consumption/budgets@2023-05-01' = if (!empty(budgetContactEmail)) {
-  name: 'budget-${namePrefix}-${environmentName}'
+  name: names.budget
   properties: {
     category: 'Cost'
     amount: monthlyBudget
@@ -306,25 +299,7 @@ resource budget 'Microsoft.Consumption/budgets@2023-05-01' = if (!empty(budgetCo
   }
 }
 
-output environmentId string = appsEnvironment.id
+// What the scripts report; agents-apps.bicep finds the rest by name.
 output registryName string = registry.name
 output registryServer string = registry.properties.loginServer
-output storageAccountName string = storage.name
-output queueEndpoint string = storage.properties.primaryEndpoints.queue
 output keyVaultName string = vault.name
-output keyVaultUri string = vault.properties.vaultUri
-output engineIdentity object = {
-  id: engineIdentity.id
-  clientId: engineIdentity.properties.clientId
-  principalId: engineIdentity.properties.principalId
-}
-output jobIdentities array = [
-  for (job, i) in jobs: {
-    key: job.key
-    queue: job.queue
-    role: job.role
-    id: jobIdentities[i].id
-    clientId: jobIdentities[i].properties.clientId
-    principalId: jobIdentities[i].properties.principalId
-  }
-]

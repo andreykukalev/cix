@@ -465,11 +465,13 @@ function Assert-CixAppsRegion {
   $wanted = $Settings.agents.location
   # Filtered here rather than with --query: quotes inside native arguments don't survive Windows PowerShell 5.1.
   $provider = Invoke-CixAz @('provider', 'show', '--namespace', 'Microsoft.App', '-o', 'json') | ConvertFrom-CixJson
-  $types = @($provider.resourceTypes | Where-Object { $_.resourceType -eq 'managedEnvironments' })
-  $regions = @($types | ForEach-Object { $_.locations } | ForEach-Object { ("$_" -replace '\s', '').ToLowerInvariant() })
-  if ($regions -notcontains $wanted) {
-    $hint = if ($regions -contains 'germanywestcentral') { ' Set agents.location to germanywestcentral (the agreed fallback)' } else { ' Choose another region for agents.location' }
-    throw "Container Apps environments aren't offered in $wanted.$hint in $($Settings.path), and check the prices there."
+  foreach ($type in 'managedEnvironments', 'jobs', 'containerApps') {
+    $found = @($provider.resourceTypes | Where-Object { $_.resourceType -eq $type })
+    $regions = @($found | ForEach-Object { $_.locations } | ForEach-Object { ("$_" -replace '\s', '').ToLowerInvariant() })
+    if ($regions -notcontains $wanted) {
+      $hint = if ($regions -contains 'germanywestcentral') { ' Set agents.location to germanywestcentral (the agreed fallback)' } else { ' Choose another region for agents.location' }
+      throw "Container Apps $type aren't offered in $wanted.$hint in $($Settings.path), and check the prices there."
+    }
   }
 }
 
@@ -484,8 +486,25 @@ function Get-CixSignedInUser {
   if ($id -notmatch '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { throw 'Sign in to Azure as a user (az login): the engine and agents are set up by their owner, not by a service principal.' }
   $candidates = foreach ($field in 'mail', 'userPrincipalName') { if ($me.PSObject.Properties[$field]) { $me.$field } }
   $email = ''
-  foreach ($candidate in @($candidates)) { if ("$candidate" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { $email = "$candidate"; break } }
+  # A guest's or personal account's user name (name_gmail.com#EXT#@tenant.onmicrosoft.com) looks like an address but gets no mail.
+  foreach ($candidate in @($candidates)) { if ("$candidate" -match '^[^@\s#]+@[^@\s]+\.[^@\s]+$') { $email = "$candidate"; break } }
   return @{ Id = $id; Email = $email }
+}
+
+function Assert-CixBudgetStart {
+  <#
+    Azure creates a budget only from the current month on, and its start can't be moved afterwards: a first deployment with
+    agents.budgetStartDate in a past month would fail, so this stops first and says what to set. An existing budget keeps its date.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [datetime]$Today = [datetime]::UtcNow)
+  $start = [datetime]::ParseExact($Settings.agents.budgetStartDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+  if ($start -ge [datetime]::new($Today.Year, $Today.Month, 1)) { return }
+  $name = "budget-$($Settings.namePrefix)-$($Settings.environmentName)"
+  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -eq 'true') {
+    $budgets = @(Invoke-CixAz @('consumption', 'budget', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+    if (@($budgets | Where-Object { $_.PSObject.Properties['name'] -and $_.name -eq $name }).Count -gt 0) { return }
+  }
+  throw "agents.budgetStartDate ($($Settings.agents.budgetStartDate)) is in a past month and $name doesn't exist yet; Azure only starts a new budget this month or later. Set it to $($Today.ToString('yyyy-MM', [Globalization.CultureInfo]::InvariantCulture))-01 in $($Settings.path)."
 }
 
 function Find-CixAgentsResource {
@@ -567,13 +586,15 @@ function Get-CixEngineAudience {
 }
 
 function Get-CixRunningImageTag {
-  <# The image tag the engine app runs now (CI deploys new ones), or '' before it exists. #>
+  <# The image tag the engine app runs now (CI deploys new ones), or '' before it exists. Generic az resource calls: the
+     containerapp commands need an extension that a fresh Azure CLI would stop to ask about. #>
   param([Parameter(Mandatory)][hashtable]$Settings)
   if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return '' }
-  $all = @(Invoke-CixAz @('containerapp', 'list', '--resource-group', $Settings.resourceGroup, '-o', 'json') | ConvertFrom-CixJson)
+  $all = @(Invoke-CixAz @('resource', 'list', '--resource-group', $Settings.resourceGroup, '--resource-type', 'Microsoft.App/containerApps', '-o', 'json') | ConvertFrom-CixJson)
   $engines = @($all | Where-Object { "$($_.name)" -like '*-engine' -and (Test-CixEnvironmentTag -Resource $_ -Settings $Settings) })
   if ($engines.Count -ne 1) { return '' }
-  $image = "$(@($engines[0].properties.template.containers)[0].image)"
+  $app = Invoke-CixAz @('resource', 'show', '--ids', "$($engines[0].id)", '-o', 'json') | ConvertFrom-CixJson
+  $image = "$(@($app.properties.template.containers)[0].image)"
   if ($image -notmatch '/cix-engine:([A-Za-z0-9._-]{1,128})$') { return '' }
   return $Matches[1]
 }
@@ -581,9 +602,12 @@ function Get-CixRunningImageTag {
 function Assert-CixImages {
   <# Both images (cix-engine and cix-trader) must be in the registry with this tag before the apps are pointed at it. #>
   param([Parameter(Mandatory)][string]$Registry, [Parameter(Mandatory)][string]$Tag)
+  $hint = 'CI pushes images on merge to main (or pass -ImageTag with one it pushed).'
+  $repositories = @(Invoke-CixAz @('acr', 'repository', 'list', '--name', $Registry, '-o', 'json') | ConvertFrom-CixJson)
   foreach ($repository in 'cix-engine', 'cix-trader') {
+    if ($repositories -notcontains $repository) { throw "$Registry has no $repository images yet. $hint" }
     $tags = @(Invoke-CixAz @('acr', 'repository', 'show-tags', '--name', $Registry, '--repository', $repository, '-o', 'json') | ConvertFrom-CixJson)
-    if ($tags -notcontains $Tag) { throw "$Registry has no $repository image tagged $Tag. CI pushes images on merge to main (or pass -ImageTag with one it pushed)." }
+    if ($tags -notcontains $Tag) { throw "$Registry has no $repository image tagged $Tag. $hint" }
   }
 }
 

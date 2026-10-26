@@ -150,20 +150,15 @@ module agentsPlatform 'modules/agents-platform.bicep' = if (agentsDeploy != 'non
 module agentsApps 'modules/agents-apps.bicep' = if (agentsDeploy == 'apps') {
   name: 'cix-${environmentName}-agents-apps'
   scope: group
+  // No outputs passed between them (the apps find the platform's resources by name), so the order is stated here.
+  dependsOn: [agentsPlatform, database]
   params: {
     namePrefix: namePrefix
     environmentName: environmentName
     location: agentsLocation
     tags: allTags
-    environmentId: agentsPlatform!.outputs.environmentId
-    registryServer: agentsPlatform!.outputs.registryServer
-    queueEndpoint: agentsPlatform!.outputs.queueEndpoint
-    storageAccountName: agentsPlatform!.outputs.storageAccountName
-    keyVaultName: agentsPlatform!.outputs.keyVaultName
-    keyVaultUri: agentsPlatform!.outputs.keyVaultUri
-    engineIdentity: agentsPlatform!.outputs.engineIdentity
-    jobIdentities: agentsPlatform!.outputs.jobIdentities
-    cosmosEndpoint: database.outputs.endpoint
+    cosmosAccountName: sharedAccountName
+    cosmosResourceGroupName: sharedResourceGroupName
     databaseName: databaseName
     engineAudience: engineAudience
     imageTag: imageTag

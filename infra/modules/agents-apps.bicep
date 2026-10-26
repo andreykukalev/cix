@@ -6,26 +6,17 @@
 //     engine decides about retries (tools/trader/agent-job.sh).
 // The trading mode is not a parameter: this template only ever deploys a paper engine. The live engine gets its own
 // resource group, Key Vault and template, with no CI access (docs/research/azure-hosting.md).
+// Everything from agents-platform.bicep is found by name (agents-names.bicep), so the preview shows these apps in full.
+
+import { agentJobs, agentsNames, poisonQueue } from 'agents-names.bicep'
 
 param namePrefix string
 param environmentName string
 param location string
 param tags object
 
-param environmentId string
-param registryServer string
-param queueEndpoint string
-param storageAccountName string
-param keyVaultName string
-param keyVaultUri string
-
-@description('The engine\'s identity: id, clientId and principalId.')
-param engineIdentity object
-
-@description('The jobs\' identities, as agents-platform.bicep outputs them (key, queue, role, id, clientId, principalId).')
-param jobIdentities array
-
-param cosmosEndpoint string
+param cosmosAccountName string
+param cosmosResourceGroupName string
 param databaseName string
 
 @description('The engine\'s application ID URI in Entra (api://<app ID>), which the jobs request tokens for.')
@@ -45,13 +36,44 @@ param analystModel string
 @description('When the Claude setup token expires (YYYY-MM-DD; not a secret). Runs warn from 14 days before. Empty: no check.')
 param claudeTokenExpires string
 
-var engineImage = '${registryServer}/cix-engine:${imageTag}'
-var agentImage = '${registryServer}/cix-trader:${imageTag}' // the trader image runs the analyst too, as in Compose
-var poisonQueueUrl = '${queueEndpoint}runs-poison'
+var names = agentsNames(namePrefix, environmentName, resourceGroup().id)
+
+resource appsEnvironment 'Microsoft.App/managedEnvironments@2025-01-01' existing = {
+  name: names.appsEnvironment
+}
+
+resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: names.registry
+}
+
+resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: names.storage
+}
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
-  name: keyVaultName
+  name: names.vault
 }
+
+resource engineIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: '${names.identityPrefix}engine'
+}
+
+resource jobIdentities 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = [
+  for job in agentJobs: {
+    name: '${names.identityPrefix}${job.key}'
+  }
+]
+
+resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
+  name: cosmosAccountName
+  scope: resourceGroup(cosmosResourceGroupName)
+}
+
+var registryServer = registry.properties.loginServer
+var queueEndpoint = storage.properties.primaryEndpoints.queue
+var keyVaultUri = vault.properties.vaultUri
+var engineImage = '${registryServer}/cix-engine:${imageTag}'
+var agentImage = '${registryServer}/cix-trader:${imageTag}' // the trader image runs the analyst too, as in Compose
 
 // Set by the owner before the apps are deployed (tools/azure/provision.ps1 asks for it); never by a template.
 resource claudeToken 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
@@ -61,19 +83,19 @@ resource claudeToken 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
 
 // Each job reads claude-token, and no other secret.
 resource jobSecret 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for job in jobIdentities: {
-    name: guid(claudeToken.id, job.id, '4633458b-17de-408a-b874-0445c86b69e6')
+  for i in range(0, length(agentJobs)): {
+    name: guid(claudeToken.id, jobIdentities[i].id, '4633458b-17de-408a-b874-0445c86b69e6')
     scope: claudeToken
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6') // Key Vault Secrets User
-      principalId: job.principalId
+      principalId: jobIdentities[i].properties.principalId
       principalType: 'ServicePrincipal'
     }
   }
 ]
 
 resource engine 'Microsoft.App/containerApps@2025-01-01' = {
-  name: take('ca-${namePrefix}-${environmentName}-engine', 32)
+  name: names.engineApp
   location: location
   tags: tags
   identity: {
@@ -81,7 +103,7 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
     userAssignedIdentities: { '${engineIdentity.id}': {} }
   }
   properties: {
-    environmentId: environmentId
+    environmentId: appsEnvironment.id
     workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
@@ -108,7 +130,7 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
               { name: 'AllowedHosts', value: '*' } // internal ingress only, and every caller needs an Entra token
               { name: 'Cosmos__Enabled', value: 'true' }
               { name: 'Cosmos__Emulator', value: 'false' }
-              { name: 'Cosmos__Endpoint', value: cosmosEndpoint }
+              { name: 'Cosmos__Endpoint', value: cosmos.properties.documentEndpoint }
               { name: 'Cosmos__Database', value: databaseName }
               { name: 'Cosmos__AccountKey', secretRef: 'cosmos-key' }
               { name: 'ToolServer__Auth', value: 'Entra' }
@@ -116,10 +138,15 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
               { name: 'ToolServer__Entra__Audience', value: engineAudience }
               { name: 'AgentRuns__Mode', value: 'Queue' }
               { name: 'AgentRuns__Queues__ServiceUri', value: queueEndpoint }
-              { name: 'AgentRuns__Queues__ManagedIdentityClientId', value: engineIdentity.clientId }
+              { name: 'AgentRuns__Queues__ManagedIdentityClientId', value: engineIdentity.properties.clientId }
             ],
-            // Each job's identity, by object ID, with its agent role: the only callers the tool server lets in.
-            map(jobIdentities, job => { name: 'ToolServer__Entra__Agents__${job.principalId}', value: job.role })
+            // Each job's identity, by object ID, with its agent role: the only callers the tool server lets in. Spelled out
+            // (Bicep can't index a resource collection inside a lambda); the test checks there is one per job.
+            [
+              { name: 'ToolServer__Entra__Agents__${jobIdentities[0].properties.principalId}', value: agentJobs[0].role }
+              { name: 'ToolServer__Entra__Agents__${jobIdentities[1].properties.principalId}', value: agentJobs[1].role }
+              { name: 'ToolServer__Entra__Agents__${jobIdentities[2].properties.principalId}', value: agentJobs[2].role }
+            ]
           )
           probes: [
             // The engine listens only once the database answers (it waits, with backoff): allow it 10 minutes to start
@@ -138,18 +165,18 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
   }
 }
 
-resource agentJobs 'Microsoft.App/jobs@2025-01-01' = [
-  for job in jobIdentities: {
-    name: take('caj-${namePrefix}-${environmentName}-${job.key}', 32)
+resource jobs 'Microsoft.App/jobs@2025-01-01' = [
+  for (job, i) in agentJobs: {
+    name: take('${names.jobPrefix}${job.key}', 32)
     location: location
     tags: tags
     identity: {
       type: 'UserAssigned'
-      userAssignedIdentities: { '${job.id}': {} }
+      userAssignedIdentities: { '${jobIdentities[i].id}': {} }
     }
     dependsOn: [jobSecret]
     properties: {
-      environmentId: environmentId
+      environmentId: appsEnvironment.id
       workloadProfileName: 'Consumption'
       configuration: {
         triggerType: 'Event'
@@ -167,17 +194,17 @@ resource agentJobs 'Microsoft.App/jobs@2025-01-01' = [
                 name: 'run-queue'
                 type: 'azure-queue'
                 metadata: {
-                  accountName: storageAccountName
+                  accountName: storage.name
                   queueName: job.queue
                   queueLength: '1'
                 }
-                identity: job.id
+                identity: jobIdentities[i].id
               }
             ]
           }
         }
-        registries: [{ server: registryServer, identity: job.id }]
-        secrets: [{ name: 'claude-token', keyVaultUrl: '${keyVaultUri}secrets/claude-token', identity: job.id }]
+        registries: [{ server: registryServer, identity: jobIdentities[i].id }]
+        secrets: [{ name: 'claude-token', keyVaultUrl: '${keyVaultUri}secrets/claude-token', identity: jobIdentities[i].id }]
       }
       template: {
         containers: [
@@ -192,8 +219,8 @@ resource agentJobs 'Microsoft.App/jobs@2025-01-01' = [
               { name: 'CIX_ENGINE_URL', value: 'https://${engine.properties.configuration.ingress.fqdn}' }
               { name: 'CIX_ENGINE_AUDIENCE', value: engineAudience }
               { name: 'CIX_QUEUE_URL', value: '${queueEndpoint}${job.queue}' }
-              { name: 'CIX_POISON_QUEUE_URL', value: poisonQueueUrl }
-              { name: 'AZURE_CLIENT_ID', value: job.clientId }
+              { name: 'CIX_POISON_QUEUE_URL', value: '${queueEndpoint}${poisonQueue}' }
+              { name: 'AZURE_CLIENT_ID', value: jobIdentities[i].properties.clientId }
               { name: 'CLAUDE_TOKEN_EXPIRES', value: claudeTokenExpires }
               { name: job.key == 'analyst' ? 'ANALYST_MODEL' : 'TRADER_MODEL', value: job.key == 'analyst' ? analystModel : traderModel }
             ]
@@ -215,4 +242,4 @@ resource agentJobs 'Microsoft.App/jobs@2025-01-01' = [
 
 output engineAppName string = engine.name
 output engineUrl string = 'https://${engine.properties.configuration.ingress.fqdn}'
-output jobNames array = [for i in range(0, length(jobIdentities)): agentJobs[i].name]
+output jobNames array = [for i in range(0, length(agentJobs)): jobs[i].name]
