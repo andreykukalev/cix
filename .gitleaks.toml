@@ -3,17 +3,14 @@ title = "CIX gitleaks config"
 [extend]
 useDefault = true
 
-# Identifiers that look like keys to the generic rule but are type names.
-[[allowlists]]
-description = "Code identifiers, not secrets"
-regexTarget = "match"
-regexes = ['''IEd25519Signer''']
-
-# Azure built-in role definition IDs: public, the same in every tenant (infra/modules/agents-*.bicep). Exact IDs only.
-[[allowlists]]
-description = "Azure built-in role definition IDs, not secrets"
+# A single [allowlist] table: the gitleaks the CI action runs (8.24) ignores the newer [[allowlists]] form.
+#   - IEd25519Signer: a code identifier that looks like a key to the generic rule.
+#   - Azure built-in role definition IDs (infra/modules/agents-*.bicep): public, the same in every tenant. Exact IDs only.
+[allowlist]
+description = "Code identifiers and public Azure role IDs, not secrets"
 regexTarget = "match"
 regexes = [
+  '''IEd25519Signer''',
   '''7f951dda-4ed3-4680-a7ca-43fe172d538d''', # AcrPull
   '''4633458b-17de-408a-b874-0445c86b69e6''', # Key Vault Secrets User
   '''b86a8fe4-44ce-4948-aee5-eccb2c155cd7''', # Key Vault Secrets Officer
