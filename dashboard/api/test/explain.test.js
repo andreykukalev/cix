@@ -68,6 +68,8 @@ test('owner requests are told apart from the strategy\'s decisions', () => {
   const agent = own({ actor: 'trader-requests', data: { tool: 'manual-agent', symbol: 'UNI-EUR', side: 'buy', status: 'placed', rule: 'ok', stopLoss: '6', takeProfit: '6.6', approvedPrice: '6.24', rationale: 'Uptrend intact; buying half.' } });
   assert.equal(agent.headline, 'Buy UNI-EUR: the trader agreed to your request');
   assert.deepEqual(agent.points, ["Trader's reasoning: Uptrend intact; buying half."]);
+  const agentPublic = pub({ actor: 'trader-requests', data: { tool: 'manual-agent', symbol: 'UNI-EUR', side: 'buy', status: 'placed', rule: 'ok', rationale: 'As the owner noted, divorce money; buying.' } });
+  assert.ok(!JSON.stringify(agentPublic).includes('divorce'), "the trader's answer may quote the note: not public");
   assert.match(agent.risk.text, /^Risk plan: stop 6 \(-3\.85%\), target 6\.6 \(\+5\.77%\)$/);
 });
 
@@ -97,6 +99,7 @@ test('agent-written numbers that could be prices never reach the public view', (
     'signal entry BTC-EUR rank 64250: uptrend pullback 61234.5 ATR above EMA20, 1h 60000.0, 24h 70000',
     'signal exit BTC-EUR stop-at-60000: whatever',
     'signal exit stop=60000.5 stop: bid 1 at or below stop 2',
+    'signal entry BTC-EUR rank 1: test entry (trend 64250), 0.3 ATR above EMA20, 1h +0.1%, 24h +0.2%',
   ];
   for (const rationale of leaks) {
     const x = pub({ actor: 'trader', data: { tool: 'place_order', symbol: 'BTC-EUR', side: 'buy', status: 'placed', rule: 'ok', rationale } });

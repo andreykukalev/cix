@@ -411,10 +411,19 @@ async function loadViewer() {
   } catch {
     state.viewer = V.viewer(null);
   }
+  if (state.viewer.owner) {
+    // The role alone isn't enough: the API takes only the confirmed account (setup-dashboard-requests.ps1).
+    try {
+      const probe = await fetch('/api/owner/requests', { headers: { accept: 'application/json' } });
+      if (probe.status === 403) state.viewer = { ...state.viewer, owner: false, unconfirmed: true };
+    } catch { /* offline: the buttons' requests will say */ }
+  }
   const who = document.getElementById('who');
   const link = document.getElementById('sign-in');
   if (state.viewer.signedIn) {
-    who.textContent = state.viewer.owner ? `Owner: ${state.viewer.name ?? 'signed in'}` : `Signed in as ${state.viewer.name ?? 'a guest'} (not the owner)`;
+    who.textContent = state.viewer.owner ? `Owner: ${state.viewer.name ?? 'signed in'}`
+      : state.viewer.unconfirmed ? `Signed in as ${state.viewer.name ?? '?'}: owner role, not confirmed yet (run the setup script again)`
+        : `Signed in as ${state.viewer.name ?? 'a guest'} (not the owner)`;
     link.textContent = 'Sign out';
     link.href = '/.auth/logout?post_logout_redirect_uri=/';
   }

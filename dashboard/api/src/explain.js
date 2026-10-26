@@ -78,7 +78,7 @@ function entryEvidence(reason, shown = (t) => t, reveal = true) {
   const m = /^(.*?),?\s+(-?[\d.]+) ATR above EMA20,\s*1h (\S+),\s*24h (\S+)$/.exec(reason.trim());
   if (!m) return null;
   const setup = m[1].trim();
-  const trend = /^test entry \(trend (\w+)\)$/.exec(setup);
+  const trend = /^test entry \(trend (up|down|flat)\)$/.exec(setup); // the engine's words only
   const points = [
     trend ? `Test entry: the strategy buys whatever passes the filters, whatever the trend (now ${trend[1]})` : `Setup: ${shown(setup)}`,
     `Price is ${checked(m[2], 'ratio', reveal)}× the hourly range (ATR) above its 20-hour average (EMA20)`,
@@ -152,7 +152,9 @@ function explain(entry, { reveal = false, mask = (s) => s } = {}) {
   const symbol = d.symbol ?? '';
   const rationale = typeof d.rationale === 'string' ? d.rationale.trim() : '';
   const shown = (text) => (reveal ? text : mask(text));
-  const raw = !rationale ? null : !reveal && tool === 'manual-direct' ? "Owner's direct sell." : shown(rationale);
+  // A direct sell quotes the owner's note, and the trader's answer to a request may: neither is public.
+  const raw = !rationale ? null : !reveal && tool === 'manual-direct' ? "Owner's direct sell."
+    : !reveal && tool === 'manual-agent' ? "The trader's answer to an owner request." : shown(rationale);
   const out = outcome(d, shown);
 
   if (tool === 'cancel_order') {
@@ -205,7 +207,7 @@ function explain(entry, { reveal = false, mask = (s) => s } = {}) {
   if (tool === 'manual-agent') {
     return {
       headline: `${verb(d.side)} ${symbol}: the trader agreed to ${reveal ? 'your' : "the owner's"} request`,
-      points: rationale ? [`Trader's reasoning: ${shown(rationale)}`] : [],
+      points: !reveal ? ["The trader analysed the owner's request and decided to act on it"] : rationale ? [`Trader's reasoning: ${rationale}`] : [],
       risk: d.side === 'buy' ? riskPoint(d, reveal, null) : null,
       outcome: out,
       source: 'owner request',

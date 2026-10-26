@@ -378,7 +378,10 @@ function Write-CixSecretFile {
   param([Parameter(Mandatory)][ValidatePattern('^[a-z_]+$')][string]$Name, [Parameter(Mandatory)][string]$Value)
   $dir = Join-Path $script:RepoRoot 'secrets'
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  if (-not $script:OnWindows) { Invoke-CixNative { chmod 700 $dir } } # no one else can open a file in it, even before its chmod
+  if (-not $script:OnWindows) {
+    Invoke-CixNative { chmod 700 $dir } # no one else can open a file in it, even before its chmod
+    if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to $dir; the key was not written." }
+  }
   $path = Join-Path $dir $Name
   # A fresh, restricted (empty) file first, then the key: it is never on disk with wider access, and no old access rules survive.
   if (Test-Path $path) { Remove-Item $path -Force }
