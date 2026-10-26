@@ -11,6 +11,7 @@ try {
   functionsAvailable = false;
 }
 
-test('the API registers its two GET endpoints', { skip: !functionsAvailable && '@azure/functions is not installed' }, () => {
+test('the API registers its public and owner endpoints', { skip: !functionsAvailable && '@azure/functions is not installed' }, () => {
   assert.doesNotThrow(() => require('../src/functions/dashboard.js'));
+  assert.doesNotThrow(() => require('../src/functions/owner.js')); // the writer is created on first use, not at load
 });

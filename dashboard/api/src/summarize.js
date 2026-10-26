@@ -4,6 +4,7 @@
 // passed through as strings for display; only the drawdown percentage is computed here, for display.
 
 const { briefing } = require('./briefing');
+const { explain } = require('./explain');
 
 const STALE_AFTER_MS = 3 * 60 * 1000; // the engine writes its status every minute
 
@@ -98,7 +99,11 @@ function agentsSummary(entries, now) {
   }));
 }
 
-function decisions(entries) {
+/**
+ * Orders the agents and the engine decided, newest first. reveal is for the owner's view only (served with no-store
+ * behind the owner role): it keeps levels and prices in the explanation; the public page gets them masked.
+ */
+function decisions(entries, { reveal = false } = {}) {
   return entries.filter((e) => e.kind === 'order').map((e) => {
     const d = e.data ?? {};
     return {
@@ -111,10 +116,11 @@ function decisions(entries) {
       size: d.approvedSize ?? d.requestedSize ?? null,
       status: d.status ?? null,
       rule: d.rule ?? null,
-      rationale: publicText(d.rationale ?? null),
+      rationale: reveal ? d.rationale ?? null : publicText(d.rationale ?? null),
       hasStop: d.stopLoss !== undefined,
       clientOrderId: d.clientOrderId ?? null,
-      summary: publicSummary(e),
+      summary: reveal ? e.summary ?? null : publicSummary(e),
+      explanation: explain(e, { reveal, mask: publicText }),
     };
   }).sort(byTimeDesc);
 }
@@ -237,4 +243,4 @@ function summarize(input, now) {
   };
 }
 
-module.exports = { summarize, engineHealth, agentRuns, publicText, publicSummary, STALE_AFTER_MS };
+module.exports = { summarize, decisions, engineHealth, agentRuns, publicText, publicSummary, STALE_AFTER_MS };

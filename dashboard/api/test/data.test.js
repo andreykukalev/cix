@@ -74,3 +74,41 @@ test('journal requests are normalised so equal requests share one cache entry', 
   assert.deepEqual([...new Set(keys)], ['journal:2026-10-25:fill:50', 'journal:2026-10-25:fill:100']);
   assert.equal(journalRequest('2026-10-25', '', '150', NOW).top, 200);
 });
+
+const { loadActivity, loadOwnerDecisions, loadRequests, KINDS } = require('../src/data');
+
+test('activity reads only fills, across the day partitions the periods cover', async () => {
+  const queries = [];
+  const reader = { async query(container, sql, options) { queries.push({ container, sql, ...options }); return [{ at: '2026-10-25T10:00:00Z', data: { symbol: 'LINK-EUR', side: 'buy', filledQuote: '12.5', clientOrderId: 'c' } }]; } };
+  const view = await loadActivity(reader, 'week', NOW);
+  assert.equal(queries.length, 1);
+  assert.equal(queries[0].partitionKey, undefined, 'cross-partition');
+  assert.match(queries[0].sql, /c\.day >= @from AND c\.entry\.kind = @kind/);
+  assert.deepEqual(queries[0].parameters, [{ name: '@from', value: '2026-08-03' }, { name: '@kind', value: 'fill' }]);
+  assert.equal(view.current.turnover, '12.50');
+  assert.equal(view.truncated, false);
+  await assert.rejects(loadActivity(reader, 'year', NOW), RangeError);
+});
+
+test('the owner\'s decisions keep prices; the public ones don\'t', async () => {
+  const entry = { id: 'o', at: '2026-10-25T12:00:00Z', kind: 'order', actor: 'trader', summary: 'buy 1 LINK-EUR @ 10.20: placed (ok)',
+    data: { tool: 'place_order', symbol: 'LINK-EUR', side: 'buy', status: 'placed', rule: 'ok', approvedPrice: '10.20', stopLoss: '9.90', rationale: 'Breakout at 10.20' } };
+  const reader = { async query(container, sql, options) { return options.partitionKey === '2026-10-25' ? [{ entry }] : []; } };
+  const owner = await loadOwnerDecisions(reader, NOW);
+  assert.equal(owner.decisions[0].rationale, 'Breakout at 10.20');
+  assert.match(owner.decisions[0].explanation.risk.text, /stop 9\.90/);
+  assert.equal(owner.decisions[0].summary, entry.summary);
+});
+
+test('request history covers the last week, newest first', async () => {
+  let seen;
+  const reader = { async query(container, sql, options) { seen = { container, sql, ...options }; return [{ id: 'a', createdAt: '2026-10-24T00:00:00Z' }, { id: 'b', createdAt: '2026-10-25T00:00:00Z' }]; } };
+  const view = await loadRequests(reader, NOW);
+  assert.equal(seen.container, 'requests');
+  assert.deepEqual(seen.parameters, [{ name: '@from', value: '2026-10-19' }, { name: '@type', value: 'manual-request' }]);
+  assert.deepEqual(view.requests.map((r) => r.id), ['b', 'a']);
+});
+
+test('the journal filter knows the manual and scanner-filter kinds', () => {
+  for (const kind of ['manual-request', 'scanner-filters', 'scan-eligibility']) assert.ok(KINDS.has(kind), kind);
+});
