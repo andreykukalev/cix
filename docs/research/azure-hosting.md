@@ -135,7 +135,13 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 3. **An agent-run scheduler in the engine:** caps, gap, heartbeat, refunds and retries, carried over from the shell loops. It works with queue publishers behind an interface (a fake in tests) and a run-outcome endpoint. (Built: "Agent runs in Azure" in [architecture.md](../architecture.md). The engine's identity needs "Storage Queue Data Message Sender" on the three run queues.)
 4. **Job entrypoints:** a run-once mode in `run-trader.sh` and `run-analyst.sh` that claims one message (deleting it, and moving it to the poison queue after 3 dequeues), checks with the engine, runs and reports the outcome. Compose keeps today's loops. (Built: `tools/trader/agent-job.sh`. The jobs' identities need "Storage Queue Data Message Processor" on their own queue and "Storage Queue Data Message Sender" on `runs-poison`. The jobs reach the engine at its internal https address: Container Apps redirects plain http to https unless ingress allows insecure traffic, and the job script accepts plain http only for a single-label name inside the environment.)
 5. **Images:** configuration files built in, logs to stdout. (Already true of both images; in job mode a failed run's stderr goes to stdout too, masked.)
-6. **Bicep:** the workload-profiles environment with its VNet, the engine app (explicit environment name and paper mode), three jobs, ACR, a storage account with the queues, Key Vault, Log Analytics, identities and role assignments, and the budget.
+6. **Bicep:** the workload-profiles environment with its VNet, the engine app (explicit environment name and paper mode), three jobs, ACR, a storage account with the queues, Key Vault, Log Analytics, identities and role assignments, and the budget. (Templates built: `infra/modules/agents-platform.bicep` and `agents-apps.bicep`, behind `agents.deploy`, off by default. `provision.ps1` deploys both; for `apps` it creates the engine's Entra app, uploads `claude-token` and checks the images.) Before CI deploys the apps, or anything live runs there, the security review asks for:
+   - the engine on Cosmos DB data-plane RBAC, scoped to its database and without delete on the journal, instead of the account key, which writes and deletes across the whole shared account;
+   - CI deploying with a custom role that only updates the apps' images, with every role assignment left to the owner's deployments;
+   - the engine's Entra app requiring an app role assignment, held only by the three job identities (the engine's `oid` allowlist is the only check today);
+   - images deployed by digest rather than by tag;
+   - private access to Key Vault and storage;
+   - the live-mode hook covering `infra/` (owner-only: hooks aren't changed by agents).
 7. **CI:** image push, deploy and roll-back jobs, planned by `tools/ci/plan.sh` so that unrelated changes don't deploy.
 
 ## Cutover

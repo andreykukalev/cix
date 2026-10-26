@@ -6,7 +6,11 @@
       projects (infra/shared/main.bicep, settings in infra/shared/<name>.json);
     - CIX's own group, for example rg-cix-dev, with the dashboard (Static Web Apps, Free), plus CIX's database in
       the shared account (infra/main.bicep, settings in infra/environments/<Environment>.json).
-  The engine and agents keep running in Docker on this PC.
+  The engine and agents keep running in Docker on this PC, unless agents.deploy in the settings says otherwise (ADR-0013):
+    - platform: what the engine and the agent jobs run on (registry, queues, Key Vault, environment, logs, budget);
+    - apps: also the paper engine and the three jobs. Needs platform deployed first, claude-token in its Key Vault
+      (uploaded from secrets/claude_token, which tools/setup-secrets.ps1 writes, without showing it), and images CI pushed.
+      Creates the engine's Entra app registration (cix-engine-<environment>) when missing.
 
 .DESCRIPTION
   1. Checks the tools it needs (Azure CLI with Bicep; Node.js only for -DeployDashboard).
@@ -27,6 +31,15 @@
   .\tools\azure\provision.ps1 -Environment dev                  # deploy, then write the engine's settings
 .EXAMPLE
   .\tools\azure\provision.ps1 -Environment dev -DeployDashboard -SkipInfrastructure -SkipEngineConfig   # publish the dashboard only
+.EXAMPLE
+  .\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig -ImageTag <commit SHA>   # agents.deploy apps, first time
+.PARAMETER ImageTag
+  agents.deploy apps: the image tag to run. Without it, the tag the engine runs now is kept (CI deploys new ones).
+.PARAMETER UploadClaudeToken
+  agents.deploy apps: upload secrets/claude_token to Key Vault even if claude-token is there already (after renewing it).
+.PARAMETER BudgetEmail
+  agents: where the budget's alerts go. Without it, your sign-in's email address (a guest or personal account may have
+  none that receives mail; then pass this). Not kept in the repo.
 #>
 [CmdletBinding()]
 param(
@@ -38,6 +51,9 @@ param(
   [switch]$DeployDashboard,
   [switch]$UpdateShared,
   [switch]$AllowProtectedInSharedAccount,
+  [ValidatePattern('^[A-Za-z0-9._-]{1,128}$')][string]$ImageTag,
+  [switch]$UploadClaudeToken,
+  [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$BudgetEmail,
   [switch]$Yes
 )
 Set-StrictMode -Version Latest
@@ -69,6 +85,8 @@ Write-CixInfo "Settings:        $($settings.path)"
 Write-CixInfo "Shared account:  resource group $($shared.resourceGroup) ($($shared.location)), free tier $($shared.enableFreeTier) ($($shared.path))"
 Write-CixInfo "CIX:             resource group $($settings.resourceGroup) ($($settings.location)), database '$($settings.cosmos.databaseName)' at $($settings.cosmos.databaseThroughput) RU/s"
 Write-CixInfo "Dashboard:       $(if ($settings.deployDashboard) { "Static Web App (Free) in $($settings.dashboardLocation)" } else { 'not deployed' })"
+$agents = if ($settings.ContainsKey('agents')) { $settings.agents.deploy } else { 'none' }
+Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "the paper engine and three jobs, in $($settings.agents.location)" } })"
 if ($settings.protected) {
   # The shared account's keys reach every project's database (ADR-0009): fine for paper and tests, not for live money.
   if (-not $AllowProtectedInSharedAccount) {
@@ -103,9 +121,58 @@ if (-not $SkipInfrastructure) {
     }
   }
 
+  # The engine and agents (agents.deploy): checks and values found now, before the preview.
+  $agentValues = @{}
+  if ($agents -ne 'none') {
+    Write-CixStep "Engine and agents ($agents, in $($settings.agents.location))"
+    Assert-CixAgentsTools
+    Assert-CixAppsRegion -Settings $settings
+    $me = Get-CixSignedInUser
+    $agentValues['ownerObjectId'] = $me.Id
+    $agentValues['budgetContactEmail'] = if ($BudgetEmail) { $BudgetEmail } else { $me.Email }
+    if (-not $agentValues.budgetContactEmail) { Write-CixWarn 'Your sign-in has no email address that receives mail, so no budget is created. Pass -BudgetEmail to get one.' }
+    else {
+      Assert-CixBudgetStart -Settings $settings
+      Write-CixInfo "Budget: $($settings.agents.monthlyBudget) a month on $($settings.resourceGroup), alerts to $($agentValues.budgetContactEmail)."
+    }
+    if ($agents -eq 'apps') {
+      $vault = Find-CixAgentsResource -Settings $settings -Kind keyvault
+      $registry = Find-CixAgentsResource -Settings $settings -Kind acr
+      if (-not $vault -or -not $registry) { throw "Deploy with agents.deploy 'platform' first: the apps need its Key Vault (with claude-token) and its registry (with images from CI)." }
+      # Checked before anything is changed: the images...
+      $tag = if ($ImageTag) { $ImageTag } else { Get-CixRunningImageTag -Settings $settings }
+      if (-not $tag) { throw 'Nothing runs yet, so there is no image to keep: pass -ImageTag with a tag CI pushed (the commit SHA).' }
+      Assert-CixImages -Registry $registry -Tag $tag
+      $agentValues['imageTag'] = $tag
+      Write-CixInfo "Images: $registry, tag $tag. Engine: $(if ($settings.agents.startEngine) { 'running (one replica)' } else { 'stopped (agents.startEngine false)' })."
+      # ...then the Claude credential: uploaded from secrets/claude_token (tools/setup-secrets.ps1 writes it) straight to Key Vault.
+      if ($UploadClaudeToken -or -not (Test-CixVaultSecret -Vault $vault -Name 'claude-token')) {
+        $local = Join-CixPath (Get-CixRepoRoot) 'secrets' 'claude_token'
+        if (-not (Test-Path $local)) { throw "Key Vault $vault has no claude-token. Run tools/setup-secrets.ps1 (it writes secrets/claude_token), then run this again: it uploads the file without showing it." }
+        if ($WhatIfOnly) { Write-CixInfo "Would upload secrets/claude_token to $vault as claude-token." }
+        else {
+          Confirm-Step "Upload secrets/claude_token to Key Vault $vault as claude-token?"
+          Set-CixVaultSecretFromFile -Vault $vault -Name 'claude-token' -Path $local
+          Write-CixInfo "Uploaded claude-token to $vault (not shown)."
+        }
+      }
+      # ...then the engine's Entra app registration, made only once you have said yes.
+      $audience = Get-CixEngineAudience -Settings $settings -OwnerId $me.Id
+      if (-not $audience -and -not $WhatIfOnly) {
+        Confirm-Step "Create the engine's Entra app registration cix-engine-$($settings.environmentName) (single tenant, no secrets, no permissions)?"
+        $audience = Get-CixEngineAudience -Settings $settings -OwnerId $me.Id -Create
+      }
+      if (-not $audience) {
+        $audience = 'api://00000000-0000-0000-0000-000000000000'
+        Write-CixInfo "The engine's Entra app (cix-engine-$($settings.environmentName)) is created when you deploy; the preview uses a placeholder."
+      }
+      $agentValues['engineAudience'] = $audience
+    }
+  }
+
   Write-CixStep "CIX ($($settings.resourceGroup), database '$($settings.cosmos.databaseName)')"
   Assert-CixDatabaseClaim -Settings $settings -AccountName $sharedName
-  Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -WhatIf | Out-Null
+  Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -Agents $agentValues -WhatIf | Out-Null
   if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed.'; return }
   Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"
   # The deployment sets the dashboard's settings to exactly what infra/ says, which would drop the writer identity's and the
@@ -121,7 +188,14 @@ if (-not $SkipInfrastructure) {
       foreach ($k in @($current.Keys | Where-Object { $_ -like 'COSMOS_WRITER_*' -or $_ -eq 'DASHBOARD_OWNER_USER_ID' })) { $writerSettings[$k] = $current[$k] }
     }
   }
-  $outputs = Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName
+  try { $outputs = Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -Agents $agentValues }
+  catch {
+    # The jobs' access to claude-token is granted in the same deployment that creates them, and takes minutes to apply.
+    if ($agents -eq 'apps' -and "$($_.Exception.Message)" -match 'claude-token') {
+      throw "$($_.Exception.Message) The jobs' access to claude-token was just granted and can take a few minutes to apply: run this again shortly."
+    }
+    throw
+  }
   if ($writerSettings.Count -gt 0) {
     try {
       $now = Get-CixStaticSiteSettings -SiteId $siteId
@@ -136,6 +210,11 @@ if (-not $SkipInfrastructure) {
   $cosmosEndpoint = $outputs.cosmosEndpoint.value
   $staticWebApp = $outputs.staticWebAppName.value
   $dashboardUrl = $outputs.dashboardUrl.value
+  if ($agents -ne 'none') {
+    Write-CixInfo "Registry:  $($outputs.registryServer.value)"
+    Write-CixInfo "Key Vault: $($outputs.keyVaultName.value)"
+    if ($agents -eq 'apps') { Write-CixInfo "Engine app: $($outputs.engineAppName.value); jobs: $(@($outputs.agentJobNames.value) -join ', ')" }
+  }
 }
 else {
   $found = Get-CixCosmosAccount -Settings $settings

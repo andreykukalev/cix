@@ -78,6 +78,7 @@ Two settings files, both ready to use:
 | `sharedCosmos` | Which shared settings file to use (`shared` means `infra/shared/shared.json`) |
 | `cosmos.databaseName`, `cosmos.databaseThroughput` | CIX's database in the shared account, and its throughput (400 to 1000 RU/s; 400 leaves room for other projects) |
 | `deployDashboard` | Create the Static Web App |
+| `agents` | The engine and the agent jobs in Azure (ADR-0013). `deploy`: `none` (the default), `platform` or `apps`, see [Engine and agents in Azure](#engine-and-agents-in-azure). `location`: their region, where the database is (`polandcentral`). `startEngine` stays `false` until the cutover. `traderModel`, `analystModel`, `claudeTokenExpires` as in Compose. `monthlyBudget` (40) and `budgetStartDate` set the resource group's monthly budget; the start date can't be moved once the budget exists |
 
 No secrets go in these files. `prod.example.json` shows a protected environment, with its own database name.
 
@@ -104,6 +105,32 @@ It then writes the engine's settings:
 Pass `-SkipEngineConfig` to leave these two files alone.
 
 The deployment is safe to run again. It brings the resources back to what the template describes and keeps the data.
+
+## Engine and agents in Azure
+
+Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agents.deploy` in the environment file chooses how much of it exists:
+
+- **`platform`** (`infra/modules/agents-platform.bicep`). This adds the pieces the engine and the jobs run on, in `agents.location`:
+  - a Log Analytics workspace, capped at 0.1 GB a day;
+  - a VNet with an internal Container Apps environment (workload profiles, Consumption);
+  - the container registry (Basic, about $5 a month);
+  - a storage account with the four run queues, with shared keys off;
+  - Key Vault, with `cosmos-key` copied from the shared account;
+  - one managed identity each for the engine and the three jobs, with only the roles each needs;
+  - the budget, with alerts to your sign-in's address, or to `-BudgetEmail` (a personal Microsoft account usually has no address in the tenant that gets mail, so pass it).
+
+  Apart from the registry, nothing here costs anything until something runs. The names are fixed per resource group, and a deleted Key Vault is kept for 7 days: provisioning again within a week of deleting the group fails until you purge it (`az keyvault purge --name <vault>`). You get Key Vault Secrets Officer on the vault, so you can set `claude-token` yourself. `provision.ps1` grants it to your own sign-in by object ID, never to whoever runs the deployment, so a CI identity can't pick it up.
+- **`apps`** (`infra/modules/agents-apps.bicep`). This adds the paper engine (internal ingress only, at most one replica, stopped while `startEngine` is false) and the jobs `trader`, `requests` and `analyst`. Each job is started by a message on its own queue and runs one at a time. Before deploying, `provision.ps1` makes these checks and changes, in this order, asking before each change:
+  - checks that Container Apps is offered in `agents.location`, and that Bicep is 0.32 or later;
+  - checks that the registry has both images with the tag: `-ImageTag <commit SHA>` the first time, and after that the tag the engine already runs;
+  - uploads `secrets/claude_token` to Key Vault as `claude-token` if it isn't there yet, straight from the file without showing it. Pass `-UploadClaudeToken` after renewing it;
+  - creates the engine's Entra app registration, `cix-engine-<environment>`, if missing. It is single tenant, with no secrets and no permissions, and its application ID URI `api://<app ID>` is the audience the jobs' tokens are for. An existing one is used only if you are its only owner;
+
+  Deploy `platform` first, then `apps` once CI has pushed images. The jobs' access to `claude-token` is granted in the same deployment that creates them and takes a few minutes to apply, so the first `apps` deployment can fail on it; run it again shortly.
+
+  While `startEngine` is false the engine has no replica, but a request to its internal address would start one for a few minutes. Nothing in the environment calls it until the cutover.
+
+The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode, `Production` or an exchange setting. A protected environment must keep `agents.deploy` at `none`; the template deploys no agents there whatever the parameters say.
 
 ## 3. Switch the engine to Azure
 
