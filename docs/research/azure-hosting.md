@@ -141,7 +141,6 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
    - the engine's Entra app requiring an app role assignment, held only by the three job identities (the engine's `oid` allowlist is the only check today);
    - images deployed by digest rather than by tag;
    - private access to Key Vault and storage;
-   - the live-mode hook covering `infra/` (owner-only: hooks aren't changed by agents).
 7. **CI:** image push, deploy and roll-back jobs, planned by `tools/ci/plan.sh` so that unrelated changes don't deploy.
 
 ## Cutover
@@ -161,4 +160,4 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 ## Still open
 
 1. **Engine size.** Running `docker stats` on the PC for a day shows whether 0.25 vCPU / 0.5 GiB is enough. The cost table assumes it is.
-2. **The live-mode hook.** It doesn't yet see `'Live'` written in Bicep (`infra/**`). Hooks are the owner's to change. Extending it, together with `ManualRequests:AllowLive`, would close that gap before infrastructure files can mention the live engine.
+2. ~~**The live-mode hook.**~~ Done (owner's go-ahead, 2026-10-26): it checks the templates under `infra/` as they will be after an edit (no quoted `'Live'` or `'Production'`, and the Paper and Azure lines stay), and blocks `Production` and `ManualRequests:AllowLive` outside tests and docs.

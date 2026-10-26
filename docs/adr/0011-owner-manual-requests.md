@@ -42,4 +42,4 @@ Requests are documents in a new Cosmos DB container, `requests` (partition `/day
 - Owner text (`note`) reaches the trader as quoted data (`ownerNote`). It is cleaned and bounded, the trader's instructions treat it as context, and a request run has no order tools of its own to be steered into.
 - The Windows script (`run-trader.ps1`) answers requests only when run with `-OwnerRequests`; the Docker trader loop is the supported path.
 - Malformed, forged, oversized or excess requests are refused one by one (at most 50 read and 10 handled a poll, refusals journaled up to 50 a day, document copies written 10 at a time), so one bad document can't stop the others or use up the database's throughput. Requests for another trading mode aren't even read.
-- The live-mode hook doesn't yet cover `ManualRequests:AllowLive`; the owner may want it to.
+- The live-mode hook blocks agents from setting `ManualRequests:AllowLive` (outside tests and docs), as it does the trading mode.
