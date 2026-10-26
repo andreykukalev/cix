@@ -181,9 +181,10 @@ Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal a
   if ($parts['requests'] -match '\$\{item\}/(create|upsert)') { throw 'the engine may only update requests, not add them' }
 }
 
-Check 'agents settings: dev runs the platform, dates stay text, and they reach the template as its parameters' {
+Check 'agents settings: dev''s are valid, dates stay text, and they reach the template as its parameters' {
   $s = Read-CixEnvironment -Name dev
-  Expect $s.agents.deploy 'platform' 'agents.deploy in dev.json (platform since 2026-10-26; apps only when the owner says so)'
+  # The owner moves dev.json from none to platform to apps; no test pins which.
+  if (@('none', 'platform', 'apps') -notcontains $s.agents.deploy) { throw "agents.deploy in dev.json is '$($s.agents.deploy)'" }
   Expect ($s.agents.budgetStartDate -is [string]) $true 'budgetStartDate is text'
   Expect $s.agents.budgetStartDate '2026-11-01' 'budgetStartDate'
   $s.agents.deploy = 'platform'
