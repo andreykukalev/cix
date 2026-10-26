@@ -41,7 +41,7 @@ GitHub Actions ─OIDC─► ACR (images) ─► Container Apps environment: wor
    - Its only ingress is internal: apps and jobs in the same environment can reach it, and the internet can't.
    - A health probe uses the existing `/healthz`.
    - The app sets `ASPNETCORE_ENVIRONMENT=Azure` and `Trading__Mode=Paper` explicitly. .NET treats a missing environment name as Production, which would remove the guard in `TradingMode.cs` that refuses Live outside Production.
-2. **The environment uses workload profiles, the Consumption profile, and its own VNet** from the start. It costs the same as a plain Consumption environment. A fixed outbound IP for the live engine (open question 4) later needs a NAT gateway on that VNet, and a VNet can't be added to an existing environment.
+2. **The environment uses workload profiles, the Consumption profile, and its own VNet** from the start. It costs the same as a plain Consumption environment. A fixed outbound IP for the live engine (decided with the live engine) later needs a NAT gateway on that VNet, and a VNet can't be added to an existing environment.
 3. **Each agent is a Container Apps Job with its own managed identity**, billed only while it runs.
    - The three jobs are `cix-trader` (strategy runs), `cix-trader-requests` (runs that answer owner requests) and `cix-analyst`.
    - Each job watches its own queue, with `maxExecutions: 1` so runs happen one at a time.
@@ -86,7 +86,7 @@ The analyst runs from the engine's schedule rather than a cron job, so its 30-mi
 
 ## Monthly cost
 
-Consumption prices (USD, East US, Oct 2026; check the price for the chosen region at deployment): $0.000024 per active vCPU-second and $0.000003 per GiB-second. Each subscription gets 180,000 vCPU-seconds and 360,000 GiB-seconds free a month, and jobs are billed at the same rates while they run. A 30-day month has 2,592,000 seconds.
+Consumption prices (USD, East US, Oct 2026; Poland Central may differ slightly and is re-checked before provisioning): $0.000024 per active vCPU-second and $0.000003 per GiB-second. Each subscription gets 180,000 vCPU-seconds and 360,000 GiB-seconds free a month, and jobs are billed at the same rates while they run. A 30-day month has 2,592,000 seconds.
 
 | Item | Assumption | Typical | At the run caps |
 | --- | --- | --- | --- |
@@ -145,11 +145,14 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 3. Watch for a day: engine status, agent runs, the journal and the cost meter.
 4. To roll back, deactivate the Azure revision, disable the jobs and start Compose again. Both use the same database.
 
-## Open questions for the owner
+## Owner decisions (2026-10-26)
 
-1. **Region.** I'd use the region of the existing resources, for the lowest latency to Cosmos DB, unless you prefer another.
-2. **Claude credentials in Azure.** Keep the `claude setup-token` subscription token in Key Vault, as on the PC, or switch to an API key billed per use.
-3. **Engine size.** Running `docker stats` on the PC for a day shows whether 0.25 vCPU / 0.5 GiB is enough. The cost table assumes it is.
-4. **Live, later.** Revolut X can limit an API key to a list of IP addresses. A NAT gateway on the environment's VNet gives the live engine one fixed outbound IP, for about $32 a month more. Decide this before the live engine moves to Azure; paper needs no key.
-5. **Merging.** Keep your merge as the only gate (recommended), or allow auto-merge for agent pull requests once CI passes.
-6. **The live-mode hook.** It doesn't yet see `'Live'` written in Bicep (`infra/**`). Hooks are yours to change: extending it, together with `ManualRequests:AllowLive`, would close that gap before infrastructure files can mention the live engine.
+1. **Region: Poland Central**, where the Cosmos DB account is. If Container Apps environments with workload profiles aren't offered there, use **Germany West Central**. Microsoft's workload-profiles page lists the Consumption profile for "all supported regions" without naming them. Before provisioning, `provision.ps1` checks that `Microsoft.App/managedEnvironments` lists the region (`az provider show -n Microsoft.App`) and stops if it doesn't. Prices are re-checked for the chosen region.
+2. **Claude credentials:** the `claude setup-token` subscription token, kept in Key Vault. Switch to an API key only if the subscription's limits get in the way.
+3. **No NAT gateway now.** The fixed outbound IP is decided together with the live engine. The environment still gets its own VNet, so a NAT gateway can be added later without rebuilding it.
+4. **The owner's merge is the only gate.** There is no auto-merge for agent pull requests.
+
+## Still open
+
+1. **Engine size.** Running `docker stats` on the PC for a day shows whether 0.25 vCPU / 0.5 GiB is enough. The cost table assumes it is.
+2. **The live-mode hook.** It doesn't yet see `'Live'` written in Bicep (`infra/**`). Hooks are the owner's to change. Extending it, together with `ManualRequests:AllowLive`, would close that gap before infrastructure files can mention the live engine.
