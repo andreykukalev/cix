@@ -223,7 +223,9 @@ else {
 }
 
 Write-CixStep 'Owner'
-$users = @(Invoke-CixAz @('staticwebapp', 'users', 'list', '--name', $appName, '--resource-group', $settings.resourceGroup, '--authentication-provider', 'AAD', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+# Every provider (the API lists users only for all of them at once): anyone holding the role counts, whatever their sign-in.
+$users = @(Invoke-CixAz @('staticwebapp', 'users', 'list', '--name', $appName, '--resource-group', $settings.resourceGroup, '--authentication-provider', 'all', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+$isAad = { param($u) -not $u.PSObject.Properties['provider'] -or "$($u.provider)" -eq 'aad' } # -eq ignores case
 $owners = @($users | Where-Object { $_.PSObject.Properties['roles'] -and (",$($_.roles)," -replace '\s', '') -match ',owner,' })
 foreach ($o in $owners) { Write-CixInfo "Has the owner role: $($o.displayName)" }
 $pinned = (Get-CixStaticSiteSettings -SiteId $site.id)['DASHBOARD_OWNER_USER_ID']
@@ -232,11 +234,11 @@ if (-not $OwnerAccount) {
 }
 else {
   # Anyone else holding the role redeemed a link that wasn't for them, or was added by hand: stop until it's removed.
-  $strangers = @($owners | Where-Object { -not $_.PSObject.Properties['displayName'] -or $_.displayName -ne $OwnerAccount })
+  $strangers = @($owners | Where-Object { -not $_.PSObject.Properties['displayName'] -or $_.displayName -ne $OwnerAccount -or -not (& $isAad $_) })
   if ($strangers.Count -gt 0) {
     throw "$(($strangers | ForEach-Object { $_.displayName }) -join ', ') also hold(s) the owner role. Remove them first: Azure portal, $appName, Role management. Nothing about the owner was changed."
   }
-  $mine = @($owners | Where-Object { $_.displayName -eq $OwnerAccount })
+  $mine = @($owners | Where-Object { $_.displayName -eq $OwnerAccount -and (& $isAad $_) })
   if ($mine.Count -eq 0) {
     Confirm-Step "Invite $OwnerAccount to the owner role on ${appName}?"
     $link = Invoke-CixAz -Quiet @('staticwebapp', 'users', 'invite', '--name', $appName, '--resource-group', $settings.resourceGroup,

@@ -545,6 +545,7 @@ Check 'setup-dashboard-requests.ps1 (-Yes) creates a create-only identity and st
   if ($r.Output.Contains($fakePassword) -or $r.Calls.Contains($fakePassword)) { throw 'the secret was printed or put on a command line' }
   if ($r.Output -notmatch 'auth/invitations/abc') { throw "the invitation link wasn't shown: $($r.Output)" }
   if ($r.Calls -notmatch 'users invite .*--invitation-expiration-in-hours 2 ') { throw 'the invitation should expire in 2 hours' }
+  if ($r.Calls -notmatch 'staticwebapp users list .*--authentication-provider all ') { throw 'users are listed for all providers only (the API refuses one provider)' }
   if ($r.Output -notmatch 'run this script again') { throw "it didn't say to run it again to confirm the owner: $($r.Output)" }
 }
 
@@ -559,6 +560,8 @@ Check 'setup-dashboard-requests.ps1 confirms the owner by user ID once the invit
 Check 'setup-dashboard-requests.ps1 refuses when someone else holds the owner role' {
   $r = Invoke-SetupWriter $existingWriter @{ 'staticwebapp users list' = '[{"displayName":"owner@example.com","userId":"owner-uid","roles":"owner"},{"displayName":"stranger@example.com","userId":"x","roles":"anonymous,owner"}]' }
   if (-not $r.Error -or -not $r.Error.Contains('stranger@example.com also hold(s) the owner role')) { throw "got: $($r.Error)" }
+  $r = Invoke-SetupWriter $existingWriter @{ 'staticwebapp users list' = '[{"displayName":"owner@example.com","provider":"github","userId":"gh","roles":"owner"}]' }
+  if (-not $r.Error -or -not $r.Error.Contains('owner@example.com also hold(s) the owner role')) { throw "a same-named GitHub user got through: $($r.Error)" }
   if ($r.Calls -match '--method put|users invite') { throw "it changed the owner: $($r.Calls)" }
 }
 
