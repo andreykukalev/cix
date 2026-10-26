@@ -89,7 +89,7 @@ flowchart LR
 | Phase | Where | Approx. USD per month |
 | --- | --- | --- |
 | Prototype | Docker Compose on your machine: Cosmos DB emulator, engine, agent containers running Claude Code (ADR-0005) | Claude usage only |
-| Live | Azure Container Apps (engine always on, agents as scheduled jobs); Cosmos DB serverless; Key Vault; Azure Monitor | to be priced at deployment, within the budget |
+| Azure (proposed, ADR-0013) | Azure Container Apps (engine always on, agents as queue-triggered jobs); Cosmos DB free tier in the shared account (ADR-0009); Key Vault; Log Analytics | about 23 to 35, plus Claude |
 
 Budget: $150 a month including Claude through Microsoft Foundry. Set an Azure budget alert at $130.
 
