@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Cix.Engine.AgentRuns;
 using Cix.Engine.Journal;
+using Cix.Engine.Persistence;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cix.Engine.Tests;
@@ -11,12 +13,17 @@ internal sealed class RecordingRunQueue(IAgentRunStateStore store) : IAgentRunQu
 
     public bool Fail { get; set; }
 
+    /// <summary>The send's own timeout firing, with the caller's token still live.</summary>
+    public bool TimeOut { get; set; }
+
     public async Task SendAsync(AgentRun run, TimeSpan timeToLive, CancellationToken cancellationToken)
     {
         if (Fail)
             throw new HttpRequestException("queue unreachable");
+        if (TimeOut)
+            throw new TaskCanceledException("send timed out");
         var saved = await store.LoadAsync(cancellationToken);
-        Sent.Add((run, timeToLive, saved?.InFlight.Any(r => r.Id == run.Id) == true));
+        Sent.Add((run, timeToLive, saved?.State.InFlight.Any(r => r.Id == run.Id) == true));
     }
 }
 
@@ -34,9 +41,12 @@ public sealed class AgentRunSchedulerTests
 
     internal sealed class Setup
     {
-        public Setup(bool analyst = false, bool lease = true, InMemoryAgentRunStateStore? store = null)
+        private readonly Action<AgentRunOptions>? _change;
+
+        public Setup(bool analyst = false, bool lease = true, Action<AgentRunOptions>? change = null)
         {
-            Store = store ?? new InMemoryAgentRunStateStore();
+            _change = change;
+            Store = new InMemoryAgentRunStateStore();
             Queue = new RecordingRunQueue(Store);
             Lease = new FixedLease(lease);
             Scheduler = New(analyst);
@@ -51,8 +61,12 @@ public sealed class AgentRunSchedulerTests
         public AgentRunScheduler Scheduler { get; }
 
         /// <summary>Another engine over the same saved state, as after a restart or a deployment.</summary>
-        public AgentRunScheduler New(bool analyst = false) => new(
-            new AgentRunOptions { Analyst = analyst }, Signals, Store, Queue, Journal, Time, NullLogger<AgentRunScheduler>.Instance, Lease);
+        public AgentRunScheduler New(bool analyst = false)
+        {
+            var options = new AgentRunOptions { Analyst = analyst };
+            _change?.Invoke(options);
+            return new(options, Signals, Store, Queue, Journal, Time, NullLogger<AgentRunScheduler>.Instance, Lease);
+        }
 
         public IReadOnlyList<JournalEntry> Steps(string step) =>
             Journal.Entries.Where(e => e.Kind == AgentRunScheduler.Kind && e.Data?["step"] == step).ToList();
@@ -87,7 +101,31 @@ public sealed class AgentRunSchedulerTests
         Assert.Equal(0, await setup.Scheduler.PollOnceAsync(CancellationToken.None));
         Assert.Empty(setup.Queue.Sent);
         Assert.Equal(0, setup.Store.Saves);
-        Assert.Null(await setup.Scheduler.ClaimAsync("run-20261026-080000-abcdef", "trader", CancellationToken.None));
+        Assert.Equal(AgentRunAnswer.Unavailable, (await setup.Scheduler.ClaimAsync("run-20261026-080000-abcdef", "trader", null, CancellationToken.None)).Answer);
+    }
+
+    [Fact]
+    public async Task AnEngineThatLostTheLease_OrWasOvertaken_ChangesNothing()
+    {
+        var setup = new Setup();
+        await setup.Scheduler.PollOnceAsync(CancellationToken.None);
+        var run = setup.Queue.Sent.Single().Run;
+
+        var next = setup.New(); // took over, read the same state
+        Assert.Equal(AgentRunAnswer.Yes, (await next.ClaimAsync(run.Id, "trader", null, CancellationToken.None)).Answer);
+        var saves = setup.Store.Saves;
+
+        // The old engine still has the state from before the claim: its write (a second claim) must not undo it.
+        Assert.Equal(AgentRunAnswer.Unavailable, (await setup.Scheduler.ClaimAsync(run.Id, "trader", null, CancellationToken.None)).Answer);
+        Assert.Equal(saves, setup.Store.Saves);
+        Assert.Null(setup.Scheduler.State); // read again next time
+        Assert.Equal(AgentRunAnswer.Yes, await setup.Scheduler.CompleteAsync(run.Id, "trader", AgentRunOutcome.Done, CancellationToken.None));
+
+        setup.Lease.IsHeld = false;
+        Assert.Equal(AgentRunAnswer.Unavailable, await next.CompleteAsync(run.Id, "trader", AgentRunOutcome.Done, CancellationToken.None));
+        setup.Time.Advance(TimeSpan.FromHours(4)); // a heartbeat is due, but not this engine's to queue
+        Assert.Equal(0, await next.PollOnceAsync(CancellationToken.None));
+        Assert.Equal(saves + 1, setup.Store.Saves);
     }
 
     [Fact]
@@ -98,7 +136,7 @@ public sealed class AgentRunSchedulerTests
         setup.Signals.Inputs = new AgentRunInputs(true, true, "buy:SOL-EUR", string.Empty);
 
         Assert.Equal(0, await setup.Scheduler.PollOnceAsync(CancellationToken.None));
-        var state = (await setup.Store.LoadAsync(CancellationToken.None))!;
+        var state = (await setup.Store.LoadAsync(CancellationToken.None))!.State;
         Assert.Empty(state.InFlight);
         Assert.Equal((0, 1), (state.Runs, state.Refunds));
         Assert.Single(setup.Steps("not-sent"));
@@ -110,23 +148,96 @@ public sealed class AgentRunSchedulerTests
     }
 
     [Fact]
+    public async Task ASendThatTimesOut_IsNotSent()
+    {
+        var setup = new Setup();
+        setup.Queue.TimeOut = true;
+
+        Assert.Equal(0, await setup.Scheduler.PollOnceAsync(CancellationToken.None));
+        Assert.Single(setup.Steps("not-sent"));
+        Assert.Empty(setup.Scheduler.State!.InFlight);
+    }
+
+    [Fact]
+    public async Task TheDailyCap_IsJournaledOnce()
+    {
+        var setup = new Setup(change: o => o.MaxRunsPerDay = 1);
+        setup.Signals.Inputs = new AgentRunInputs(true, true, "buy:SOL-EUR", string.Empty);
+        var run = (await PollAndTakeAsync(setup)).Run;
+        Assert.Equal(AgentRunAnswer.Yes, await setup.Scheduler.CompleteAsync(run.Id, "trader", AgentRunOutcome.Done, CancellationToken.None));
+
+        setup.Time.Advance(TimeSpan.FromMinutes(15));
+        setup.Signals.Inputs = new AgentRunInputs(true, true, "buy:SOL-EUR|buy:ETH-EUR", string.Empty);
+        Assert.Equal(0, await setup.Scheduler.PollOnceAsync(CancellationToken.None));
+        Assert.Equal(0, await setup.Scheduler.PollOnceAsync(CancellationToken.None));
+
+        var capped = Assert.Single(setup.Steps("capped"));
+        Assert.Equal(AgentRunScheduler.Actor, capped.Actor);
+        Assert.Null(capped.RunId);
+    }
+
+    [Fact]
+    public async Task AnExecution_CanRepeatAClaimWhoseAnswerItLost()
+    {
+        var setup = new Setup();
+        await setup.Scheduler.PollOnceAsync(CancellationToken.None);
+        var run = setup.Queue.Sent.Single().Run;
+
+        Assert.Equal(AgentRunAnswer.Yes, (await setup.Scheduler.ClaimAsync(run.Id, "trader", "cix-trader-x7k2p", CancellationToken.None)).Answer);
+        Assert.Equal(AgentRunAnswer.Yes, (await setup.Scheduler.ClaimAsync(run.Id, "trader", "cix-trader-x7k2p", CancellationToken.None)).Answer);
+        Assert.Equal(AgentRunAnswer.No, (await setup.Scheduler.ClaimAsync(run.Id, "trader", "cix-trader-other", CancellationToken.None)).Answer);
+        Assert.Equal(AgentRunAnswer.No, (await setup.Scheduler.ClaimAsync(run.Id, "trader", "not a label", CancellationToken.None)).Answer);
+        Assert.Single(setup.Steps("claimed")); // journaled once
+    }
+
+    [Fact]
+    public void WithCosmos_TheRunStateIsInTheDatabase_WhicheverIsRegisteredFirst()
+    {
+        var options = new AgentRunOptions { Mode = AgentRunMode.Queue, Queues = { ServiceUri = "https://cixruns.queue.core.windows.net" } };
+        var cosmos = new CosmosOptions { Enabled = true, Emulator = true, Endpoint = "https://localhost:8081", Database = "cix" };
+
+        var cosmosLast = new ServiceCollection()
+            .AddCixAgentRuns(options, Tools.ToolServerAuth.Entra, durableState: true)
+            .AddCixCosmos(cosmos, TradingMode.Paper);
+        var cosmosFirst = new ServiceCollection()
+            .AddCixCosmos(cosmos, TradingMode.Paper)
+            .AddCixAgentRuns(options, Tools.ToolServerAuth.Entra, durableState: true);
+
+        foreach (var services in new[] { cosmosLast, cosmosFirst })
+        {
+            var store = services.Last(d => d.ServiceType == typeof(IAgentRunStateStore));
+            Assert.NotNull(store.ImplementationFactory); // the Cosmos store's factory, not the in-memory instance
+            Assert.Null(store.ImplementationInstance);
+        }
+    }
+
+    private static async Task<(AgentRunAnswer Answer, AgentRun Run)> PollAndTakeAsync(Setup setup)
+    {
+        await setup.Scheduler.PollOnceAsync(CancellationToken.None);
+        var run = setup.Queue.Sent.Last().Run;
+        var (answer, _) = await setup.Scheduler.ClaimAsync(run.Id, run.Kind.Role(), null, CancellationToken.None);
+        return (answer, run);
+    }
+
+    [Fact]
     public async Task OnlyItsOwnJob_ClaimsARun_Once_AndReportsItOnce()
     {
         var setup = new Setup();
         await setup.Scheduler.PollOnceAsync(CancellationToken.None);
         var run = setup.Queue.Sent.Single().Run;
 
-        Assert.Null(await setup.Scheduler.ClaimAsync(run.Id, "analyst", CancellationToken.None));
-        Assert.Null(await setup.Scheduler.ClaimAsync(run.Id, null, CancellationToken.None));
-        Assert.Null(await setup.Scheduler.ClaimAsync("../" + run.Id, "trader", CancellationToken.None));
-        Assert.Equal(run.Id, (await setup.Scheduler.ClaimAsync(run.Id, "trader", CancellationToken.None))?.Id);
-        Assert.Null(await setup.Scheduler.ClaimAsync(run.Id, "trader", CancellationToken.None));
+        Assert.Equal(AgentRunAnswer.No, (await setup.Scheduler.ClaimAsync(run.Id, "analyst", null, CancellationToken.None)).Answer);
+        Assert.Equal(AgentRunAnswer.No, (await setup.Scheduler.ClaimAsync(run.Id, null, null, CancellationToken.None)).Answer);
+        Assert.Equal(AgentRunAnswer.No, (await setup.Scheduler.ClaimAsync("../" + run.Id, "trader", null, CancellationToken.None)).Answer);
+        var claimed = await setup.Scheduler.ClaimAsync(run.Id, "trader", null, CancellationToken.None);
+        Assert.Equal((AgentRunAnswer.Yes, run.Id), (claimed.Answer, claimed.Run?.Id));
+        Assert.Equal(AgentRunAnswer.No, (await setup.Scheduler.ClaimAsync(run.Id, "trader", null, CancellationToken.None)).Answer);
 
-        Assert.False(await setup.Scheduler.CompleteAsync(run.Id, "trader-requests", AgentRunOutcome.Done, CancellationToken.None));
-        Assert.True(await setup.Scheduler.CompleteAsync(run.Id, "trader", AgentRunOutcome.Done, CancellationToken.None));
-        Assert.False(await setup.Scheduler.CompleteAsync(run.Id, "trader", AgentRunOutcome.NotRun, CancellationToken.None));
+        Assert.Equal(AgentRunAnswer.No, await setup.Scheduler.CompleteAsync(run.Id, "trader-requests", AgentRunOutcome.Done, CancellationToken.None));
+        Assert.Equal(AgentRunAnswer.Yes, await setup.Scheduler.CompleteAsync(run.Id, "trader", AgentRunOutcome.Done, CancellationToken.None));
+        Assert.Equal(AgentRunAnswer.No, await setup.Scheduler.CompleteAsync(run.Id, "trader", AgentRunOutcome.NotRun, CancellationToken.None));
 
-        Assert.Empty((await setup.Store.LoadAsync(CancellationToken.None))!.InFlight);
+        Assert.Empty((await setup.Store.LoadAsync(CancellationToken.None))!.State.InFlight);
         Assert.Equal(new[] { "queued", "claimed", "done" }, setup.Journal.Entries.Where(e => e.RunId == run.Id).Select(e => e.Data!["step"]));
     }
 
@@ -139,8 +250,8 @@ public sealed class AgentRunSchedulerTests
 
         var next = setup.New();
         Assert.Equal(0, await next.PollOnceAsync(CancellationToken.None)); // the heartbeat is in flight: not queued again
-        Assert.NotNull(await next.ClaimAsync(run.Id, "trader", CancellationToken.None));
-        Assert.True(await next.CompleteAsync(run.Id, "trader", AgentRunOutcome.Done, CancellationToken.None));
+        Assert.Equal(AgentRunAnswer.Yes, (await next.ClaimAsync(run.Id, "trader", null, CancellationToken.None)).Answer);
+        Assert.Equal(AgentRunAnswer.Yes, await next.CompleteAsync(run.Id, "trader", AgentRunOutcome.Done, CancellationToken.None));
         Assert.Equal(T0 + TimeSpan.FromHours(4), next.State!.NextHeartbeat);
     }
 
@@ -172,10 +283,10 @@ public sealed class AgentRunSchedulerTests
             InFlight = [new AgentRun("run-20261026-080000-abcdef", AgentRunKind.Requests, AgentRunPurpose.Requests, "manual:a", T0, T0.AddMinutes(1))],
         };
 
-        var json = JsonSerializer.Serialize(state, Persistence.CosmosDb.Json);
-        var back = JsonSerializer.Deserialize<AgentRunState>(json, Persistence.CosmosDb.Json)!;
+        var json = JsonSerializer.Serialize(state, CosmosDb.Json);
+        var back = JsonSerializer.Deserialize<AgentRunState>(json, CosmosDb.Json)!;
 
-        Assert.Equal(json, JsonSerializer.Serialize(back, Persistence.CosmosDb.Json));
+        Assert.Equal(json, JsonSerializer.Serialize(back, CosmosDb.Json));
         Assert.Equal(state.InFlight.Single(), back.InFlight.Single());
     }
 

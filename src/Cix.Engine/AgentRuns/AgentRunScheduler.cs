@@ -5,6 +5,7 @@ using Cix.Engine.Manual;
 using Cix.Engine.Persistence;
 using Cix.Engine.Scanning;
 using Cix.Engine.Tools;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Cix.Engine.AgentRuns;
 
@@ -15,29 +16,63 @@ public interface IAgentRunQueue
     Task SendAsync(AgentRun run, TimeSpan timeToLive, CancellationToken cancellationToken);
 }
 
-/// <summary>The saved <see cref="AgentRunState"/>: in memory by default, Cosmos DB with AddCixCosmos.</summary>
+/// <summary>The saved state and its version.</summary>
+public sealed record StoredAgentRunState(AgentRunState State, string ETag);
+
+/// <summary>
+/// The saved <see cref="AgentRunState"/>: in memory by default, Cosmos DB with AddCixCosmos. Writes are conditional on the
+/// version read, so an engine that lost the engine lease can't overwrite what the engine that took over saved.
+/// </summary>
 public interface IAgentRunStateStore
 {
-    Task<AgentRunState?> LoadAsync(CancellationToken cancellationToken);
+    Task<StoredAgentRunState?> LoadAsync(CancellationToken cancellationToken);
 
-    Task SaveAsync(AgentRunState state, CancellationToken cancellationToken);
+    /// <summary>
+    /// Saves if the document is still at <paramref name="etag"/> (or, with null, doesn't exist yet). Returns the new version,
+    /// or null if someone else wrote it since.
+    /// </summary>
+    Task<string?> SaveAsync(AgentRunState state, string? etag, CancellationToken cancellationToken);
 }
 
 public sealed class InMemoryAgentRunStateStore : IAgentRunStateStore
 {
-    private AgentRunState? _saved;
+    private readonly object _gate = new();
+    private StoredAgentRunState? _saved;
+    private int _version;
 
     public int Saves { get; private set; }
 
-    public Task<AgentRunState?> LoadAsync(CancellationToken cancellationToken) => Task.FromResult(Volatile.Read(ref _saved));
-
-    public Task SaveAsync(AgentRunState state, CancellationToken cancellationToken)
+    public Task<StoredAgentRunState?> LoadAsync(CancellationToken cancellationToken)
     {
-        Volatile.Write(ref _saved, state);
-        Saves++;
-        return Task.CompletedTask;
+        lock (_gate)
+            return Task.FromResult(_saved);
+    }
+
+    public Task<string?> SaveAsync(AgentRunState state, string? etag, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (_saved?.ETag != etag)
+                return Task.FromResult<string?>(null);
+            _saved = new StoredAgentRunState(state, (++_version).ToString(CultureInfo.InvariantCulture));
+            Saves++;
+            return Task.FromResult<string?>(_saved.ETag);
+        }
     }
 }
+
+/// <summary>How the engine answers a job.</summary>
+public enum AgentRunAnswer
+{
+    Yes,
+    No,
+
+    /// <summary>Not this engine's call right now: it doesn't hold the lease, is busy, or another engine wrote the state. Ask again shortly.</summary>
+    Unavailable,
+}
+
+/// <summary>This engine may not change the run state now: it lost the lease, or another engine saved it first.</summary>
+public sealed class AgentRunsUnavailableException(string message) : Exception(message);
 
 /// <summary>What the run rules look at.</summary>
 public interface IAgentRunSignals
@@ -74,11 +109,16 @@ public sealed partial class AgentRunScheduler(
     public const string Actor = "engine";
 
     /// <summary>A queue send gets this long; the run is then counted as not run and tried again by the rules.</summary>
-    public static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>A job waits at most this long for a look in progress; then it is told to ask again.</summary>
+    public static readonly TimeSpan JobWait = TimeSpan.FromSeconds(10);
+
+    private readonly AgentRunOptions _options = options;
     private readonly AgentRunPlanner _planner = new(options);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private AgentRunState? _state;
+    private string? _etag;
     private string? _saved;
 
     /// <summary>Whether this engine schedules runs now: only while it holds the engine lease.</summary>
@@ -115,6 +155,8 @@ public sealed partial class AgentRunScheduler(
             var sent = 0;
             foreach (var run in plan.Dispatch)
             {
+                if (!IsActive)
+                    break; // the lease went: what isn't sent expires unclaimed and counts as not run
                 if (await TrySendAsync(run, cancellationToken).ConfigureAwait(false))
                     sent++;
             }
@@ -128,23 +170,32 @@ public sealed partial class AgentRunScheduler(
     }
 
     /// <summary>
-    /// A job takes its run before it starts Claude. Null when the run isn't wanted: unknown, for another job, claimed
-    /// already, or queued too long ago. A repeated or stale message costs one container start and no Claude usage.
+    /// A job takes its run before it starts Claude. No when the run isn't wanted: unknown, for another job, claimed
+    /// already by another execution, or queued too long ago. A repeated or stale message costs one container start and no
+    /// Claude usage. <paramref name="claimant"/> (the job execution's name) lets that execution repeat a claim whose answer
+    /// it didn't get.
     /// </summary>
-    public async Task<AgentRun?> ClaimAsync(string runId, string? role, CancellationToken cancellationToken)
+    public async Task<(AgentRunAnswer Answer, AgentRun? Run)> ClaimAsync(string runId, string? role, string? claimant, CancellationToken cancellationToken)
     {
-        if (!ToolCallContext.IsSafeLabel(runId) || AgentRunKinds.ForRole(role) is not { } kind || !IsActive)
-            return null;
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (!ToolCallContext.IsSafeLabel(runId) || AgentRunKinds.ForRole(role) is not { } kind || (claimant is not null && !ToolCallContext.IsSafeLabel(claimant)))
+            return (AgentRunAnswer.No, null);
+        if (!IsActive || !await _gate.WaitAsync(JobWait, cancellationToken).ConfigureAwait(false))
+            return (AgentRunAnswer.Unavailable, null);
         try
         {
-            var (state, run) = _planner.Claim(await LoadAsync(cancellationToken).ConfigureAwait(false), runId, kind, time.GetUtcNow());
+            var (state, run, repeated) = _planner.Claim(await LoadAsync(cancellationToken).ConfigureAwait(false), runId, kind, claimant, time.GetUtcNow());
             if (run is null)
-                return null;
+                return (AgentRunAnswer.No, null);
+            if (repeated)
+                return (AgentRunAnswer.Yes, run);
             await SaveAsync(state, cancellationToken).ConfigureAwait(false); // claimed once only, across restarts too
             LogClaimed(logger, run.Id);
             await JournalAsync(run, "claimed", Inv($"{Label(run)} {run.Id} started by its job")).ConfigureAwait(false);
-            return run;
+            return (AgentRunAnswer.Yes, run);
+        }
+        catch (AgentRunsUnavailableException)
+        {
+            return (AgentRunAnswer.Unavailable, null);
         }
         finally
         {
@@ -152,21 +203,26 @@ public sealed partial class AgentRunScheduler(
         }
     }
 
-    /// <summary>How a claimed run ended. False if there is no such claimed run for that job (unknown, or reported already).</summary>
-    public async Task<bool> CompleteAsync(string runId, string? role, AgentRunOutcome outcome, CancellationToken cancellationToken)
+    /// <summary>How a claimed run ended. No if there is no such claimed run for that job (unknown, or reported already).</summary>
+    public async Task<AgentRunAnswer> CompleteAsync(string runId, string? role, AgentRunOutcome outcome, CancellationToken cancellationToken)
     {
-        if (!ToolCallContext.IsSafeLabel(runId) || AgentRunKinds.ForRole(role) is not { } kind || !IsActive)
-            return false;
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (!ToolCallContext.IsSafeLabel(runId) || AgentRunKinds.ForRole(role) is not { } kind)
+            return AgentRunAnswer.No;
+        if (!IsActive || !await _gate.WaitAsync(JobWait, cancellationToken).ConfigureAwait(false))
+            return AgentRunAnswer.Unavailable;
         try
         {
             var (state, run) = _planner.Complete(await LoadAsync(cancellationToken).ConfigureAwait(false), runId, kind, outcome, time.GetUtcNow());
             if (run is null)
-                return false;
+                return AgentRunAnswer.No;
             await SaveAsync(state, cancellationToken).ConfigureAwait(false);
             LogCompleted(logger, run.Id, outcome.Name());
             await JournalAsync(run, outcome.Name(), Inv($"{Label(run)} {run.Id} ended: {outcome.Name()}")).ConfigureAwait(false);
-            return true;
+            return AgentRunAnswer.Yes;
+        }
+        catch (AgentRunsUnavailableException)
+        {
+            return AgentRunAnswer.Unavailable;
         }
         finally
         {
@@ -176,7 +232,7 @@ public sealed partial class AgentRunScheduler(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(options.Poll, time);
+        using var timer = new PeriodicTimer(_options.Poll, time);
         try
         {
             do
@@ -208,21 +264,20 @@ public sealed partial class AgentRunScheduler(
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(SendTimeout);
-            await queue.SendAsync(run, options.ClaimTimeout, timeout.Token).ConfigureAwait(false);
+            await queue.SendAsync(run, _options.ClaimTimeout, timeout.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // The job can't have it: count it as not run, so the cap is refunded and the rules try again.
             LogSendFailed(logger, run.Id, ex.GetType().Name);
-            var state = _planner.Unsent(_state!, run, time.GetUtcNow());
-            Volatile.Write(ref _state, state);
             try
             {
-                await SaveAsync(state, cancellationToken).ConfigureAwait(false);
+                if (Volatile.Read(ref _state) is { } current)
+                    await SaveAsync(_planner.Unsent(current, run, time.GetUtcNow()), cancellationToken).ConfigureAwait(false);
             }
             catch (Exception saveError) when (saveError is not OperationCanceledException)
             {
-                LogSaveFailed(logger, saveError.GetType().Name); // kept in memory; saved with the next change
+                LogSaveFailed(logger, saveError.GetType().Name); // it stays in flight and expires unclaimed: also not run
             }
 
             await JournalAsync(run, "not-sent", Inv($"{Label(run)} {run.Id} could not be queued ({ex.GetType().Name}); counted as not run")).ConfigureAwait(false);
@@ -238,19 +293,32 @@ public sealed partial class AgentRunScheduler(
     {
         if (Volatile.Read(ref _state) is { } loaded)
             return loaded;
-        var state = await store.LoadAsync(cancellationToken).ConfigureAwait(false) ?? new AgentRunState();
-        _saved = JsonSerializer.Serialize(state, CosmosDb.Json);
+        var stored = await store.LoadAsync(cancellationToken).ConfigureAwait(false);
+        var state = stored?.State ?? new AgentRunState();
+        _etag = stored?.ETag;
+        _saved = stored is null ? null : JsonSerializer.Serialize(state, CosmosDb.Json);
         Volatile.Write(ref _state, state);
         return state;
     }
 
-    // Saves only what changed; most looks change nothing. The state in memory moves on only once it is saved.
+    // Saves only what changed; most looks change nothing. The state in memory moves on only once it is saved, and only by
+    // this engine while it holds the lease and nobody else wrote the state since it read it.
     private async Task SaveAsync(AgentRunState state, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(state, CosmosDb.Json);
         if (json != _saved)
         {
-            await store.SaveAsync(state, cancellationToken).ConfigureAwait(false);
+            if (!IsActive)
+                throw new AgentRunsUnavailableException("This engine no longer holds the engine lease.");
+            var etag = await store.SaveAsync(state, _etag, cancellationToken).ConfigureAwait(false);
+            if (etag is null)
+            {
+                Volatile.Write(ref _state, null); // read it again at the next look
+                LogConflict(logger);
+                throw new AgentRunsUnavailableException("Another engine saved the agent run state.");
+            }
+
+            _etag = etag;
             _saved = json;
         }
 
@@ -314,6 +382,9 @@ public sealed partial class AgentRunScheduler(
     [LoggerMessage(Level = LogLevel.Warning, Message = "Agent run state could not be saved ({Error})")]
     private static partial void LogSaveFailed(ILogger logger, string error);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Another engine saved the agent run state; this one reads it again")]
+    private static partial void LogConflict(ILogger logger);
+
     [LoggerMessage(Level = LogLevel.Error, Message = "Journal write failed for an agent-run entry ({Error})")]
     private static partial void LogJournalFailed(ILogger logger, string error);
 }
@@ -333,7 +404,7 @@ public static class AgentRunRegistration
         if (options.Mode == AgentRunMode.Off)
             return services;
 
-        services.AddSingleton<IAgentRunStateStore>(new InMemoryAgentRunStateStore());
+        services.TryAddSingleton<IAgentRunStateStore>(new InMemoryAgentRunStateStore()); // AddCixCosmos's store wins either way
         services.AddSingleton<IAgentRunSignals, EngineAgentRunSignals>();
         services.AddSingleton<IAgentRunQueue>(_ => new StorageAgentRunQueue(options.Queues));
         services.AddSingleton<AgentRunScheduler>();

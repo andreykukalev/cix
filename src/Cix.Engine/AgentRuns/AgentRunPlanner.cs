@@ -25,7 +25,9 @@ public static class AgentRunPurpose
 /// <param name="Id">The run ID the job sends to the tool server (<c>X-Cix-Run</c>), so the journal links its calls to it.</param>
 /// <param name="Key">The signal key or request key it was started for; empty for heartbeat, scheduled and analyst runs.</param>
 /// <param name="ClaimedAt">When its job claimed it; a run is claimed once only.</param>
-public sealed record AgentRun(string Id, AgentRunKind Kind, string Purpose, string Key, DateTimeOffset DispatchedAt, DateTimeOffset? ClaimedAt = null)
+/// <param name="Claimant">Which job execution claimed it, if it said: that execution may repeat its claim.</param>
+public sealed record AgentRun(
+    string Id, AgentRunKind Kind, string Purpose, string Key, DateTimeOffset DispatchedAt, DateTimeOffset? ClaimedAt = null, string? Claimant = null)
 {
     /// <summary><c>run-20261026-140500-3fa2c1</c>, or <c>analyst-...</c>: readable, ordered, and a safe journal label.</summary>
     public static string NewId(AgentRunKind kind, DateTimeOffset at) => string.Create(
@@ -48,6 +50,8 @@ public sealed record AgentRunState
     public int Refunds { get; init; }
 
     public int RequestRuns { get; init; }
+
+    public int RequestRefunds { get; init; }
 
     /// <summary>The day the strategy cap was last reported, so it is reported once a day.</summary>
     public DateOnly? CappedOn { get; init; }
@@ -131,15 +135,21 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
         return new AgentRunPlan(s, dispatch, expired, notices);
     }
 
-    /// <summary>The job took the run. Null if it isn't in flight for that kind, was claimed already, or waited too long.</summary>
-    public (AgentRunState State, AgentRun? Run) Claim(AgentRunState state, string runId, AgentRunKind kind, DateTimeOffset now)
+    /// <summary>
+    /// The job took the run. Null if it isn't in flight for that kind, was claimed already, or waited too long. The same
+    /// <paramref name="claimant"/> (a job execution) asking again gets the run again, so a claim whose answer was lost can
+    /// be repeated; <c>Repeated</c> says so.
+    /// </summary>
+    public (AgentRunState State, AgentRun? Run, bool Repeated) Claim(AgentRunState state, string runId, AgentRunKind kind, string? claimant, DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(state);
         var run = state.InFlight.FirstOrDefault(r => r.Id == runId && r.Kind == kind);
+        if (run?.ClaimedAt is not null && claimant is not null && run.Claimant == claimant)
+            return (state, run, true);
         if (run is null || run.ClaimedAt is not null || now - run.DispatchedAt >= options.ClaimTimeout)
-            return (state, null);
-        var claimed = run with { ClaimedAt = now };
-        return (state with { InFlight = state.InFlight.Select(r => r.Id == runId ? claimed : r).ToList() }, claimed);
+            return (state, null, false);
+        var claimed = run with { ClaimedAt = now, Claimant = claimant };
+        return (state with { InFlight = state.InFlight.Select(r => r.Id == runId ? claimed : r).ToList() }, claimed, false);
     }
 
     /// <summary>
@@ -164,7 +174,7 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
     private static AgentRunState RollDay(AgentRunState s, DateTimeOffset now)
     {
         var today = DateOnly.FromDateTime(now.UtcDateTime);
-        return today == s.Day ? s : s with { Day = today, Runs = 0, Refunds = 0, RequestRuns = 0 };
+        return today == s.Day ? s : s with { Day = today, Runs = 0, Refunds = 0, RequestRuns = 0, RequestRefunds = 0 };
     }
 
     // Owner requests first: the owner is waiting, and each request expires in the engine if it isn't answered in time.
@@ -265,11 +275,10 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
             case AgentRunKind.Requests:
                 if (outcome == AgentRunOutcome.Done)
                     return s with { LastRequests = run.Key, RequestsRetryAt = null };
-                return s with
-                {
-                    RequestRuns = outcome == AgentRunOutcome.NotRun && today ? Math.Max(0, s.RequestRuns - 1) : s.RequestRuns,
-                    RequestsRetryAt = now + AgentRunOptions.RequestsRetry,
-                };
+                // Refunded at most as often as the cap itself, so a job that always reports not run can't run every 5 minutes.
+                if (outcome == AgentRunOutcome.NotRun && today && s.RequestRefunds < options.MaxRequestRunsPerDay)
+                    s = s with { RequestRuns = Math.Max(0, s.RequestRuns - 1), RequestRefunds = s.RequestRefunds + 1 };
+                return s with { RequestsRetryAt = now + AgentRunOptions.RequestsRetry };
 
             case AgentRunKind.Trader:
                 // Claude wasn't used: don't spend the daily cap, up to a ceiling so a misjudged failure can't run unbounded.
@@ -277,7 +286,12 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
                     s = s with { Runs = Math.Max(0, s.Runs - 1), Refunds = s.Refunds + 1 };
                 if (run.Purpose == AgentRunPurpose.Signals && outcome == AgentRunOutcome.Done)
                     return s with { LastKey = run.Key, NextHeartbeat = now + options.Heartbeat };
-                return run.Purpose == AgentRunPurpose.Heartbeat ? s with { NextHeartbeat = now + options.Heartbeat } : s;
+                if (run.Purpose == AgentRunPurpose.Heartbeat)
+                    return s with { NextHeartbeat = now + options.Heartbeat };
+                // A slot that came while the run was still going isn't run straight after it: the next one is an interval on.
+                return run.Purpose == AgentRunPurpose.Scheduled && s.NextScheduled is { } next && next <= now
+                    ? s with { NextScheduled = now + options.Interval }
+                    : s;
 
             case AgentRunKind.Analyst:
                 // A run that couldn't use Claude is retried soon; the slot it missed isn't made up twice.

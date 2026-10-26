@@ -218,12 +218,18 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
             NextHeartbeat = at.AddHours(4),
             InFlight = [new Cix.Engine.AgentRuns.AgentRun("run-20261026-080000-abcdef", Cix.Engine.AgentRuns.AgentRunKind.Trader, "signals", "buy:SOL-EUR", at, at.AddMinutes(1))],
         };
-        await new CosmosAgentRunStateStore(_db, TradingMode.Paper).SaveAsync(state, CancellationToken.None);
+        var store = new CosmosAgentRunStateStore(_db, TradingMode.Paper);
+        var first = await store.SaveAsync(state, null, CancellationToken.None);
+        Assert.NotNull(first);
+        Assert.Null(await store.SaveAsync(state, null, CancellationToken.None)); // it exists now
 
         var loaded = await new CosmosAgentRunStateStore(_db, TradingMode.Paper).LoadAsync(CancellationToken.None);
         Assert.NotNull(loaded);
-        Assert.Equal((state.Day, 3, "buy:SOL-EUR", state.NextHeartbeat), (loaded.Day, loaded.Runs, loaded.LastKey, loaded.NextHeartbeat));
-        Assert.Equal(state.InFlight.Single(), loaded.InFlight.Single());
+        Assert.Equal((first, state.Day, 3, "buy:SOL-EUR", state.NextHeartbeat), (loaded.ETag, loaded.State.Day, loaded.State.Runs, loaded.State.LastKey, loaded.State.NextHeartbeat));
+        Assert.Equal(state.InFlight.Single(), loaded.State.InFlight.Single());
+        Assert.NotNull(await store.SaveAsync(state with { Runs = 4 }, first, CancellationToken.None));
+        Assert.Null(await store.SaveAsync(state with { Runs = 5 }, first, CancellationToken.None)); // a stale engine's write
+        Assert.Equal(4, (await store.LoadAsync(CancellationToken.None))!.State.Runs);
         Assert.Null(await new CosmosAgentRunStateStore(_db, TradingMode.Live).LoadAsync(CancellationToken.None));
     }
 

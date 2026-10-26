@@ -45,9 +45,9 @@ public sealed class AgentRunPlannerTests
 
         public AgentRun Single(AgentRunInputs inputs) => Assert.Single(Tick(inputs));
 
-        public AgentRun? Claim(AgentRun run, AgentRunKind? kind = null)
+        public AgentRun? Claim(AgentRun run, AgentRunKind? kind = null, string? claimant = null)
         {
-            var (state, claimed) = Planner.Claim(State, run.Id, kind ?? run.Kind, Now);
+            var (state, claimed, _) = Planner.Claim(State, run.Id, kind ?? run.Kind, claimant, Now);
             State = state;
             return claimed;
         }
@@ -187,6 +187,21 @@ public sealed class AgentRunPlannerTests
     }
 
     [Fact]
+    public void RequestRunRefunds_AreCappedLikeTheRunsThemselves()
+    {
+        var sim = new Sim(Options(o => o.MaxRequestRunsPerDay = 1));
+        var waiting = Signals(requests: "manual:a", scanned: false);
+
+        sim.Finish(sim.Single(waiting), AgentRunOutcome.NotRun);
+        Assert.Equal((0, 1), (sim.State.RequestRuns, sim.State.RequestRefunds));
+        sim.Advance(TimeSpan.FromMinutes(5));
+        sim.Finish(sim.Single(waiting), AgentRunOutcome.NotRun); // a job that always says it couldn't run
+        Assert.Equal((1, 1), (sim.State.RequestRuns, sim.State.RequestRefunds));
+        sim.Advance(TimeSpan.FromMinutes(5));
+        Assert.Empty(sim.Tick(waiting)); // capped until tomorrow
+    }
+
+    [Fact]
     public void WithoutTheScanner_RunsOnAFixedCadence_WithoutCatchingUp()
     {
         var sim = new Sim(Options());
@@ -314,6 +329,36 @@ public sealed class AgentRunPlannerTests
     }
 
     [Fact]
+    public void TheSameExecution_CanRepeatItsClaim_AndNoOtherCan()
+    {
+        var sim = new Sim(Options());
+        var run = sim.Single(Signals());
+
+        Assert.NotNull(sim.Claim(run, claimant: "cix-trader-x7k2p"));
+        sim.Advance(TimeSpan.FromMinutes(12)); // past the claim window: a repeat still works, it isn't a new claim
+        var (state, again, repeated) = sim.Planner.Claim(sim.State, run.Id, run.Kind, "cix-trader-x7k2p", sim.Now);
+        Assert.True(repeated);
+        Assert.Same(sim.State, state);
+        Assert.Equal(run.DispatchedAt, again!.ClaimedAt); // still the first claim's time
+        Assert.Null(sim.Claim(run, claimant: "cix-trader-9qq1z"));
+        Assert.Null(sim.Claim(run)); // no name: no repeat
+    }
+
+    [Fact]
+    public void ASlotThatComesDuringARun_IsNotRunStraightAfterIt()
+    {
+        var sim = new Sim(Options(o => o.IntervalMinutes = 15));
+        var first = sim.Single(NoScanner);
+        Assert.NotNull(sim.Claim(first));
+        sim.Advance(TimeSpan.FromMinutes(20)); // the 15-minute slot came and went while it ran
+        Assert.Empty(sim.Tick(NoScanner));
+        Assert.NotNull(sim.Complete(first, AgentRunOutcome.Done));
+
+        Assert.Empty(sim.Tick(NoScanner));
+        Assert.Equal(sim.Now + TimeSpan.FromMinutes(15), sim.State.NextScheduled);
+    }
+
+    [Fact]
     public void AnUnsentRun_IsNotRun()
     {
         var sim = new Sim(Options());
@@ -374,5 +419,6 @@ public sealed class AgentRunPlannerTests
         Assert.Throws<InvalidOperationException>(() => Options(o => o.PollSeconds = 1).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.MaxRunsPerDay = 0).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.AnalystRetryMinutes = 400).Validate(ToolServerAuth.Loopback, false));
+        Assert.Throws<InvalidOperationException>(() => Options(o => o.RunTimeoutMinutes = AgentRunOptions.JobReplicaTimeoutMinutes).Validate(ToolServerAuth.Loopback, false));
     }
 }

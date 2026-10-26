@@ -84,6 +84,9 @@ public sealed class AgentRunOptions
     /// <summary>A run that never used Claude is refunded at most this often a day, so a misjudged failure can't run unbounded.</summary>
     public const int MaxRefundsPerDay = 96;
 
+    /// <summary>The agent jobs' replica timeout in Container Apps (ADR-0013): a job is stopped after this many minutes.</summary>
+    public const int JobReplicaTimeoutMinutes = 20;
+
     /// <summary>A failed or capped owner-request run is tried again after this long.</summary>
     public static readonly TimeSpan RequestsRetry = TimeSpan.FromMinutes(5);
 
@@ -124,7 +127,7 @@ public sealed class AgentRunOptions
 
     /// <summary>
     /// A claimed run that hasn't reported how it ended this long after the claim counts as failed. Keep it above the jobs'
-    /// replica timeout (20 minutes), so a run is never given up on while its job may still be working.
+    /// replica timeout (<see cref="JobReplicaTimeoutMinutes"/>), so a run is never given up on while its job may still be working.
     /// </summary>
     public int RunTimeoutMinutes { get; set; } = 25;
 
@@ -161,6 +164,8 @@ public sealed class AgentRunOptions
         Positive(AnalystRetryMinutes, nameof(AnalystRetryMinutes));
         Positive(ClaimTimeoutMinutes, nameof(ClaimTimeoutMinutes));
         Positive(RunTimeoutMinutes, nameof(RunTimeoutMinutes));
+        if (RunTimeoutMinutes <= JobReplicaTimeoutMinutes)
+            throw new InvalidOperationException($"AgentRuns:RunTimeoutMinutes must be more than {JobReplicaTimeoutMinutes}, the jobs' replica timeout, so a run is never given up on while its job may still be working.");
         if (PollSeconds is < 5 or > 600)
             throw new InvalidOperationException("AgentRuns:PollSeconds must be between 5 and 600.");
         if (AnalystIntervalHours is < 1 or > 12)

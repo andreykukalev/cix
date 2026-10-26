@@ -176,20 +176,23 @@ public static class ToolServerRegistration
     /// <summary>
     /// The agent jobs' side of the run queues. A job claims its run before it starts Claude (<c>{"wanted": false}</c> means
     /// drop the message), then reports <c>{"outcome": "done" | "failed" | "not-run"}</c>. The job is known by its token's
-    /// role, so it can claim and report only its own kind of run. 503 while this engine doesn't hold the engine lease (a
-    /// deployment in progress): the job should try again shortly. 404 without the scheduler (Compose). A change is saved
-    /// whether or not the caller is still waiting, so a dropped connection can't leave a claim half made.
+    /// role, so it can claim and report only its own kind of run. 503 while this engine can't answer (it doesn't hold the
+    /// engine lease, a look is in progress for more than 10 seconds, or another engine saved the state): the job should
+    /// try again shortly. 404 without the scheduler (Compose). A change is saved whether or not the caller is still
+    /// waiting, so a dropped connection can't leave a claim half made.
     /// </summary>
     private static void MapAgentRuns(WebApplication app)
     {
-        app.MapPost(RunsEndpoint + "/{id}/claim", async (string id, HttpContext http) =>
+        app.MapPost(RunsEndpoint + "/{id}/claim", async (string id, RunClaimBody body, HttpContext http) =>
         {
             if (http.RequestServices.GetService<AgentRuns.AgentRunScheduler>() is not { } scheduler)
                 return Results.NotFound();
-            if (!scheduler.IsActive)
-                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-            var run = await scheduler.ClaimAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, CancellationToken.None).ConfigureAwait(false);
-            return Results.Json(new { wanted = run is not null, purpose = run?.Purpose });
+            if (body.Claimant is { } claimant && !ToolCallContext.IsSafeLabel(claimant))
+                return Results.BadRequest();
+            var (answer, run) = await scheduler.ClaimAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, body.Claimant, CancellationToken.None).ConfigureAwait(false);
+            return answer == AgentRuns.AgentRunAnswer.Unavailable
+                ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable)
+                : Results.Json(new { wanted = answer == AgentRuns.AgentRunAnswer.Yes, purpose = run?.Purpose });
         });
         app.MapPost(RunsEndpoint + "/{id}/outcome", async (string id, RunOutcomeBody body, HttpContext http) =>
         {
@@ -197,12 +200,17 @@ public static class ToolServerRegistration
                 return Results.NotFound();
             if (AgentRuns.AgentRunKinds.ParseOutcome(body.Outcome) is not { } outcome)
                 return Results.BadRequest();
-            if (!scheduler.IsActive)
-                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-            var recorded = await scheduler.CompleteAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, outcome, CancellationToken.None).ConfigureAwait(false);
-            return recorded ? Results.NoContent() : Results.NotFound(); // unknown, not claimed, another job's, or reported already
+            return await scheduler.CompleteAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, outcome, CancellationToken.None).ConfigureAwait(false) switch
+            {
+                AgentRuns.AgentRunAnswer.Yes => Results.NoContent(),
+                AgentRuns.AgentRunAnswer.Unavailable => Results.StatusCode(StatusCodes.Status503ServiceUnavailable),
+                _ => Results.NotFound(), // unknown, not claimed, another job's, or reported already
+            };
         });
     }
+
+    /// <summary>The body of <c>POST /runs/{id}/claim</c>: the job execution's name, so it can repeat a claim whose answer it lost.</summary>
+    public sealed record RunClaimBody(string? Claimant);
 
     /// <summary>The body of <c>POST /runs/{id}/outcome</c>.</summary>
     public sealed record RunOutcomeBody(string? Outcome);
