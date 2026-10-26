@@ -158,6 +158,14 @@ Check 'the engine in Azure is given a journal folder under /tmp' {
   if ($apps -notmatch "\{ name: 'Journal__Directory', value: '/tmp/[a-z-]+' \}") { throw 'Journal__Directory is not set to a folder under /tmp' }
 }
 
+# A stopped engine (startEngine false) still runs once per new revision: it must not queue agent runs, or the jobs calling
+# it keep it awake and it trades until the cutover.
+Check 'the engine queues agent runs only when startEngine is true' {
+  $apps = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-apps.bicep'))
+  if ($apps -notmatch "\{ name: 'AgentRuns__Mode', value: startEngine \? 'Queue' : 'Off' \}") { throw 'AgentRuns__Mode does not follow startEngine' }
+  if (([regex]::Matches($apps, 'AgentRuns__Mode')).Count -ne 1) { throw 'AgentRuns__Mode is set more than once' }
+}
+
 # The engine in Azure signs in to Cosmos DB with its identity: no account key anywhere in the agents' templates, and its
 # roles reach CIX's containers only, never delete, and leave the journal append-only.
 Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal append-only' {
@@ -189,7 +197,7 @@ Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal a
 
 Check 'agents settings: dev''s are valid, dates stay text, and they reach the template as its parameters' {
   $s = Read-CixEnvironment -Name dev
-  # The owner moves dev.json from none to platform to apps; no test pins which.
+  # The owner moves dev.json from none to platform to apps, and starts the engine at the cutover; no test pins which.
   if (@('none', 'platform', 'apps') -notcontains $s.agents.deploy) { throw "agents.deploy in dev.json is '$($s.agents.deploy)'" }
   Expect ($s.agents.budgetStartDate -is [string]) $true 'budgetStartDate is text'
   Expect $s.agents.budgetStartDate '2026-11-01' 'budgetStartDate'
@@ -197,7 +205,8 @@ Check 'agents settings: dev''s are valid, dates stay text, and they reach the te
   $d = Get-CixDeploymentValues -Settings $s -SharedAccountName 'cosmos-shared-test' -Agents @{ budgetContactEmail = 'owner@example.com'; ownerObjectId = $ownerId }
   Expect $d.Values.agents 'platform' 'agents'
   Expect $d.Values.agentsLocation 'polandcentral' 'agentsLocation'
-  Expect $d.Values.startEngine $false 'startEngine'
+  Expect ($s.agents.startEngine -is [bool]) $true 'startEngine is a boolean'
+  Expect $d.Values.startEngine $s.agents.startEngine 'startEngine'
   Expect $d.Values.monthlyBudget 40 'monthlyBudget'
   Expect $d.Values.budgetContactEmail 'owner@example.com' 'budgetContactEmail'
   Expect $d.Values.ownerObjectId $ownerId 'ownerObjectId'
@@ -508,11 +517,13 @@ foreach ($case in @(
   }
 }
 
-# A copy of dev.json as environment 'citest' (its own group and database), with agents.deploy set here rather than whatever
-# dev.json has; written to infra/environments/citest.json by the helpers below, and removed after.
+# A copy of dev.json as environment 'citest' (its own group and database), with agents.deploy set here and the engine
+# stopped, rather than whatever dev.json has; written to infra/environments/citest.json by the helpers below, and removed after.
 function Get-CitestJson([string]$Deploy) {
   $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest').Replace('"databaseName": "cix"', '"databaseName": "cix-citest"')
   if ($json -notmatch '"deploy": "(none|platform|apps)"') { throw 'dev.json has no agents.deploy to replace' }
+  if ($json -notmatch '"startEngine": (true|false)') { throw 'dev.json has no agents.startEngine to replace' }
+  $json = [regex]::Replace($json, '"startEngine": (true|false)', '"startEngine": false')
   return [regex]::Replace($json, '"deploy": "(none|platform|apps)"', "`"deploy`": `"$Deploy`"")
 }
 function Invoke-CitestProvision([hashtable]$Fake, [hashtable]$Arguments) {

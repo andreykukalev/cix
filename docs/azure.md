@@ -131,7 +131,7 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
 
   Deploy `platform` first, set up CI's deploy identity (below), then deploy `apps` once CI has pushed images, and run the setup again. The jobs' access to `claude-token` is granted in the same deployment that creates them and takes a few minutes to apply, so the first `apps` deployment can fail on it; run it again shortly.
 
-  While `startEngine` is false the engine has no replica, but a request to its internal address would start one for a few minutes. Nothing in the environment calls it until the cutover.
+  While `startEngine` is false the engine has no replica and queues no agent runs (`AgentRuns:Mode` is `Off`). Azure still starts each new revision once, and a request to its internal address would start one, for a few minutes; with nothing queued, no job calls it and it scales back to zero.
 
 ### Deploying the engine and the agents from CI
 
