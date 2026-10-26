@@ -152,6 +152,27 @@ Check 'the agents'' templates set what the engine and the job scripts read' {
   }
 }
 
+# The engine in Azure signs in to Cosmos DB with its identity: no account key anywhere in the agents' templates, and its
+# roles reach CIX's containers only, never delete, and leave the journal append-only.
+Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal append-only' {
+  $modules = Join-CixPath $repo 'infra' 'modules'
+  foreach ($name in 'agents-platform.bicep', 'agents-apps.bicep') {
+    $text = [IO.File]::ReadAllText((Join-CixPath $modules $name))
+    if ($text -match '(?i)listKeys\(\)\.primary(Master|Readonly)|AccountKey|cosmos-key') { throw "$name hands out the account key" }
+  }
+  $apps = [IO.File]::ReadAllText((Join-CixPath $modules 'agents-apps.bicep'))
+  if ($apps -notmatch "\{ name: 'Cosmos__ManagedIdentityClientId', value: engineIdentity\.properties\.clientId \}") { throw 'the engine is not given its identity for Cosmos DB' }
+  $access = [IO.File]::ReadAllText((Join-CixPath $modules 'cosmos-engine-access.bicep'))
+  if ($access -match '(?i)items/(delete|\*)|containers/\*|databaseAccounts/\*|unmask|executeStoredProcedure|manageConflicts') { throw 'a role allows more than reading and writing items' }
+  if (([regex]::Matches($access, 'assignableScopes: \[databaseScope\]')).Count -ne 1 -or $access -notmatch "var databaseScope = '\$\{account\.id\}/dbs/\$\{databaseName\}'") { throw 'the roles are not limited to CIX''s database' }
+  if ($access -notmatch "scope: '\$\{databaseScope\}/colls/\$\{a\.container\}'") { throw 'the roles are not assigned per container' }
+  $parts = @{}
+  foreach ($part in @(($access -split "container: '") | Select-Object -Skip 1)) { $parts[$part.Substring(0, $part.IndexOf("'"))] = $part }
+  Expect (($parts.Keys | Sort-Object) -join ',') 'journal,requests,state' 'containers'
+  if ($parts['journal'] -notmatch 'items/create' -or $parts['journal'] -match 'items/(replace|upsert)') { throw 'the journal role is not append-only' }
+  if ($parts['requests'] -match 'items/(create|upsert)') { throw 'the engine may only update requests, not add them' }
+}
+
 Check 'agents settings: dev keeps them off, dates stay text, and they reach the template as its parameters' {
   $s = Read-CixEnvironment -Name dev
   Expect $s.agents.deploy 'none' 'agents.deploy in dev.json (on only when the owner says so)'
@@ -844,7 +865,7 @@ $agentsFake = @{
   'ad app owner'          = "[{`"id`":`"$ownerId`"}]"
   'keyvault list'         = '[{"name":"kvother","tags":{}},{"name":"kvcixcitest1","tags":{"cix-environment":"citest"}}]'
   'acr list'              = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}}]'
-  'keyvault secret list'  = '[{"name":"cosmos-key","id":"https://kvcixcitest1.vault.azure.net/secrets/cosmos-key"},{"name":"claude-token","id":"https://kvcixcitest1.vault.azure.net/secrets/claude-token"}]'
+  'keyvault secret list'  = '[{"name":"claude-token","id":"https://kvcixcitest1.vault.azure.net/secrets/claude-token"}]'
   'ad app list'           = '[]'
   'ad app create'         = '44444444-4444-4444-4444-444444444444'
   'ad sp list'            = '[]'
@@ -956,7 +977,7 @@ foreach ($case in @(
 # Without secrets/claude_token (it is never in the repo; skipped where a developer has one), a vault without claude-token stops.
 if (-not (Test-Path (Join-CixPath $repo 'secrets' 'claude_token'))) {
   Check 'provision.ps1 agents apps refuses: no claude-token in the vault and none to upload' {
-    $r = Invoke-AgentsProvision @{ 'keyvault secret list' = '[{"name":"cosmos-key"}]' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+    $r = Invoke-AgentsProvision @{ 'keyvault secret list' = '[{"name":"other-secret"}]' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
     if (-not $r.Error -or -not $r.Error.Contains('has no claude-token. Run tools/setup-secrets.ps1')) { throw "got: $($r.Error)" }
     if ($r.Calls.Contains('ad app create') -or $r.Calls.Contains('deployment sub create')) { throw 'went on anyway' }
   }

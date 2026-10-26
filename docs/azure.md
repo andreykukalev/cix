@@ -115,7 +115,8 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
   - a VNet with an internal Container Apps environment (workload profiles, Consumption);
   - the container registry (Basic, about $5 a month);
   - a storage account with the four run queues, with shared keys off;
-  - Key Vault, with `cosmos-key` copied from the shared account;
+  - Key Vault, for `claude-token`. It holds no Cosmos DB key: the engine signs in to the database with its managed identity;
+  - in the shared account, Cosmos DB roles for the engine's identity (`infra/modules/cosmos-engine-access.bicep`), one per container and within CIX's database only. In `journal` it can read and add entries, never replace or delete one. In `state` it can read, create and replace documents, and in `requests` read and replace them, with no delete anywhere. They can't create containers or reach other projects' databases. A new role assignment can take a few minutes to apply: an engine started before then stops on a 403 and the platform starts it again;
   - one managed identity each for the engine and the three jobs, with only the roles each needs;
   - the budget, with alerts to your sign-in's address, or to `-BudgetEmail` (a personal Microsoft account usually has no address in the tenant that gets mail, so pass it).
 
@@ -158,16 +159,16 @@ Optionally set the repository variable `CLAUDE_CODE_VERSION` to pin the Claude C
 
 **What the identity could still do**, if a workflow on `main` misused it. `main` has no branch protection here, so this trusts everyone who can push to `main`, merge into it or start a workflow on it, including the Claude coding agents (see the dashboard's paragraph above).
 - Run any image as the engine or a job, with their settings changed, since Azure has no right that allows changing only the image. That image runs with the engine's or the job's managed identity, so it can do whatever they can:
-  - read `cosmos-key`, the shared Cosmos DB account's read-write key. With it, it can write and delete anywhere in that account: CIX's journal (which the engine itself only appends to), its state, including the kill switch and halts, and other projects' databases;
+  - use the engine's Cosmos DB roles: read CIX's database, add journal entries, and change its state documents, including the kill switch and halts, and the outcomes of your requests. It can't delete anything, rewrite a journal entry, or reach other projects' databases in the shared account;
   - read `claude-token`, through a job's identity, and use the subscription it belongs to;
   - send run messages on the queues.
-- Change the trading mode and the environment name. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group and Key Vault, where CI has no role, and must not share a database or Cosmos DB account this key reaches (see the hosting memo).
+- Change the trading mode and the environment name. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group, Key Vault, identity and database, where CI has no role (see the hosting memo). It can share the free Cosmos DB account, since the paper engine's roles stop at CIX's paper database.
 
-Anyone who can push to `main` can already reach most of this through the code the engine runs. Moving the engine to Cosmos DB data-plane roles instead of the account key, scoped to its database and without delete on the journal, removes the widest part of it; it is the first item to do before the cutover ([hosting memo](research/azure-hosting.md), "Code changes", item 6).
+Anyone who can push to `main` can already reach most of this through the code the engine runs. What is still to do before the cutover is in the [hosting memo](research/azure-hosting.md) ("Code changes", item 6).
 
 If you suspect misuse:
 1. Remove the identity's role assignments, or delete `AGENTS_AZURE_CLIENT_ID`.
-2. Regenerate the shared account's primary key (anything else that uses it needs the new one), then run `provision.ps1` again. That copies the new key to Key Vault and puts the apps' settings back.
+2. Run `provision.ps1` again: it puts the apps' settings and the engine's Cosmos DB roles back. Then check the journal and the engine's state documents (the kill switch, halts) for anything you didn't do. The engine's roles can't delete, so nothing is gone.
 3. Renew `claude-token` (`claude setup-token`, then `provision.ps1 -UploadClaudeToken`).
 4. Check the registry's tags and the engine's revisions.
 

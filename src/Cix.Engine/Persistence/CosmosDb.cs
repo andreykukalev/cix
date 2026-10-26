@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Azure.Core;
+using Azure.Identity;
 using Microsoft.Azure.Cosmos;
 
 namespace Cix.Engine.Persistence;
@@ -14,8 +16,16 @@ public sealed class CosmosOptions
 
     public string Endpoint { get; set; } = "https://localhost:8081";
 
-    /// <summary>From user secrets or Key Vault, never a file in the repo. Optional with the Linux emulator, which ignores keys.</summary>
+    /// <summary>From user secrets, never a file in the repo. Optional with the Linux emulator, which ignores keys.</summary>
     public string? AccountKey { get; set; }
+
+    /// <summary>
+    /// In Azure: the client ID of the engine's user-assigned identity, used instead of a key. Its data-plane roles reach
+    /// CIX's containers only (infra/modules/cosmos-engine-access.bicep), and it can't create them, so they must exist.
+    /// </summary>
+    public string? ManagedIdentityClientId { get; set; }
+
+    public bool UsesIdentity => !string.IsNullOrEmpty(ManagedIdentityClientId);
 
     public string Database { get; set; } = "cix";
 
@@ -34,8 +44,17 @@ public sealed class CosmosOptions
         if (Emulator && !IsLocalHost(uri))
             throw new InvalidOperationException(
                 "Cosmos:Emulator is only allowed with a loopback endpoint or the Compose service https://cosmos:8081 (it accepts a self-signed certificate).");
-        if (!Emulator && string.IsNullOrWhiteSpace(AccountKey))
-            throw new InvalidOperationException("Cosmos:AccountKey is required (set it with dotnet user-secrets).");
+        if (UsesIdentity)
+        {
+            if (!Guid.TryParse(ManagedIdentityClientId, out _))
+                throw new InvalidOperationException("Cosmos:ManagedIdentityClientId must be the identity's client ID (a GUID).");
+            if (Emulator)
+                throw new InvalidOperationException("Cosmos:ManagedIdentityClientId can't be used with the emulator, which doesn't take Entra tokens.");
+            if (!string.IsNullOrEmpty(AccountKey))
+                throw new InvalidOperationException("Set Cosmos:AccountKey or Cosmos:ManagedIdentityClientId, not both.");
+        }
+        else if (!Emulator && string.IsNullOrWhiteSpace(AccountKey))
+            throw new InvalidOperationException("Cosmos:AccountKey is required (set it with dotnet user-secrets), or Cosmos:ManagedIdentityClientId in Azure.");
         if (string.IsNullOrWhiteSpace(Database) || Database.Length > 64)
             throw new InvalidOperationException("Cosmos:Database must be a short name.");
     }
@@ -71,11 +90,15 @@ public sealed class CosmosDb : IDisposable
     private readonly CosmosClient _client;
     private readonly string _database;
 
-    public CosmosDb(CosmosOptions options)
+    private readonly bool _usesIdentity;
+
+    /// <param name="credential">For tests: replaces the managed identity when <see cref="CosmosOptions.ManagedIdentityClientId"/> is set.</param>
+    public CosmosDb(CosmosOptions options, TokenCredential? credential = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
         _database = options.Database;
+        _usesIdentity = options.UsesIdentity;
 
         var clientOptions = new CosmosClientOptions
         {
@@ -95,6 +118,13 @@ public sealed class CosmosDb : IDisposable
                 // The emulator's certificate is self-signed; Validate() allows this for loopback or the Compose emulator only.
                 ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
             });
+        }
+
+        if (_usesIdentity)
+        {
+            credential ??= new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(options.ManagedIdentityClientId!));
+            _client = new CosmosClient(options.Endpoint, credential, clientOptions);
+            return;
         }
 
         // The Linux emulator ignores the key, but the SDK needs a well-formed one.
@@ -125,10 +155,27 @@ public sealed class CosmosDb : IDisposable
     /// <summary>
     /// Creates the database and containers if they don't exist yet. Call once at startup. The <c>requests</c> container is
     /// optional: in Azure the engine can't create containers (key-based metadata writes are off), so an account provisioned
-    /// before it existed runs on without manual requests until provisioning runs again.
+    /// before it existed runs on without manual requests until provisioning runs again. With a managed identity nothing is
+    /// created (its roles can't): the containers are only checked, and a missing <c>journal</c> or <c>state</c> fails.
     /// </summary>
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
+        if (_usesIdentity)
+        {
+            await Journal.ReadContainerAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            await State.ReadContainerAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await Requests.ReadContainerAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                RequestsAvailable = true;
+            }
+            catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Forbidden)
+            {
+                RequestsAvailable = false; // as below: provisioning adds it, and its role
+            }
+            return;
+        }
+
         Database database = await _client.CreateDatabaseIfNotExistsAsync(_database, cancellationToken: cancellationToken).ConfigureAwait(false);
         await database.CreateContainerIfNotExistsAsync(new ContainerProperties(JournalContainer, "/day"), cancellationToken: cancellationToken).ConfigureAwait(false);
         await database.CreateContainerIfNotExistsAsync(new ContainerProperties(StateContainer, "/id"), cancellationToken: cancellationToken).ConfigureAwait(false);

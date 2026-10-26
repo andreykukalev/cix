@@ -1,6 +1,7 @@
 // CIX in Azure: its own resource group with the read-only dashboard (Static Web Apps, Free), and its own database in the
 // shared Cosmos DB account (infra/shared/main.bicep, deployed first). Until agents is 'apps', the engine and the agents run
-// in Docker on the owner's PC and connect to the database over HTTPS with the account key.
+// in Docker on the owner's PC and connect to the database over HTTPS with the account key. In Azure the engine uses its
+// managed identity instead, with roles on CIX's containers only (modules/cosmos-engine-access.bicep).
 // agents (ADR-0013): 'platform' adds what the engine and the agent jobs run on (modules/agents-platform.bicep); 'apps'
 // also deploys the paper engine and the three jobs (modules/agents-apps.bicep). 'none', the default, adds neither.
 // Deploy with tools/azure/provision.ps1, which reads infra/environments/<name>.json. See docs/azure.md and ADR-0009.
@@ -138,8 +139,6 @@ module agentsPlatform 'modules/agents-platform.bicep' = if (agentsDeploy != 'non
     environmentName: environmentName
     location: agentsLocation
     tags: allTags
-    cosmosAccountName: sharedAccountName
-    cosmosResourceGroupName: sharedResourceGroupName
     monthlyBudget: monthlyBudget
     budgetStartDate: budgetStartDate
     budgetContactEmail: budgetContactEmail
@@ -147,11 +146,23 @@ module agentsPlatform 'modules/agents-platform.bicep' = if (agentsDeploy != 'non
   }
 }
 
+// The engine's access to CIX's database, granted where the account is, once the database and the identity exist.
+module engineCosmosAccess 'modules/cosmos-engine-access.bicep' = if (agentsDeploy != 'none') {
+  name: 'cix-${environmentName}-engine-cosmos-access'
+  scope: resourceGroup(sharedResourceGroupName)
+  dependsOn: [database]
+  params: {
+    accountName: sharedAccountName
+    databaseName: databaseName
+    enginePrincipalId: agentsPlatform!.outputs.enginePrincipalId
+  }
+}
+
 module agentsApps 'modules/agents-apps.bicep' = if (agentsDeploy == 'apps') {
   name: 'cix-${environmentName}-agents-apps'
   scope: group
   // No outputs passed between them (the apps find the platform's resources by name), so the order is stated here.
-  dependsOn: [agentsPlatform, database]
+  dependsOn: [agentsPlatform, database, engineCosmosAccess]
   params: {
     namePrefix: namePrefix
     environmentName: environmentName
