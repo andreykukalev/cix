@@ -142,7 +142,10 @@ public sealed partial class ToolCallContext(
             ? null // owner requests: allowed with place_order, which can do more than they can (ADR-0011)
             : $"The active {(analyst ? "analyst" : "strategy")} spec ({spec.Label}) doesn't allow {tool}.";
         if (reason is null)
+        {
+            NoteRunCall();
             return;
+        }
         await DenyAsync(tool, reason, cancellationToken).ConfigureAwait(false);
         throw new McpException(reason);
     }
@@ -154,20 +157,32 @@ public sealed partial class ToolCallContext(
     public async Task RequireRunAsync(string tool, CancellationToken cancellationToken)
     {
         if (!OutsideRun)
+        {
+            NoteRunCall();
             return;
+        }
         await DenyAsync(tool, OutsideRunReason, cancellationToken).ConfigureAwait(false);
         throw new McpException(OutsideRunReason);
     }
 
-    private const string OutsideRunReason =
-        "This call isn't part of a run the engine started for this job (X-Cix-Run must be the claimed run).";
+    private string OutsideRunReason => runs is null
+        ? "No agent runs are scheduled here (AgentRuns:Mode is Off), so agent tools are refused."
+        : "This call isn't part of a run the engine started for this job (X-Cix-Run must be the claimed run).";
 
     /// <summary>
-    /// When the engine schedules the runs (ADR-0013), a job's tool calls must belong to the run it claimed and hasn't
-    /// reported: the caps then bound what agents do, not only how often a job starts, and the journal's run IDs can be
-    /// trusted. Without the scheduler (Compose, or loopback) runs aren't tracked and this never applies.
+    /// In Azure (Entra) the engine schedules the runs (ADR-0013), and a job's tool calls must belong to the run it claimed
+    /// and hasn't reported: the caps then bound what agents do, not only how often a job starts, and the journal's run IDs
+    /// can be trusted. Without the scheduler there (agent runs off) every agent call is refused rather than unbounded.
+    /// Over loopback (Compose) runs aren't tracked and this never applies.
     /// </summary>
-    private bool OutsideRun => runs is not null && options.Auth == ToolServerAuth.Entra && !runs.IsRunInProgress(RunId, Agent);
+    private bool OutsideRun => options.Auth == ToolServerAuth.Entra && (runs is null || !runs.IsRunInProgress(RunId, Agent));
+
+    /// <summary>An allowed call inside a run: the run can't then be refunded as not run.</summary>
+    private void NoteRunCall()
+    {
+        if (runs is not null && options.Auth == ToolServerAuth.Entra && RunId is { } runId)
+            runs.NoteToolCall(runId);
+    }
 
     public async Task RequireOperatorAsync(string tool, CancellationToken cancellationToken)
     {

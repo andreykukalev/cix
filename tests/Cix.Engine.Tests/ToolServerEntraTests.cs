@@ -192,18 +192,7 @@ public sealed class ToolServerEntraTests
         var (app, address, tools) = await StartAsync(setup.Scheduler);
         await using (app)
         {
-            async Task<bool> RefusedAsync(string tool, string? runId, string? identity = null)
-            {
-                var headers = new Dictionary<string, string> { ["Authorization"] = "Bearer " + Token(identity ?? TraderId) };
-                if (runId is not null)
-                    headers[ToolServerOptions.RunHeader] = runId;
-                await using var client = await McpClient.CreateAsync(new HttpClientTransport(new HttpClientTransportOptions
-                {
-                    Endpoint = new Uri(address + ToolServerRegistration.Endpoint),
-                    AdditionalHeaders = headers,
-                }));
-                return (await client.CallToolAsync(tool, new Dictionary<string, object?>())).IsError == true;
-            }
+            Task<bool> RefusedAsync(string tool, string? runId, string? identity = null) => IsRefusedAsync(address, tool, runId, identity);
 
             Assert.True(await RefusedAsync("get_portfolio", run.Id)); // queued, not claimed yet
             Assert.Equal(HttpStatusCode.OK, (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/claim", Token(TraderId))).Status);
@@ -230,11 +219,65 @@ public sealed class ToolServerEntraTests
     }
 
     [Fact]
-    public async Task TheRoleComesFromTheToken_NotFromTheHeader()
+    public async Task InAzure_WithAgentRunsOff_AgentToolsAreRefused()
     {
-        var (app, address, tools) = await StartAsync();
+        var (app, address, tools) = await StartAsync(); // Entra, no scheduler: no run can be claimed, so none is in progress
         await using (app)
         {
+            Assert.True(await IsRefusedAsync(address, "get_strategy_spec", "run-20261026-080000-abcdef"));
+            Assert.True(await IsRefusedAsync(address, "get_portfolio", "run-20261026-080000-abcdef"));
+            Assert.Equal(2, tools.Journal.Entries.Count(e => e.Kind == "tool-denied" && e.Summary.Contains("Mode is Off", StringComparison.Ordinal)));
+            Assert.DoesNotContain(tools.Journal.Entries, e => e.Kind == "tool-call");
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task ARunThatUsedTools_ReportedNotRun_CountsAsFailed()
+    {
+        var setup = new AgentRunSchedulerTests.Setup();
+        await setup.Scheduler.PollOnceAsync(CancellationToken.None);
+        var run = setup.Queue.Sent.Single().Run;
+        var (app, address, _) = await StartAsync(setup.Scheduler);
+        await using (app)
+        {
+            Assert.Equal(HttpStatusCode.OK, (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/claim", Token(TraderId))).Status);
+            Assert.False(await IsRefusedAsync(address, "get_portfolio", run.Id));
+            Assert.Equal(HttpStatusCode.NoContent,
+                (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/outcome", Token(TraderId), """{"outcome":"not-run"}""")).Status);
+
+            Assert.Equal((1, 0), (setup.Scheduler.State!.Runs, setup.Scheduler.State.Refunds)); // no refund
+            Assert.Contains("reported not-run", Assert.Single(setup.Steps("failed")).Summary, StringComparison.Ordinal);
+            Assert.Empty(setup.Steps("not-run"));
+            await app.StopAsync();
+        }
+    }
+
+    /// <summary>Calls <paramref name="tool"/> as <paramref name="identity"/> (the trader by default) under run <paramref name="runId"/>.</summary>
+    private static async Task<bool> IsRefusedAsync(string address, string tool, string? runId, string? identity = null)
+    {
+        var headers = new Dictionary<string, string> { ["Authorization"] = "Bearer " + Token(identity ?? TraderId) };
+        if (runId is not null)
+            headers[ToolServerOptions.RunHeader] = runId;
+        await using var client = await McpClient.CreateAsync(new HttpClientTransport(new HttpClientTransportOptions
+        {
+            Endpoint = new Uri(address + ToolServerRegistration.Endpoint),
+            AdditionalHeaders = headers,
+        }));
+        return (await client.CallToolAsync(tool, new Dictionary<string, object?>())).IsError == true;
+    }
+
+    [Fact]
+    public async Task TheRoleComesFromTheToken_NotFromTheHeader()
+    {
+        var setup = new AgentRunSchedulerTests.Setup();
+        setup.Signals.Inputs = new(true, true, string.Empty, "req-1"); // an owner request waiting
+        await setup.Scheduler.PollOnceAsync(CancellationToken.None);
+        var run = setup.Queue.Sent.Select(s => s.Run).Single(r => r.Kind == AgentRunKind.Requests);
+        var (app, address, tools) = await StartAsync(setup.Scheduler);
+        await using (app)
+        {
+            Assert.Equal(HttpStatusCode.OK, (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/claim", Token(RequestsId))).Status);
             await using var client = await McpClient.CreateAsync(new HttpClientTransport(new HttpClientTransportOptions
             {
                 Endpoint = new Uri(address + ToolServerRegistration.Endpoint),
@@ -243,7 +286,7 @@ public sealed class ToolServerEntraTests
                     ["Authorization"] = "Bearer " + Token(RequestsId),
                     [ToolServerOptions.AgentHeader] = "analyst", // claims to be someone else
                     [ToolServerOptions.OperatorKeyHeader] = ToolRig.OperatorKey,
-                    [ToolServerOptions.RunHeader] = "run-9",
+                    [ToolServerOptions.RunHeader] = run.Id,
                 },
             }));
 
@@ -259,7 +302,7 @@ public sealed class ToolServerEntraTests
             Assert.NotEqual(true, spec.IsError);
             Assert.True(view.IsError); // analyst tools: not for this identity
             Assert.True(journal.IsError); // no operator tools with Entra, whatever the header says
-            Assert.Equal(("trader-requests", "run-9"), tools.Journal.Entries.Where(e => e.Kind == "tool-call").Select(e => (e.Actor, e.RunId)).Single());
+            Assert.Equal(("trader-requests", run.Id), tools.Journal.Entries.Where(e => e.Kind == "tool-call").Select(e => (e.Actor, e.RunId)).Single());
             Assert.Equal(2, tools.Journal.Entries.Count(e => e.Kind == "tool-denied" && e.Actor == "trader-requests"));
             await app.StopAsync();
         }

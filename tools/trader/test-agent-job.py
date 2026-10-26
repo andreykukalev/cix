@@ -121,6 +121,7 @@ FAKE_CLAUDE = """#!/usr/bin/env bash
 {
   printf 'run=%s\\n' "$CIX_RUN_ID"
   [[ "$CIX_ENGINE_TOKEN" == "$EXPECTED_ENGINE_TOKEN" ]] && echo token=ok
+  [[ -z "${IDENTITY_ENDPOINT:-}${IDENTITY_HEADER:-}" ]] && echo identity=absent
   printf 'arg=%s\\n' "$@"
 } > "$FAKE_CLAUDE_LOG"
 case "${FAKE_CLAUDE_MODE:-done}" in
@@ -135,7 +136,7 @@ def message(run_id, job, purpose="heartbeat"):
     return base64.b64encode(json.dumps({"runId": run_id, "job": job, "purpose": purpose}).encode()).decode()
 
 
-def run(script, job, port, tmp, claude_mode="done"):
+def run(script, job, port, tmp, claude_mode="done", **settings):
     log = os.path.join(tmp, "claude.log")
     if os.path.exists(log):
         os.remove(log)
@@ -162,6 +163,7 @@ def run(script, job, port, tmp, claude_mode="done"):
         "FAKE_CLAUDE_LOG": log,
         "FAKE_CLAUDE_MODE": claude_mode,
     }
+    env.update(settings)
     result = subprocess.run(["bash", os.path.join(ROOT, "tools", "trader", script)], env=env, capture_output=True, text=True, timeout=120)
     output = result.stdout + result.stderr
     assert ENGINE_TOKEN not in output and STORAGE_TOKEN not in output and IDENTITY_HEADER not in output, "a token was printed"
@@ -211,6 +213,7 @@ def main():
             claim = calls("POST", "/runs/run-20261026-160000-abc123/claim")
             assert claim and json.loads(claim[0][2]) == {"claimant": "cix-trader-x7k2p"}, claim
             assert claude and "run=run-20261026-160000-abc123" in claude and "token=ok" in claude, claude
+            assert "identity=absent" in claude, "Claude could get tokens of its own: " + claude
             assert "arg=Run one trading cycle of the active strategy now." in claude, claude
             assert any(line.startswith("arg=") and line.endswith("tools/trader/mcp-azure.json") for line in claude.splitlines()), claude
             outcome = calls("POST", "/runs/run-20261026-160000-abc123/outcome")
@@ -264,7 +267,7 @@ def main():
             assert code != 0, out
             assert [json.loads(o[2]) for o in calls("POST", "/outcome")] == [{"outcome": "failed"}]
             # The job's files go with its container: the end of stderr reaches its log, with tokens and keys masked.
-            assert "stderr (last 30 lines)" in out and "| boom: bearer <token>, key sk-ant-***" in out, out
+            assert "stderr (last 30 lines)" in out and "| boom: bearer *** key ***" in out, out
             assert "x" * 12 not in out, out
 
         def poison_message():
@@ -287,6 +290,19 @@ def main():
 
         def bad_run_id_is_dropped():
             reset("runs-trader", [("m11", 0, message("../../etc/passwd", "trader"))])
+            code, out, claude = run("run-trader.sh", "trader", port, tmp)
+            assert code == 0 and claude is None and not calls("POST", "/claim"), out
+
+        def unsafe_settings_are_refused():
+            for settings, why in (({"CIX_ENGINE_URL": f"http://127.0.0.1:{port}/"}, "CIX_ENGINE_URL"),
+                                  ({"CIX_ENGINE_URL": "http://engine.example.com"}, "CIX_ENGINE_URL"),
+                                  ({"TRADER_TIMEOUT_MINUTES": "16"}, "15 minutes or less")):
+                reset("runs-trader", [("m12", 0, message("run-20261026-161000-ffffff", "trader"))])
+                code, out, _ = run("run-trader.sh", "trader", port, tmp, **settings)
+                assert code != 0 and why in out and not WORLD.requests, (settings, out)
+
+        def dot_run_id_is_dropped():
+            reset("runs-trader", [("m13", 0, message("..", "trader"))])
             code, out, claude = run("run-trader.sh", "trader", port, tmp)
             assert code == 0 and claude is None and not calls("POST", "/claim"), out
 

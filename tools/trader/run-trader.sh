@@ -96,7 +96,7 @@ run_once() {
   wait_for_engine
   say "$run_id starting: $why ($auth, model $model)"
 
-  (cd "$dir" && timeout "${timeout_minutes}m" claude -p "$prompt" \
+  (cd "$dir" && timeout "${timeout_minutes}m" env -u IDENTITY_ENDPOINT -u IDENTITY_HEADER -u MSI_ENDPOINT -u MSI_SECRET claude -p "$prompt" \
       --append-system-prompt "$instructions" \
       --mcp-config "$dir/tools/trader/$mcp" --strict-mcp-config \
       --allowedTools "$allowed" --disallowedTools "$refused" \
@@ -116,7 +116,7 @@ run_once() {
   fi
   if ! jq -e . "$log" >/dev/null 2>&1; then
     if cat "$log" "$logs/$run_id.err" 2>/dev/null | grep -qiE 'invalid api key|authentication_error|unauthori[sz]ed|oauth token (has )?expired|401'; then
-      say "$run_id: Claude rejected the credentials ($auth). Renew with 'claude setup-token' (or a new API key), run tools/setup-secrets.ps1 -Claude, and restart the trader."
+      say "$run_id: Claude rejected the credentials ($auth). $(renew_hint)"
     else
       say "$run_id failed (exit $code)."
       failure_details "$logs" "$run_id"
@@ -127,7 +127,7 @@ run_once() {
   if [[ "$(jq -r '.is_error // false' "$log")" == "true" ]]; then
     say "$run_id ended with an error: $(jq -r '.subtype // "unknown"' "$log")"
     if jq -r '.result // ""' "$log" | grep -qiE 'invalid api key|authentication|401|oauth'; then
-      say "Claude rejected the credentials ($auth). Renew them and restart the trader."
+      say "Claude rejected the credentials ($auth). $(renew_hint)"
     fi
   fi
   say "$run_id done. Models used: $(jq -r '(.modelUsage // {}) | keys | join(", ")' "$log"), cost: $(jq -r '.total_cost_usd // "?"' "$log") USD, turns: $(jq -r '.num_turns // "?"' "$log")"

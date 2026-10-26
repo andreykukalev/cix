@@ -13,9 +13,11 @@
 # variables, passed to curl through a file descriptor rather than its arguments, and never printed.
 #
 # Settings (environment): CIX_JOB (trader, trader-requests or analyst: the role of this job's identity), CIX_ENGINE_URL
-# (the engine's internal address), CIX_ENGINE_AUDIENCE (its application ID URI), CIX_QUEUE_URL and CIX_POISON_QUEUE_URL
+# (the engine's internal address, no path), CIX_ENGINE_AUDIENCE (its application ID URI), CIX_QUEUE_URL and CIX_POISON_QUEUE_URL
 # (https://<account>.queue.core.windows.net/<queue>), AZURE_CLIENT_ID (a user-assigned identity's client ID; empty for
-# system-assigned). From the platform: IDENTITY_ENDPOINT, IDENTITY_HEADER, CONTAINER_APP_JOB_EXECUTION_NAME.
+# system-assigned), and the Claude credential as for Compose (CLAUDE_TOKEN_FILE: a Key Vault secret mounted as a file).
+# From the platform: IDENTITY_ENDPOINT, IDENTITY_HEADER, CONTAINER_APP_JOB_EXECUTION_NAME. Claude itself starts without the
+# identity endpoint, so nothing it runs can get tokens of its own; it gets only this run's engine token.
 # The caller defines say (agent-common.sh):
 # shellcheck disable=SC2154
 
@@ -25,22 +27,28 @@ job_attempts=6        # engine calls: a 503 (deployment, busy) or a dropped conn
 job_retry_seconds="${CIX_JOB_RETRY_SECONDS:-10}"
 [[ "$job_retry_seconds" =~ ^[0-9]{1,3}$ ]] || job_retry_seconds=10
 
-# Succeeds for an https URL, or http on loopback (tests) or a plain in-environment host name (the engine's internal app).
+# Succeeds for an https URL, or http on loopback (tests).
 job_url_ok() {
-  [[ "$1" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._/-]*)?$ ]] && return 0
-  [[ "${2:-}" == "plain-http" && "$1" =~ ^http://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] && return 0
-  [[ "$1" =~ ^http://127\.0\.0\.1:[0-9]+(/[A-Za-z0-9._/-]*)?$ ]]
+  [[ "$1" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._-]+)*$ ]] || [[ "$1" =~ ^http://127\.0\.0\.1:[0-9]+(/[A-Za-z0-9._-]+)*$ ]]
+}
+
+# The engine's address: a host only, no path or trailing slash. Plain http only for a single-label name, which stays inside
+# the Container Apps environment (the app's name), or loopback; the token never goes to an outside host unencrypted.
+job_engine_url_ok() {
+  [[ "$1" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ || "$1" =~ ^http://[a-z0-9-]+(:[0-9]+)?$ || "$1" =~ ^http://127\.0\.0\.1:[0-9]+$ ]]
 }
 
 job_check_settings() {
   local expected="$1"
   [[ "${CIX_JOB:-}" =~ ^($expected)$ ]] || { say "CIX_JOB must be one of: ${expected//|/, }."; return 1; }
-  job_url_ok "${CIX_ENGINE_URL:-}" plain-http || { say "CIX_ENGINE_URL must be the engine's address, like http://cix-engine."; return 1; }
+  job_engine_url_ok "${CIX_ENGINE_URL:-}" || { say "CIX_ENGINE_URL must be the engine's address with no path, like https://cix-engine.internal.<environment domain>."; return 1; }
   job_url_ok "${CIX_QUEUE_URL:-}" || { say "CIX_QUEUE_URL must be the job's queue, like https://<account>.queue.core.windows.net/runs-trader."; return 1; }
   job_url_ok "${CIX_POISON_QUEUE_URL:-}" || { say "CIX_POISON_QUEUE_URL must be the poison queue's https URL."; return 1; }
   [[ "${CIX_ENGINE_AUDIENCE:-}" =~ ^[A-Za-z0-9:/._-]{3,200}$ ]] || { say "CIX_ENGINE_AUDIENCE must be the engine's application ID URI, like api://cix-engine."; return 1; }
   [[ -n "${IDENTITY_ENDPOINT:-}" && -n "${IDENTITY_HEADER:-}" ]] || { say "No managed identity here (IDENTITY_ENDPOINT); job mode runs only as a Container Apps Job."; return 1; }
   [[ -z "${AZURE_CLIENT_ID:-}" || "$AZURE_CLIENT_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { say "AZURE_CLIENT_ID must be the identity's client ID (a GUID)."; return 1; }
+  # A run must end, and report, within the job's 20-minute replica timeout, claim and report retries included.
+  (( timeout_minutes <= 15 )) || { say "The run timeout must be 15 minutes or less in job mode (the job stops a replica after 20)."; return 1; }
   return 0
 }
 
@@ -98,7 +106,7 @@ job_take() {
   message="$(printf '%s' "$text" | base64 -d 2>/dev/null)"
   job_run_id="$(jq -r '.runId // empty' <<<"$message" 2>/dev/null)"
   job_purpose="$(jq -r '.purpose // empty' <<<"$message" 2>/dev/null)"
-  if [[ ! "$job_run_id" =~ ^[A-Za-z0-9._:-]{1,64}$ || "$(jq -r '.job // empty' <<<"$message" 2>/dev/null)" != "$CIX_JOB" \
+  if [[ ! "$job_run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$ || "$(jq -r '.job // empty' <<<"$message" 2>/dev/null)" != "$CIX_JOB" \
         || ! "$job_purpose" =~ ^[a-z]{1,20}$ ]]; then
     say "Message $id isn't a run for this job; dropped."
     job_run_id=""

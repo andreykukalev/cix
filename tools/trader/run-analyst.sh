@@ -68,7 +68,7 @@ run_once() {
   wait_for_engine
   say "$run_id starting ($auth, model $model)"
 
-  (cd "$dir" && timeout "${timeout_minutes}m" claude -p 'Assess the market now and record your view.' \
+  (cd "$dir" && timeout "${timeout_minutes}m" env -u IDENTITY_ENDPOINT -u IDENTITY_HEADER -u MSI_ENDPOINT -u MSI_SECRET claude -p 'Assess the market now and record your view.' \
       --append-system-prompt "$instructions"$'\n\n'"$site_note" \
       --mcp-config "$dir/tools/trader/$mcp" --strict-mcp-config \
       --allowedTools "$tools" --disallowedTools "$denied" \
