@@ -1,0 +1,190 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using Cix.Engine.Tools;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
+using ModelContextProtocol.Client;
+
+namespace Cix.Engine.Tests;
+
+/// <summary>The tool server with Entra authentication (ADR-0013): tokens signed with a test key in place of Entra's.</summary>
+public sealed class ToolServerEntraTests
+{
+    private static readonly string Tenant = Guid.NewGuid().ToString();
+    private static readonly string TraderId = Guid.NewGuid().ToString();
+    private static readonly string RequestsId = Guid.NewGuid().ToString();
+    private const string Audience = "api://cix-engine-test";
+
+    // Built at runtime: not a secret, and scanners needn't think so.
+    private static readonly SymmetricSecurityKey Key = new(RandomNumberGenerator.GetBytes(32));
+
+    private static ToolServerOptions Options() => new()
+    {
+        Url = "http://0.0.0.0:5077",
+        Auth = ToolServerAuth.Entra,
+        Entra = new EntraToolServerOptions
+        {
+            TenantId = Tenant,
+            Audience = Audience,
+            Agents = new(StringComparer.OrdinalIgnoreCase) { [TraderId] = "trader", [RequestsId] = "trader-requests" },
+            TestSigningKey = Key,
+        },
+    };
+
+    private static ToolServerOptions Changed(Action<ToolServerOptions> change)
+    {
+        var options = Options();
+        change(options);
+        return options;
+    }
+
+    /// <summary>A token like a managed identity's. Its lifetime spans any clock a test machine might have.</summary>
+    private static string Token(
+        string oid, string? audience = Audience, string? issuer = null, SecurityKey? key = null, DateTime? expires = null) =>
+        new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+        {
+            Issuer = issuer ?? $"https://sts.windows.net/{Tenant}/",
+            Audience = audience,
+            Claims = new Dictionary<string, object> { ["oid"] = oid, ["tid"] = Tenant },
+            IssuedAt = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            NotBefore = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            Expires = expires ?? new DateTime(2100, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            SigningCredentials = new SigningCredentials(key ?? Key, SecurityAlgorithms.HmacSha256),
+        });
+
+    private static async Task<(WebApplication App, string Address, ToolRig Tools)> StartAsync()
+    {
+        var tools = new ToolRig();
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddSingleton<TimeProvider>(tools.Rig.Time);
+        builder.Services.AddSingleton(tools.Features);
+        builder.Services.AddSingleton(tools.Rig.Execution);
+        builder.Services.AddSingleton(tools.Rig.KillSwitch);
+        builder.Services.AddSingleton(Rig.Limits);
+        builder.Services.AddSingleton(tools.Scanner);
+        builder.Services.AddSingleton(tools.Universe);
+        builder.Services.AddSingleton(tools.Views);
+        builder.Services.AddSingleton(tools.AnalystSpecs);
+        builder.Services.AddCixToolServer(Options(), tools.Specs, tools.Journal);
+        var app = builder.Build();
+        app.UseCixToolServer();
+        await app.StartAsync();
+        return (app, app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First(), tools);
+    }
+
+    private static async Task<HttpStatusCode> GetAsync(string url, string? token = null)
+    {
+        using var client = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (token is not null)
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var response = await client.SendAsync(request);
+        return response.StatusCode;
+    }
+
+    [Fact]
+    public async Task OnlyListedIdentities_WithValidTokens_GetIn_AndHealthStaysOpen()
+    {
+        var (app, address, _) = await StartAsync();
+        await using (app)
+        {
+            var signals = address + ToolServerRegistration.SignalsEndpoint;
+            Assert.Equal(HttpStatusCode.OK, await GetAsync(address + ToolServerRegistration.HealthEndpoint));
+            Assert.Equal(HttpStatusCode.Unauthorized, await GetAsync(address + "/anything-else")); // closed by default
+            Assert.Equal(HttpStatusCode.Unauthorized, await GetAsync(signals));
+            Assert.Equal(HttpStatusCode.Unauthorized, await GetAsync(signals, "not-a-token"));
+            Assert.Equal(HttpStatusCode.Unauthorized, await GetAsync(signals, Token(TraderId, audience: "api://something-else")));
+            Assert.Equal(HttpStatusCode.Unauthorized, await GetAsync(signals, Token(TraderId, issuer: $"https://sts.windows.net/{Guid.NewGuid()}/")));
+            Assert.Equal(HttpStatusCode.Unauthorized, await GetAsync(signals, Token(TraderId, key: new SymmetricSecurityKey(RandomNumberGenerator.GetBytes(32)))));
+            Assert.Equal(HttpStatusCode.Unauthorized, await GetAsync(signals, Token(TraderId, expires: new DateTime(2001, 1, 1, 0, 0, 0, DateTimeKind.Utc))));
+            Assert.Equal(HttpStatusCode.Forbidden, await GetAsync(signals, Token(Guid.NewGuid().ToString()))); // valid, but not one of ours
+            Assert.Equal(HttpStatusCode.OK, await GetAsync(signals, Token(TraderId)));
+            Assert.Equal(HttpStatusCode.OK, await GetAsync(signals, Token(TraderId, issuer: $"https://login.microsoftonline.com/{Tenant}/v2.0")));
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TheRoleComesFromTheToken_NotFromTheHeader()
+    {
+        var (app, address, tools) = await StartAsync();
+        await using (app)
+        {
+            await using var client = await McpClient.CreateAsync(new HttpClientTransport(new HttpClientTransportOptions
+            {
+                Endpoint = new Uri(address + ToolServerRegistration.Endpoint),
+                AdditionalHeaders = new Dictionary<string, string>
+                {
+                    ["Authorization"] = "Bearer " + Token(RequestsId),
+                    [ToolServerOptions.AgentHeader] = "analyst", // claims to be someone else
+                    [ToolServerOptions.OperatorKeyHeader] = ToolRig.OperatorKey,
+                    [ToolServerOptions.RunHeader] = "run-9",
+                },
+            }));
+
+            var spec = await client.CallToolAsync("get_strategy_spec", new Dictionary<string, object?>());
+            var view = await client.CallToolAsync("record_market_view", new Dictionary<string, object?>
+            {
+                ["regime"] = "neutral",
+                ["summary"] = "Calm markets, nothing scheduled today.",
+                ["sources"] = new[] { "https://example.com/a" }, // a complete call: only the identity can refuse it
+            });
+            var journal = await client.CallToolAsync("query_journal", new Dictionary<string, object?>());
+
+            Assert.NotEqual(true, spec.IsError);
+            Assert.True(view.IsError); // analyst tools: not for this identity
+            Assert.True(journal.IsError); // no operator tools with Entra, whatever the header says
+            Assert.Equal(("trader-requests", "run-9"), tools.Journal.Entries.Where(e => e.Kind == "tool-call").Select(e => (e.Actor, e.RunId)).Single());
+            Assert.Equal(2, tools.Journal.Entries.Count(e => e.Kind == "tool-denied" && e.Actor == "trader-requests"));
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public void Context_WithEntra_UsesTheAuthenticatedRole_OrInvalid()
+    {
+        var tools = new ToolRig();
+        var http = new HttpContextAccessor { HttpContext = new DefaultHttpContext() };
+        http.HttpContext.Request.Headers[ToolServerOptions.AgentHeader] = "analyst";
+        var context = new ToolCallContext(http, tools.Specs, tools.Journal, Options(), tools.Rig.Time, NullLogger<ToolCallContext>.Instance, tools.AnalystSpecs);
+
+        Assert.Equal("invalid", context.Agent); // no validated identity: never the header's name
+        http.HttpContext.Items[ToolCallContext.AuthenticatedAgentItem] = "trader";
+        Assert.Equal("trader", context.Agent);
+        Assert.False(context.IsOperator);
+    }
+
+    [Fact]
+    public void RoleFor_ReadsTheObjectId()
+    {
+        var options = Options().Entra;
+        Assert.Equal("trader", options.RoleFor(new ClaimsPrincipal(new ClaimsIdentity([new Claim("oid", TraderId.ToUpperInvariant())]))));
+        Assert.Null(options.RoleFor(new ClaimsPrincipal(new ClaimsIdentity([new Claim("oid", Guid.NewGuid().ToString())]))));
+        Assert.Null(options.RoleFor(new ClaimsPrincipal(new ClaimsIdentity())));
+        Assert.Null(options.RoleFor(null));
+    }
+
+    [Fact]
+    public void EntraOptions_AreValidated()
+    {
+        Options().Validate(); // any listening address, no operator key
+
+        Assert.Throws<InvalidOperationException>(() => Changed(o => o.OperatorKey = ToolRig.OperatorKey).Validate());
+        Assert.Throws<InvalidOperationException>(() => Changed(o => o.Entra.TenantId = "contoso").Validate());
+        Assert.Throws<InvalidOperationException>(() => Changed(o => o.Entra.Audience = " ").Validate());
+        Assert.Throws<InvalidOperationException>(() => Changed(o => o.Entra.Agents.Clear()).Validate());
+        Assert.Throws<InvalidOperationException>(() => Changed(o => o.Entra.Agents["not-a-guid"] = "trader").Validate());
+        Assert.Throws<InvalidOperationException>(() => Changed(o => o.Entra.Agents[Guid.NewGuid().ToString()] = "owner").Validate());
+        Assert.Throws<InvalidOperationException>(() => Changed(o => o.Url = "https://0.0.0.0:5077").Validate());
+    }
+}

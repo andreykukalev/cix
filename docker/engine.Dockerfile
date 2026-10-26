@@ -11,8 +11,8 @@ RUN dotnet publish src/Cix.Engine/Cix.Engine.csproj -c Release -o /app --nologo
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app ./
-# The tool server binds 127.0.0.1 only (ToolServer:Url via ListenOnLoopback). Clearing the image's default 8080
-# setting just avoids a startup warning about overridden addresses.
+# The tool server binds 127.0.0.1 only (ToolServer:Url via ListenForAgents), or every interface with ToolServer:Auth=Entra
+# in Azure. Clearing the image's default 8080 setting just avoids a startup warning about overridden addresses.
 ENV ASPNETCORE_HTTP_PORTS= \
     DOTNET_NOLOGO=1
 USER $APP_UID
