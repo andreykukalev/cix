@@ -181,9 +181,10 @@ Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal a
   if ($parts['requests'] -match '\$\{item\}/(create|upsert)') { throw 'the engine may only update requests, not add them' }
 }
 
-Check 'agents settings: dev keeps them off, dates stay text, and they reach the template as its parameters' {
+Check 'agents settings: dev''s are valid, dates stay text, and they reach the template as its parameters' {
   $s = Read-CixEnvironment -Name dev
-  Expect $s.agents.deploy 'none' 'agents.deploy in dev.json (on only when the owner says so)'
+  # The owner moves dev.json from none to platform to apps; no test pins which.
+  if (@('none', 'platform', 'apps') -notcontains $s.agents.deploy) { throw "agents.deploy in dev.json is '$($s.agents.deploy)'" }
   Expect ($s.agents.budgetStartDate -is [string]) $true 'budgetStartDate is text'
   Expect $s.agents.budgetStartDate '2026-11-01' 'budgetStartDate'
   $s.agents.deploy = 'platform'
@@ -501,20 +502,31 @@ foreach ($case in @(
   }
 }
 
+# A copy of dev.json as environment 'citest' (its own group and database), with agents.deploy set here rather than whatever
+# dev.json has; written to infra/environments/citest.json by the helpers below, and removed after.
+function Get-CitestJson([string]$Deploy) {
+  $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest').Replace('"databaseName": "cix"', '"databaseName": "cix-citest"')
+  if ($json -notmatch '"deploy": "(none|platform|apps)"') { throw 'dev.json has no agents.deploy to replace' }
+  return [regex]::Replace($json, '"deploy": "(none|platform|apps)"', "`"deploy`": `"$Deploy`"")
+}
+function Invoke-CitestProvision([hashtable]$Fake, [hashtable]$Arguments) {
+  <# provision.ps1 for CIX alone (agents.deploy none), whatever dev.json deploys. #>
+  $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
+  [IO.File]::WriteAllText($file, (Get-CitestJson 'none'))
+  try { return Invoke-WithFakeAz $Fake { & (Join-Path $azureTools 'provision.ps1') -Environment citest @Arguments } }
+  finally { Remove-Item $file -Force }
+}
+
 Check 'provision.ps1 rerun: uses the existing shared account untouched and previews CIX (new database)' {
-  $r = Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $false } {
-    & (Join-Path $azureTools 'provision.ps1') -Environment dev -WhatIfOnly
-  }
+  $r = Invoke-CitestProvision @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $false } @{ WhatIfOnly = $true }
   if ($r.Error) { throw $r.Error }
-  foreach ($expected in @('Using cosmos-shared-x; left unchanged', "==> CIX (rg-cix-dev, database 'cix')", 'Preview only: nothing was changed.')) {
+  foreach ($expected in @('Using cosmos-shared-x; left unchanged', "==> CIX (rg-cix-citest, database 'cix-citest')", 'Preview only: nothing was changed.')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
 }
 
 Check 'provision.ps1 full run (-Yes) with an existing shared account: deploys CIX and reports the dashboard' {
-  $r = Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $false } {
-    & (Join-Path $azureTools 'provision.ps1') -Environment dev -Yes -SkipEngineConfig
-  }
+  $r = Invoke-CitestProvision @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $false } @{ Yes = $true; SkipEngineConfig = $true }
   if ($r.Error) { throw $r.Error }
   foreach ($expected in @('Using cosmos-shared-x; left unchanged', 'Cosmos DB account:  cosmos-shared-x (shared, in rg-shared)', 'Dashboard:          https://dash.example')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
@@ -522,11 +534,9 @@ Check 'provision.ps1 full run (-Yes) with an existing shared account: deploys CI
 }
 
 Check 'provision.ps1 full run (-Yes) with no shared account: creates it, then CIX' {
-  $r = Invoke-WithFakeAz @{ GroupExists = 'false'; GroupList = '[]'; DatabaseExists = $false } {
-    & (Join-Path $azureTools 'provision.ps1') -Environment dev -Yes -SkipEngineConfig
-  }
+  $r = Invoke-CitestProvision @{ GroupExists = 'false'; GroupList = '[]'; DatabaseExists = $false } @{ Yes = $true; SkipEngineConfig = $true }
   if ($r.Error) { throw $r.Error }
-  foreach ($expected in @('Shared account: cosmos-shared-x', "==> CIX (rg-cix-dev, database 'cix')", 'Dashboard:          https://dash.example')) {
+  foreach ($expected in @('Shared account: cosmos-shared-x', "==> CIX (rg-cix-citest, database 'cix-citest')", 'Dashboard:          https://dash.example')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
 }
@@ -630,7 +640,7 @@ $agentsResources = '[' + ((@($agentsTargets) + @($agentsOthers) | ForEach-Object
 $agentsActions = '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/revisions/read","Microsoft.App/containerApps/write","Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.ContainerRegistry/registries/read"]'
 function Invoke-SetupAgentsCi([hashtable]$Overrides, [string]$Deploy = 'platform', [bool]$Protected = $false) {
   $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
-  $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest').Replace('"databaseName": "cix"', '"databaseName": "cix-citest"').Replace('"deploy": "none"', "`"deploy`": `"$Deploy`"")
+  $json = (Get-CitestJson $Deploy)
   if ($Protected) { $json = $json.Replace('"protected": false', '"protected": true') }
   [IO.File]::WriteAllText($file, $json)
   $extra = @{}; foreach ($k in $cleanApp.Keys) { $extra[$k] = $cleanApp[$k] }
@@ -859,9 +869,7 @@ Check 'only the deploy-dashboard and deploy-agents jobs may request Azure sign-i
 }
 
 Check 'provision.ps1 refuses a database that exists but no CIX environment claims' {
-  $r = Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $true } {
-    & (Join-Path $azureTools 'provision.ps1') -Environment dev -WhatIfOnly
-  }
+  $r = Invoke-CitestProvision @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $true } @{ WhatIfOnly = $true }
   if (-not $r.Error -or -not $r.Error.Contains("already exists in cosmos-shared-x but no CIX environment claims it")) { throw "got: $($r.Error)" }
 }
 
@@ -919,7 +927,7 @@ $agentsFake = @{
 }
 function Invoke-AgentsProvision([hashtable]$Overrides, [hashtable]$Arguments, [string]$Deploy = 'apps') {
   $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
-  $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest').Replace('"databaseName": "cix"', '"databaseName": "cix-citest"').Replace('"deploy": "none"', "`"deploy`": `"$Deploy`"")
+  $json = (Get-CitestJson $Deploy)
   [IO.File]::WriteAllText($file, $json)
   $extra = @{}; foreach ($k in $agentsFake.Keys) { $extra[$k] = $agentsFake[$k] }
   foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
