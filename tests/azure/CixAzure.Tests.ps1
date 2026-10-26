@@ -163,14 +163,22 @@ Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal a
   $apps = [IO.File]::ReadAllText((Join-CixPath $modules 'agents-apps.bicep'))
   if ($apps -notmatch "\{ name: 'Cosmos__ManagedIdentityClientId', value: engineIdentity\.properties\.clientId \}") { throw 'the engine is not given its identity for Cosmos DB' }
   $access = [IO.File]::ReadAllText((Join-CixPath $modules 'cosmos-engine-access.bicep'))
-  if ($access -match '(?i)items/(delete|\*)|containers/\*|databaseAccounts/\*|unmask|executeStoredProcedure|manageConflicts') { throw 'a role allows more than reading and writing items' }
-  if (([regex]::Matches($access, 'assignableScopes: \[databaseScope\]')).Count -ne 1 -or $access -notmatch "var databaseScope = '\$\{account\.id\}/dbs/\$\{databaseName\}'") { throw 'the roles are not limited to CIX''s database' }
-  if ($access -notmatch "scope: '\$\{databaseScope\}/colls/\$\{a\.container\}'") { throw 'the roles are not assigned per container' }
+  if ($access -match '(?i)items/delete|\{item\}/delete|unmask|executeStoredProcedure|manageConflicts') { throw 'a role allows more than reading and writing items' }
+  if ($access -notmatch "var databaseScope = '\$\{account\.id\}/dbs/\$\{databaseName\}'") { throw 'the roles are not limited to CIX''s database' }
+  $perContainer = "'\$\{databaseScope\}/colls/\$\{a\.container\}'"
+  if (([regex]::Matches($access, "assignableScopes: \[$perContainer\]")).Count -ne 1 -or ([regex]::Matches($access, "(?m)^\s*scope: $perContainer")).Count -ne 1) { throw 'the roles are not assignable and assigned per container' }
+  # The shared pieces only read: item writes are spelled out per container below.
+  Expect ([regex]::Match($access, "(?m)^var item = '([^']+)'").Groups[1].Value) 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items' 'item actions'
+  Expect ([regex]::Match($access, "(?m)^var metadata = '([^']+)'").Groups[1].Value) 'Microsoft.DocumentDB/databaseAccounts/readMetadata' 'metadata action'
+  $query = @([regex]::Matches([regex]::Match($access, '(?s)var query = \[(.*?)\]').Groups[1].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+  Expect ($query -join ',') 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/executeQuery,Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/readChangeFeed' 'query actions'
+  if ($access -match '/\*') { throw 'a role uses a wildcard' }
   $parts = @{}
   foreach ($part in @(($access -split "container: '") | Select-Object -Skip 1)) { $parts[$part.Substring(0, $part.IndexOf("'"))] = $part }
   Expect (($parts.Keys | Sort-Object) -join ',') 'journal,requests,state' 'containers'
-  if ($parts['journal'] -notmatch 'items/create' -or $parts['journal'] -match 'items/(replace|upsert)') { throw 'the journal role is not append-only' }
-  if ($parts['requests'] -match 'items/(create|upsert)') { throw 'the engine may only update requests, not add them' }
+  if (([regex]::Matches($access, '\$\{item\}/')).Count -ne 7 -or ([regex]::Matches($access, "Microsoft\.DocumentDB/[^']*items")).Count -ne 1) { throw 'item actions written some other way than per container' }
+  if ($parts['journal'] -notmatch '\$\{item\}/create' -or $parts['journal'] -match '\$\{item\}/(replace|upsert)') { throw 'the journal role is not append-only' }
+  if ($parts['requests'] -match '\$\{item\}/(create|upsert)') { throw 'the engine may only update requests, not add them' }
 }
 
 Check 'agents settings: dev keeps them off, dates stay text, and they reach the template as its parameters' {
@@ -901,6 +909,19 @@ Check 'provision.ps1 agents apps (-Yes): creates the engine''s Entra app, checks
     if (-not $r.Calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
   }
   if ($r.Calls.Contains('keyvault secret set')) { throw 'uploaded claude-token although the vault has it' }
+  if ($r.Calls -match 'keyvault secret show') { throw 'read a secret value' }
+  if ($r.Calls.Contains('keyvault secret delete') -or $r.Calls.Contains('role assignment delete')) { throw "deleted something: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents deletes the cosmos-key an earlier template left in Key Vault, and the engine''s access to it' {
+  $vaultId = '/subscriptions/x/resourceGroups/rg-cix-citest/providers/Microsoft.KeyVault/vaults/kvcixcitest1'
+  $r = Invoke-AgentsProvision @{ 'keyvault secret list' = '[{"name":"cosmos-key"},{"name":"claude-token"}]'; 'keyvault show' = $vaultId } @{ Yes = $true; SkipEngineConfig = $true } 'platform'
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($call in @("role assignment delete --scope $vaultId/secrets/cosmos-key --yes", 'keyvault secret delete --vault-name kvcixcitest1 --name cosmos-key')) {
+    if (-not $r.Calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
+  }
+  if ($r.Calls.IndexOf('keyvault secret delete') -lt $r.Calls.IndexOf('deployment sub create')) { throw 'deleted it before the deployment' }
+  if (-not $r.Output.Contains('still holds cosmos-key')) { throw "no warning in: $($r.Output)" }
   if ($r.Calls -match 'keyvault secret show') { throw 'read a secret value' }
 }
 

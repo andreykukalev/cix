@@ -34,6 +34,7 @@ param sharedResourceGroupName string
 param sharedAccountName string
 
 @description('CIX\'s database in the shared account; the engine uses Cosmos:Database.')
+@minLength(1)
 param databaseName string = 'cix'
 
 @description('Throughput shared by CIX\'s two containers. The free tier covers 1000 RU/s for the whole account, shared with other projects\' databases.')

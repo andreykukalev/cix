@@ -116,7 +116,7 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
   - the container registry (Basic, about $5 a month);
   - a storage account with the four run queues, with shared keys off;
   - Key Vault, for `claude-token`. It holds no Cosmos DB key: the engine signs in to the database with its managed identity;
-  - in the shared account, Cosmos DB roles for the engine's identity (`infra/modules/cosmos-engine-access.bicep`), one per container and within CIX's database only. In `journal` it can read and add entries, never replace or delete one. In `state` it can read, create and replace documents, and in `requests` read and replace them, with no delete anywhere. They can't create containers or reach other projects' databases. A new role assignment can take a few minutes to apply: an engine started before then stops on a 403 and the platform starts it again;
+  - in the shared account, Cosmos DB roles for the engine's identity (`infra/modules/cosmos-engine-access.bicep`), one per container and within CIX's database only. In `journal` it can query and add entries, never replace or delete one. In `state` it can read, create, replace and upsert documents, and in `requests` read, query and replace them, with no delete anywhere. They can't create containers or reach other projects' databases. Cosmos DB may not know an identity created moments earlier, and a new assignment can take a few minutes to apply: if the deployment fails on the engine's principal, run it again shortly, and an engine started before its roles apply stops on a 403 and the platform starts it again. A Key Vault from an earlier template still holds `cosmos-key`, the account's read-write key: `provision.ps1` deletes it and the engine's access to it, after asking;
   - one managed identity each for the engine and the three jobs, with only the roles each needs;
   - the budget, with alerts to your sign-in's address, or to `-BudgetEmail` (a personal Microsoft account usually has no address in the tenant that gets mail, so pass it).
 
@@ -159,16 +159,16 @@ Optionally set the repository variable `CLAUDE_CODE_VERSION` to pin the Claude C
 
 **What the identity could still do**, if a workflow on `main` misused it. `main` has no branch protection here, so this trusts everyone who can push to `main`, merge into it or start a workflow on it, including the Claude coding agents (see the dashboard's paragraph above).
 - Run any image as the engine or a job, with their settings changed, since Azure has no right that allows changing only the image. That image runs with the engine's or the job's managed identity, so it can do whatever they can:
-  - use the engine's Cosmos DB roles: read CIX's database, add journal entries, and change its state documents, including the kill switch and halts, and the outcomes of your requests. It can't delete anything, rewrite a journal entry, or reach other projects' databases in the shared account;
+  - use the engine's Cosmos DB roles: read CIX's database, add journal entries (forged ones too), and overwrite any document in `state` and `requests`: the kill switch and halts, the paper account, the lease, the archived strategy specs, and your requests. It can't delete anything, change or remove a journal entry, or reach other projects' databases in the shared account;
   - read `claude-token`, through a job's identity, and use the subscription it belongs to;
   - send run messages on the queues.
-- Change the trading mode and the environment name. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group, Key Vault, identity and database, where CI has no role (see the hosting memo). It can share the free Cosmos DB account, since the paper engine's roles stop at CIX's paper database.
+- Change the trading mode and the environment name. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group, Key Vault, identity and database, where CI has no role (see the hosting memo). The paper engine's roles stop at CIX's paper database, so CI can't reach a live database through them; whether the live database may share the account is still open (ADR-0013).
 
 Anyone who can push to `main` can already reach most of this through the code the engine runs. What is still to do before the cutover is in the [hosting memo](research/azure-hosting.md) ("Code changes", item 6).
 
 If you suspect misuse:
 1. Remove the identity's role assignments, or delete `AGENTS_AZURE_CLIENT_ID`.
-2. Run `provision.ps1` again: it puts the apps' settings and the engine's Cosmos DB roles back. Then check the journal and the engine's state documents (the kill switch, halts) for anything you didn't do. The engine's roles can't delete, so nothing is gone.
+2. Run `provision.ps1` again: it puts the apps' settings and the engine's Cosmos DB roles back. Then check the engine's state documents (the kill switch, halts, the paper account) and your requests for anything you didn't do. They may have been overwritten: the journal still has every entry the engine wrote, so rebuild from it, or ask Azure support to restore the account's periodic backup. Journal entries may have been added, but none changed or removed. If `cosmos-key` was ever in the vault while the engine app ran, regenerate the shared account's primary key too (`az cosmosdb keys regenerate --key-kind primary`), then run `provision.ps1` without `-SkipEngineConfig` so the PC's `secrets/cosmos_key` gets it, and give it to the other projects that use the account.
 3. Renew `claude-token` (`claude setup-token`, then `provision.ps1 -UploadClaudeToken`).
 4. Check the registry's tags and the engine's revisions.
 

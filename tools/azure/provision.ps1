@@ -194,6 +194,10 @@ if (-not $SkipInfrastructure) {
     if ($agents -eq 'apps' -and "$($_.Exception.Message)" -match 'claude-token') {
       throw "$($_.Exception.Message) The jobs' access to claude-token was just granted and can take a few minutes to apply: run this again shortly."
     }
+    # Cosmos DB checks a role assignment's principal in Entra, which may not know an identity created moments earlier.
+    if ($agents -ne 'none' -and "$($_.Exception.Message)" -match '(?i)sqlRoleAssignments|principal') {
+      throw "$($_.Exception.Message) If this is about the engine's identity, it was just created and may not be known yet: run this again shortly."
+    }
     throw
   }
   if ($writerSettings.Count -gt 0) {
@@ -214,6 +218,15 @@ if (-not $SkipInfrastructure) {
     Write-CixInfo "Registry:  $($outputs.registryServer.value)"
     Write-CixInfo "Key Vault: $($outputs.keyVaultName.value)"
     if ($agents -eq 'apps') { Write-CixInfo "Engine app: $($outputs.engineAppName.value); jobs: $(@($outputs.agentJobNames.value) -join ', ')" }
+    # The template before the engine signed in with its identity copied the shared account's read-write key into Key Vault
+    # as cosmos-key, readable by the engine. A deployment doesn't remove what a template no longer has: do it here.
+    $vaultName = "$($outputs.keyVaultName.value)"
+    if ($vaultName -and (Test-CixVaultSecret -Vault $vaultName -Name 'cosmos-key')) {
+      Write-CixWarn "Key Vault $vaultName still holds cosmos-key, the shared Cosmos DB account's read-write key, from an earlier template. Nothing uses it now."
+      Confirm-Step "Delete cosmos-key from $vaultName, and the engine's access to it?"
+      Remove-CixVaultSecretAndAccess -Vault $vaultName -Name 'cosmos-key'
+      Write-CixWarn "Deleted. If the engine app ever ran while it was there, an image CI deployed could have read the key: regenerate the shared account's primary key (docs/azure.md, 'If you suspect misuse')."
+    }
   }
 }
 else {

@@ -76,7 +76,17 @@ public sealed class DeploymentConfigTests
         Assert.True(options.UsesIdentity);
         Assert.Null(options.AccountKey);
         using var db = new CosmosDb(options, new NoTokens()); // builds the client only: nothing is called yet
-        Assert.False(db.RequestsAvailable);
+        Assert.True(db.UsesIdentity);
+    }
+
+    [Fact]
+    public void AccountKey_StillWorksForThePc()
+    {
+        var options = new CosmosOptions { Enabled = true, Endpoint = "https://cosmos-shared-x.documents.azure.com:443/", AccountKey = Convert.ToBase64String(new byte[64]) };
+
+        options.Validate();
+        using var db = new CosmosDb(options);
+        Assert.False(db.UsesIdentity);
     }
 
     [Theory]

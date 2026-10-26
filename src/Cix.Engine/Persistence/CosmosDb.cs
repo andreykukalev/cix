@@ -90,15 +90,13 @@ public sealed class CosmosDb : IDisposable
     private readonly CosmosClient _client;
     private readonly string _database;
 
-    private readonly bool _usesIdentity;
-
     /// <param name="credential">For tests: replaces the managed identity when <see cref="CosmosOptions.ManagedIdentityClientId"/> is set.</param>
     public CosmosDb(CosmosOptions options, TokenCredential? credential = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
         _database = options.Database;
-        _usesIdentity = options.UsesIdentity;
+        UsesIdentity = options.UsesIdentity;
 
         var clientOptions = new CosmosClientOptions
         {
@@ -120,7 +118,7 @@ public sealed class CosmosDb : IDisposable
             });
         }
 
-        if (_usesIdentity)
+        if (UsesIdentity)
         {
             credential ??= new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(options.ManagedIdentityClientId!));
             _client = new CosmosClient(options.Endpoint, credential, clientOptions);
@@ -156,22 +154,24 @@ public sealed class CosmosDb : IDisposable
     /// Creates the database and containers if they don't exist yet. Call once at startup. The <c>requests</c> container is
     /// optional: in Azure the engine can't create containers (key-based metadata writes are off), so an account provisioned
     /// before it existed runs on without manual requests until provisioning runs again. With a managed identity nothing is
-    /// created (its roles can't): the containers are only checked, and a missing <c>journal</c> or <c>state</c> fails.
+    /// created (its roles can't): the containers are only checked. A missing <c>journal</c> or <c>state</c>, or a 403 on any
+    /// of the three (its role not assigned, or not applied yet), stops startup: provisioning creates them and their roles
+    /// together, so manual requests are never turned off quietly.
     /// </summary>
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
-        if (_usesIdentity)
+        if (UsesIdentity)
         {
-            await Journal.ReadContainerAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            await State.ReadContainerAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            await RequireContainerAsync(Journal, cancellationToken).ConfigureAwait(false);
+            await RequireContainerAsync(State, cancellationToken).ConfigureAwait(false);
             try
             {
                 await Requests.ReadContainerAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 RequestsAvailable = true;
             }
-            catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Forbidden)
+            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
             {
-                RequestsAvailable = false; // as below: provisioning adds it, and its role
+                RequestsAvailable = false; // as below: provisioning adds it
             }
             return;
         }
@@ -189,6 +189,22 @@ public sealed class CosmosDb : IDisposable
             RequestsAvailable = false; // exists only once infra/main.bicep has run again; reported in the status and the log
         }
     }
+
+    private async Task RequireContainerAsync(Container container, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await container.ReadContainerAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new InvalidOperationException(
+                $"Cosmos DB container '{container.Id}' doesn't exist in database '{_database}', and the engine's identity can't create it: run tools/azure/provision.ps1.", ex);
+        }
+    }
+
+    /// <summary>Whether the client signs in with the managed identity rather than a key.</summary>
+    internal bool UsesIdentity { get; }
 
     /// <summary>For tests only: removes the whole database.</summary>
     internal Task DeleteDatabaseAsync(CancellationToken cancellationToken) =>
