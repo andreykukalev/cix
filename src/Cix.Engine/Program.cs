@@ -58,14 +58,15 @@ builder.Services.AddCixExecution(
     builder.Configuration.GetSection(ExecutionOptions.SectionName).Get<ExecutionOptions>() ?? new ExecutionOptions(),
     builder.Configuration.GetSection(SafetyOptions.SectionName).Get<SafetyOptions>() ?? new SafetyOptions());
 
-// The MCP tool server: agents' only way in. Loopback only; operator tools need the key from user secrets.
+// The MCP tool server: agents' only way in. Loopback only (operator tools need the key from user secrets), or in Azure
+// Entra tokens from the agent jobs' managed identities, with no operator tools (ADR-0013).
 var toolServer = builder.Configuration.GetSection(ToolServerOptions.SectionName).Get<ToolServerOptions>() ?? new ToolServerOptions();
 builder.Services.AddCixToolServer(
     mode,
     toolServer,
     builder.Configuration.GetSection(StrategyOptions.SectionName).Get<StrategyOptions>() ?? new StrategyOptions(),
     builder.Configuration.GetSection(JournalOptions.SectionName).Get<JournalOptions>() ?? new JournalOptions());
-builder.WebHost.ListenOnLoopback(builder.Configuration, toolServer);
+builder.WebHost.ListenForAgents(builder.Configuration, toolServer);
 
 // The market analyst's spec and its market view (risk-off or flagged symbols block new entries, never exits). #25.
 var strategyOptions = builder.Configuration.GetSection(StrategyOptions.SectionName).Get<StrategyOptions>() ?? new StrategyOptions();

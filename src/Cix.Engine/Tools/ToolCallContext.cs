@@ -15,8 +15,16 @@ public sealed class ToolServerOptions
     public const string RunHeader = "X-Cix-Run";
     public const string OperatorKeyHeader = "X-Cix-Operator-Key";
 
-    /// <summary>Where the MCP endpoint listens. Loopback only until the Azure deployment adds authentication.</summary>
+    /// <summary>
+    /// Where the MCP endpoint listens: loopback with <see cref="ToolServerAuth.Loopback"/>; any address (in Azure,
+    /// <c>http://0.0.0.0:5077</c> behind the environment's internal ingress) with <see cref="ToolServerAuth.Entra"/>.
+    /// </summary>
     public string Url { get; set; } = "http://127.0.0.1:5077";
+
+    /// <summary>How callers are identified. Loopback unless configured (ADR-0013).</summary>
+    public ToolServerAuth Auth { get; set; } = ToolServerAuth.Loopback;
+
+    public EntraToolServerOptions Entra { get; set; } = new();
 
     /// <summary>
     /// Secret that unlocks operator tools, from user secrets (never in a file in the repo). Agents' MCP configuration
@@ -28,8 +36,16 @@ public sealed class ToolServerOptions
     {
         if (!Uri.TryCreate(Url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttp)
             throw new InvalidOperationException("ToolServer:Url must be an absolute http URL.");
+        if (Auth == ToolServerAuth.Entra)
+        {
+            Entra.Validate();
+            if (!string.IsNullOrEmpty(OperatorKey))
+                throw new InvalidOperationException("ToolServer:OperatorKey must be unset with Entra authentication: operator tools stay off the network.");
+            return;
+        }
+
         if (!uri.IsLoopback)
-            throw new InvalidOperationException("ToolServer:Url must be a loopback address (127.0.0.1 or localhost) until authentication exists.");
+            throw new InvalidOperationException("ToolServer:Url must be a loopback address (127.0.0.1 or localhost) unless ToolServer:Auth is Entra.");
         if (OperatorKey is { Length: > 0 and < 24 })
             throw new InvalidOperationException("ToolServer:OperatorKey must be at least 24 characters.");
     }
@@ -65,10 +81,16 @@ public sealed partial class ToolCallContext(
 
     private static readonly IReadOnlySet<string> OwnOrderTools = new HashSet<string>(StringComparer.Ordinal) { "place_order", "cancel_order" };
 
+    /// <summary>Where the tool server's guard puts the agent role it took from a validated Entra token.</summary>
+    public const string AuthenticatedAgentItem = "cix-agent";
+
     public string Agent
     {
         get
         {
+            // With Entra, the identity decides: a caller can't name itself into another agent's tools.
+            if (options.Auth == ToolServerAuth.Entra)
+                return http.HttpContext?.Items[AuthenticatedAgentItem] as string ?? "invalid";
             var name = Header(ToolServerOptions.AgentHeader);
             return name is null ? "agent" : ReservedActors.Contains(name) ? "invalid" : name;
         }
@@ -85,7 +107,7 @@ public sealed partial class ToolCallContext(
         get
         {
             var supplied = http.HttpContext?.Request.Headers[ToolServerOptions.OperatorKeyHeader].ToString();
-            if (string.IsNullOrEmpty(options.OperatorKey) || string.IsNullOrEmpty(supplied))
+            if (options.Auth != ToolServerAuth.Loopback || string.IsNullOrEmpty(options.OperatorKey) || string.IsNullOrEmpty(supplied))
                 return false;
             return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(supplied), Encoding.UTF8.GetBytes(options.OperatorKey));
         }

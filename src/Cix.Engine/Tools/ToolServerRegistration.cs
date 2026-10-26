@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authentication;
 using Cix.Engine.Journal;
 using Cix.Engine.Strategy;
 
@@ -58,6 +59,8 @@ public static class ToolServerRegistration
         services.AddSingleton(specs);
         services.AddSingleton(journal);
         services.AddSingleton<ToolCallContext>();
+        if (options.Auth == ToolServerAuth.Entra)
+            services.AddAuthentication().AddJwtBearer(EntraToolServerOptions.Scheme, options.Entra.Configure);
         services.AddMcpServer()
             .WithHttpTransport(o => o.Stateless = true)
             .WithTools<AgentTools>()
@@ -78,10 +81,13 @@ public static class ToolServerRegistration
     /// <summary>
     /// Maps the MCP endpoint behind a guard: requests with an <c>Origin</c> header (any browser page) get 403, and posts must
     /// be JSON, so a web page can't drive the tools through the user's browser even though the server is on localhost.
+    /// With Entra authentication, every request except <c>GET /healthz</c> (the platform's probes) also needs a valid token
+    /// from a listed managed identity: 401 without one, 403 for an identity that isn't listed.
     /// </summary>
     public static WebApplication UseCixToolServer(this WebApplication app)
     {
         ArgumentNullException.ThrowIfNull(app);
+        var options = app.Services.GetRequiredService<ToolServerOptions>();
         app.Use(async (context, next) =>
         {
             if (context.Request.Path.StartsWithSegments(Endpoint, StringComparison.OrdinalIgnoreCase)
@@ -99,6 +105,21 @@ public static class ToolServerRegistration
                     context.Response.StatusCode = StatusCodes.Status415UnsupportedMediaType;
                     return;
                 }
+            }
+
+            // With Entra, everything except the health probe needs a listed identity: a route added later is closed by default.
+            if (options.Auth == ToolServerAuth.Entra
+                && !(HttpMethods.IsGet(context.Request.Method) && context.Request.Path.Equals(HealthEndpoint, StringComparison.OrdinalIgnoreCase)))
+            {
+                var result = await context.AuthenticateAsync(EntraToolServerOptions.Scheme).ConfigureAwait(false);
+                var role = result.Succeeded ? options.Entra.RoleFor(result.Principal) : null;
+                if (role is null)
+                {
+                    context.Response.StatusCode = result.Succeeded ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized;
+                    return;
+                }
+
+                context.Items[ToolCallContext.AuthenticatedAgentItem] = role;
             }
 
             await next(context).ConfigureAwait(false);
@@ -148,19 +169,20 @@ public static class ToolServerRegistration
     }
 
     /// <summary>
-    /// Listens on the configured loopback port only. Endpoints from Kestrel configuration are refused, because they would
-    /// override this binding.
+    /// Listens on the configured port: on loopback only, or on every interface with Entra authentication. Endpoints from
+    /// Kestrel configuration are refused, because they would override this binding.
     /// </summary>
-    public static void ListenOnLoopback(this ConfigureWebHostBuilder webHost, IConfiguration configuration, ToolServerOptions options)
+    public static void ListenForAgents(this ConfigureWebHostBuilder webHost, IConfiguration configuration, ToolServerOptions options)
     {
         ArgumentNullException.ThrowIfNull(webHost);
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
         if (configuration.GetSection("Kestrel:Endpoints").Exists())
-            throw new InvalidOperationException("Kestrel:Endpoints is not allowed; set ToolServer:Url (loopback only) instead.");
+            throw new InvalidOperationException("Kestrel:Endpoints is not allowed; set ToolServer:Url instead.");
 
         var port = new Uri(options.Url).Port;
-        webHost.ConfigureKestrel(k => k.Listen(System.Net.IPAddress.Loopback, port));
+        var address = options.Auth == ToolServerAuth.Entra ? System.Net.IPAddress.Any : System.Net.IPAddress.Loopback;
+        webHost.ConfigureKestrel(k => k.Listen(address, port));
     }
 }
