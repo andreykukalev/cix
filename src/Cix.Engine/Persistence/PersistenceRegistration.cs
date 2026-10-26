@@ -145,6 +145,7 @@ public static class PersistenceRegistration
         services.AddSingleton<Manual.IManualRequestStore>(sp => new Manual.CosmosManualRequestStore(sp.GetRequiredService<CosmosDb>()));
         services.AddSingleton<Manual.IManualLedgerStore>(sp => new CosmosManualLedgerStore(sp.GetRequiredService<CosmosDb>(), mode));
         services.AddSingleton<Scanning.IScannerFilterStore>(sp => new CosmosScannerFilterStore(sp.GetRequiredService<CosmosDb>(), mode));
+        services.AddSingleton<AgentRuns.IAgentRunStateStore>(sp => new CosmosAgentRunStateStore(sp.GetRequiredService<CosmosDb>(), mode));
         services.AddSingleton(sp => new EngineLease(
             new CosmosLeaseStore(sp.GetRequiredService<CosmosDb>(), mode), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<EngineLease>>()));
         services.AddSingleton<IEngineLease>(sp => sp.GetRequiredService<EngineLease>());

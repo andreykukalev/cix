@@ -74,6 +74,16 @@ flowchart LR
 
 With `Entra`, every request except `GET /healthz` (left open for the platform's probes) answers 401 without a valid token and 403 for an identity that isn't listed. Tokens are checked for the tenant's issuer (v1 or v2), the audience, the signature (Entra's published keys) and their lifetime. The deployment must also set `AllowedHosts` to the engine's internal host name, because the default allows only `localhost` and `127.0.0.1`. The platform's health probes then need a `Host` header with that name, or they get 400.
 
+### Agent runs in Azure
+
+In Compose, the shell loops in `tools/trader` decide when the trader and the analyst run (`AgentRuns:Mode` `Off`, the default). In Azure (`Queue`, ADR-0013) the engine decides, with the same rules and defaults: new signals at most every 15 minutes, a heartbeat after 4 hours with nothing new, 30 strategy runs a day, 20 owner-request runs a day apart from those, the analyst every 6 hours, refunds for runs that never used Claude, and the retries. The rules are `AgentRunPlanner`, tested without clocks or queues. `Queue` needs `ToolServer:Auth` `Entra` and Cosmos DB.
+
+1. **Queue.** When a run is due, the engine saves its state (`agent-runs-<mode>`), then puts `{"runId", "job", "purpose"}` on that job's Storage queue (`runs-trader`, `runs-requests` or `runs-analyst`). The message expires after 10 minutes, which is when the engine gives up on an unclaimed run and counts it as not run. Only the engine holding the engine lease queues runs.
+2. **Claim.** The job deletes the message and calls `POST /runs/{runId}/claim` with its token and `{"claimant": "<its execution name>"}`. `{"wanted": true, "purpose": ...}` comes back once, for that job's own kind of run only; the same execution may repeat the claim if it lost the answer. Anything else gets `{"wanted": false, "purpose": null}` and the job stops without starting Claude. 503 means this engine can't answer right now (it doesn't hold the lease during a deployment, it is busy for more than 10 seconds, or another engine saved the state first): try again for at least 30 seconds.
+3. **Report.** The job calls `POST /runs/{runId}/outcome` with `{"outcome": "done" | "failed" | "not-run"}` (204, or 404 if there is no such claimed run). A claimed run that doesn't report within 25 minutes counts as failed.
+
+The state is written only if nobody wrote it since this engine read it (an ETag check), so an engine that lost the lease can't undo the new one's changes. Owner-request runs are refunded at most as often as their cap allows, so a job that always reports `not-run` can't run every 5 minutes. Both endpoints are behind the tool server's Entra check and take JSON (`Content-Type: application/json`). The journal records each step as `agent-run`.
+
 ## Rules that never bend
 
 1. Agents reach the exchange only through tool server tools, and every order passes the risk gate.

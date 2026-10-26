@@ -8,6 +8,10 @@
     <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.63.0" />
     <!-- Entra access tokens from the agent jobs' managed identities, in Azure only (ADR-0013). -->
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
+    <!-- Keeps the Microsoft.IdentityModel packages on one version: Azure.Core's MSAL brings Abstractions 8.14.0. -->
+    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.14.0" />
+    <!-- The agent jobs' run queues, in Azure only (ADR-0013). Azure.Core carries the managed identity credential. -->
+    <PackageReference Include="Azure.Storage.Queues" Version="12.28.1" />
     <!-- The Cosmos SDK checks for Newtonsoft.Json at build time even with a System.Text.Json serializer. -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>

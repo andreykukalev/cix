@@ -256,6 +256,48 @@ public sealed class CosmosManualLedgerStore(CosmosDb db, TradingMode mode) : Man
         CosmosDb.WriteStateAsync(db.State, Id, ledger, DocumentPrefix, About, cancellationToken);
 }
 
+/// <summary>
+/// The agent-run scheduler's state, as <c>agent-runs-&lt;mode&gt;</c> (ADR-0013): today's run counts, the signal and request keys
+/// last handled, the next heartbeat and analyst slot, and the runs queued and not yet ended.
+/// </summary>
+public sealed class CosmosAgentRunStateStore(CosmosDb db, TradingMode mode) : AgentRuns.IAgentRunStateStore
+{
+    public const string DocumentPrefix = "agent-runs";
+    public const string About =
+        "When the engine queues agent runs: today's counts against the daily caps, the signals and owner requests last handled, the next heartbeat and analyst slot, and the runs queued that haven't ended. Saved before each run is queued, only if unchanged since the engine read it; the journal's agent-run entries keep the history.";
+
+    private string Id => $"{DocumentPrefix}-{mode.ToString().ToLowerInvariant()}";
+
+    public async Task<AgentRuns.StoredAgentRunState?> LoadAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await db.State.ReadItemAsync<CosmosDb.StateDocument<AgentRuns.AgentRunState>>(Id, new PartitionKey(Id), cancellationToken: cancellationToken).ConfigureAwait(false);
+            return new AgentRuns.StoredAgentRunState(response.Resource.Value, response.ETag);
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
+    public async Task<string?> SaveAsync(AgentRuns.AgentRunState state, string? etag, CancellationToken cancellationToken)
+    {
+        var document = new CosmosDb.StateDocument<AgentRuns.AgentRunState>(Id, state, DocumentPrefix, About, DateTimeOffset.UtcNow);
+        try
+        {
+            var response = etag is null
+                ? await db.State.CreateItemAsync(document, new PartitionKey(Id), cancellationToken: cancellationToken).ConfigureAwait(false)
+                : await db.State.ReplaceItemAsync(document, Id, new PartitionKey(Id), new ItemRequestOptions { IfMatchEtag = etag }, cancellationToken).ConfigureAwait(false);
+            return response.ETag;
+        }
+        catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed or HttpStatusCode.NotFound)
+        {
+            return null; // another engine wrote it since this one read it
+        }
+    }
+}
+
 /// <summary>For tests.</summary>
 public sealed class InMemoryPaperAccountStore : IPaperAccountStore
 {
