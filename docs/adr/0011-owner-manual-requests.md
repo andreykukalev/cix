@@ -37,7 +37,7 @@ Requests are documents in a new Cosmos DB container, `requests` (partition `/day
 
 - The dashboard needs a write identity that can only create documents in `requests` (PR 2), separate from its read-only key, behind owner sign-in.
 - Existing Azure databases need `tools/azure/provision.ps1` once to add the container (the engine can't create containers there). Until then manual requests are off and the status says `unavailable`; everything else runs as before.
-- The `requests` container is new data the reset script doesn't touch.
+- The `requests` container is new data the reset script doesn't touch. (2026-10-26: it does with `-IncludeRequests`, the owner's choice for a fresh start.)
 - A trader run for a request costs an LLM call, counted against its own daily cap (`TRADER_MAX_MANUAL_RUNS_PER_DAY`, 20); past it, agent-assisted requests expire.
 - Owner text (`note`) reaches the trader as quoted data (`ownerNote`). It is cleaned and bounded, the trader's instructions treat it as context, and a request run has no order tools of its own to be steered into.
 - The Windows script (`run-trader.ps1`) answers requests only when run with `-OwnerRequests`; the Docker trader loop is the supported path.

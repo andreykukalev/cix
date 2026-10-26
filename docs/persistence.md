@@ -10,7 +10,7 @@ The Cosmos DB database `cix` has three containers.
 |---|---|---|---|
 | `state` | What is true **now**: the engine's operational state, the paper account, archived strategy specs. One document per id. | Documents are replaced as things change. | `/id` |
 | `journal` | What **happened**: every decision, order, fill and safety event, with who did it and why. | Append-only. Nothing is ever updated or deleted (CLAUDE.md rule 4). | `/day` (UTC date) |
-| `requests` | The owner's **manual buy and sell requests** from the dashboard, each with its outcome and history (ADR-0011). | The dashboard creates a request; the engine updates it as it handles it. Nothing deletes one. | `/day` (UTC date) |
+| `requests` | The owner's **manual buy and sell requests** from the dashboard, each with its outcome and history (ADR-0011). | The dashboard creates a request; the engine updates it as it handles it. Only the owner's test reset deletes one (`reset-database.ps1 -IncludeRequests`). | `/day` (UTC date) |
 
 The rule of thumb is that **state** answers "what must the engine know to carry on right now?" and the **journal** answers "what happened, and why?". The engine recovers from state and reconciles it with the exchange. It doesn't rebuild state by replaying the journal, except for one fallback described below.
 
