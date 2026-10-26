@@ -132,7 +132,7 @@ if ($app) {
 }
 # Every Cosmos DB role assignment in the account: this identity's, and anyone else's on the writer role.
 $allAssignments = @(Invoke-CixAz @('cosmosdb', 'sql', 'role', 'assignment', 'list', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
-$roleAssignments = if ($sp) { @($allAssignments | Where-Object { $_.principalId -eq $sp.id }) } else { @() }
+$roleAssignments = @($allAssignments | Where-Object { $sp -and $_.principalId -eq $sp.id }) # @(): one or none stays an array
 
 # An existing Cosmos DB role with this name must allow exactly the two data actions, on the requests container only.
 $roles = @(Invoke-CixAz @('cosmosdb', 'sql', 'role', 'definition', 'list', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup, '--only-show-errors', '-o', 'json') |
