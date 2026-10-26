@@ -162,7 +162,7 @@ Optionally set the repository variable `CLAUDE_CODE_VERSION` to pin the Claude C
   - use the engine's Cosmos DB roles: read CIX's database, add journal entries (forged ones too), and overwrite any document in `state` and `requests`: the kill switch and halts, the paper account, the lease, the archived strategy specs, and your requests. It can't delete anything, change or remove a journal entry, or reach other projects' databases in the shared account;
   - read `claude-token`, through a job's identity, and use the subscription it belongs to;
   - send run messages on the queues.
-- Change the trading mode and the environment name. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group, Key Vault, identity and database, where CI has no role (see the hosting memo). The paper engine's roles stop at CIX's paper database, so CI can't reach a live database through them; whether the live database may share the account is still open (ADR-0013).
+- Change the trading mode and the environment name. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group, Key Vault, identity and database, where CI has no role (see the hosting memo). The paper engine's roles stop at CIX's paper database, so CI can't reach the live database (its own database in the same free account, owner decision 5 in the memo) through them.
 
 Anyone who can push to `main` can already reach most of this through the code the engine runs. What is still to do before the cutover is in the [hosting memo](research/azure-hosting.md) ("Code changes", item 6).
 

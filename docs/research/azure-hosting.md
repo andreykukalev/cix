@@ -121,7 +121,7 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 | Pull request | CI, no Azure access | Build and test (as now), build the images, `bicep build` and lint |
 | Merge to `main`, application change | CI as `cix-agents-deploy-<env>` | Push images to ACR tagged with the commit SHA. Update the paper engine app to that image and wait for its new revision to be healthy (its startup and readiness probes), then the jobs. If anything fails, put back the images that ran before and fail the run. |
 | Infrastructure change (`infra/`) | The owner, with `provision.ps1` | What-if first, then apply, as today. The template is subscription-scoped and creates role assignments, Key Vault and the budget. Applying it needs Owner-level rights, which CI must not hold. |
-| Bootstrap, secret rotation, anything about the live engine | The owner | Run from the owner's own sign-in. The live engine goes into its own resource group and Key Vault, where CI's identities have no role, with its own identity and database. The paper engine's Cosmos DB roles reach CIX's paper database only, so CI can't reach a live database through them. Whether the live database may share the free account is open (ADR-0013): the account's keys still write every database in it. |
+| Bootstrap, secret rotation, anything about the live engine | The owner | Run from the owner's own sign-in. The live engine goes into its own resource group and Key Vault, where CI's identities have no role, with its own identity and database. The live database sits in the shared free account (owner decision 5); the paper engine's Cosmos DB roles reach CIX's paper database only, so CI can't reach the live one through them. |
 
 - **`cix-agents-deploy-<env>`** uses an OIDC credential trusted for `main` only, as in ADR-0010. It has `AcrPush` on the registry and a custom role assigned on the registry, the paper engine app and the three jobs: read and update them. It holds nothing on the resource group, so it can't create resources or role assignments. An image it deploys runs with the engine's or a job's identity, and so reaches what they reach (CIX's paper database through the engine's Cosmos DB roles, and `claude-token` through a job's). A run started by hand on `main` signs in with the same identity, which is why that identity has no rights over infrastructure or the live engine.
 - **The merge is the approval.** GitHub Free can't require a reviewer for deployments in a private repository. Agents develop on branches and open pull requests, CI must pass, the owner merges, and CI deploys paper.
@@ -149,6 +149,11 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 2. Stop the PC stack with `docker compose down`, without `-v`, so the local data is kept. Then activate the Azure engine and enable the jobs. The lease and the saved state in Cosmos DB carry the paper account over unchanged.
 3. Watch for a day: engine status, agent runs, the journal and the cost meter.
 4. To roll back, deactivate the Azure revision, disable the jobs and start Compose again. Both use the same database.
+5. Once the PC is no longer needed as a fallback, rotate the shared account's read-write key the PC engine used, and keep it only where it is still needed:
+   - regenerate the primary key (`az cosmosdb keys regenerate --key-kind primary`) and delete `secrets/cosmos_key` on the PC;
+   - give the new key to the other projects that still use one, and to nothing of CIX's: the paper engine and, later, the live engine sign in with their identities;
+   - regenerate the secondary key as well if nothing uses it, so no old copy of it works.
+   Before live trading starts, do it again for anything that got the key since, and regenerate the read-only keys too, then run `provision.ps1` so the dashboard gets the new one.
 
 ## Owner decisions (2026-10-26)
 
@@ -156,8 +161,20 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 2. **Claude credentials:** the `claude setup-token` subscription token, kept in Key Vault. Switch to an API key only if the subscription's limits get in the way.
 3. **No NAT gateway now.** The fixed outbound IP is decided together with the live engine. The environment still gets its own VNet, so a NAT gateway can be added later without rebuilding it.
 4. **The owner's merge is the only gate.** There is no auto-merge for agent pull requests.
+5. **Cosmos DB stays free: one account, no second one.** When live comes, the live engine uses its own database in the shared free account, and signs in to it with its own identity and roles, as the paper engine does. The live engine and its Key Vault (the Revolut X keys) go in a separate resource group, `rg-cix-live`, where CI and the agents have no role. The account's read-write key reaches every database, so the cutover rotates it and keeps it only where it is still needed (Cutover, step 5). What risk remains is below.
+6. **Paper stays as the dev environment.** Paper keeps running in `rg-cix-dev`, deployed by CI on each merge that changes the images, next to live. Live moves only when the owner promotes an image that has run on paper, pinned by digest, from their own sign-in. Live pulls either from the dev registry by that digest or from a registry of its own (about $5 a month), never by a tag CI can move.
+
+## Risk that remains with live in the shared account
+
+- **The account's keys reach every database in it**, the live one included. Whoever holds the read-write key can change or delete anything there: live state, the kill switch, the lease, and journal entries too. That includes another project, wherever it keeps the key (its own CI, a laptop). Rotating at the cutover and before live trading keeps the number of holders small, but each holder stays trusted with live data. Removing this entirely needs key access turned off for the account (`disableLocalAuth`), which only works once every project signs in with an identity.
+- **The read-only key reads the live database**: positions, orders and balances. The dashboard holds it, and the dashboard's CI deploy identity can deploy code that runs with it. This exposes the data, but it can't trade or change state.
+- **Control of the account is shared.** Anyone with a role on the account or `rg-shared` can list its keys, change its firewall, or delete it, along with every project's database. Keep those roles to the owner alone. A `CanNotDelete` lock on the account (free) guards against a mistaken delete; it is not set yet.
+- **Throughput is shared within the free tier's 1000 RU/s.** Each database has its own throughput, so another project can't throttle live. But a live database at 400 RU/s next to paper's 400 leaves 200 for everything else, and going past 1000 is billed.
+- **Backup is the account's.** It uses the account's periodic backups, which only Azure support can restore (into a new account), on the account's schedule and retention. Live's own history is its journal.
+- **`provision.ps1` still refuses a protected environment in the shared account** unless it is given `-AllowProtectedInSharedAccount`. The live template work replaces that refusal with checks for the above: no CI or agent role on `rg-cix-live`, the live engine on its identity, and the key rotated.
 
 ## Still open
 
 1. ~~**Engine size.**~~ Checked (2026-10-26): `docker stats` on the PC showed the engine at 0.41% CPU and 125.6 MiB, well inside 0.25 vCPU / 0.5 GiB, so the cost table stands. That was a quiet moment; a reading during an agent run would confirm the peak.
 2. ~~**The live-mode hook.**~~ Done (owner's go-ahead, 2026-10-26): it checks the templates under `infra/` as they will be after an edit (no quoted `'Live'` or `'Production'`, and the Paper and Azure lines stay), and blocks `Production` and `ManualRequests:AllowLive` outside tests and docs.
+3. ~~**A live database in the shared account.**~~ Decided (owner, 2026-10-26): yes, in its own database, with the live engine in `rg-cix-live` (owner decisions 5 and 6).

@@ -950,7 +950,10 @@ Check 'provision.ps1 agents platform: no budget without an address that gets mai
   $r = Invoke-AgentsProvision @{ 'ad signed-in-user' = $guest } @{ Yes = $true; SkipEngineConfig = $true } 'platform'
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   if (-not $r.Output.Contains('no budget is created. Pass -BudgetEmail')) { throw "no warning in: $($r.Output)" }
-  foreach ($never in @('ad app', 'keyvault', 'acr ')) { if ($r.Calls.Contains($never)) { throw "platform ran '$never'" } }
+  foreach ($never in @('ad app', 'acr ')) { if ($r.Calls.Contains($never)) { throw "platform ran '$never'" } }
+  # Only the names in Key Vault are listed (for a cosmos-key an earlier template left): no secret is set, read or deleted.
+  $vaultCalls = @(($r.Calls -split "`n") | Where-Object { $_ -match 'keyvault' -and $_ -notmatch '^\s*keyvault secret list ' })
+  if ($vaultCalls.Count -gt 0) { throw "platform ran $($vaultCalls -join '; ')" }
 }
 
 Check 'a budget starting in a past month is refused only while it does not exist' {
