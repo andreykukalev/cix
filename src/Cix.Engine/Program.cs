@@ -2,6 +2,7 @@ using Cix.Domain.Risk;
 using Cix.Engine;
 using Cix.Engine.Analysis;
 using Cix.Engine.Execution;
+using Cix.Engine.Manual;
 using Cix.Engine.MarketData;
 using Cix.Engine.Paper;
 using Cix.Engine.Persistence;
@@ -69,6 +70,10 @@ builder.Services.AddCixAnalyst(
 
 // Deterministic scans of the universe every few minutes; signals are journaled and served by scan_market. Never trades.
 builder.Services.AddCixScanner(scanner, universe);
+
+// The owner's manual buy and sell requests from the dashboard (ADR-0011): every order still goes through the risk gate.
+builder.Services.AddCixManualRequests(
+    builder.Configuration.GetSection(ManualRequestOptions.SectionName).Get<ManualRequestOptions>() ?? new ManualRequestOptions());
 
 // A readable status record every minute (heartbeat, last sync, portfolio) and dependency health for /healthz.
 builder.Services.AddCixStatus();

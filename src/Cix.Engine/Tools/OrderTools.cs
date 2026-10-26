@@ -158,7 +158,7 @@ public sealed class OrderTools(
     }
 
     /// <summary>Required, trimmed, single-line and bounded: it is written to the journal verbatim.</summary>
-    private static string Rationale(string? rationale)
+    internal static string Rationale(string? rationale)
     {
         var text = string.Join(' ', (rationale ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         // Drop control and format characters (zero-width, bidi overrides) that could disguise what the owner reads.

@@ -324,7 +324,7 @@ public sealed class McpEndToEndTests
         Assert.Equal(
             new[]
             {
-                "cancel_order", "get_analyst_brief", "get_daily_summary", "get_features", "get_market_view", "get_open_orders",
+                "answer_manual_request", "cancel_order", "get_analyst_brief", "get_daily_summary", "get_features", "get_manual_requests", "get_market_view", "get_open_orders",
                 "get_portfolio", "get_position_plans", "get_strategy_spec", "pause_trading", "place_order", "query_journal",
                 "record_market_view", "resume_trading", "scan_market",
             },

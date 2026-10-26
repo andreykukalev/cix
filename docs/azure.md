@@ -9,7 +9,7 @@ Your PC (Docker Compose)                                   Azure
 │ engine ── trader, analyst     │ ─────────────────────────► │ Cosmos DB cosmos-shared-<suffix>     │
 │ (paper exchange, risk gate)   │                            │ (free tier: 1000 RU/s for the account)│
 └───────────────────────────────┘                            │   database cix (400 RU/s):           │
-                                                             │     journal, state                   │
+                                                             │     journal, state, requests         │
                                                              │   (other projects' databases)        │
                                                              └──────────────▲───────────────────────┘
                                                            rg-cix-dev       │ read-only key (server side)
@@ -19,12 +19,23 @@ Browser ── https://<name>.azurestaticapps.net ── /api (managed Functions
 
 Nothing in this guide runs by itself. You provision, switch and reset, each with its own command.
 
+## Adding the `requests` container to an existing database
+
+Manual Buy and Sell requests (ADR-0011) need a third container, `requests`. The engine can't create containers in Azure, so a database provisioned before #63 needs the template once more. It adds the container and changes nothing else (no data is moved, reset or deleted):
+
+```powershell
+.\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig
+docker compose -f docker-compose.yml -f docker-compose.azure.yml restart engine
+```
+
+The what-if preview should show only the new container. Until it exists, the engine runs as before and its status reports manual requests as `unavailable`.
+
 ## What it costs
 
 | Resource | Plan | Expected cost |
 |---|---|---|
 | Shared Cosmos DB account (`rg-shared`) | Free tier | **$0** for the first 1000 RU/s and 25 GB across all its databases |
-| CIX's database `cix`, 400 RU/s shared by `journal` and `state` | Inside the free tier | **$0**. It leaves 600 RU/s of the free tier for other projects. |
+| CIX's database `cix`, 400 RU/s shared by `journal`, `state` and `requests` | Inside the free tier | **$0**. It leaves 600 RU/s of the free tier for other projects. |
 | Static Web App with managed API (`rg-cix-dev`) | Free | **$0** (includes 100 GB of bandwidth a month) |
 | Data sent from Azure to your PC | | Well under the free 100 GB a month |
 
@@ -81,7 +92,7 @@ The script:
 1. Checks the Azure CLI.
 2. Signs you in with `az login` if needed, and selects the subscription.
 3. **Shared account.** If `rg-shared` has no account tagged `shared-role=cosmos` yet, it shows a what-if preview of `infra/shared/main.bicep` (the resource group and the account, no databases), asks, then deploys it. An existing shared account is left exactly as it is; pass `-UpdateShared` to apply the template to it (for example after changing `allowedIpRanges`).
-4. **CIX.** It shows a what-if preview of `infra/main.bicep` (`rg-cix-dev`, the dashboard, and the `cix` database with its two containers in the shared account), asks, then deploys it.
+4. **CIX.** It shows a what-if preview of `infra/main.bicep` (`rg-cix-dev`, the dashboard, and the `cix` database with its containers in the shared account), asks, then deploys it.
 5. Prints the Cosmos DB endpoint and the dashboard URL.
 
 With `-WhatIfOnly` and no shared account yet, only the shared account's preview is shown: CIX's preview needs the account to exist.
@@ -218,7 +229,7 @@ Safeguards:
 - The database must be this environment's alone: its group's `cix-database` and `cix-cosmos-account` tags must name it, and no other group may claim it. So a copied or mistyped settings file can't point a reset (or a deployment) at another environment's or project's database. Two environment files sharing one database name are refused outright.
 - Agents can't run it: a hook blocks the script for every Claude agent, along with deleting Cosmos DB resources, regenerating keys, or `docker compose down -v`. It is the one thing allowed to delete journal entries, an owner-approved exception to the append-only rule ([ADR-0008](adr/0008-azure-database-local-agents-dashboard.md)).
 - It acts only on CIX's database (`cosmos.databaseName`) in the single shared account (tagged `shared-role=cosmos` in the shared resource group), and checks the database exists first. Other projects' databases are never touched.
-- It touches only the `journal` and `state` containers. It never deletes the database or the shared account.
+- It touches only the `journal` and `state` containers. It never deletes the database or the shared account, and never touches the owner's `requests`.
 - It refuses while the engine is running.
 - It deletes nothing without `-Apply` and the typed confirmation, and prints a summary of what was planned and what was done.
 

@@ -90,6 +90,15 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
   - The default list is federalreserve.gov, bls.gov, bea.gov, ecb.europa.eu, tradingeconomics.com, reuters.com, apnews.com, cnbc.com, coindesk.com, theblock.co, decrypt.co, rekt.news, defillama.com, tokenomist.ai, status.solana.com and revolut.com.
   - To change it, set the whole list in `.env`, for example `ANALYST_WEB_DOMAINS=reuters.com,coindesk.com,federalreserve.gov`, then run `docker compose up -d analyst`.
 
+## Manual requests
+
+You can ask the engine to sell (or the trader to consider a buy or a sell) without waiting for a signal (ADR-0011). The dashboard's buttons create these requests; until then, or to test, create one in Data Explorer (http://localhost:1234, `cix` › `requests` › New Item). The fields and an example are in [persistence.md](persistence.md#the-requests-container).
+
+- **Direct sell** (`"mode": "direct"`): the engine sells the `portion` of the position at the bid within about 5 seconds, through the risk gate.
+- **Agent-assisted** (`"mode": "agent"`, for sells and buys): the trader is started at once, looks at the request, and executes or declines it with its reasoning. Buys are agent-assisted only. These runs have their own daily cap (`TRADER_MAX_MANUAL_RUNS_PER_DAY`, 20) and can't place or cancel orders themselves.
+- **Watch it:** the request document's `status`, `outcome` and `events`, the journal's `manual-request` and `order` entries, `docker compose logs trader`, and the engine status's `manualRequests`.
+- A request more than 5 minutes old when the engine sees it expires; one the trader doesn't answer in 20 minutes expires too; a second request for the same coin and side while one is in progress is refused; at most 20 a day. To change these, add a `"ManualRequests"` section to `appsettings.json` (`Enabled`, `MaxPerDay`, `MaxAgeAtPickup`, `AgentAnswerTimeout`, `PollInterval`); `"Enabled": false` leaves requests untouched. Requests are for paper trading: a Live engine ignores them (`AllowLive`, off, see ADR-0011).
+
 ## Strategies: good and risky
 
 There are two strategies, both on the same coins (`AllowedSymbols`):
@@ -99,6 +108,8 @@ There are two strategies, both on the same coins (`AllowedSymbols`):
 To switch:
 1. In `src\Cix.Engine\appsettings.json`, set `"Strategy": { ..., "Name": "risky", "Version": 1 }` (or `"good"`).
 2. Run `docker compose restart engine trader`.
+
+The coin filters come with the strategy (its `scanner` parameters), so changing them means a new spec version. The engine records the filters in force in the database (`scanner-filters-paper`) and journals a `scanner-filters` entry with each changed value when they change, and a `scan-eligibility` entry when the coins that pass change. Restarts don't reset either.
 
 The trader calls Claude only when the scanner's signals change (checked every minute), plus a position review every 4 hours (`TRADER_HEARTBEAT_MINUTES` in `.env`). The engine log shows each scan's ranking and why each symbol did or didn't signal (`Scan: ... ranked [...] excluded [...]`). See `strategies\README.md` for the settings.
 

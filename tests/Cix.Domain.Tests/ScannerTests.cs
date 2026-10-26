@@ -55,6 +55,18 @@ public sealed class ScannerTests
         MarketScanner.Scan(inputs, held ?? [], parameters ?? Defaults, Now, allowEntries);
 
     [Fact]
+    public void ExcludedSymbols_KeepTheirMoves_UnlessTheirDataIsStale()
+    {
+        // 24 candles of 1 unit at 100: 2,400 EUR a day, far below the 100,000 minimum.
+        var result = Scan([Input(hourly: Hourly(volume: 1m)), Input(Features("ETH-EUR", stale: true))]);
+
+        var low = Assert.Single(result.Excluded, x => x.Symbol == "SOL-EUR");
+        Assert.Equal(("low-volume", (decimal?)0.002m, (decimal?)0.03m), (low.Reason, low.Return1h, low.Return24h));
+        var stale = Assert.Single(result.Excluded, x => x.Symbol == "ETH-EUR");
+        Assert.Equal(("stale", (decimal?)null, (decimal?)null), (stale.Reason, stale.Return1h, stale.Return24h));
+    }
+
+    [Fact]
     public void RoundTripCost_IsTwoFeesPlusSpreadPlusTwoSlippages() =>
         Assert.Equal(0.0038m, MarketScanner.RoundTripCost(0.001m, Defaults));
 

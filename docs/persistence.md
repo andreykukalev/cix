@@ -2,14 +2,15 @@
 
 How CIX stores what it knows, and how it picks up after a restart, a crash or a PC reboot without placing a trade twice, missing a fill or leaving a position without its stop.
 
-## Two containers, two jobs
+## Three containers, three jobs
 
-The Cosmos DB database `cix` has two containers.
+The Cosmos DB database `cix` has three containers.
 
 | Container | Holds | Changes | Partition key |
 |---|---|---|---|
 | `state` | What is true **now**: the engine's operational state, the paper account, archived strategy specs. One document per id. | Documents are replaced as things change. | `/id` |
 | `journal` | What **happened**: every decision, order, fill and safety event, with who did it and why. | Append-only. Nothing is ever updated or deleted (CLAUDE.md rule 4). | `/day` (UTC date) |
+| `requests` | The owner's **manual buy and sell requests** from the dashboard, each with its outcome and history (ADR-0011). | The dashboard creates a request; the engine updates it as it handles it. Nothing deletes one. | `/day` (UTC date) |
 
 The rule of thumb is that **state** answers "what must the engine know to carry on right now?" and the **journal** answers "what happened, and why?". The engine recovers from state and reconciles it with the exchange. It doesn't rebuild state by replaying the journal, except for one fallback described below.
 
@@ -24,6 +25,8 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 | `engine-state-paper` (`engine-state-live` in Live) | `engine-state` | The engine's operational state (below). | On every change: an order sent, confirmed or finished, a plan opened or closed, a new loss baseline, the kill switch. |
 | `engine-status-paper` (or `-live`) | `engine-status` | The engine's status for people and the dashboard (below). Built from what the engine already holds in memory, with no exchange call and no state change, and never read back, so it can't affect trading. | Every minute. |
 | `paper-account` | `paper-account` | The simulated Revolut X account: balances (`available`, `reserved`) per currency, and its orders (all open ones and the latest 500 finished). Paper mode only. | Every second when something changed, and at shutdown. |
+| `manual-requests-paper` (or `-live`) | `manual-requests` | The engine's own record of owner requests (ADR-0011): those it accepted and still acts on (`active`: the request as first read, its status, since when, the claim's `clientOrderId`), today's `accepted` and `refused` counts, and the requests accepted since yesterday (`seen`), so none is taken twice. | Before a request's order is sent, and at each later step. |
+| `scanner-filters-paper` (or `-live`) | `scanner-filters` | The coin filters in force (`value.filters`, from the active spec's `scanner` parameters), the spec they came from, since when (`since`), and the coins that passed them (`passing`) or not (`excluded`, with the reason) at the last change. Read back at startup, so a restart doesn't count as a change. | Only when the filters or the set of passing coins change (see the `scanner-filters` and `scan-eligibility` journal entries). |
 | `spec-<name>@v<N>-<hash>` | `strategy-spec` | An immutable copy of a strategy spec version that ran. Journal entries name it in `specVersion` (`good@v1#3f2a9c1b04de`). | Once, the first time a version runs. Never overwritten. |
 
 ### `engine-state-*`
@@ -46,9 +49,11 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 | `startedAt`, `mode`, `strategy` | When this engine process started, paper or live, and the active strategy spec. |
 | `halted`, `haltedBy`, `haltCategory`, `haltedSince` | The kill switch: which part of the engine engaged it and a fixed description of why. The exact reason (which can name orders or amounts) is only in the journal's `kill-switch` entry. |
 | `lastReconciledAt`, `lastReconcileAttemptAt`, `lastReconcileProblem` | The last full comparison with the exchange (the portfolio's last sync), the last attempt, and a problem code: `exchange-unreadable`, `unknown-open-orders`, `unexplained-holdings-change`, `holdings-not-compared` (no fresh prices to value the holdings), or empty. |
-| `lastScan` | The latest scan: when, how many coins ranked and excluded, entry and exit signals, and the signal key the trader watches. `market` lists every coin: rank, trend, 1h and 24h return, hourly range (ATR) and volume ratio as fractions, its signal (`buy`, `sell (stop)`, ...) and why it has no entry or was excluded. No prices. |
+| `lastScan` | The latest scan: when, how many coins ranked and excluded, entry and exit signals, and the signal key the trader watches. `market` lists every coin: rank, trend, 1h and 24h return, hourly range (ATR) and volume ratio as fractions, its signal (`buy`, `sell (stop)`, ...) and why it has no entry or was excluded. Excluded coins also carry their 1h and 24h return when their data is fresh. No prices. |
 | `marketView` | The analyst's current view: regime, until when, coins to avoid. |
 | `oldestQuoteAt`, `unquotedSymbols` | The oldest of the latest prices across the tradable coins that have one, and the coins with none yet. Minutes old means market data has stalled. |
+| `filters` | The coin filters in force: spec, `since` (when first applied), `minQuoteVolume24h`, `maxSpreadFraction`, `maxAtrFraction`, `minAtrToCostRatio`, `minHourlyCandles24h`, `requireUptrendPullback`, `trendExits`, `maxEntrySignals`, `orderQuote`. |
+| `manualRequests` | Whether manual requests are on (`state`: `ok`, `off`, `unavailable` when the `requests` container doesn't exist yet, `not-used` without a database), how many wait for the trader, and the last poll. |
 | `portfolio` | As the safety monitor last valued it (every minute): equity, cash (equity minus holdings, including what open buys reserve), peak equity, today's P&L, exposure, and each holding with its value and plan (status, entry, stop, target). Absent until the first valuation. |
 
 ### Why some IDs are still GUIDs
@@ -68,12 +73,54 @@ Each document is `{ id, day, entry }`. The entry has `id`, `at`, `kind`, `actor`
 |---|---|---|
 | `tool-call` | An agent used a read tool. | `tool` |
 | `tool-denied` | A tool was refused (not allowed by the spec, wrong caller). | `tool` |
-| `order` | An order was placed or refused (`place_order`, `cancel_order`, or the engine's `protective-exit`). | `tool`, `clientOrderId`, `orderId`, `symbol`, `side`, `requestedSize`, `requestedPrice`, `status`, `rule`, `reason`, `rationale`, `stopLoss`, `takeProfit` |
+| `order` | An order was placed or refused (`place_order`, `cancel_order`, the engine's `protective-exit`, or an owner request: `manual-direct`, `manual-agent`). | `tool`, `clientOrderId`, `orderId`, `symbol`, `side`, `requestedSize`, `requestedPrice`, `status`, `rule`, `reason`, `rationale`, `stopLoss`, `takeProfit`; `requestId` for owner requests |
 | `fill` | An order finished with something filled. Written once per order, even across restarts. | `clientOrderId`, `orderId`, `symbol`, `side`, `filledSize`, `averagePrice`, `fee`, `status`, `source`, `stopLoss`, `takeProfit`; `runId` and `specVersion` of the order |
 | `order-closed` | An order finished with nothing filled (cancelled, expired, rejected). | as `fill` |
 | `kill-switch` | Trading halted or resumed. | `action`, `reason`, `cancelled` |
 | `scan-signal` | The scanner found a new entry or exit signal. | `symbol`, signal fields |
+| `manual-request` | An owner request was received (actor `owner`), refused, sent to the trader, decided by the trader (actor `trader-requests`), placed, cancelled unfilled, filled or closed. | `requestId`, `mode` (`direct`, `agent`), `side`, `symbol`, `requestedPortion` or `quoteAmount`, `status`, `rule`, `reason`, `rationale`, `clientOrderId`, `note` |
+| `scanner-filters` | The coin filters in force changed (a new spec version), or were recorded for the first time. | `spec`, `previousSpec`, `changes` (`minQuoteVolume24h 100000 → 20000; ...`), `filters` and `previousFilters` (JSON), `passing`, `excluded` (`SYMBOL:reason,...`) |
+| `scan-eligibility` | The set of coins that pass the filters changed under the same filters, in two scans in a row. A coin without data yet (`stale`, `insufficient-history`) keeps its last result. | `added`, `removed`, `passing`, `excluded`, `spec` |
 | `market-view` | The analyst recorded a view. | `regime`, `validUntil`, `avoid`, `sources`, `highlights` (from analyst v2: a JSON list of up to five items with `title`, `impact`, `direction`, `symbols`, `detail`, `source`, for the owner's dashboard; the trader never sees them) |
+
+## The `requests` container
+
+One document per owner request, partitioned by its UTC `day`. The dashboard (or, for testing, Data Explorer) creates it; the engine polls every 5 seconds for new ones and copies each step it takes onto the document. ADR-0011 explains the design.
+
+| Field | Written by | Meaning |
+|---|---|---|
+| `id` | requester | 8 to 64 letters, digits or dashes; a GUID from the dashboard. Creating the same id twice fails, so a double click can't make two requests. |
+| `day`, `createdAt` | requester | The UTC date and time of the request. A request more than 5 minutes old when the engine first sees it expires instead of trading on a stale intent. |
+| `side`, `mode` | requester | `sell` with `direct` (the engine sells at once) or `agent` (the trader decides); `buy` with `agent` only. |
+| `symbol` | requester | A coin in the risk allowlist, such as `XRP-EUR`. |
+| `portion` | requester | Sells: the share of the sellable position, more than 0 and at most 1. |
+| `quoteAmount` | requester | Buys: how much quote currency (EUR) to spend. |
+| `note`, `requestedBy` | requester | Optional text for the trader and the history (cleaned, at most 280 characters), and who asked. |
+| `tradingMode` | requester | `paper` (the default) or `live`. An engine acts only on requests for its own mode, and a Live engine only with `ManualRequests:AllowLive`, which is off. |
+| `status` | both | `new` (requester), then the engine's: `awaiting-agent`, `executing`, `placed`, `unconfirmed`, `filled`, `closed`, `declined`, `rejected`, `failed`, `invalid`, `duplicate`, `expired`. A new request must have status `new` and none of `outcome`, `events` or `updatedAt`. |
+| `outcome` | engine | `rule`, `reason`, and as they apply `decidedBy`, `runId`, `rationale`, `clientOrderId`, `requestedSize`, `requestedPrice`, `approvedSize`, `approvedPrice`, `orderId`, `filledSize`, `averagePrice`. |
+| `events` | engine | The history: one `{ at, status, by, detail }` per step. |
+
+The engine reads a request document once, while it is `new`. From then on it trusts only its own record, `manual-requests-paper` in the `state` container (below), and writes each step onto the document as a copy for people. So a document written with another status, or edited later, changes nothing.
+
+A request is claimed in that record, with its `clientOrderId`, **before** its order is sent. If the engine stops at that moment, it finds the claim at the next start: the order is reconciled if it was sent (`unconfirmed`, then `filled` or `closed`). If there is no trace of it after 2 minutes, the request is closed as `outcome-unknown`, with a reminder to check the exchange's order history before sending it again. The same happens to a placed order the engine stops tracking without a record of how it ended. A manual order still unfilled after 4 minutes is cancelled, and the request closes with what filled. A request is never executed twice.
+
+Example, for testing in Data Explorer (`requests` container, New Item; set `day` and `createdAt` to now, in UTC):
+
+```json
+{
+  "id": "test-sell-0001",
+  "day": "2026-10-26",
+  "createdAt": "2026-10-26T10:15:00Z",
+  "side": "sell",
+  "mode": "direct",
+  "symbol": "XRP-EUR",
+  "portion": 0.5,
+  "note": "testing a direct sell",
+  "requestedBy": "owner",
+  "status": "new"
+}
+```
 
 ### Tracing one trade
 

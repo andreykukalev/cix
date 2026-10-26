@@ -221,6 +221,41 @@ public sealed class CosmosEngineStatusStore(CosmosDb db, TradingMode mode) : Sta
         CosmosDb.WriteStateAsync(db.State, $"{DocumentPrefix}-{mode.ToString().ToLowerInvariant()}", status, DocumentPrefix, About, cancellationToken);
 }
 
+/// <summary>The coin filters in force and which coins pass, as <c>scanner-filters-&lt;mode&gt;</c>; replaced only when they change.</summary>
+public sealed class CosmosScannerFilterStore(CosmosDb db, TradingMode mode) : Scanning.IScannerFilterStore
+{
+    public const string DocumentPrefix = "scanner-filters";
+    public const string About =
+        "The coin filters in force (from the active strategy spec), since when, and which coins passed them at the last change. Replaced only when the filters or the set of passing coins change; the journal's scanner-filters and scan-eligibility entries keep the history.";
+
+    private string Id => $"{DocumentPrefix}-{mode.ToString().ToLowerInvariant()}";
+
+    public Task<Scanning.ScannerFilterState?> LoadAsync(CancellationToken cancellationToken) =>
+        CosmosDb.ReadStateAsync<Scanning.ScannerFilterState>(db.State, Id, cancellationToken);
+
+    public Task SaveAsync(Scanning.ScannerFilterState state, CancellationToken cancellationToken) =>
+        CosmosDb.WriteStateAsync(db.State, Id, state, DocumentPrefix, About, cancellationToken);
+}
+
+/// <summary>
+/// The engine's own record of manual requests, as <c>manual-requests-&lt;mode&gt;</c> (ADR-0011): the requests it accepted and
+/// still acts on, with each claim's client order ID, and today's counts. Saved before a request's order is sent.
+/// </summary>
+public sealed class CosmosManualLedgerStore(CosmosDb db, TradingMode mode) : Manual.IManualLedgerStore
+{
+    public const string DocumentPrefix = "manual-requests";
+    public const string About =
+        "The engine's own record of the owner's manual requests: those it accepted and still acts on (waiting for the trader, being sent, or placed), with each order's client order ID, and today's counts. The request documents in the requests container carry a copy of each step for people; the engine trusts only this record.";
+
+    private string Id => $"{DocumentPrefix}-{mode.ToString().ToLowerInvariant()}";
+
+    public Task<Manual.ManualLedger?> LoadAsync(CancellationToken cancellationToken) =>
+        CosmosDb.ReadStateAsync<Manual.ManualLedger>(db.State, Id, cancellationToken);
+
+    public Task SaveAsync(Manual.ManualLedger ledger, CancellationToken cancellationToken) =>
+        CosmosDb.WriteStateAsync(db.State, Id, ledger, DocumentPrefix, About, cancellationToken);
+}
+
 /// <summary>For tests.</summary>
 public sealed class InMemoryPaperAccountStore : IPaperAccountStore
 {

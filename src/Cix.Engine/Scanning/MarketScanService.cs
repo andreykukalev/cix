@@ -84,7 +84,8 @@ public sealed partial class MarketScanService(
     ScannerOptions options,
     TimeProvider time,
     ILogger<MarketScanService> logger,
-    Analysis.MarketViewStore? views = null)
+    Analysis.MarketViewStore? views = null,
+    ScannerFilterRecorder? filters = null)
 {
     public const string SignalKind = "scan-signal";
     public const string Actor = "scanner";
@@ -199,9 +200,11 @@ public sealed partial class MarketScanService(
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var parameters = Parameters;
             var result = await RunAsync(cancellationToken).ConfigureAwait(false);
             await RecordNewSignalsAsync(result).ConfigureAwait(false);
             Latest = result;
+            await RecordFiltersAsync(result, parameters).ConfigureAwait(false);
             return result;
         }
         finally
@@ -209,6 +212,29 @@ public sealed partial class MarketScanService(
             _gate.Release();
         }
     }
+
+    /// <summary>The coin filters in force and which coins pass them, as recorded in the database (null before the first scan).</summary>
+    public ScannerFilterState? RecordedFilters => filters?.Current;
+
+    /// <summary>Records filter and eligibility changes; a failure is logged and retried at the next scan, never fails the scan.</summary>
+    private async Task RecordFiltersAsync(ScanResult result, ScannerParameters parameters)
+    {
+        if (filters is null)
+            return;
+        try
+        {
+            await filters.RecordAsync(result, parameters, specs.Active?.Label, CancellationToken.None).ConfigureAwait(false);
+        }
+#pragma warning disable CA1031 // anything, timeouts included: a record that failed must never stop the scan or the protective exits after it
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            LogFiltersFailed(logger, ex.GetType().Name, ex.Message);
+        }
+    }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Coin filter record not updated ({Error}): {Detail}; retried at the next scan")]
+    private static partial void LogFiltersFailed(ILogger logger, string error, string detail);
 
     private async Task<ScanResult> RunAsync(CancellationToken cancellationToken)
     {
@@ -503,6 +529,8 @@ public static class ScannerRegistration
         options.Validate();
         services.AddSingleton(options);
         services.AddSingleton(universe);
+        services.AddSingleton<IScannerFilterStore, InMemoryScannerFilterStore>();
+        services.AddSingleton<ScannerFilterRecorder>();
         services.AddSingleton<MarketScanService>();
         services.AddHostedService<MarketScanBackgroundService>();
         return services;

@@ -36,7 +36,31 @@ public sealed record EngineStatus(
     MarketViewStatus? MarketView,
     DateTimeOffset? OldestQuoteAt,
     IReadOnlyList<string> UnquotedSymbols,
-    PortfolioStatus? Portfolio);
+    PortfolioStatus? Portfolio,
+    FiltersStatus? Filters = null,
+    ManualRequestsStatus? ManualRequests = null);
+
+/// <summary>
+/// The coin filters the scanner applies, from the active strategy spec (a change is a new spec version). Fractions as
+/// fractions (0.004 = 0.4%), volume in the quote currency.
+/// </summary>
+/// <param name="Since">When these filters were first applied, from the database record; null until the first scan records them.</param>
+public sealed record FiltersStatus(
+    string? Spec,
+    DateTimeOffset? Since,
+    decimal MinQuoteVolume24h,
+    decimal MaxSpreadFraction,
+    decimal MaxAtrFraction,
+    decimal MinAtrToCostRatio,
+    int MinHourlyCandles24h,
+    bool RequireUptrendPullback,
+    bool TrendExits,
+    int MaxEntrySignals,
+    decimal OrderQuote);
+
+/// <param name="State"><c>ok</c>, <c>off</c>, <c>unavailable</c> (no requests container yet) or <c>not-used</c> (no database).</param>
+/// <param name="AwaitingAgent">Agent-assisted requests waiting for the trader.</param>
+public sealed record ManualRequestsStatus(string State, int AwaitingAgent, DateTimeOffset? LastPollAt);
 
 /// <param name="Market">Every scanned symbol from the latest scan, for the owner's market overview.</param>
 public sealed record ScanStatus(
@@ -144,7 +168,8 @@ public sealed partial class EngineStatusService(
     ILogger<EngineStatusService> logger,
     MarketScanService? scanner = null,
     MarketViewStore? views = null,
-    IStrategySpecStore? specs = null) : BackgroundService
+    IStrategySpecStore? specs = null,
+    Manual.ManualRequestService? manual = null) : BackgroundService
 {
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
@@ -175,7 +200,7 @@ public sealed partial class EngineStatusService(
                 r.Symbol, r.Rank, r.Trend.ToString().ToLowerInvariant(), Round(r.Return1h), Round(r.Return24h), Round(r.AtrFraction),
                 Round(r.VolumeRatio, 2), Signal(r.Symbol), r.NoEntryReason))
             .Concat(scan.Excluded.OrderBy(x => x.Symbol, StringComparer.Ordinal)
-                .Select(x => new MarketRow(x.Symbol, null, null, null, null, null, null, Signal(x.Symbol), x.Reason)))
+                .Select(x => new MarketRow(x.Symbol, null, null, Round(x.Return1h), Round(x.Return24h), null, null, Signal(x.Symbol), x.Reason)))
             .ToList();
     }
 
@@ -209,7 +234,21 @@ public sealed partial class EngineStatusService(
                 : new MarketViewStatus(view.Regime.ToString(), view.RecordedAt, view.ValidUntil, view.IsActive(now), view.Flags.Select(f => f.Symbol).ToList()),
             quoted.Count == 0 ? null : quoted.Min(s => quoteTimes[s]),
             tradable.Where(s => !quoteTimes.ContainsKey(s)).ToList(),
-            Portfolio());
+            Portfolio(),
+            Filters(),
+            manual is null ? null : new ManualRequestsStatus(manual.State, manual.Pending.Count, manual.LastPollAt));
+    }
+
+    private FiltersStatus? Filters()
+    {
+        if (scanner is null)
+            return null;
+        var p = scanner.Parameters;
+        var recorded = scanner.RecordedFilters;
+        return new FiltersStatus(
+            specs?.Active?.Label, recorded is not null && recorded.Filters == p ? recorded.Since : null,
+            p.MinQuoteVolume24h, p.MaxSpreadFraction, p.MaxAtrFraction, p.MinAtrToCostRatio, p.MinHourlyCandles24h,
+            p.RequireUptrendPullback, p.TrendExits, p.MaxEntrySignals, p.OrderQuote);
     }
 
     private PortfolioStatus? Portfolio()

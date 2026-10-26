@@ -71,6 +71,7 @@ services:
       TRADER_HEARTBEAT_MINUTES: "${TRADER_HEARTBEAT_MINUTES:-240}"  # signal-driven strategies: review even without signals
       TRADER_MIN_GAP_MINUTES: "${TRADER_MIN_GAP_MINUTES:-15}"
       TRADER_MAX_RUNS_PER_DAY: "${TRADER_MAX_RUNS_PER_DAY:-30}"
+      TRADER_MAX_MANUAL_RUNS_PER_DAY: "${TRADER_MAX_MANUAL_RUNS_PER_DAY:-20}"   # runs for owner requests, counted separately
       TRADER_POLL_SECONDS: "${TRADER_POLL_SECONDS:-60}"
       CLAUDE_TOKEN_EXPIRES: "${CLAUDE_TOKEN_EXPIRES:-}"
     secrets:

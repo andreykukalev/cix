@@ -37,7 +37,10 @@ public enum CancelOutcome
 /// Why an order is sent and the plan that goes with it. Kept in the engine state while the order works (so a restart keeps
 /// it) and copied into the journal's fill entry.
 /// </summary>
-/// <param name="Source"><c>place_order</c>, <c>protective-exit</c> or <c>engine</c>.</param>
+/// <param name="Source">
+/// <c>place_order</c>, <c>protective-exit</c>, <c>manual-direct</c> (an owner's direct sell), <c>manual-agent</c> (an owner's
+/// request the trader agreed to) or <c>engine</c>.
+/// </param>
 public sealed record OrderContext(string Source, decimal? StopLoss = null, decimal? TakeProfit = null, string? RunId = null, string? Strategy = null);
 
 /// <summary>A portfolio valuation and when it was taken.</summary>
@@ -127,6 +130,9 @@ public sealed partial class ExecutionService
         foreach (var sent in store.Current.SentOrders.Where(o => o.VenueOrderId is not null))
             _tracked[sent.ClientOrderId] = new TrackedOrder(ToIntent(sent), sent.VenueOrderId!, Restored: true);
     }
+
+    /// <summary>Whether the engine sent an order with this client order ID that it hasn't yet seen finish.</summary>
+    public bool IsWorkingOrder(string clientOrderId) => _store.Current.Known.Contains(clientOrderId, StringComparer.Ordinal);
 
     /// <summary>Position plans (stop and target by symbol) from the engine state.</summary>
     public IReadOnlyDictionary<string, PositionPlanState> PositionPlanStates => _store.Current.Plans;

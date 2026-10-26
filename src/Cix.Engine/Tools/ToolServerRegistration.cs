@@ -64,6 +64,7 @@ public static class ToolServerRegistration
             .WithTools<OrderTools>()
             .WithTools<ScanTools>()
             .WithTools<AnalystTools>()
+            .WithTools<ManualTools>()
             .WithTools<OperatorTools>();
         return services;
     }
@@ -128,6 +129,7 @@ public static class ToolServerRegistration
             if (http.RequestServices.GetService<Scanning.MarketScanService>() is not { } scanner)
                 return Results.NotFound();
             var latest = scanner.Latest;
+            var manual = http.RequestServices.GetService<Manual.ManualRequestService>();
             return Results.Json(new
             {
                 asOf = latest?.AsOf,
@@ -137,6 +139,9 @@ public static class ToolServerRegistration
                 exits = latest?.Exits.Count ?? 0,
                 staleOrders = scanner.StaleOrderSymbols.Count,
                 key = scanner.SignalKey,
+                // Owner requests waiting for the trader (manual:<id>|...): a run is due for each new one, whatever the strategy.
+                manualKey = manual?.AgentKey ?? string.Empty,
+                manualPending = manual?.Pending.Count ?? 0,
             });
         });
         return app;

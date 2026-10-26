@@ -99,7 +99,9 @@ public sealed record ScanRow(
     decimal RoundTripCostFraction,
     string? NoEntryReason);
 
-public sealed record ScanExclusion(string Symbol, string Reason, string Detail);
+/// <param name="Return1h">The symbol's move over the last hour, when its data allows (fractions: 0.05 = 5%).</param>
+/// <param name="Return24h">The move over the last 24 hours, when its data allows.</param>
+public sealed record ScanExclusion(string Symbol, string Reason, string Detail, decimal? Return1h = null, decimal? Return24h = null);
 
 /// <summary>A suggested buy: a limit at the ask, with the stop and target to pass to place_order.</summary>
 public sealed record EntrySignal(
@@ -152,15 +154,17 @@ public static class MarketScanner
         foreach (var input in inputs.OrderBy(i => i.Symbol, StringComparer.Ordinal))
         {
             // A symbol the analyst flagged gets no entry; its exits still come from the held positions below.
+            // Excluded symbols keep their moves (when the data is fresh), so an overview can show every coin.
+            (decimal? Hour, decimal? Day) moves = input.Features.IsStale ? (null, null) : (input.Features.Return1h, input.Features.Return24h);
             if (input.Allowed && view?.FlagFor(input.Symbol, now) is { } flag)
             {
-                excluded.Add(new ScanExclusion(input.Symbol, "news", Inv($"Flagged by the market analyst until {flag.Until:yyyy-MM-dd HH:mm} UTC.")));
+                excluded.Add(new ScanExclusion(input.Symbol, "news", Inv($"Flagged by the market analyst until {flag.Until:yyyy-MM-dd HH:mm} UTC."), moves.Hour, moves.Day));
                 continue;
             }
 
             var (metrics, exclusion) = Evaluate(input, parameters);
             if (exclusion is not null)
-                excluded.Add(exclusion);
+                excluded.Add(exclusion with { Return1h = moves.Hour, Return24h = moves.Day });
             else
                 eligible.Add((input, metrics!, Score(input.Features, metrics!, parameters)));
         }
