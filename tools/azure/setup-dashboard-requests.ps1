@@ -225,8 +225,8 @@ else {
 Write-CixStep 'Owner'
 # Every provider (the API lists users only for all of them at once): anyone holding the role counts, whatever their sign-in.
 $users = @(Invoke-CixAz @('staticwebapp', 'users', 'list', '--name', $appName, '--resource-group', $settings.resourceGroup, '--authentication-provider', 'all', '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
-$isAad = { param($u) -not $u.PSObject.Properties['provider'] -or "$($u.provider)" -eq 'aad' } # -eq ignores case
-$owners = @($users | Where-Object { $_.PSObject.Properties['roles'] -and (",$($_.roles)," -replace '\s', '') -match ',owner,' })
+$isAad = { param($u) [bool]($u.PSObject.Properties['provider'] -and "$($u.provider)" -eq 'aad') } # -eq ignores case; missing: not aad
+$owners = @($users | Where-Object { $_.PSObject.Properties['roles'] -and (@(@($_.roles) -join ',' -split '[,\s]+') -contains 'owner') })
 foreach ($o in $owners) { Write-CixInfo "Has the owner role: $($o.displayName)" }
 $pinned = (Get-CixStaticSiteSettings -SiteId $site.id)['DASHBOARD_OWNER_USER_ID']
 if (-not $OwnerAccount) {
@@ -239,6 +239,7 @@ else {
     throw "$(($strangers | ForEach-Object { $_.displayName }) -join ', ') also hold(s) the owner role. Remove them first: Azure portal, $appName, Role management. Nothing about the owner was changed."
   }
   $mine = @($owners | Where-Object { $_.displayName -eq $OwnerAccount -and (& $isAad $_) })
+  if ($mine.Count -gt 1) { throw "More than one account named $OwnerAccount holds the owner role. Remove the extra ones first: Azure portal, $appName, Role management." }
   if ($mine.Count -eq 0) {
     Confirm-Step "Invite $OwnerAccount to the owner role on ${appName}?"
     $link = Invoke-CixAz -Quiet @('staticwebapp', 'users', 'invite', '--name', $appName, '--resource-group', $settings.resourceGroup,
