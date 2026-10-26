@@ -231,7 +231,7 @@ What the identity could still do, if a workflow on `main` misused it: read the d
 
 The script command above still works for publishing by hand.
 
-The dashboard shows:
+The dashboard is organised in tabs: **Overview** (status, briefing, portfolio, trading cycle, errors), **Coins** (with the Buy and Sell buttons), **Activity** (volume, executed trades, decisions), **Requests** and **Journal** (journal browser, state documents). The tab is kept in the address (`#coins`), so a bookmark opens it. On a phone the tabs are a bar at the bottom, tables become cards, and the Buy and Sell dialog opens from the bottom with large choices. It shows:
 - **Market briefing** (at the top, for stepping in by hand): the analyst's latest view (from the last 24 hours) and reasoning, up to five highlights (the most important news and scheduled events, each marked risk, opportunity or watch, with its coins and a source link), and a short **Needs attention** list picked from the latest scan: buy and sell signals, moves of 5% or more in 24 hours or 2% in an hour, volume at 2.5 times its usual level, an hourly range of 2% or more, coins the scanner excluded as too volatile, too thin or without fresh data, and coins the analyst said to avoid. A falling coin you hold ranks higher. The full scan of every coin is one click away. Highlights are only as fresh as the analyst's last run (every `ANALYST_INTERVAL_HOURS`, 6 by default); a shorter interval gives fresher news at the cost of more Opus runs.
 - **Engine:** running, or not responding when the heartbeat is older than 3 minutes. Also its strategy, and the kill switch with who engaged it and why, as a category.
 - **Mode:** paper or live, a toggle at the top. Live shows data only if a live engine has written it.

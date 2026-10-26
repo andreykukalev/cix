@@ -26,135 +26,152 @@
       <span id="who" class="small muted"></span>
       <a id="sign-out" class="button ghost small" href="/.auth/logout?post_logout_redirect_uri=/signed-out.html">Sign out</a>
     </div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" role="tab" id="tab-overview" data-tab="overview" aria-controls="panel-overview" aria-selected="true"><span class="icon" aria-hidden="true">◧</span>Overview</button>
+      <button type="button" role="tab" id="tab-coins" data-tab="coins" aria-controls="panel-coins" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">◎</span>Coins</button>
+      <button type="button" role="tab" id="tab-activity" data-tab="activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">▤</span>Activity</button>
+      <button type="button" role="tab" id="tab-requests" data-tab="requests" aria-controls="panel-requests" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">⇄</span>Requests</button>
+      <button type="button" role="tab" id="tab-journal" data-tab="journal" aria-controls="panel-journal" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">☰</span>Journal</button>
+    </nav>
   </header>
 
   <main>
     <p id="banner" class="banner" hidden></p>
+    <p id="request-status" class="request-status" role="status" aria-live="polite" hidden></p>
 
-    <section class="tiles" aria-label="Status">
-      <article class="tile" id="tile-engine"><h2>Engine</h2><p class="value">–</p><p class="sub">–</p></article>
-      <article class="tile" id="tile-trading"><h2>Trading</h2><p class="value">–</p><p class="sub">–</p></article>
-      <article class="tile" id="tile-view"><h2>Market view</h2><p class="value">–</p><p class="sub">–</p></article>
-      <article class="tile" id="tile-data"><h2>Market data</h2><p class="value">–</p><p class="sub">–</p></article>
-      <article class="tile" id="tile-sync"><h2>Last sync</h2><p class="value">–</p><p class="sub">–</p></article>
-    </section>
+    <div class="tab-panel" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview">
+      <section class="tiles" aria-label="Status">
+        <article class="tile" id="tile-engine"><h2>Engine</h2><p class="value">–</p><p class="sub">–</p></article>
+        <article class="tile" id="tile-trading"><h2>Trading</h2><p class="value">–</p><p class="sub">–</p></article>
+        <article class="tile" id="tile-view"><h2>Market view</h2><p class="value">–</p><p class="sub">–</p></article>
+        <article class="tile" id="tile-data"><h2>Market data</h2><p class="value">–</p><p class="sub">–</p></article>
+        <article class="tile" id="tile-sync"><h2>Last sync</h2><p class="value">–</p><p class="sub">–</p></article>
+      </section>
 
-    <section class="panel briefing" aria-labelledby="h-briefing">
-      <div class="panel-head"><h2 id="h-briefing">Market briefing</h2><span id="briefing-meta" class="muted small"></span></div>
-      <div class="split">
-        <div>
-          <h3>From the analyst</h3>
-          <p id="analyst-summary" class="summary muted">–</p>
-          <ul id="highlights" class="cards"></ul>
+      <section class="panel briefing" aria-labelledby="h-briefing">
+        <div class="panel-head"><h2 id="h-briefing">Market briefing</h2><span id="briefing-meta" class="muted small"></span></div>
+        <div class="split">
+          <div>
+            <h3>From the analyst</h3>
+            <p id="analyst-summary" class="summary muted">–</p>
+            <ul id="highlights" class="cards"></ul>
+          </div>
+          <div>
+            <h3>Needs attention</h3>
+            <ul id="attention" class="cards"></ul>
+          </div>
         </div>
-        <div>
-          <h3>Needs attention</h3>
-          <ul id="attention" class="cards"></ul>
+      </section>
+
+      <section class="panel" aria-labelledby="h-portfolio">
+        <div class="panel-head"><h2 id="h-portfolio">Portfolio</h2><span id="valued-at" class="muted small"></span></div>
+        <div class="figures" id="figures"></div>
+        <div class="split">
+          <div>
+            <h3>Holdings</h3>
+            <table id="holdings"><thead><tr><th>Coin</th><th class="num">Value</th><th class="num">Entry</th><th class="num">Stop</th><th class="num">Target</th><th>Plan</th></tr></thead><tbody></tbody></table>
+          </div>
+          <div>
+            <h3>Balances <span class="muted small">(paper account)</span></h3>
+            <table id="balances"><thead><tr><th>Currency</th><th class="num">Available</th><th class="num">Reserved</th></tr></thead><tbody></tbody></table>
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <section class="panel" aria-labelledby="h-coins">
-      <div class="panel-head">
-        <h2 id="h-coins">Coins</h2>
-        <span id="coins-meta" class="muted small"></span>
-      </div>
-      <p id="request-status" class="request-status" role="status" aria-live="polite" hidden></p>
-      <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Note</th><th class="paper-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
-      <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan.</p>
-    </section>
-
-    <section class="panel" aria-labelledby="h-requests">
-      <div class="panel-head"><h2 id="h-requests">Your requests</h2><span class="muted small">last 7 days, paper</span></div>
-      <table id="requests"><thead><tr><th>Sent</th><th>Request</th><th>How</th><th>Status</th><th>Outcome</th><th>Steps</th></tr></thead><tbody></tbody></table>
-    </section>
-
-    <section class="panel" aria-labelledby="h-volume">
-      <div class="panel-head">
-        <h2 id="h-volume">Trading activity</h2>
-        <div class="segmented" role="group" aria-label="Period">
-          <button type="button" data-period="day" aria-pressed="true">Daily</button>
-          <button type="button" data-period="week" aria-pressed="false">Weekly</button>
-          <button type="button" data-period="month" aria-pressed="false">Monthly</button>
+      <section class="panel" aria-labelledby="h-cycle">
+        <div class="panel-head"><h2 id="h-cycle">Trading cycle</h2></div>
+        <div class="figures" id="cycle"></div>
+        <div class="split">
+          <div>
+            <h3>Orders in flight</h3>
+            <table id="orders"><thead><tr><th>Sent</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Limit</th><th>Source</th><th>Order</th></tr></thead><tbody></tbody></table>
+          </div>
+          <div>
+            <h3>Agents</h3>
+            <table id="agents"><thead><tr><th>Agent</th><th>Last run</th><th>Last activity</th><th class="num">Runs today</th><th class="num">Calls</th><th class="num">Orders</th></tr></thead><tbody></tbody></table>
+          </div>
         </div>
-      </div>
-      <p id="volume-meta" class="muted small"></p>
-      <div class="figures" id="volume-cards"></div>
-      <figure class="chart">
-        <svg id="volume-chart" role="img" aria-labelledby="volume-chart-title" viewBox="0 0 640 190" preserveAspectRatio="none"><title id="volume-chart-title">Buy and sell volume by period</title></svg>
-        <figcaption class="muted small"><span id="volume-unit">volume</span>: <span class="key buy"></span> bought <span class="key sell"></span> sold · executed trades only, UTC periods, weeks from Monday · fees not included</figcaption>
-      </figure>
-    </section>
+      </section>
 
-    <section class="panel" aria-labelledby="h-portfolio">
-      <div class="panel-head"><h2 id="h-portfolio">Portfolio</h2><span id="valued-at" class="muted small"></span></div>
-      <div class="figures" id="figures"></div>
-      <div class="split">
-        <div>
-          <h3>Holdings</h3>
-          <table id="holdings"><thead><tr><th>Coin</th><th class="num">Value</th><th class="num">Entry</th><th class="num">Stop</th><th class="num">Target</th><th>Plan</th></tr></thead><tbody></tbody></table>
+      <section class="panel" aria-labelledby="h-problems">
+        <div class="panel-head"><h2 id="h-problems">Errors and safety events</h2></div>
+        <table id="problems"><thead><tr><th>Time</th><th>Source</th><th>Kind</th><th>What happened</th></tr></thead><tbody></tbody></table>
+      </section>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" id="panel-coins" aria-labelledby="tab-coins" hidden>
+      <section class="panel" aria-labelledby="h-coins">
+        <div class="panel-head">
+          <h2 id="h-coins">Coins</h2>
+          <span id="coins-meta" class="muted small"></span>
         </div>
-        <div>
-          <h3>Balances <span class="muted small">(paper account)</span></h3>
-          <table id="balances"><thead><tr><th>Currency</th><th class="num">Available</th><th class="num">Reserved</th></tr></thead><tbody></tbody></table>
+        <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Note</th><th class="paper-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
+        <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan.</p>
+      </section>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" hidden>
+      <section class="panel" aria-labelledby="h-volume">
+        <div class="panel-head">
+          <h2 id="h-volume">Trading activity</h2>
+          <div class="segmented" role="group" aria-label="Period">
+            <button type="button" data-period="day" aria-pressed="true">Daily</button>
+            <button type="button" data-period="week" aria-pressed="false">Weekly</button>
+            <button type="button" data-period="month" aria-pressed="false">Monthly</button>
+          </div>
         </div>
-      </div>
-    </section>
+        <p id="volume-meta" class="muted small"></p>
+        <div class="figures" id="volume-cards"></div>
+        <figure class="chart">
+          <svg id="volume-chart" role="img" aria-labelledby="volume-chart-title" viewBox="0 0 640 190" preserveAspectRatio="none"><title id="volume-chart-title">Buy and sell volume by period</title></svg>
+          <figcaption class="muted small"><span id="volume-unit">volume</span>: <span class="key buy"></span> bought <span class="key sell"></span> sold · executed trades only, UTC periods, weeks from Monday · fees not included</figcaption>
+        </figure>
+      </section>
 
-    <section class="panel" aria-labelledby="h-cycle">
-      <div class="panel-head"><h2 id="h-cycle">Trading cycle</h2></div>
-      <div class="figures" id="cycle"></div>
-      <div class="split">
-        <div>
-          <h3>Orders in flight</h3>
-          <table id="orders"><thead><tr><th>Sent</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Limit</th><th>Source</th><th>Order</th></tr></thead><tbody></tbody></table>
+      <section class="panel" aria-labelledby="h-trades">
+        <div class="panel-head"><h2 id="h-trades">Executed trades</h2><span class="muted small">last 48 hours</span></div>
+        <table id="trades"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Price</th><th class="num">Fee</th><th>By</th><th>Status</th><th>Order</th></tr></thead><tbody></tbody></table>
+      </section>
+
+      <section class="panel" aria-labelledby="h-decisions">
+        <div class="panel-head"><h2 id="h-decisions">Decisions</h2><span id="decisions-meta" class="muted small">orders placed, refused or cancelled: the reason first, with stops, targets and risk in figures, and the technical text under it</span></div>
+        <table id="decisions"><thead><tr><th>Time</th><th>By</th><th>Action</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Price</th><th>Status</th><th>Why</th></tr></thead><tbody></tbody></table>
+      </section>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" id="panel-requests" aria-labelledby="tab-requests" hidden>
+      <section class="panel" aria-labelledby="h-requests">
+        <div class="panel-head"><h2 id="h-requests">Your requests</h2><span class="muted small">last 7 days, paper</span></div>
+        <table id="requests"><thead><tr><th>Sent</th><th>Request</th><th>How</th><th>Status</th><th>Outcome</th><th>Steps</th></tr></thead><tbody></tbody></table>
+      </section>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" id="panel-journal" aria-labelledby="tab-journal" hidden>
+      <section class="panel" id="journal-panel" aria-labelledby="h-activity">
+        <div class="panel-head">
+          <h2 id="h-activity">Journal activity</h2><span class="muted small">every entry, by day and kind</span>
+          <form id="journal-filter" class="inline">
+            <label>Day <input type="date" id="journal-day"></label>
+            <label>Kind
+              <select id="journal-kind">
+                <option value="">all</option>
+                <option>order</option><option>fill</option><option>order-closed</option><option>tool-call</option>
+                <option>tool-denied</option><option>kill-switch</option><option>scan-signal</option><option>market-view</option>
+                <option>manual-request</option><option>scanner-filters</option><option>scan-eligibility</option>
+              </select>
+            </label>
+            <button type="submit" class="ghost">Show</button>
+            <button type="button" id="journal-recent" class="ghost">Recent</button>
+          </form>
         </div>
-        <div>
-          <h3>Agents</h3>
-          <table id="agents"><thead><tr><th>Agent</th><th>Last run</th><th>Last activity</th><th class="num">Runs today</th><th class="num">Calls</th><th class="num">Orders</th></tr></thead><tbody></tbody></table>
-        </div>
-      </div>
-    </section>
+        <table id="activity"><thead><tr><th>Time</th><th>Kind</th><th>Actor</th><th>Run</th><th>Summary</th><th>Entry</th></tr></thead><tbody></tbody></table>
+      </section>
 
-    <section class="panel" aria-labelledby="h-trades">
-      <div class="panel-head"><h2 id="h-trades">Executed trades</h2><span class="muted small">last 48 hours</span></div>
-      <table id="trades"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Price</th><th class="num">Fee</th><th>By</th><th>Status</th><th>Order</th></tr></thead><tbody></tbody></table>
-    </section>
-
-    <section class="panel" aria-labelledby="h-decisions">
-      <div class="panel-head"><h2 id="h-decisions">Decisions</h2><span id="decisions-meta" class="muted small">orders placed, refused or cancelled: the reason first, with stops, targets and risk in figures, and the technical text under it</span></div>
-      <table id="decisions"><thead><tr><th>Time</th><th>By</th><th>Action</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Price</th><th>Status</th><th>Why</th></tr></thead><tbody></tbody></table>
-    </section>
-
-    <section class="panel" aria-labelledby="h-problems">
-      <div class="panel-head"><h2 id="h-problems">Errors and safety events</h2></div>
-      <table id="problems"><thead><tr><th>Time</th><th>Source</th><th>Kind</th><th>What happened</th></tr></thead><tbody></tbody></table>
-    </section>
-
-    <details class="panel collapsible" id="journal-panel">
-      <summary><h2 id="h-activity">Journal activity</h2><span class="muted small">every entry, by day and kind</span></summary>
-      <div class="panel-head">
-        <form id="journal-filter" class="inline">
-          <label>Day <input type="date" id="journal-day"></label>
-          <label>Kind
-            <select id="journal-kind">
-              <option value="">all</option>
-              <option>order</option><option>fill</option><option>order-closed</option><option>tool-call</option>
-              <option>tool-denied</option><option>kill-switch</option><option>scan-signal</option><option>market-view</option>
-              <option>manual-request</option><option>scanner-filters</option><option>scan-eligibility</option>
-            </select>
-          </label>
-          <button type="submit" class="ghost">Show</button>
-          <button type="button" id="journal-recent" class="ghost">Recent</button>
-        </form>
-      </div>
-      <table id="activity"><thead><tr><th>Time</th><th>Kind</th><th>Actor</th><th>Run</th><th>Summary</th><th>Entry</th></tr></thead><tbody></tbody></table>
-    </details>
-
-    <section class="panel" aria-labelledby="h-state">
-      <div class="panel-head"><h2 id="h-state">State documents</h2><span class="muted small">what the engine knows now (see docs/persistence.md)</span></div>
-      <table id="state"><thead><tr><th>Document</th><th>Type</th><th>Updated</th><th>What it is</th></tr></thead><tbody></tbody></table>
-    </section>
+      <section class="panel" aria-labelledby="h-state">
+        <div class="panel-head"><h2 id="h-state">State documents</h2><span class="muted small">what the engine knows now (see docs/persistence.md)</span></div>
+        <table id="state"><thead><tr><th>Document</th><th>Type</th><th>Updated</th><th>What it is</th></tr></thead><tbody></tbody></table>
+      </section>
+    </div>
   </main>
 
   <dialog id="request-dialog" aria-labelledby="request-title">
