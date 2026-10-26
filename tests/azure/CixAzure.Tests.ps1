@@ -152,6 +152,12 @@ Check 'the agents'' templates set what the engine and the job scripts read' {
   }
 }
 
+# The container's user has no app data folder, so the engine stops at startup unless the file journal's folder is set.
+Check 'the engine in Azure is given a journal folder under /tmp' {
+  $apps = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-apps.bicep'))
+  if ($apps -notmatch "\{ name: 'Journal__Directory', value: '/tmp/[a-z-]+' \}") { throw 'Journal__Directory is not set to a folder under /tmp' }
+}
+
 # The engine in Azure signs in to Cosmos DB with its identity: no account key anywhere in the agents' templates, and its
 # roles reach CIX's containers only, never delete, and leave the journal append-only.
 Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal append-only' {

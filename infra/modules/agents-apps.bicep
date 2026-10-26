@@ -140,6 +140,9 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
               { name: 'Cosmos__Database', value: databaseName }
               // No key: its identity, with roles on CIX's containers only (cosmos-engine-access.bicep).
               { name: 'Cosmos__ManagedIdentityClientId', value: engineIdentity.properties.clientId }
+              // The journal lives in Cosmos DB, but the tool server still makes its file fallback's folder at startup, and the
+              // container's user has no app data folder: without this the engine stops before it listens.
+              { name: 'Journal__Directory', value: '/tmp/cix-journal' }
               { name: 'ToolServer__Auth', value: 'Entra' }
               { name: 'ToolServer__Entra__TenantId', value: tenant().tenantId }
               { name: 'ToolServer__Entra__Audience', value: engineAudience }
