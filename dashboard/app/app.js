@@ -73,12 +73,18 @@ function money(value, currency) {
   return value === null || value === undefined ? '–' : `${amount(value)} ${currency ?? ''}`.trim();
 }
 
+/** Fills a table's body. Each cell carries its column's heading (data-label), which small screens show on the card. */
 function rows(tableId, items, render, emptyText) {
   const body = document.querySelector(`#${tableId} tbody`);
-  const columns = document.querySelectorAll(`#${tableId} thead th`).length;
+  const headings = [...document.querySelectorAll(`#${tableId} thead th`)].filter((th) => !th.hidden).map((th) => th.textContent.trim());
+  const labelled = (cell, i) => {
+    const node = cell instanceof Node && cell.tagName === 'TD' ? cell : el('td', {}, cell);
+    if (headings[i]) node.dataset.label = headings[i];
+    return node;
+  };
   body.replaceChildren(...(items.length
-    ? items.map((item) => el('tr', {}, render(item).map((cell) => (cell instanceof Node && cell.tagName === 'TD' ? cell : el('td', {}, cell)))))
-    : [el('tr', { class: 'empty' }, el('td', { colspan: String(columns), text: emptyText }))]));
+    ? items.map((item) => el('tr', {}, render(item).map(labelled)))
+    : [el('tr', { class: 'empty' }, el('td', { colspan: String(headings.length || 1), text: emptyText }))]));
 }
 
 function td(content, cls) {
@@ -330,8 +336,9 @@ function signedOut() {
   for (const p of state.pending.values()) clearInterval(p.timer);
   state.pending.clear();
   document.getElementById('request-dialog').close();
-  for (const node of document.querySelectorAll('main > :not(#banner)')) node.hidden = true;
-  banner('Your sign-in has ended.', true, { href: SIGN_IN, text: 'Sign in again' });
+  for (const node of document.querySelectorAll('main > :not(#banner), .tabs')) node.hidden = true;
+  // Back to the same tab after signing in: the hash is one of TABS, set by setTab.
+  banner('Your sign-in has ended.', true, { href: `${SIGN_IN}${encodeURIComponent(location.hash)}`, text: 'Sign in again' });
   document.getElementById('updated').textContent = 'Signed out';
 }
 
@@ -562,7 +569,7 @@ function track(item) {
   };
   entry.timer = setInterval(async () => {
     if (Date.now() - entry.since > POLL_FOR_MS) {
-      requestStatus(`${V.what(item)}: still in progress after 15 minutes; see Your requests.`, 'warn');
+      requestStatus(`${V.what(item)}: still in progress after 15 minutes; see the Requests tab.`, 'warn');
       stop();
       return;
     }
@@ -586,6 +593,40 @@ async function showJournalDay(day, kind) {
     if (error instanceof SignedOut) { signedOut(); return; }
     banner(`Couldn't load the journal: ${error.message}`, true);
   }
+}
+
+// --- Tabs ---------------------------------------------------------------------------------------------------------------------
+
+const TABS = ['overview', 'coins', 'activity', 'requests', 'journal'];
+
+/** Shows one tab's panel. The tab is kept in the address (#coins), so a reload or a bookmark opens the same one. */
+function setTab(tab, { focus = false } = {}) {
+  const name = TABS.includes(tab) ? tab : 'overview';
+  for (const button of document.querySelectorAll('[role="tab"]')) {
+    const selected = button.dataset.tab === name;
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    if (selected && focus) button.focus();
+  }
+  if (!state.signedOut) for (const panel of document.querySelectorAll('.tab-panel')) panel.hidden = panel.id !== `panel-${name}`;
+  if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
+}
+
+function setupTabs() {
+  const buttons = [...document.querySelectorAll('[role="tab"]')];
+  for (const button of buttons) {
+    button.addEventListener('click', () => { setTab(button.dataset.tab); window.scrollTo({ top: 0 }); });
+    button.addEventListener('keydown', (event) => { // arrow keys move between tabs, as for any tab list
+      const step = { ArrowRight: 1, ArrowLeft: -1, Home: -Infinity, End: Infinity }[event.key];
+      if (step === undefined) return;
+      event.preventDefault();
+      const i = buttons.indexOf(button);
+      const next = Number.isFinite(step) ? (i + step + buttons.length) % buttons.length : step < 0 ? 0 : buttons.length - 1;
+      setTab(buttons[next].dataset.tab, { focus: true });
+    });
+  }
+  window.addEventListener('hashchange', () => setTab(location.hash.slice(1)));
+  setTab(location.hash.slice(1));
 }
 
 function setMode(mode) {
@@ -620,9 +661,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     button.setAttribute('aria-pressed', String(button.dataset.period === period));
     button.addEventListener('click', () => setPeriod(button.dataset.period));
   }
-  const journal = document.getElementById('journal-panel');
-  try { journal.open = localStorage.getItem('cix-journal-open') === 'true'; } catch { /* closed */ }
-  journal.addEventListener('toggle', () => { try { localStorage.setItem('cix-journal-open', String(journal.open)); } catch { /* fine */ } });
+  setupTabs();
   const form = document.getElementById('request-form');
   form.addEventListener('submit', sendRequest);
   form.addEventListener('input', updateSummary);
