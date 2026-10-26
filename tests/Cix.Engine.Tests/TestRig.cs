@@ -26,7 +26,8 @@ internal sealed class Rig
         SafetyOptions? safety = null,
         PaperExchange? paper = null,
         MutableTime? time = null,
-        InMemoryJournal? journal = null)
+        InMemoryJournal? journal = null,
+        Persistence.IEngineLease? lease = null)
     {
         Journal = journal ?? new InMemoryJournal();
         Time = time ?? new MutableTime(T0);
@@ -49,7 +50,7 @@ internal sealed class Rig
         Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, Limits, Time);
         Execution = new ExecutionService(
             Exchange, new RiskGate(Limits, Time), Portfolio, State, pairs, KillSwitch, Store, Time,
-            NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety, Journal);
+            NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety, Journal, lease);
         Monitor = new SafetyMonitor(Execution, KillSwitch, State, Limits, Safety, Time, NullLogger<SafetyMonitor>.Instance);
         Quote(60_000.00m, 60_010.00m);
     }

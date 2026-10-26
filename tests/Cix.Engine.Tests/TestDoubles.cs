@@ -29,6 +29,11 @@ internal sealed class MutableTime(DateTimeOffset start) : TimeProvider
     public void Advance(TimeSpan by) => _now += by;
 
     public override DateTimeOffset GetUtcNow() => _now;
+
+    // Elapsed time follows the same clock, so durations measured with timestamps advance with the test.
+    public override long GetTimestamp() => _now.UtcTicks;
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 }
 
 /// <summary>Builds an <see cref="ApprovedOrder"/> without the gate, to test how clients handle orders the gate would refuse.</summary>

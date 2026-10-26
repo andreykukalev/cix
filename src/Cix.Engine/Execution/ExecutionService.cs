@@ -3,6 +3,7 @@ using Cix.Domain.Exchange;
 using Cix.Domain.Risk;
 using Cix.Engine.Journal;
 using Cix.Engine.MarketData;
+using Cix.Engine.Persistence;
 
 namespace Cix.Engine.Execution;
 
@@ -80,6 +81,7 @@ public sealed partial class ExecutionService
     private readonly IEngineStateStore _store;
     private readonly SafetyOptions _safety;
     private readonly IJournal? _journal;
+    private readonly IEngineLease _lease;
     private readonly TimeProvider _time;
     private readonly ILogger<ExecutionService> _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -108,7 +110,8 @@ public sealed partial class ExecutionService
         ILogger<ExecutionService> logger,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         SafetyOptions? safety = null,
-        IJournal? journal = null)
+        IJournal? journal = null,
+        IEngineLease? lease = null)
     {
         _exchange = exchange;
         _gate = gate;
@@ -120,6 +123,7 @@ public sealed partial class ExecutionService
         _safety = safety ?? new SafetyOptions();
         _safety.Validate();
         _journal = journal;
+        _lease = lease ?? NoEngineLease.Instance;
         _time = time;
         _logger = logger;
         _delay = delay ?? ((d, ct) => Task.Delay(d, time, ct));
@@ -130,6 +134,9 @@ public sealed partial class ExecutionService
         foreach (var sent in store.Current.SentOrders.Where(o => o.VenueOrderId is not null))
             _tracked[sent.ClientOrderId] = new TrackedOrder(ToIntent(sent), sent.VenueOrderId!, Restored: true);
     }
+
+    /// <summary>Whether this engine holds the engine lease for its mode, and so may act on the exchange (ADR-0013).</summary>
+    public bool HoldsLease => _lease.IsHeld;
 
     /// <summary>Whether the engine sent an order with this client order ID that it hasn't yet seen finish.</summary>
     public bool IsWorkingOrder(string clientOrderId) => _store.Current.Known.Contains(clientOrderId, StringComparer.Ordinal);
@@ -332,6 +339,9 @@ public sealed partial class ExecutionService
         if (!ours)
             return (CancelOutcome.NotOwn, null);
 
+        if (!_lease.IsHeld)
+            return (CancelOutcome.Failed, order.ClientOrderId);
+
         try
         {
             var cancelled = await _exchange.CancelOrderAsync(venueOrderId, cancellationToken).ConfigureAwait(false);
@@ -419,6 +429,12 @@ public sealed partial class ExecutionService
 
             foreach (var venueOrderId in targets)
             {
+                if (!_lease.IsHeld)
+                {
+                    notCancelled.Add(venueOrderId); // another engine may own these now
+                    continue;
+                }
+
                 try
                 {
                     // False = the exchange doesn't know it (already filled or cancelled): nothing left to stop.
@@ -472,6 +488,9 @@ public sealed partial class ExecutionService
             var cancelled = 0;
             foreach (var venueOrderId in targets)
             {
+                if (!_lease.IsHeld)
+                    break; // another engine may own these now
+
                 try
                 {
                     if (await _exchange.CancelOrderAsync(venueOrderId, cancellationToken).ConfigureAwait(false))
@@ -519,6 +538,10 @@ public sealed partial class ExecutionService
         // The kill switch may have engaged while the portfolio was being read; it flips before taking the lock.
         if (_killSwitch.IsEngaged)
             return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
+
+        // Another engine of this mode may be trading, or this one couldn't renew its lease: it must not act (ADR-0013).
+        if (!_lease.IsHeld)
+            return Reject(LeaseRule, LeaseReason);
 
         // Record the order and its plan before sending: if the engine dies mid-send, the order is still recognised as ours
         // after a restart, and the position it opens still has its stop and target.
@@ -672,6 +695,11 @@ public sealed partial class ExecutionService
     }
 
     private static ExecutionResult Reject(string rule, string reason) => new(ExecutionStatus.Rejected, rule, reason);
+
+    /// <summary>The engine's reason code when it doesn't hold the engine lease (ADR-0013).</summary>
+    public const string LeaseRule = "engine-lease";
+
+    private const string LeaseReason = "This engine doesn't hold the engine lease for its trading mode (another engine may be trading); nothing was sent.";
 
     /// <summary>Drops finished orders from the persisted known set. A failed write only leaves extra IDs, which is safe.</summary>
     private void ForgetKnown(IReadOnlyCollection<string> clientOrderIds)

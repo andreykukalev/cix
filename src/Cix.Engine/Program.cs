@@ -32,6 +32,11 @@ builder.Services.AddSingleton(new RiskGate(limits));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(new TradingContext(mode));
 
+// Only the engine holding the lease trades (ADR-0013). Without Cosmos DB there is one engine and nothing to share; with it,
+// AddCixCosmos replaces this. Registered first, so it stops last and releases the lease after everything else has stopped.
+builder.Services.AddSingleton<IEngineLease>(NoEngineLease.Instance);
+builder.Services.AddHostedService<EngineLeaseService>();
+
 // Paper mode registers no order-capable client; see ExchangeRegistration.
 builder.Services.AddCixExchange(
     mode,

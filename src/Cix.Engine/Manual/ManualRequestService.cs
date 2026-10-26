@@ -118,6 +118,8 @@ public sealed partial class ManualRequestService(
     {
         if (State != "ok")
             return 0;
+        if (!execution.HoldsLease)
+            return 0; // a refusal would be final, while the engine that holds the lease can still carry the request out
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try

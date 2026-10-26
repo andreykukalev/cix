@@ -309,3 +309,54 @@ public sealed class CosmosSpecArchive(CosmosDb db)
     /// <summary>Cosmos DB ids can't contain <c>/ \ ? #</c>: <c>trend@v1#abc</c> becomes <c>spec-trend@v1-abc</c>.</summary>
     internal static string SpecId(string label) => "spec-" + label.Replace('#', '-').Replace('/', '-').Replace('\\', '-').Replace('?', '-');
 }
+
+/// <summary>The engine lease for one trading mode: <c>engine-lease-paper</c> (or <c>-live</c>) in <c>state</c>.</summary>
+public sealed class CosmosLeaseStore(CosmosDb db, TradingMode mode) : ILeaseStore
+{
+    public const string DocumentPrefix = "engine-lease";
+    public const string About =
+        "Which engine may trade in this mode. The holder renews it every 15 seconds; another engine takes it only after it was released or stayed unchanged for 2 minutes. Holder null means released.";
+
+    public string Id => $"{DocumentPrefix}-{mode.ToString().ToLowerInvariant()}";
+
+    public async Task<StoredLease?> ReadAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await db.State.ReadItemAsync<CosmosDb.StateDocument<LeaseRecord>>(Id, new PartitionKey(Id), cancellationToken: cancellationToken).ConfigureAwait(false);
+            return new StoredLease(response.Resource.Value, response.ETag);
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
+    public async Task<string?> TryCreateAsync(LeaseRecord record, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await db.State.CreateItemAsync(Document(record), new PartitionKey(Id), cancellationToken: cancellationToken).ConfigureAwait(false);
+            return response.ETag;
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            return null;
+        }
+    }
+
+    public async Task<string?> TryReplaceAsync(LeaseRecord record, string etag, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await db.State.ReplaceItemAsync(Document(record), Id, new PartitionKey(Id), new ItemRequestOptions { IfMatchEtag = etag }, cancellationToken).ConfigureAwait(false);
+            return response.ETag;
+        }
+        catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
+    private CosmosDb.StateDocument<LeaseRecord> Document(LeaseRecord record) => new(Id, record, DocumentPrefix, About, record.UpdatedAt);
+}

@@ -27,6 +27,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 | `paper-account` | `paper-account` | The simulated Revolut X account: balances (`available`, `reserved`) per currency, and its orders (all open ones and the latest 500 finished). Paper mode only. | Every second when something changed, and at shutdown. |
 | `manual-requests-paper` (or `-live`) | `manual-requests` | The engine's own record of owner requests (ADR-0011): those it accepted and still acts on (`active`: the request as first read, its status, since when, the claim's `clientOrderId`), today's `accepted` and `refused` counts, and the requests accepted since yesterday (`seen`), so none is taken twice. | Before a request's order is sent, and at each later step. |
 | `scanner-filters-paper` (or `-live`) | `scanner-filters` | The coin filters in force (`value.filters`, from the active spec's `scanner` parameters), the spec they came from, since when (`since`), and the coins that passed them (`passing`) or not (`excluded`, with the reason) at the last change. Read back at startup, so a restart doesn't count as a change. | Only when the filters or the set of passing coins change (see the `scanner-filters` and `scan-eligibility` journal entries). |
+| `engine-lease-paper` (or `-live`) | `engine-lease` | Which engine may trade in this mode (`holder`: the host name and a random suffix, or null once released; `acquiredAt`). See "One engine per mode" below. | Every 15 seconds by the holder, and at shutdown (released). |
 | `spec-<name>@v<N>-<hash>` | `strategy-spec` | An immutable copy of a strategy spec version that ran. Journal entries name it in `specVersion` (`good@v1#3f2a9c1b04de`). | Once, the first time a version runs. Never overwritten. |
 
 ### `engine-state-*`
@@ -138,10 +139,22 @@ From there, `runId` leads to everything that agent run did (`WHERE c.entry.runId
 ### Startup
 
 1. **Wait for the database.** The engine connects to Cosmos DB and retries with growing pauses (2, 4, 8, 16, then every 30 seconds) while it is starting, which takes minutes after a reboot. It logs `Waiting for the database: attempt N failed (...)` each time. Only a failure that waiting can't fix (a bad setting, an unreadable saved state) stops startup.
-2. **Load the saved state:** the engine state, then the paper account. Each step can be retried, and the paper account is restored once only.
-3. **Rebuild what memory held.** Every order in `orders` that the exchange had confirmed is tracked again, so its fill is journaled even if it filled while the engine was down. Their IDs can't be reused, and they never count as "someone else's order".
-4. **Start listening.** The tool server and `GET /healthz` answer only now, so "healthy" means ready to trade.
-5. **Reconcile** within a minute, then every two minutes, as described next.
+2. **Take the engine lease** for this mode (see below). While another engine holds it, the engine waits and logs `Another engine holds the lease for this trading mode; waiting…` once.
+3. **Load the saved state:** the engine state, then the paper account. Each step can be retried, and the paper account is restored once only.
+4. **Rebuild what memory held.** Every order in `orders` that the exchange had confirmed is tracked again, so its fill is journaled even if it filled while the engine was down. Their IDs can't be reused, and they never count as "someone else's order".
+5. **Start listening.** The tool server and `GET /healthz` answer only now, so "healthy" means ready to trade.
+6. **Reconcile** within a minute, then every two minutes, as described next.
+
+### One engine per mode
+
+With a shared database, two engines of the same mode can briefly run at once: a deployment starts the new one before stopping the old one, a crashed host may not have noticed yet, or the engine moves from the PC to Azure (ADR-0013). Only the engine holding `engine-lease-<mode>` loads the state and acts on the exchange.
+
+- **Holding it.** The holder renews the document every 15 seconds. If it goes 60 seconds without a successful renewal, for example during a database outage, it stops sending or cancelling orders and stops saving the paper account. The engine then shuts down and the host restarts it as a waiting engine. If a renewal finds that another engine took the lease, it shuts down at once.
+- **Taking it.** A waiting engine takes the lease when there is none, when it was released, or when the document has stayed unchanged for 2 minutes by the waiting engine's own clock. The gap between 60 seconds and 2 minutes lets the old holder stop first. No two clocks are compared, and every write is an ETag check, so two engines can't both take it.
+- **Shutting down.** A clean shutdown releases the lease after everything else has stopped, so the next engine starts at once. After a crash, the next engine waits the 2 minutes.
+- **Compose.** `docker compose up -d --build` stops the old engine before starting the new one, so the lease passes over at once.
+- **Container Apps.** A new revision waits for the lease while the old one runs, so the deployment has to stop the old revision first, or report readiness while waiting. A liveness probe mustn't restart a waiting engine within 2 minutes, because the wait starts again with each restart (#80).
+- **Without Cosmos DB** there is nothing to share, and the engine always holds the lease.
 
 ### Reconciliation (every 2 minutes, and right after startup)
 
