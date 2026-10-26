@@ -1,8 +1,9 @@
 name: CI
 
-# Pull request runs say which push they test: the PR, how many commits it has, and what happened (opened, synchronize for
-# a new push). The commit itself is in the run's summary (plan job). Other runs keep GitHub's default name.
-run-name: "${{ github.event_name == 'pull_request' && format('#{0} · commit {1} · {2} · {3}', github.event.pull_request.number, github.event.pull_request.commits, github.event.action, github.event.pull_request.title) || '' }}"
+# Pull request runs say which push they test: the PR, how many commits it has, what happened (opened, synchronize for a
+# new push) and the head commit (in full: expressions can't shorten it). The plan job's summary has the commit's subject.
+# Other runs keep GitHub's default name (an empty run-name falls back to it).
+run-name: "${{ github.event_name == 'pull_request' && format('#{0} · {1} commit(s) · {2} · {3} · {4}', github.event.pull_request.number, github.event.pull_request.commits, github.event.action, github.event.pull_request.title, github.event.pull_request.head.sha) || '' }}"
 
 on:
   push:
