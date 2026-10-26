@@ -216,7 +216,7 @@ function New-FakeAz([string]$CosmosAccounts = '[]', [string]$GroupExists = 'fals
   if ($onWindows) {
     $lines = @('@echo off', 'echo %* >> "%~dp0calls.log"', 'echo WARNING: fake az writes to stderr 1>&2')
     foreach ($k in $answers.Keys) {
-      $match = switch (($k -split ' ').Count) { 1 { '"%1"' } 2 { '"%1 %2"' } 3 { '"%1 %2 %3"' } 4 { '"%1 %2 %3 %4"' } default { '"%1 %2 %3 %4 %5"' } }
+      $match = switch (($k -split ' ').Count) { 1 { '"%1"' } 2 { '"%1 %2"' } 3 { '"%1 %2 %3"' } 4 { '"%~1 %~2 %~3 %~4"' } default { '"%~1 %~2 %~3 %~4 %~5"' } } # %~: an argument in quotes (--filter "appId eq ...") can't break the line
       $lines += "if $match==`"$k`" echo $($answers[$k])& exit /b 0"
     }
     if (-not $DatabaseExists) { $lines += 'if "%1 %2"=="cosmosdb sql" echo ERROR: (NotFound) Resource not found 1>&2& exit /b 3' }
