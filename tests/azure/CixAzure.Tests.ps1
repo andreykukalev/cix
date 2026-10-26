@@ -197,7 +197,7 @@ Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal a
 
 Check 'agents settings: dev''s are valid, dates stay text, and they reach the template as its parameters' {
   $s = Read-CixEnvironment -Name dev
-  # The owner moves dev.json from none to platform to apps; no test pins which.
+  # The owner moves dev.json from none to platform to apps, and starts the engine at the cutover; no test pins which.
   if (@('none', 'platform', 'apps') -notcontains $s.agents.deploy) { throw "agents.deploy in dev.json is '$($s.agents.deploy)'" }
   Expect ($s.agents.budgetStartDate -is [string]) $true 'budgetStartDate is text'
   Expect $s.agents.budgetStartDate '2026-11-01' 'budgetStartDate'
@@ -205,7 +205,8 @@ Check 'agents settings: dev''s are valid, dates stay text, and they reach the te
   $d = Get-CixDeploymentValues -Settings $s -SharedAccountName 'cosmos-shared-test' -Agents @{ budgetContactEmail = 'owner@example.com'; ownerObjectId = $ownerId }
   Expect $d.Values.agents 'platform' 'agents'
   Expect $d.Values.agentsLocation 'polandcentral' 'agentsLocation'
-  Expect $d.Values.startEngine $false 'startEngine'
+  Expect ($s.agents.startEngine -is [bool]) $true 'startEngine is a boolean'
+  Expect $d.Values.startEngine $s.agents.startEngine 'startEngine'
   Expect $d.Values.monthlyBudget 40 'monthlyBudget'
   Expect $d.Values.budgetContactEmail 'owner@example.com' 'budgetContactEmail'
   Expect $d.Values.ownerObjectId $ownerId 'ownerObjectId'
