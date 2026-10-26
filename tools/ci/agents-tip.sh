@@ -10,9 +10,10 @@
 set -euo pipefail
 
 out="${GITHUB_OUTPUT:-/dev/stdout}"
-# The files plan.sh sets `images` for, and CI itself (which makes it run everything). test-deploy-agents.py checks that
-# the two agree.
-relevant='^(src/|Cix\.slnx$|Directory\.Build\.props$|global\.json$|NuGet\.config$|\.editorconfig$|config/|strategies/|docker/|docker-compose[^/]*\.yml$|\.dockerignore$|tools/trader/|\.claude/agents/|\.claude/hooks/|\.claude/settings\.json$|\.github/workflows/|tools/ci/)'
+# The files plan.sh sets `images` for, or makes it run everything for: CI itself, and any file it doesn't classify (all
+# but the ones `quiet` lists, which never change the images). test-deploy-agents.py checks that the two agree.
+images='^(src/|Cix\.slnx$|Directory\.Build\.props$|global\.json$|NuGet\.config$|\.editorconfig$|config/|strategies/|docker/|docker-compose[^/]*\.yml$|\.dockerignore$|tools/trader/|\.claude/agents/|\.claude/hooks/|\.claude/settings\.json$|\.github/workflows/|tools/ci/)'
+quiet='^(tests/|tools/azure/|infra/|dashboard/|docs/|\.claude/skills/|\.gitleaks\.toml$|\.gitignore$|\.gitattributes$|LICENSE$)|\.md$'
 
 if [[ ! -f "${SETTINGS:-}" ]]; then
   echo "::error::No environment file ${SETTINGS:-} (AGENTS_ENVIRONMENT names it)."
@@ -30,9 +31,9 @@ if ! tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || [ -z "$t
 fi
 if [ "$tip" = "$GITHUB_SHA" ]; then
   echo "deploy=true" >> "$out"
-elif ! changed=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$tip" | jq -r --arg re "$relevant" '
+elif ! changed=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$tip" | jq -r --arg images "$images" --arg quiet "$quiet" '
        if .status == "ahead" and (.files | length) < 300
-       then [.files[].filename | select(test($re))] | length
+       then [.files[].filename | select(test($images) or (test($quiet) | not))] | length
        else -1 end'); then
   echo "deploy=false" >> "$out"
   echo "::warning::Couldn't compare this commit with the tip of main ($tip); not deploying. The newer run deploys."

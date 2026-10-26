@@ -472,10 +472,11 @@ jobs:
   deploy-agents:
     # Step 2: sign in to Azure as the agents' deploy identity, which trusts only workflows on main of this repository (an
     # OIDC federated credential, as for the dashboard: ADR-0010). It may push images to this environment's registry and
-    # update the existing engine app and jobs; it can't create resources or role assignments, nor read Key Vault. An update
-    # could change more than the image (Azure has no narrower right); tools/ci/deploy-agents.sh sends only the containers'
-    # images. It waits for the engine's new revision to be healthy, then updates the jobs, and goes back to the previous
-    # images if anything fails. Set up once with tools/azure/setup-ci-deploy.ps1 -For agents (docs/azure.md).
+    # update the existing engine app and jobs. It can't create resources or role assignments, nor read Key Vault directly,
+    # but an image it deploys runs with the apps' identities (docs/azure.md). An update could change more than the image
+    # (Azure has no narrower right); tools/ci/deploy-agents.sh sends only the containers. It waits for the engine's new
+    # revision to be healthy, then updates the jobs, and goes back to the previous images if anything fails.
+    # Set up once with tools/azure/setup-ci-deploy.ps1 -For agents (docs/azure.md).
     needs: [build-test, containers, secret-scan, agents-images]
     # The checks may have been skipped (they passed on this exact content in the pull request); none may have failed,
     # and cancelling the run stops the deployment (the last step rolls back a half-done one).

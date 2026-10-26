@@ -132,15 +132,15 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
 
 ### Deploying the engine and the agents from CI
 
-Once its deploy identity is set up (below), CI deploys after a push to `main` that changes what goes into the images (`src/`, `config/`, `strategies/`, `docker/`, `tools/trader/`, `.claude/agents/`, `.claude/hooks/`, `.claude/settings.json`), or on a manual run of *CI* on `main`, once the .NET tests, the container checks and the secret scan pass (or already passed in the pull request):
+Once its deploy identity is set up (below), CI deploys after a push to `main` that changes what goes into the images, or on a manual run of *CI* on `main`, once the .NET tests, the container checks and the secret scan pass (or already passed in the pull request). What goes into the images is what `tools/ci/plan.sh` says: `src/`, `config/`, `strategies/`, `docker/`, `tools/trader/`, `.claude/agents/`, `.claude/hooks/`, `.claude/settings.json`, the solution and build files, the Compose files, and also any change to CI itself or to a file it doesn't classify. Each deployment restarts the paper engine on a new revision (the lease carries its state over).
 
 1. `agents-images` builds `cix-engine` and `cix-trader` in a job with no Azure access, and hands them on as an artifact, with their hashes as job outputs.
 2. `deploy-agents` signs in as `cix-agents-deploy-<environment>`, checks the hashes, and runs `tools/ci/deploy-agents.sh`:
    - it pushes both images to the environment's registry, tagged with the commit SHA;
    - with `agents.deploy` at `platform` it stops there: run `provision.ps1 -ImageTag <that SHA>` with `apps` to create the engine and the jobs from them;
-   - with `apps`, it points the engine at its new image and, while the engine runs a replica (`startEngine` true), waits up to 12 minutes for the new revision to be healthy (its startup and readiness probes passed). Then it points the three jobs at the new agent image. It changes only the containers' images, through the management API;
+   - with `apps`, it points the engine at its new image and, while the engine runs a replica (`startEngine` true), waits up to 12 minutes for the new revision to be healthy (its startup and readiness probes passed). Then it points the three jobs at the new agent image. It sends only the containers, with their images changed, through the management API, and waits for Azure to apply each change;
    - if anything fails after the engine changed, it puts the engine and the jobs back on the images they ran before and fails the run. A run cancelled halfway does the same in its last step. If even that fails, the run says so: check the engine's revisions and the jobs in the portal, or run `provision.ps1` again;
-   - an engine you stopped (no active revision, or stopped with `az containerapp stop`) is left alone, with a warning, and nothing is deployed. Run *CI* by hand once it runs again.
+   - an engine you stopped (its latest revision deactivated, or stopped with `az containerapp stop`) is left alone, with a warning, and nothing is deployed. Run *CI* by hand once it runs again.
 
 A run that is no longer the tip of `main` still deploys when the newer commits changed nothing that goes into the images or CI; otherwise the newer run deploys. Runs deploy one at a time. Nothing deploys while `agents.deploy` is `none` or `AGENTS_AZURE_CLIENT_ID` isn't set. CI never deploys infrastructure, settings or roles: those stay with `provision.ps1`. It never deploys a protected environment. The image artifact is kept for a day, so re-running only the deploy job later than that fails; run the whole workflow instead.
 
@@ -151,7 +151,7 @@ A run that is no longer the tip of `main` still deploys when the newer commits c
 ```
 
 It works like the dashboard's setup above, with its own identity and role:
-- `AcrPush` on the environment's registry, and a custom role, `CIX agents deployer (<environment>)`: read and update Container Apps and jobs, join the Container Apps environment, assign managed identities, and read the registry. It is assigned on the registry and, once `apps` exists, on the engine, the three jobs, their four identities and the Container Apps environment, never on the resource group. So it can't create apps, jobs or any other resource, nor role assignments, and it can't read Key Vault, storage or the database itself;
+- `AcrPush` on the environment's registry, and a custom role, `CIX agents deployer (<environment>)`: read and update Container Apps and jobs, and read the registry. It is assigned on the registry and, once `apps` exists, on the engine and the three jobs, never on the resource group. So it can't create apps, jobs or any other resource, nor role assignments, nor move an app to another identity or environment, and it can't read Key Vault, storage or the database itself;
 - it prints `AGENTS_AZURE_CLIENT_ID`, `AGENTS_REGISTRY` and `AGENTS_ENVIRONMENT` (with `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`, the same as the dashboard's). Add them as repository variables, or pass `-SetGitHubVariables`.
 
 Optionally set the repository variable `CLAUDE_CODE_VERSION` to pin the Claude Code version in the agent image (otherwise each build takes the latest).

@@ -565,11 +565,11 @@ foreach ($case in @(
 $agentsRegistryId = '/subscriptions/x/resourceGroups/rg-cix-citest/providers/Microsoft.ContainerRegistry/registries/crcixcitest1'
 $agentsGroupId = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-citest'
 $agentsTargets = @('Microsoft.App/containerApps/ca-cix-citest-engine', 'Microsoft.App/jobs/caj-cix-citest-trader', 'Microsoft.App/jobs/caj-cix-citest-requests',
-  'Microsoft.App/jobs/caj-cix-citest-analyst', 'Microsoft.App/managedEnvironments/cae-cix-citest', 'Microsoft.ManagedIdentity/userAssignedIdentities/id-cix-citest-engine',
-  'Microsoft.ManagedIdentity/userAssignedIdentities/id-cix-citest-trader', 'Microsoft.ManagedIdentity/userAssignedIdentities/id-cix-citest-requests',
-  'Microsoft.ManagedIdentity/userAssignedIdentities/id-cix-citest-analyst') | ForEach-Object { "$agentsGroupId/providers/$_" }
-$agentsResources = '[' + ((@($agentsTargets) + @("$agentsGroupId/providers/Microsoft.KeyVault/vaults/kvcixcitest1") | ForEach-Object { "{`"id`":`"$_`"}" }) -join ',') + ']'
-$agentsActions = '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/revisions/read","Microsoft.App/containerApps/write","Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.App/managedEnvironments/join/action","Microsoft.ContainerRegistry/registries/read","Microsoft.ManagedIdentity/userAssignedIdentities/assign/action"]'
+  'Microsoft.App/jobs/caj-cix-citest-analyst') | ForEach-Object { "$agentsGroupId/providers/$_" }
+$agentsOthers = @('Microsoft.App/managedEnvironments/cae-cix-citest', 'Microsoft.ManagedIdentity/userAssignedIdentities/id-cix-citest-engine',
+  'Microsoft.KeyVault/vaults/kvcixcitest1') | ForEach-Object { "$agentsGroupId/providers/$_" }
+$agentsResources = '[' + ((@($agentsTargets) + @($agentsOthers) | ForEach-Object { "{`"id`":`"$_`"}" }) -join ',') + ']'
+$agentsActions = '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/revisions/read","Microsoft.App/containerApps/write","Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.ContainerRegistry/registries/read"]'
 function Invoke-SetupAgentsCi([hashtable]$Overrides, [string]$Deploy = 'platform', [bool]$Protected = $false) {
   $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
   $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest').Replace('"databaseName": "cix"', '"databaseName": "cix-citest"').Replace('"deploy": "none"', "`"deploy`": `"$Deploy`"")
@@ -600,7 +600,8 @@ Check 'setup-ci-deploy.ps1 -For agents (-Yes), platform: its own identity, AcrPu
   }
   $assigned = @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' })
   Expect $assigned.Count 2 'role assignments'
-  if ($calls -match "--scope $([regex]::Escape($agentsGroupId))(\s|$)") { throw "assigned something on the whole group: $($r.Calls)" }
+  $onGroup = @($assigned | Where-Object { $_ -match "--scope $([regex]::Escape($agentsGroupId))(\s|$)" })
+  if ($onGroup.Count -gt 0) { throw "assigned something on the whole group: $($onGroup -join '; ')" }
   foreach ($expected in @('AGENTS_AZURE_CLIENT_ID = 66666666-6666-6666-6666-666666666666', 'AGENTS_REGISTRY = crcixcitest1', 'AGENTS_ENVIRONMENT = citest',
       'Assigned AcrPush on crcixcitest1.', 'run this again to let it update the engine and the jobs')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
@@ -608,7 +609,7 @@ Check 'setup-ci-deploy.ps1 -For agents (-Yes), platform: its own identity, AcrPu
   if ($r.Output.Contains('DASHBOARD_ENVIRONMENT') -or $calls.Contains('staticwebapp')) { throw 'set up the dashboard instead' }
 }
 
-Check 'setup-ci-deploy.ps1 -For agents (-Yes), apps: the deployer role on the engine, the jobs, their identities and environment, never the group' {
+Check 'setup-ci-deploy.ps1 -For agents (-Yes), apps: the deployer role on the engine and the jobs, never the group' {
   $r = Invoke-SetupAgentsCi @{} 'apps'
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   $calls = $r.Calls.Replace('"', '')
@@ -616,8 +617,9 @@ Check 'setup-ci-deploy.ps1 -For agents (-Yes), apps: the deployer role on the en
     if (-not $calls.Contains("--role CIX agents deployer (citest) --scope $scope")) { throw "the deployer role isn't on $scope`: $($r.Calls)" }
   }
   $assigned = @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' })
-  Expect $assigned.Count 11 'role assignments (AcrPush, and the deployer role on the registry and nine resources)'
-  if ($calls -match "--scope $([regex]::Escape($agentsGroupId))(\s|$)" -or $calls.Contains('kvcixcitest1')) { throw "assigned something beyond those: $($r.Calls)" }
+  Expect $assigned.Count 6 'role assignments (AcrPush, and the deployer role on the registry, the engine and the jobs)'
+  $beyond = @($assigned | Where-Object { $_ -match "--scope $([regex]::Escape($agentsGroupId))(\s|$)" -or $_ -match 'managedEnvironments|userAssignedIdentities|kvcixcitest1' })
+  if ($beyond.Count -gt 0) { throw "assigned something beyond those: $($beyond -join '; ')" }
   if ($r.Output.Contains('run this again')) { throw 'asked to run again although apps is deployed' }
 }
 

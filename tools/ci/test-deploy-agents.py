@@ -43,7 +43,7 @@ FAKE_AZ = textwrap.dedent(r'''
     method, url = opt("--method"), opt("--url")
     prefix = "https://management.azure.com" + s["base"]
     resource, _, query = url.partition("?")
-    if query != "api-version=2024-03-01" or not resource.startswith(prefix): sys.exit("ERROR: (NotFound) " + url)
+    if query != "api-version=2025-01-01" or not resource.startswith(prefix): sys.exit("ERROR: (NotFound) " + url)
     parts = resource[len(prefix):].split("/")
     kind, name, rest = parts[0], parts[1], parts[2:]
     if method == "get":
@@ -67,23 +67,27 @@ FAKE_AZ = textwrap.dedent(r'''
         image = body["properties"]["template"]["containers"][0]["image"]
         if body != {"properties": {"template": {"containers": [{"name": "engine", "image": image}]}}}: sys.exit("ERROR: sent more than the containers")
         if image in s["fail_patch"].get(name, []): sys.exit("ERROR: (BadRequest) update failed")
+        if s["conflict_once"]: s["conflict_once"] = False; save(); sys.exit("ERROR: (Conflict) an operation is in progress")
         for r in e["revisions"]: r["active"] = False
         rev = {"name": "rev-%d" % (len(e["revisions"]) + 1), "image": image, "active": True, "polls": 0}
-        e["revisions"].append(rev); e["image"] = image
+        e["revisions"].append(rev)
+        if s["stale"]: e["pending"] = image  # applied only after a few reads: until then Azure still shows the old image
+        else: e["image"] = image
         e["previous_latest"] = e["latest"]; e["latest"] = rev["name"]
-        e["lag_left"] = s["rev_lag"]; e["prov_left"] = s["prov_lag"]; save()
+        e["lag_left"] = s["rev_lag"]; e["prov_left"] = s["prov_lag"]; e["stale_left"] = s["stale"]; save()
     elif not rest:
         latest = e["latest"]
         if e.get("lag_left", 0) > 0: e["lag_left"] -= 1; latest = e["previous_latest"]
         provisioning = "Succeeded"
-        if e.get("prov_left", 0) > 0: e["prov_left"] -= 1; provisioning = "InProgress"
+        if e.get("stale_left", 0) > 0:
+            e["stale_left"] -= 1
+            if e["stale_left"] == 0: e["image"] = e.pop("pending")
+        elif e.get("prov_left", 0) > 0: e["prov_left"] -= 1; provisioning = "InProgress"
         save()
         props = {"template": {"containers": [{"name": "engine", "image": e["image"]}], "scale": {"minReplicas": e["min"], "maxReplicas": 1}},
                  "latestRevisionName": latest, "provisioningState": provisioning}
         if e.get("runningStatus"): props["runningStatus"] = e["runningStatus"]
         out({"properties": props})
-    elif rest == ["revisions"]:
-        out({"value": [{"name": r["name"], "properties": {"active": r["active"]}} for r in e["revisions"]]})
     else:
         rev = next((r for r in e["revisions"] if r["name"] == rest[1]), None) or sys.exit("ERROR: (NotFound) revision")
         if rev["image"].endswith(s["new_tag"]):
@@ -92,7 +96,7 @@ FAKE_AZ = textwrap.dedent(r'''
             elif s["healthy_after"] is not None and rev["polls"] >= s["healthy_after"]: health, running, provisioning = "Healthy", s["running_value"], "Succeeded"
             else: health, running, provisioning = "None", "Activating", "Provisioning"
         else: health, running, provisioning = "Healthy", "Running", "Succeeded"
-        out({"properties": {"template": {"containers": [{"image": rev["image"]}]},
+        out({"properties": {"template": {"containers": [{"image": rev["image"]}]}, "active": rev["active"],
                             "healthState": health, "runningState": running, "provisioningState": provisioning}})
 ''').lstrip()
 
@@ -113,7 +117,8 @@ def names(prefix, env):
 
 def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", registry_env=None, min_replicas=1,
         running_status=None, revisions=None, engine_image=None, job_images=None, missing_engine=False, healthy_after=2,
-        running_value="Running", new_fails=False, fail_patch=None, rev_lag=0, prov_lag=1, flaky_every=0, fail_push=False,
+        running_value="Running", new_fails=False, fail_patch=None, rev_lag=0, prov_lag=1, stale=0, conflict_once=False,
+        flaky_every=0, fail_push=False,
         timeout=5, args=(), rollback_state=None, expect_rc=0, expect_engine=None, expect_jobs=None, expect_in_output=(),
         expect_calls=(), never_calls=(), expect_rollback_file=False):
     engine, jobs = names(prefix, env)
@@ -130,7 +135,8 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
                        "revisions": revisions if revisions is not None else [{"name": "rev-1", "image": current, "active": True, "polls": 0}]},
             "jobs": job_images or {j: old_agent for j in jobs},
             "healthy_after": healthy_after, "running_value": running_value, "new_fails": new_fails, "new_tag": NEW,
-            "fail_patch": fail_patch or {}, "rev_lag": rev_lag, "prov_lag": prov_lag, "flaky_every": flaky_every, "gets": 0,
+            "fail_patch": fail_patch or {}, "rev_lag": rev_lag, "prov_lag": prov_lag, "stale": stale, "conflict_once": conflict_once,
+            "flaky_every": flaky_every, "gets": 0,
         }
         json.dump(state, open(os.path.join(d, "state.json"), "w"))
         for tool, body in (("az", FAKE_AZ), ("docker", FAKE_DOCKER)):
@@ -188,7 +194,11 @@ def report(kind, name, problems, detail):
 
 
 def interrupted(jobs):
-    return {"engine": old_engine, "jobs": {j: old_agent for j in jobs}}
+    return {"server": SERVER, "engine": old_engine, "jobs": {j: old_agent for j in jobs}}
+
+
+def tampered(jobs):
+    return {"server": SERVER, "engine": "null", "jobs": {j: old_agent for j in jobs}}
 
 
 engine_dev, jobs_dev = names("cix", "dev")
@@ -200,12 +210,16 @@ results = [
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["rev-2 is healthy"]),
     run("the old revision being healthy doesn't count while Azure still reports it as the latest", rev_lag=3,
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["rev-2 is healthy"], never_calls=["rev-1 is healthy"]),
+    run("an update Azure hasn't started yet isn't taken for done", stale=2, min_replicas=0,
+        expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Deployed {NEW}"]),
+    run("an update refused while another is in progress is tried again", conflict_once=True,
+        expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Deployed {NEW}"]),
     run("one failed read along the way is retried, not rolled back", flaky_every=3,
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Deployed {NEW}"]),
     run("long names are cut to 32 characters, as the templates cut them", prefix="cixlongprefix", env="abcdefghijkl",
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Deployed {NEW}"]),
     run("an engine with no replica gets its new image without waiting", min_replicas=0,
-        expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["The engine runs no replica"], never_calls=["/revisions/"]),
+        expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["The engine runs no replica"], never_calls=["/revisions/rev-2"]),
     run("an engine that fails comes back to the old image, and the jobs stay", new_fails=True, expect_rc=1,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["failed (provisioning Succeeded, running Failed)", "Rolled back"]),
     run("an engine that never becomes healthy is rolled back after the timeout", healthy_after=None, timeout=1, expect_rc=1,
@@ -220,17 +234,27 @@ results = [
     run("--roll-back puts back what an interrupted run left in the rollback file", args=["--roll-back"],
         engine_image=new_engine, job_images={j: new_agent for j in jobs_dev}, rollback_state=interrupted,
         expect_rc=1, expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["was interrupted", "Rolled back"]),
+    run("--roll-back refuses images that aren't from the registry", args=["--roll-back"], engine_image=new_engine,
+        job_images={j: new_agent for j in jobs_dev}, rollback_state=tampered, expect_rc=1, expect_engine=new_engine,
+        expect_jobs=old_agent, expect_in_output=["no usable image for " + engine_dev, "The rollback itself failed"],
+        expect_rollback_file=True),
     run("--roll-back with no rollback file does nothing", args=["--roll-back"], expect_in_output=["Nothing to roll back"],
         never_calls=["az "]),
     run("a failed push changes nothing", fail_push=True, expect_rc=1, expect_engine=old_engine, expect_jobs=old_agent,
         never_calls=["--method patch"]),
     run("nothing to do when the commit already runs", engine_image=new_engine, job_images={j: new_agent for j in jobs_dev},
         expect_in_output=["Already running"], never_calls=["docker", "--method patch"]),
-    run("an engine stopped by hand (no active revision) is left alone",
+    run("an engine whose latest revision was deactivated by hand is left alone",
         revisions=[{"name": "rev-1", "image": old_engine, "active": False, "polls": 0}],
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["CI leaves it alone"], never_calls=["docker", "--method patch"]),
     run("so is one stopped with az containerapp stop", running_status="Stopped",
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["CI leaves it alone"], never_calls=["docker", "--method patch"]),
+    run("and one whose older revision was activated by hand", running_status="Running",
+        revisions=[{"name": "rev-0", "image": old_engine, "active": True, "polls": 0}, {"name": "rev-1", "image": old_engine, "active": False, "polls": 0}],
+        expect_engine=old_engine, expect_in_output=["CI leaves it alone"], never_calls=["docker", "--method patch"]),
+    run("a job not running from the registry is left to provision.ps1",
+        job_images={**{j: old_agent for j in jobs_dev}, jobs_dev[2]: "mcr.microsoft.com/k8se/quickstart-jobs:latest"},
+        expect_rc=1, expect_in_output=["not an image from"], never_calls=["docker", "--method patch"]),
     run("agents.deploy platform only pushes the images, for provision.ps1 to create the apps from", deploy="platform",
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["provision.ps1 -ImageTag " + NEW],
         expect_calls=[f"docker push --quiet {new_engine}", f"docker push --quiet {new_agent}"], never_calls=["az rest"]),
@@ -341,7 +365,8 @@ for path in ["src/Cix.Engine/a.cs", "Cix.slnx", "Directory.Build.props", "global
              ".claude/settings.json", ".github/workflows/ci.yml", "tools/ci/plan.sh",
              "infra/main.bicep", "infra/environments/dev.json", "dashboard/app/app.js", "docs/azure.md", "README.md",
              ".claude/skills/x/SKILL.md", "tests/azure/CixAzure.Tests.ps1", "tools/azure/provision.ps1",
-             "tests/Cix.Engine.Tests/a.cs", ".gitleaks.toml"]:
+             "tests/Cix.Engine.Tests/a.cs", ".gitleaks.toml", "src/README.md", "tools/spike/revx_spike.py", "Makefile",
+             ".gitignore", "LICENSE"]:
     images, held = plan_images(path), held_back_by_tip(path)
     results.append(report("agents-tip", f"plan.sh and agents-tip.sh agree on {path}",
                           [] if images == held else [f"plan.sh images={images}, agents-tip.sh holds back={held}"], ""))

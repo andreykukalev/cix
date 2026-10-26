@@ -14,9 +14,9 @@
          deployment token, assigned on this environment's Static Web App alone;
        - agents: AcrPush on the environment's registry, and a custom role, "CIX agents deployer (<Environment>)", that
          may read and update container apps and jobs, assigned only on the registry (to find it) and, once
-         agents.deploy is apps, on the paper engine, the three jobs, their managed identities and the Container Apps
-         environment (which an update refers to). It can't create resources (it holds no right on the resource group),
-         role assignments, or reach Key Vault, storage or the database directly; the live engine gets a resource group
+         agents.deploy is apps, on the paper engine and the three jobs. It can't create resources (it holds no right on
+         the resource group) or role assignments, move an identity or an app to another environment, or reach Key
+         Vault, storage or the database directly; the live engine gets a resource group
          of its own (docs/research/azure-hosting.md). With agents.deploy platform, run this again after deploying apps.
   Then prints the repository variables CI needs (IDs, not secrets), and sets them with the GitHub CLI if you pass
   -SetGitHubVariables and gh is installed and signed in.
@@ -89,13 +89,12 @@ if ($For -eq 'dashboard') {
   Write-CixInfo "Static Web App:  $appName in $($settings.resourceGroup)"
 }
 else {
-  # Reading and updating the engine and the jobs (tools/ci/deploy-agents.sh patches their images through the management
-  # API) and the references an update carries: the environment and the user-assigned identities. Each right applies only
-  # where the role is assigned: on those resources and the registry, never on the group.
+  # Reading and updating the engine and the jobs: tools/ci/deploy-agents.sh patches only their containers through the
+  # management API, so the update carries no environment or identity, and needs no right on those. Each right applies
+  # only where the role is assigned: on those resources and the registry, never on the group.
   $roleActions = @(
     'Microsoft.App/containerApps/read', 'Microsoft.App/containerApps/revisions/read', 'Microsoft.App/containerApps/write',
-    'Microsoft.App/jobs/read', 'Microsoft.App/jobs/write', 'Microsoft.App/managedEnvironments/join/action',
-    'Microsoft.ContainerRegistry/registries/read', 'Microsoft.ManagedIdentity/userAssignedIdentities/assign/action') | Sort-Object
+    'Microsoft.App/jobs/read', 'Microsoft.App/jobs/write', 'Microsoft.ContainerRegistry/registries/read') | Sort-Object
   $roleDescription = 'Reads and updates the CIX paper engine and agent jobs it is assigned on, to deploy new images from CI.'
   $limit = 'push images and update the paper engine and the jobs'
   if ($settings.agents.deploy -eq 'none') { throw "agents.deploy is none in $($settings.path): run provision.ps1 with agents.deploy platform first (it creates the registry)." }
@@ -121,9 +120,7 @@ else {
     $p = "$($settings.namePrefix)-$($settings.environmentName)"
     $take = { param([string]$Text, [int]$Length) if ($Text.Length -gt $Length) { $Text.Substring(0, $Length) } else { $Text } }
     $targets = @("Microsoft.App/containerApps/$(& $take "ca-$p-engine" 32)") +
-      @('trader', 'requests', 'analyst' | ForEach-Object { "Microsoft.App/jobs/$(& $take "caj-$p-$_" 32)" }) +
-      @("Microsoft.App/managedEnvironments/cae-$p") +
-      @('engine', 'trader', 'requests', 'analyst' | ForEach-Object { "Microsoft.ManagedIdentity/userAssignedIdentities/id-$p-$_" })
+      @('trader', 'requests', 'analyst' | ForEach-Object { "Microsoft.App/jobs/$(& $take "caj-$p-$_" 32)" })
     $existing = @(Invoke-CixAz @('resource', 'list', '--resource-group', $settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
         ForEach-Object { "$($_.id)" })
     foreach ($target in $targets) {
