@@ -15,6 +15,9 @@ class WriterError extends Error {
   }
 }
 
+/** The writer identity isn't set up (or its settings are incomplete): the owner runs the setup script. */
+class WriterNotConfigured extends Error {}
+
 class RequestWriter {
   /**
    * @param {{endpoint: string, database: string, tenantId: string, clientId: string, clientSecret: string,
@@ -22,7 +25,7 @@ class RequestWriter {
    */
   constructor({ endpoint, database, tenantId, clientId, clientSecret, fetchImpl = fetch, now = () => new Date(), timeoutMs = 8000 }) {
     if (!endpoint || !database || !tenantId || !clientId || !clientSecret) {
-      throw new Error('The dashboard has no writer identity yet (COSMOS_WRITER_* settings): run tools/azure/setup-dashboard-requests.ps1.');
+      throw new WriterNotConfigured('Requests are not set up on this dashboard yet: run tools/azure/setup-dashboard-requests.ps1.');
     }
     const url = new URL(endpoint);
     if (url.protocol !== 'https:') throw new Error('COSMOS_ENDPOINT must be https.');
@@ -82,4 +85,4 @@ class RequestWriter {
   }
 }
 
-module.exports = { RequestWriter, WriterError };
+module.exports = { RequestWriter, WriterError, WriterNotConfigured };

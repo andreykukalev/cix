@@ -98,7 +98,7 @@
     filled: { label: 'Filled', tone: 'ok' },
     closed: { label: 'Closed', tone: 'warn' },
     declined: { label: 'Declined by the trader', tone: 'warn' },
-    rejected: { label: 'Refused by the risk gate', tone: 'bad' },
+    rejected: { label: 'Refused', tone: 'bad' }, // by the engine or the risk gate: the rule says which
     failed: { label: 'Refused by the exchange', tone: 'bad' },
     invalid: { label: 'Not valid', tone: 'bad' },
     duplicate: { label: 'Duplicate of a request in progress', tone: 'warn' },
@@ -107,8 +107,9 @@
 
   /** Where a request stands, for the page: a label, a tone, whether it's over, and the engine's or trader's words. */
   function requestState(item) {
-    const s = STATUS[item?.status] ?? { label: item?.status ?? 'unknown', tone: 'warn' };
+    const known = STATUS[item?.status] ?? { label: item?.status ?? 'unknown', tone: 'warn' };
     const o = item?.outcome ?? {};
+    const s = item?.status === 'rejected' && o.rule ? { ...known, label: `Refused (${o.rule})` } : known;
     const detail = [o.rationale, o.reason].filter((x) => typeof x === 'string' && x.trim()).join(' · ') || null;
     const filled = item?.status === 'filled' && o.filledSize ? `${o.filledSize}${o.averagePrice ? ` at ${o.averagePrice}` : ''}` : null;
     return { label: s.label, tone: s.tone, final: Boolean(item?.final), detail, filled };
@@ -132,21 +133,27 @@
   /** Bars for the activity chart: buy and sell volume stacked per period, scaled to the largest turnover. */
   function chart(periods, { width = 640, height = 160, gap = 6, labelEvery = 1, period = 'day' } = {}) {
     const list = Array.isArray(periods) ? periods : [];
-    const max = Math.max(0, ...list.map((p) => Number(p.turnover) || 0));
+    // Amounts for the owner; the public page gets counts only (amounts would give prices away), so it charts trades.
+    const amounts = list.length > 0 && list.every((p) => p.turnover !== null && p.turnover !== undefined);
+    const buyOf = (p) => (amounts ? p.buyVolume : p.buys);
+    const sellOf = (p) => (amounts ? p.sellVolume : p.sells);
+    const max = Math.max(0, ...list.map((p) => (amounts ? Number(p.turnover) : Number(p.buys) + Number(p.sells)) || 0));
     const slot = list.length ? width / list.length : width;
     const bar = Math.max(2, slot - gap);
     const scale = (v) => (max > 0 ? ((Number(v) || 0) / max) * height : 0);
     return {
-      width, height, max,
+      width, height, max, amounts,
       bars: list.map((p, i) => {
-        const buy = scale(p.buyVolume);
-        const sell = scale(p.sellVolume);
+        const buy = scale(buyOf(p));
+        const sell = scale(sellOf(p));
         return {
           x: i * slot + gap / 2, width: bar,
           buy: { y: height - buy, height: buy },
           sell: { y: height - buy - sell, height: sell },
           label: i % labelEvery === 0 || i === list.length - 1 ? tick(p.from, period) : '',
-          title: `${p.label}: ${p.trades} trade${p.trades === 1 ? '' : 's'}, bought ${p.buyVolume}, sold ${p.sellVolume}`,
+          title: amounts
+            ? `${p.label}: ${p.trades} trade${p.trades === 1 ? '' : 's'}, bought ${p.buyVolume}, sold ${p.sellVolume}`
+            : `${p.label}: ${p.trades} trade${p.trades === 1 ? '' : 's'}, ${p.buys} buy${p.buys === 1 ? '' : 's'}, ${p.sells} sell${p.sells === 1 ? '' : 's'}`,
         };
       }),
     };
@@ -162,6 +169,16 @@
     return { text: `${pct > 0 ? '▲ +' : pct < 0 ? '▼ ' : '■ '}${pct.toFixed(0)}% vs previous`, dir: pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat' };
   }
 
+  /** Whether the engine takes requests now, from the dashboard's engine section: a reason when it doesn't, else null. */
+  function requestsBlocked(engine) {
+    if (!engine || engine.state !== 'running') return 'The engine isn\'t running, so it can\'t take requests now.';
+    const m = engine.manualRequests;
+    if (!m) return 'This engine doesn\'t report manual requests (an older version?).';
+    if (m.state === 'off') return 'Manual requests are switched off in the engine.';
+    if (m.state !== 'ok') return 'The engine can\'t read requests right now (the requests container may be missing).';
+    return null;
+  }
+
   /** Who is signed in, from /.auth/me: owner only with a Microsoft sign-in and the owner role. */
   function viewer(me) {
     const p = me?.clientPrincipal ?? null;
@@ -170,5 +187,5 @@
     return { signedIn: true, owner: p.identityProvider === 'aad' && roles.includes('owner'), name: p.userDetails ?? null };
   }
 
-  return { change, coins, requestBody, describe, requestState, what, chart, tick, versus, viewer, STATUS, PORTIONS };
+  return { change, coins, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS };
 }));

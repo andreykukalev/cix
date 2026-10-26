@@ -19,10 +19,15 @@ function principal(request) {
   }
 }
 
-/** True only for a Microsoft sign-in that holds the owner role (given by invitation, docs/azure.md). */
-function isOwner(request) {
+/**
+ * True only for the one owner: a Microsoft sign-in that holds the owner role (given by invitation) and is the account the
+ * setup script confirmed (DASHBOARD_OWNER_USER_ID, docs/azure.md). The role alone isn't enough: whoever redeems an
+ * invitation link gets it. With no confirmed owner, nobody is.
+ */
+function isOwner(request, ownerId = process.env.DASHBOARD_OWNER_USER_ID) {
   const p = principal(request);
-  return Boolean(p && p.identityProvider === PROVIDER && Array.isArray(p.userRoles) && p.userRoles.includes(OWNER_ROLE));
+  return Boolean(ownerId && p && p.identityProvider === PROVIDER && Array.isArray(p.userRoles) && p.userRoles.includes(OWNER_ROLE)
+    && typeof p.userId === 'string' && p.userId === ownerId);
 }
 
 module.exports = { principal, isOwner, OWNER_ROLE };

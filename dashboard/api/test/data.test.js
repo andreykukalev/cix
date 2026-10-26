@@ -80,7 +80,13 @@ const { loadActivity, loadOwnerDecisions, loadRequests, KINDS } = require('../sr
 test('activity reads only fills, across the day partitions the periods cover', async () => {
   const queries = [];
   const reader = { async query(container, sql, options) { queries.push({ container, sql, ...options }); return [{ at: '2026-10-25T10:00:00Z', data: { symbol: 'LINK-EUR', side: 'buy', filledQuote: '12.5', clientOrderId: 'c' } }]; } };
-  const view = await loadActivity(reader, 'week', NOW);
+  const pub = await loadActivity(reader, 'week', NOW);
+  assert.equal(pub.amounts, false);
+  assert.ok(pub.periods.every((p) => p.turnover === null && p.buyVolume === null && p.fees === null), 'no amounts in public');
+  assert.equal(pub.current.trades, 1);
+  assert.equal(pub.total.turnover, null);
+  queries.length = 0;
+  const view = await loadActivity(reader, 'week', NOW, { amounts: true });
   assert.equal(queries.length, 1);
   assert.equal(queries[0].partitionKey, undefined, 'cross-partition');
   assert.match(queries[0].sql, /c\.day >= @from AND c\.entry\.kind = @kind/);

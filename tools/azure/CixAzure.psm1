@@ -378,6 +378,7 @@ function Write-CixSecretFile {
   param([Parameter(Mandatory)][ValidatePattern('^[a-z_]+$')][string]$Name, [Parameter(Mandatory)][string]$Value)
   $dir = Join-Path $script:RepoRoot 'secrets'
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  if (-not $script:OnWindows) { Invoke-CixNative { chmod 700 $dir } } # no one else can open a file in it, even before its chmod
   $path = Join-Path $dir $Name
   # A fresh, restricted (empty) file first, then the key: it is never on disk with wider access, and no old access rules survive.
   if (Test-Path $path) { Remove-Item $path -Force }
@@ -420,8 +421,16 @@ function Set-CixStaticSiteSettings {
     [Parameter(Mandatory)][ValidatePattern('^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Web/staticSites/[^/]+$')][string]$SiteId,
     [Parameter(Mandatory)][hashtable]$Settings
   )
-  $path = Join-Path ([IO.Path]::GetTempPath()) "cix-$([guid]::NewGuid().ToString('N')).json"
+  # A fresh directory only you can enter (Linux and macOS share /tmp), then the file in it, restricted before any value is
+  # written; on Windows the per-user temp folder plus an ACL on the file.
+  $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-$([guid]::NewGuid().ToString('N'))"
+  $path = Join-Path $dir 'settings.json'
   try {
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    if (-not $script:OnWindows) {
+      Invoke-CixNative { chmod 700 $dir }
+      if ($LASTEXITCODE -ne 0) { throw "Could not restrict access to a temporary folder; the settings were not changed." }
+    }
     [IO.File]::WriteAllText($path, '', $script:Utf8NoBom)
     if ($script:OnWindows) {
       $me = "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
@@ -433,7 +442,7 @@ function Set-CixStaticSiteSettings {
     Invoke-CixAz -Quiet @('rest', '--method', 'put', '--url', "https://management.azure.com$SiteId/config/appsettings?api-version=2024-04-01",
       '--body', "@$path", '--only-show-errors', '-o', 'none') | Out-Null
   }
-  finally { Remove-Item $path -Force -ErrorAction SilentlyContinue }
+  finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 function Set-CixEnvValue {

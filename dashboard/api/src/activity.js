@@ -124,6 +124,7 @@ function activity(fills, period, now) {
   const total = buckets.reduce((t, b) => ({ trades: t.trades + b.trades, volume: t.volume + b.buy + b.sell }), { trades: 0, volume: 0n });
   return {
     period,
+    amounts: true,
     currency: currency ?? 'EUR',
     periods: rows,
     current,
@@ -133,4 +134,22 @@ function activity(fills, period, now) {
   };
 }
 
-module.exports = { activity, periodsFor, fromDay, units, money, PERIODS };
+/**
+ * The public page's view: counts only. Amounts would give fill prices away (a day's buy volume over its one fill's size),
+ * and the public page never shows a price; the owner gets the amounts from /api/owner/activity.
+ */
+function publicActivity(a) {
+  const counts = ({ from, to, label, trades, buys, sells, manual }) => ({
+    from, to, label, trades, buys, sells, manual, buyVolume: null, sellVolume: null, turnover: null, fees: null,
+  });
+  return {
+    ...a,
+    periods: a.periods.map(counts),
+    current: counts(a.current),
+    previous: a.previous ? counts(a.previous) : null,
+    total: { ...a.total, turnover: null },
+    amounts: false,
+  };
+}
+
+module.exports = { activity, publicActivity, periodsFor, fromDay, units, money, PERIODS };

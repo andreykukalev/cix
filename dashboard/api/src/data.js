@@ -3,7 +3,7 @@
 // fail on its own; the dashboard then shows what it has and says what it couldn't read.
 
 const { summarize, publicSummary, decisions } = require('./summarize');
-const { activity, fromDay } = require('./activity');
+const { activity, publicActivity, fromDay } = require('./activity');
 const { history, historyItem } = require('./requests');
 
 const MODES = new Set(['paper', 'live']);
@@ -94,13 +94,14 @@ const FILLS_MAX = 5000;
  * Trading activity for the period switch (day, week or month): executed trades only (journal "fill" entries), read across
  * the day partitions the periods cover. Paper only for now: the journal has no mode tag yet (#65), and only paper runs.
  */
-async function loadActivity(reader, period, now) {
+async function loadActivity(reader, period, now, { amounts = false } = {}) {
   const from = fromDay(period, now); // throws RangeError for an unknown period
   const fills = await reader.query('journal', 'SELECT c.entry.at AS at, c.entry.data AS data FROM c WHERE c.day >= @from AND c.entry.kind = @kind', {
     parameters: [{ name: '@from', value: from }, { name: '@kind', value: 'fill' }],
     maxItems: FILLS_MAX,
   });
-  return { ...activity(fills, period, now), truncated: fills.length >= FILLS_MAX };
+  const full = { ...activity(fills, period, now), truncated: fills.length >= FILLS_MAX };
+  return amounts ? full : publicActivity(full);
 }
 
 /** The owner's view of recent decisions: the same list as the public page, with levels and prices kept. */

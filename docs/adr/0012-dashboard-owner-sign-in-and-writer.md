@@ -19,9 +19,12 @@ The shared account's read-write key reaches every project's database.
 ## Decision
 
 **Sign-in.** The owner signs in with a Microsoft account through Static Web Apps' built-in provider (`/.auth/login/aad`), and holds a custom `owner` role by invitation.
+- The role alone isn't enough: whoever redeems an invitation link gets it. After the owner accepts, the setup script stores that account's user ID in the app's settings (`DASHBOARD_OWNER_USER_ID`), and the API takes only that ID, with the role, as the owner. With none stored, nobody is. The invitation expires in 2 hours, and the script refuses to continue while anyone else holds the role.
 - `staticwebapp.config.json` allows `/api/owner/*` only for that role and blocks GitHub sign-in.
 - Every owner handler checks the role again, from the `x-ms-client-principal` header, which the platform sets and a browser can't.
-- The public page and API stay as they are, prices masked. The owner's views (decisions with levels, request history) are served only from `/api/owner/*`, with `no-store`.
+- The public page and API stay as they are, prices masked. The owner's views (decisions with levels, request history, activity amounts) are served only from `/api/owner/*`, with `no-store`.
+- Public activity is counts only: amounts by period next to the public trade sizes would give fill prices away.
+- Explanations on the public page show a part of the trader's free text only when it has the exact shape the engine writes (a coin, a small rank, a ratio, a percentage); anything else is masked. The owner's note on a request stays with the owner and the trader.
 
 **Writes.** A dedicated service principal, `cix-dashboard-writer-<env>`, with one client secret.
 - Its only right is a Cosmos DB data-plane custom role: `readMetadata` and `items/create`, scoped to `<database>/requests`.
@@ -33,7 +36,7 @@ The shared account's read-write key reaches every project's database.
 
 **Requests.**
 - The API builds the document itself: server time, `status: new`, `requestedBy: owner`, `tradingMode: paper` only. It takes only the fields it validates from the page.
-- A UUID per click makes a retry the same request: Cosmos DB answers 409, and the API returns the first request.
+- A UUID per dialog makes a retry the same request: Cosmos DB answers 409 (the API also checks the day before, since ids are unique per day's partition), and the API returns the request as first stored, refusing a retry that asks for something else. The dialog locks once sent.
 - Posts must be JSON and carry a custom header, so a cross-site page can't send them without a preflight the API never answers.
 - The engine checks everything again (ADR-0011).
 

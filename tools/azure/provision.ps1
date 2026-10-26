@@ -108,8 +108,8 @@ if (-not $SkipInfrastructure) {
   Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -WhatIf | Out-Null
   if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed.'; return }
   Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"
-  # The deployment sets the dashboard's settings to exactly what infra/ says, which would drop the writer identity's
-  # (setup-dashboard-requests.ps1): keep them in memory and put them back. They are never printed.
+  # The deployment sets the dashboard's settings to exactly what infra/ says, which would drop the writer identity's and the
+  # confirmed owner (setup-dashboard-requests.ps1): keep them in memory and put them back. They are never printed.
   $writerSettings = @{}
   $siteId = $null
   if ($settings.deployDashboard) {
@@ -118,7 +118,7 @@ if (-not $SkipInfrastructure) {
       $siteId = "$found".Trim()
       try { $current = Get-CixStaticSiteSettings -SiteId $siteId }
       catch { throw "Couldn't read the dashboard's settings (to keep the writer identity's through the deployment); nothing was deployed." }
-      foreach ($k in @($current.Keys | Where-Object { $_ -like 'COSMOS_WRITER_*' })) { $writerSettings[$k] = $current[$k] }
+      foreach ($k in @($current.Keys | Where-Object { $_ -like 'COSMOS_WRITER_*' -or $_ -eq 'DASHBOARD_OWNER_USER_ID' })) { $writerSettings[$k] = $current[$k] }
     }
   }
   $outputs = Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName
@@ -129,7 +129,7 @@ if (-not $SkipInfrastructure) {
       Set-CixStaticSiteSettings -SiteId $siteId -Settings $now
       Write-CixInfo "Kept the dashboard's writer settings ($(($writerSettings.Keys | Sort-Object) -join ', '))."
     }
-    catch { Write-CixWarn "Couldn't put the dashboard's writer settings back; owner requests fail until you run tools/azure/setup-dashboard-requests.ps1 -Environment $Environment -RotateSecret." }
+    catch { throw "Deployed, but couldn't put the dashboard's writer settings back; owner requests fail until you run tools/azure/setup-dashboard-requests.ps1 -Environment $Environment -OwnerAccount <you> -RotateSecret." }
     finally { $writerSettings = $null; $now = $null; $current = $null }
   }
   $cosmosAccount = $outputs.cosmosAccountName.value

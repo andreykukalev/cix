@@ -82,7 +82,7 @@
       <div class="figures" id="volume-cards"></div>
       <figure class="chart">
         <svg id="volume-chart" role="img" aria-labelledby="volume-chart-title" viewBox="0 0 640 190" preserveAspectRatio="none"><title id="volume-chart-title">Buy and sell volume by period</title></svg>
-        <figcaption class="muted small"><span class="key buy"></span> bought <span class="key sell"></span> sold · executed trades only, UTC periods, weeks from Monday · fees not included</figcaption>
+        <figcaption class="muted small"><span id="volume-unit">volume</span>: <span class="key buy"></span> bought <span class="key sell"></span> sold · executed trades only, UTC periods, weeks from Monday · fees not included</figcaption>
       </figure>
     </section>
 
@@ -172,7 +172,7 @@
         <label><input type="radio" name="mode" value="agent"> Ask the trader: it analyses first, may decline</label>
       </fieldset>
       <label id="buy-amount" class="field">Amount <input type="text" name="quoteAmount" inputmode="decimal" autocomplete="off" placeholder="25"> <span id="buy-quote" class="muted"></span></label>
-      <label class="field">Note for the trader <span class="muted small">(optional)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
+      <label class="field">Note for the trader <span class="muted small">(optional; only you and the trader see it)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
       <p id="request-summary" class="summary"></p>
       <p id="request-error" class="error" role="alert" hidden></p>
       <div class="actions">

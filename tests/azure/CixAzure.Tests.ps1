@@ -520,8 +520,8 @@ $existingWriter = @{
   'role assignment'                       = '[]'
   'cosmosdb sql role definition list'     = $writerRole
   'cosmosdb sql role assignment list'     = "[{`"principalId`":`"55555555-5555-5555-5555-555555555555`",`"roleDefinitionId`":`"/role/r1`",`"scope`":`"$writerScope`"},{`"principalId`":`"someone-else`",`"roleDefinitionId`":`"/role/other`",`"scope`":`"/`"}]"
-  'rest'                                  = '{"value":[],"properties":{"COSMOS_WRITER_TENANT_ID":"00000000-0000-0000-0000-0000000000aa","COSMOS_WRITER_CLIENT_ID":"44444444-4444-4444-4444-444444444444","COSMOS_WRITER_SECRET":"set"}}'
-  'staticwebapp users list'               = '[{"displayName":"owner@example.com","roles":"anonymous,authenticated,owner"}]'
+  'rest'                                  = '{"value":[],"properties":{"COSMOS_WRITER_TENANT_ID":"00000000-0000-0000-0000-0000000000aa","COSMOS_WRITER_CLIENT_ID":"44444444-4444-4444-4444-444444444444","COSMOS_WRITER_SECRET":"set","DASHBOARD_OWNER_USER_ID":"owner-uid"}}'
+  'staticwebapp users list'               = '[{"displayName":"owner@example.com","userId":"owner-uid","roles":"anonymous,authenticated,owner"}]'
 }
 function Invoke-SetupWriter([hashtable]$Base, [hashtable]$Overrides = @{}, [hashtable]$More = @{}) {
   $extra = @{}; foreach ($k in $Base.Keys) { $extra[$k] = $Base[$k] }
@@ -544,6 +544,22 @@ Check 'setup-dashboard-requests.ps1 (-Yes) creates a create-only identity and st
   if ($r.Calls -match '--append') { throw 'an earlier secret would stay valid' }
   if ($r.Output.Contains($fakePassword) -or $r.Calls.Contains($fakePassword)) { throw 'the secret was printed or put on a command line' }
   if ($r.Output -notmatch 'auth/invitations/abc') { throw "the invitation link wasn't shown: $($r.Output)" }
+  if ($r.Calls -notmatch 'users invite .*--invitation-expiration-in-hours 2 ') { throw 'the invitation should expire in 2 hours' }
+  if ($r.Output -notmatch 'run this script again') { throw "it didn't say to run it again to confirm the owner: $($r.Output)" }
+}
+
+Check 'setup-dashboard-requests.ps1 confirms the owner by user ID once the invitation is accepted' {
+  $r = Invoke-SetupWriter $existingWriter @{ 'rest' = '{"value":[],"properties":{"COSMOS_WRITER_TENANT_ID":"00000000-0000-0000-0000-0000000000aa","COSMOS_WRITER_CLIENT_ID":"44444444-4444-4444-4444-444444444444","COSMOS_WRITER_SECRET":"set"}}' }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -notmatch '--method put') { throw "the owner wasn't stored: $($r.Calls)" }
+  if ($r.Calls -match '(?m)\bcreate\b|credential reset|users invite') { throw "it changed something else: $($r.Calls)" }
+  if ($r.Output -notmatch 'Confirmed') { throw "no confirmation: $($r.Output)" }
+}
+
+Check 'setup-dashboard-requests.ps1 refuses when someone else holds the owner role' {
+  $r = Invoke-SetupWriter $existingWriter @{ 'staticwebapp users list' = '[{"displayName":"owner@example.com","userId":"owner-uid","roles":"owner"},{"displayName":"stranger@example.com","userId":"x","roles":"anonymous,owner"}]' }
+  if (-not $r.Error -or -not $r.Error.Contains('stranger@example.com also hold(s) the owner role')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match '--method put|users invite') { throw "it changed the owner: $($r.Calls)" }
 }
 
 Check 'setup-dashboard-requests.ps1 run again changes nothing that is already in place' {
@@ -562,6 +578,8 @@ Check 'setup-dashboard-requests.ps1 -RotateSecret replaces the secret only' {
 
 foreach ($case in @(
     @{ Name = 'a client secret it did not create'; Overrides = @{ 'ad app show' = '{"appId":"4","passwordCredentials":[{"displayName":"someone"}],"keyCredentials":[]}' }; Says = "client secrets this script didn't create" },
+    @{ Name = 'a second secret of the same name'; Overrides = @{ 'ad app show' = '{"appId":"4","passwordCredentials":[{"displayName":"cix-dashboard-requests"},{"displayName":"cix-dashboard-requests"}],"keyCredentials":[]}' }; Says = 'has 2 client secrets' },
+    @{ Name = 'the writer role assigned to someone else'; Overrides = @{ 'cosmosdb sql role assignment list' = "[{`"principalId`":`"55555555-5555-5555-5555-555555555555`",`"roleDefinitionId`":`"/role/r1`",`"scope`":`"$writerScope`"},{`"principalId`":`"intruder`",`"roleDefinitionId`":`"/role/r1`",`"scope`":`"$writerScope`"}]" }; Says = 'is also assigned to intruder' },
     @{ Name = 'a federated credential'; Overrides = @{ 'ad app federated-credential' = '[{"subject":"repo:x/y:ref:refs/heads/main"}]' }; Says = 'trusts external tokens' },
     @{ Name = 'an Azure role'; Overrides = @{ 'role assignment' = '[{"roleDefinitionName":"Reader","scope":"/subscriptions/x"}]' }; Says = 'holds Azure roles (Reader on /subscriptions/x)' },
     @{ Name = 'a broader Cosmos DB role of the same name'; Overrides = @{ 'cosmosdb sql role definition list' = $writerRole.Replace('items/create', 'items/*') }; Says = 'allows more than creating items' },

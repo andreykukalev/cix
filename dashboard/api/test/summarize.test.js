@@ -100,3 +100,12 @@ test('masks prices in every text format the engine writes', () => {
   assert.equal(publicText('rank 1, 24h +3%'), 'rank 1, 24h +3%');
   assert.equal(publicText(null), null);
 });
+
+test('the engine section says whether owner requests are taken; a direct sell\'s note stays private', () => {
+  const view = summarize({ mode: 'paper', status: { updatedAt: new Date(NOW).toISOString(), manualRequests: { state: 'off', awaitingAgent: 0, lastPollAt: null } }, engineState: null, journal: [
+    { id: 'm', at: new Date(NOW).toISOString(), kind: 'order', actor: 'owner', summary: 'manual sell 1 LINK-EUR @ 10: placed (ok)', data: { tool: 'manual-direct', symbol: 'LINK-EUR', side: 'sell', status: 'placed', rule: 'ok', rationale: "Owner's direct sell: my secret plan" } },
+  ], stateDocs: [] }, NOW);
+  assert.deepEqual(view.engine.manualRequests, { state: 'off', awaitingAgent: 0, lastPollAt: null });
+  assert.ok(!JSON.stringify(view).includes('secret plan'));
+  assert.equal(summarize({ mode: 'paper', status: null, journal: [], stateDocs: [] }, NOW).engine.manualRequests, null);
+});

@@ -157,7 +157,7 @@ function renderTables(view) {
   rows('trades', view.trades, (t) => [
     when(t.at), t.symbol ?? '–', t.side ?? '–', td(amount(t.filledSize, 0), 'num'), t.source ?? '–', t.status ?? '–', shortId(t.clientOrderId),
   ], 'No fills in the last 48 hours.');
-  if (!(state.viewer.owner && state.mode === 'paper')) rows('decisions', view.decisions, (d) => [ // the owner's view comes from /api/owner
+  rows('decisions', view.decisions, (d) => [ // for the owner, replaced by /api/owner/decisions (with levels) when that loads
     when(d.at), d.actor, d.action ?? '–', d.symbol ?? '–', d.side ?? '–', td(amount(d.size, 0), 'num'),
     el('span', { class: `badge ${{ placed: 'ok', rejected: 'bad', failed: 'bad', uncertain: 'warn' }[d.status] ?? ''}`, text: d.status ?? '–' }),
     td(why(d), 'why'),
@@ -251,6 +251,8 @@ function renderCoins(view) {
     ? `moves up to the scan at ${new Date(b.scanAt).toLocaleTimeString()} (${ago(b.scanAt)})${b.scanStale ? ', stale' : ''}`
     : 'no scan yet';
   const owner = state.viewer.owner && state.mode === 'paper';
+  const blocked = owner ? V.requestsBlocked(view.engine) : null;
+  if (blocked) document.getElementById('coins-meta').textContent += ` · requests paused: ${blocked}`;
   for (const node of document.querySelectorAll('#coins .owner-only')) node.hidden = !owner;
   rows('coins', V.coins(view), (c) => {
     const r = scan.get(c.symbol) ?? {};
@@ -271,11 +273,15 @@ function renderCoins(view) {
 
 function tradeButtons(c) {
   const busy = [...state.pending.values()].some((p) => p.symbol === c.symbol);
+  const blocked = V.requestsBlocked(state.view?.engine);
   const buy = el('button', { type: 'button', class: 'buy', 'aria-label': `Buy ${c.symbol}`, text: 'Buy' });
   buy.addEventListener('click', () => openRequest('buy', c));
   const sell = el('button', { type: 'button', class: 'sell', 'aria-label': `Sell ${c.symbol}`, text: 'Sell' });
   sell.addEventListener('click', () => openRequest('sell', c));
-  if (busy) { buy.disabled = true; sell.disabled = true; buy.title = sell.title = 'A request for this coin is in progress.'; }
+  if (busy || blocked) {
+    buy.disabled = true; sell.disabled = true;
+    buy.title = sell.title = blocked ?? 'A request for this coin is in progress.';
+  }
   return c.held ? [buy, ' ', sell] : [buy];
 }
 
@@ -335,7 +341,9 @@ async function refreshActivity() {
     return;
   }
   try {
-    const a = await getJson(`/api/activity?period=${encodeURIComponent(state.period)}`);
+    // Amounts are the owner's only (with public trade sizes they'd give fill prices away); everyone else gets counts.
+    const base = state.viewer.owner ? '/api/owner/activity' : '/api/activity';
+    const a = await getJson(`${base}?period=${encodeURIComponent(state.period)}`);
     renderVolume(a);
   } catch (error) {
     meta.textContent = `Couldn't load trading activity: ${error.message}`;
@@ -347,8 +355,9 @@ function renderVolume(a) {
   const p = a.previous ?? {};
   const unit = { day: 'today', week: 'this week', month: 'this month' }[a.period];
   const before = { day: 'yesterday', week: 'last week', month: 'last month' }[a.period];
+  const totals = a.amounts ? `${a.total.trades} trades, turnover ${a.total.turnover} ${a.currency}` : `${a.total.trades} trades`;
   document.getElementById('volume-meta').textContent =
-    `${c.label} (${unit}, UTC) against ${p.label ?? 'nothing'} (${before}). ${a.total.trades} trades, turnover ${a.total.turnover} ${a.currency} from ${a.total.from} to ${a.total.to}.${a.truncated ? ' Only the most recent fills were counted.' : ''}`;
+    `${c.label} (${unit}, UTC) against ${p.label ?? 'nothing'} (${before}). ${totals} from ${a.total.from} to ${a.total.to}.${a.amounts ? '' : ' Amounts are shown to the owner only.'}${a.truncated ? ' Not all fills could be counted: the totals are incomplete.' : ''}`;
   const card = (label, value, now, prev, sub) => {
     const vs = V.versus(now, prev);
     return el('div', { class: 'figure' },
@@ -356,17 +365,25 @@ function renderVolume(a) {
       el('span', { class: 'amount', text: value }),
       el('span', { class: sub ? 'vs' : `vs ${vs.dir}`, text: sub ?? vs.text }));
   };
-  document.getElementById('volume-cards').replaceChildren(
+  document.getElementById('volume-cards').replaceChildren(...(a.amounts ? [
     card('Turnover', `${c.turnover} ${a.currency}`, c.turnover, p.turnover),
     card('Bought', `${c.buyVolume} ${a.currency}`, c.buyVolume, p.buyVolume),
     card('Sold', `${c.sellVolume} ${a.currency}`, c.sellVolume, p.sellVolume),
     card('Trades', String(c.trades), c.trades, p.trades, `${c.buys} buys · ${c.sells} sells`),
     card('Your requests', String(c.manual), c.manual, p.manual, 'trades from the dashboard'),
     card('Fees', `${c.fees} ${a.currency}`, c.fees, p.fees, 'not in turnover'),
-  );
+  ] : [
+    card('Trades', String(c.trades), c.trades, p.trades),
+    card('Buys', String(c.buys), c.buys, p.buys),
+    card('Sells', String(c.sells), c.sells, p.sells),
+    card('Owner requests', String(c.manual), c.manual, p.manual, 'trades from the dashboard'),
+  ]));
   const g = V.chart(a.periods, { width: 640, height: 160, labelEvery: a.periods.length > 12 ? 2 : 1, period: a.period });
   const chartNode = document.getElementById('volume-chart');
-  chartNode.replaceChildren(svg('title', { id: 'volume-chart-title' }, `Buy and sell volume by ${a.period}, largest ${g.max.toFixed(2)} ${a.currency}`));
+  chartNode.replaceChildren(svg('title', { id: 'volume-chart-title' }, g.amounts
+    ? `Buy and sell volume by ${a.period}, largest ${g.max.toFixed(2)} ${a.currency}`
+    : `Buys and sells by ${a.period}, largest ${g.max} trades`));
+  document.getElementById('volume-unit').textContent = g.amounts ? `volume in ${a.currency}` : 'number of trades';
   for (const b of g.bars) {
     const group = svg('g', {});
     group.append(svg('title', {}, b.title));
@@ -461,6 +478,7 @@ function openRequest(side, coin) {
   if (side === 'sell') { form.elements.portion.value = '1'; form.elements.mode.value = 'agent'; }
   document.getElementById('request-error').hidden = true;
   document.getElementById('request-send').disabled = false;
+  for (const input of form.querySelectorAll('input')) input.disabled = false;
   updateSummary();
   dialog.showModal();
 }
@@ -489,6 +507,8 @@ async function sendRequest(event) {
   if (r.error) { error.textContent = r.error; error.hidden = false; return; }
   const send = document.getElementById('request-send');
   send.disabled = true; // no second click while this one is on its way
+  // From the first send on, this dialog is one request: a retry sends exactly the same thing. To change it, start a new one.
+  for (const input of document.getElementById('request-form').querySelectorAll('input')) input.disabled = true;
   send.textContent = 'Sending…';
   try {
     const response = await fetch('/api/owner/requests', {
@@ -502,7 +522,7 @@ async function sendRequest(event) {
     document.getElementById('request-dialog').close();
     track(answer.request);
   } catch (e) {
-    error.textContent = `Not sent: ${e.message} You can try again; it stays one request.`;
+    error.textContent = `Not confirmed: ${e.message} Send again to retry: it stays the same, single request. To change it, cancel and start a new one.`;
     error.hidden = false;
     send.disabled = false;
   } finally {

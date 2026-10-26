@@ -116,7 +116,8 @@ function decisions(entries, { reveal = false } = {}) {
       size: d.approvedSize ?? d.requestedSize ?? null,
       status: d.status ?? null,
       rule: d.rule ?? null,
-      rationale: reveal ? d.rationale ?? null : publicText(d.rationale ?? null),
+      // A direct sell's rationale carries the owner's note, which is for the owner and the trader only.
+      rationale: reveal ? d.rationale ?? null : d.tool === 'manual-direct' ? "Owner's direct sell." : publicText(d.rationale ?? null),
       hasStop: d.stopLoss !== undefined,
       clientOrderId: d.clientOrderId ?? null,
       summary: reveal ? e.summary ?? null : publicSummary(e),
@@ -213,6 +214,10 @@ function summarize(input, now) {
       oldestQuoteAt: status?.oldestQuoteAt ?? null,
       unquotedSymbols: status?.unquotedSymbols ?? [],
       marketView: status?.marketView ?? null,
+      // Whether the engine takes owner requests now (ok, off, unavailable): the page disables the buttons otherwise.
+      manualRequests: status?.manualRequests
+        ? { state: status.manualRequests.state ?? null, awaitingAgent: status.manualRequests.awaitingAgent ?? null, lastPollAt: status.manualRequests.lastPollAt ?? null }
+        : null,
     },
     sync: {
       exchange: status?.lastReconciledAt ?? null,

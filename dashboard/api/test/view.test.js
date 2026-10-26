@@ -101,3 +101,18 @@ test('only a Microsoft sign-in with the owner role sees the owner controls', () 
   assert.deepEqual(V.viewer({ clientPrincipal: null }), { signedIn: false, owner: false, name: null });
   assert.equal(V.viewer(null).signedIn, false);
 });
+
+test('requests pause, with a reason, when the engine can\'t take them', () => {
+  const ok = { state: 'running', manualRequests: { state: 'ok' } };
+  assert.equal(V.requestsBlocked(ok), null);
+  assert.match(V.requestsBlocked({ ...ok, state: 'stale' }), /isn't running/);
+  assert.match(V.requestsBlocked({ ...ok, manualRequests: { state: 'off' } }), /switched off/);
+  assert.match(V.requestsBlocked({ ...ok, manualRequests: { state: 'unavailable' } }), /can't read requests/);
+  assert.match(V.requestsBlocked({ state: 'running', manualRequests: null }), /doesn't report/);
+  assert.ok(V.requestsBlocked(undefined));
+});
+
+test('a refusal names its rule: the engine refuses some, the risk gate others', () => {
+  assert.equal(V.requestState({ status: 'rejected', final: true, outcome: { rule: 'daily-cap', reason: 'At most 20 a day.' } }).label, 'Refused (daily-cap)');
+  assert.equal(V.requestState({ status: 'rejected', final: true, outcome: {} }).label, 'Refused');
+});
