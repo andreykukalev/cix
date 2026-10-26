@@ -391,11 +391,15 @@ function Assert-CixDatabaseClaim {
     cix-cosmos-account, set by infra/main.bicep). With -RequireOwn, this environment's group must claim it too (resets).
     For a deployment, a database that already exists must already be this environment's, so a settings typo can't take
     over another project's or environment's database.
+    The group Azure makes for this environment's Container Apps environment (ME_..., managed by it) copies its tags, so it
+    carries the claim too; it is part of this environment, not another one.
   #>
   param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$AccountName, [switch]$RequireOwn)
   $db = $Settings.cosmos.databaseName
+  $ownManaged = "(?i)^/subscriptions/[^/]+/resourceGroups/$([regex]::Escape($Settings.resourceGroup))/providers/Microsoft\.App/managedEnvironments/[^/]+$"
   $claims = @(Invoke-CixAz @('group', 'list', '--tag', "cix-database=$db", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
-      Where-Object { $_.tags -and $_.tags.PSObject.Properties['cix-cosmos-account'] -and $_.tags.'cix-cosmos-account' -eq $AccountName })
+      Where-Object { $_.tags -and $_.tags.PSObject.Properties['cix-cosmos-account'] -and $_.tags.'cix-cosmos-account' -eq $AccountName } |
+      Where-Object { -not ($_.PSObject.Properties['managedBy'] -and "$($_.managedBy)" -match $ownManaged) })
   $others = @($claims | Where-Object { $_.name -ne $Settings.resourceGroup })
   if ($others.Count -gt 0) {
     throw "Database '$db' in $AccountName is claimed by resource group(s) $(($others | ForEach-Object { $_.name }) -join ', '), not only $($Settings.resourceGroup). Refusing."
