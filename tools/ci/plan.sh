@@ -4,8 +4,9 @@
 #
 #   pull_request       the jobs for the files the pull request changes (against its base)
 #   push to main       the jobs for the files the push changes, minus those the merged pull request already passed on
-#                      exactly this content: its CI run (this workflow, base main) on a head that contained the previous
-#                      tip of main, with an identical tree, where each of those jobs succeeded (skipped doesn't count).
+#                      exactly this content: its CI run (this workflow) on a head that contained the previous tip of main,
+#                      with an identical tree, where each of those jobs succeeded (skipped doesn't count). Only when the
+#                      pull request's base was main all along: a run against another base tested a different merge.
 #                      `dashboard` (publish) follows the files either way.
 #   workflow_dispatch  everything
 #
@@ -66,7 +67,16 @@ if [[ "$EVENT" == "push" && "$ci_changed" == false ]]; then
   if [[ -n "$pr" ]]; then
     git cat-file -e "$pr_head^{commit}" 2>/dev/null || git -c "http.extraheader=AUTHORIZATION: bearer $GH_TOKEN" fetch -q --no-tags origin "refs/pull/$number/head" 2>/dev/null || true
   fi
-  if [[ -n "$pr" ]] && git cat-file -e "$pr_head^{commit}" 2>/dev/null \
+  # A base changed at any time (for example from a stacked branch to main) means a run may have tested another merge, with
+  # another workflow file: reuse nothing. With no change the base was main, which only moves forward, so the run's merge
+  # base is an ancestor of BEFORE and the tested tree is pr_head's. A failed lookup reuses nothing.
+  base_changed=yes
+  if [[ -n "$pr" ]] && events=$(gh api --paginate "repos/$REPO/issues/$number/timeline?per_page=100" \
+       --jq '.[] | select(.event == "base_ref_changed") | .event' 2>/dev/null); then
+    [[ -z "$events" ]] && base_changed=no
+  fi
+  [[ -n "$pr" && "$base_changed" == yes ]] && echo "Pull request #$number changed its base or its history couldn't be read: testing here."
+  if [[ -n "$pr" && "$base_changed" == no ]] && git cat-file -e "$pr_head^{commit}" 2>/dev/null \
      && git merge-base --is-ancestor "$BEFORE_SHA" "$pr_head" \
      && [[ "$(git rev-parse "$SHA^{tree}")" == "$(git rev-parse "$pr_head^{tree}")" ]]; then
     # The latest completed pull-request run of this workflow on that head. Only jobs that succeeded there count: one

@@ -263,12 +263,13 @@ jobs:
           TOKEN: ${{ github.token }}
         run: |
           # Runs can finish out of order; an older one must not publish over a newer dashboard. A newer push that didn't
-          # change the dashboard doesn't publish, so an older run still publishes when its dashboard is the tip's.
+          # change the dashboard doesn't publish, so an older run still publishes when its dashboard (and the workflow that
+          # deploys it) is the tip's.
           git() { command git -c "http.extraheader=AUTHORIZATION: bearer $TOKEN" "$@"; }
           tip=$(git ls-remote "$REPO_URL" refs/heads/main | cut -f1)
           if [ "$tip" = "$GITHUB_SHA" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
-          elif git fetch -q --depth=1 --no-tags "$REPO_URL" "$tip" && git diff --quiet "$GITHUB_SHA" "$tip" -- dashboard infra; then
+          elif git fetch -q --depth=1 --no-tags "$REPO_URL" "$tip" && git diff --quiet "$GITHUB_SHA" "$tip" -- dashboard infra .github/workflows; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "::notice::main has moved on, but its dashboard is this one; publishing."
           else
@@ -346,8 +347,12 @@ jobs:
           tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           if [ "$tip" = "$GITHUB_SHA" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
-          elif changed=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$tip" \
-                 --jq '[.files[].filename | select(startswith("dashboard/") or startswith("infra/"))] | length') && [ "$changed" = 0 ]; then
+          # Only a tip strictly ahead of this commit, with the full file list (the API lists at most 300), and no change
+          # to the dashboard or to the workflow that deploys it. Anything else leaves publishing to the newer run.
+          elif changed=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$tip" --jq '
+                 if .status == "ahead" and (.files | length) < 300
+                 then [.files[].filename | select(startswith("dashboard/") or startswith("infra/") or startswith(".github/workflows/"))] | length
+                 else -1 end') && [ "$changed" = 0 ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"; echo "::notice::main has moved on, but its dashboard is this one; publishing."
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"; echo "::notice::main has moved on with dashboard changes; the newer run publishes the dashboard."
