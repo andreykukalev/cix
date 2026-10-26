@@ -119,11 +119,11 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 | When | Who | What happens |
 | --- | --- | --- |
 | Pull request | CI, no Azure access | Build and test (as now), build the images, `bicep build` and lint |
-| Merge to `main`, application change | CI as `cix-deploy-<env>` | Push images to ACR tagged with the commit SHA. Update the paper engine app and the jobs to that image. Wait for the new engine's status document (image version, lease held, `manualRequests.state` ok). If it doesn't report healthy, redeploy the previous commit's image and fail the run. |
+| Merge to `main`, application change | CI as `cix-agents-deploy-<env>` | Push images to ACR tagged with the commit SHA. Update the paper engine app and the jobs to that image. Wait for the new engine's status document (image version, lease held, `manualRequests.state` ok). If it doesn't report healthy, redeploy the previous commit's image and fail the run. |
 | Infrastructure change (`infra/`) | The owner, with `provision.ps1` | What-if first, then apply, as today. The template is subscription-scoped and creates role assignments, Key Vault and the budget. Applying it needs Owner-level rights, which CI must not hold. |
 | Bootstrap, secret rotation, anything about the live engine | The owner | Run from the owner's own sign-in. The live engine goes into its own resource group and Key Vault, where CI's identities have no role. |
 
-- **`cix-deploy-<env>`** uses an OIDC credential trusted for `main` only, as in ADR-0010. It has `AcrPush` on the registry and a custom role on the paper engine app and the three jobs: read, update, and start or stop executions. A run started by hand on `main` signs in with the same identity, which is why that identity has no rights over infrastructure or the live engine.
+- **`cix-agents-deploy-<env>`** uses an OIDC credential trusted for `main` only, as in ADR-0010. It has `AcrPush` on the registry and a custom role on the paper resource group: read and update the engine app and the three jobs (it can't create resources or role assignments). A run started by hand on `main` signs in with the same identity, which is why that identity has no rights over infrastructure or the live engine.
 - **The merge is the approval.** GitHub Free can't require a reviewer for deployments in a private repository. Agents develop on branches and open pull requests, CI must pass, the owner merges, and CI deploys paper.
 - **No real orders in CI or validation.** Smoke checks only read state.
 - **Cost guard.** An Azure budget on the CIX resource group alerts at $40 a month.
@@ -141,7 +141,7 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
    - the engine's Entra app requiring an app role assignment, held only by the three job identities (the engine's `oid` allowlist is the only check today);
    - images deployed by digest rather than by tag;
    - private access to Key Vault and storage;
-7. **CI:** image push, deploy and roll-back jobs, planned by `tools/ci/plan.sh` so that unrelated changes don't deploy.
+7. **CI:** image push, deploy and roll-back jobs, planned by `tools/ci/plan.sh` so that unrelated changes don't deploy. (Built: the `agents-images` and `deploy-agents` jobs and `tools/ci/deploy-agents.sh`, as `cix-agents-deploy-<env>`; see "Deploying the engine and the agents from CI" in [azure.md](../azure.md). Health is the new revision's probes rather than the status document. Of the review's asks in item 6, CI holds no role-assignment rights, but its role can change the apps' settings, not only their images: Azure has no narrower action. Images still deploy by tag.)
 
 ## Cutover
 

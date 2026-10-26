@@ -126,9 +126,36 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
   - uploads `secrets/claude_token` to Key Vault as `claude-token` if it isn't there yet, straight from the file without showing it. Pass `-UploadClaudeToken` after renewing it;
   - creates the engine's Entra app registration, `cix-engine-<environment>`, if missing. It is single tenant, with no secrets and no permissions, and its application ID URI `api://<app ID>` is the audience the jobs' tokens are for. An existing one is used only if you are its only owner;
 
-  Deploy `platform` first, then `apps` once CI has pushed images. The jobs' access to `claude-token` is granted in the same deployment that creates them and takes a few minutes to apply, so the first `apps` deployment can fail on it; run it again shortly.
+  Deploy `platform` first, set up CI's deploy identity (below), then deploy `apps` once CI has pushed images. The jobs' access to `claude-token` is granted in the same deployment that creates them and takes a few minutes to apply, so the first `apps` deployment can fail on it; run it again shortly.
 
   While `startEngine` is false the engine has no replica, but a request to its internal address would start one for a few minutes. Nothing in the environment calls it until the cutover.
+
+### Deploying the engine and the agents from CI
+
+After a push to `main` that changes what goes into the images (`src/`, `config/`, `strategies/`, `docker/`, `tools/trader/`, `.claude/`), or a manual run of *CI* on `main`, CI deploys them once the .NET tests, the container checks and the secret scan pass (or already passed in the pull request):
+
+1. `agents-images` builds `cix-engine` and `cix-trader` in a job with no Azure access, and hands them on as an artifact, with their hashes as job outputs.
+2. `deploy-agents` signs in as `cix-agents-deploy-<environment>`, checks the hashes, and runs `tools/ci/deploy-agents.sh`:
+   - it pushes both images to the environment's registry, tagged with the commit SHA;
+   - with `agents.deploy` at `platform` it stops there: run `provision.ps1 -ImageTag <that SHA>` with `apps` to create the engine and the jobs from them;
+   - with `apps`, it points the engine at its new image and, while `startEngine` is true, waits up to 12 minutes for the new revision to be healthy (its startup and readiness probes passed). Then it points the three jobs at the new agent image;
+   - if anything fails after the engine changed, it puts the engine and the jobs back on the images they ran before and fails the run. If even that fails, the run says so: check the engine's revisions in the portal.
+
+A run that is no longer the tip of `main` still deploys when nothing that goes into the images, `infra/` or CI changed since; otherwise the newer run deploys. Runs deploy one at a time. Until the identity is set up, pushes skip with a notice and a manual run fails. CI never deploys infrastructure, settings or roles: those stay with `provision.ps1`. It never deploys a protected environment.
+
+Set it up once, after `provision.ps1` has deployed `agents.deploy` `platform` (needs Owner on the subscription):
+
+```powershell
+.\tools\azure\setup-ci-deploy.ps1 -For agents -Environment dev -SubscriptionId <id>
+```
+
+It works like the dashboard's setup above, with its own identity and role:
+- `AcrPush` on the environment's registry, and a custom role, `CIX agents deployer (<environment>)`, on the resource group: read and update Container Apps and jobs (and their revisions and secrets, which an update sends back unchanged), join the Container Apps environment, assign the existing managed identities, and read the registry and the group. It can't create role assignments, Key Vault secrets or other resources;
+- it prints `AGENTS_AZURE_CLIENT_ID` and `AGENTS_ENVIRONMENT` (with `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`, the same as the dashboard's). Add them as repository variables, or pass `-SetGitHubVariables`.
+
+Optionally set the repository variable `CLAUDE_CODE_VERSION` to pin the Claude Code version in the agent image (otherwise the latest).
+
+What the identity could still do, if a workflow on `main` misused it: run any image as the engine or a job, and change their settings, including the trading mode, since Azure has no role action that allows changing only the image. Anyone who can push to `main` can already change what runs through the code itself. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group and Key Vault, where CI has no role. (The engine also refuses Live outside the `Production` environment, but this identity could change that setting too.) If you suspect misuse, remove the identity's role assignments, then run `provision.ps1` again, which puts the apps' settings back.
 
 The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode, `Production` or an exchange setting. A protected environment must keep `agents.deploy` at `none`; the template deploys no agents there whatever the parameters say.
 
@@ -161,7 +188,7 @@ This installs the API's one dependency, `@azure/functions` (pinned, with install
 After this first publish, CI publishes the dashboard by itself after a push to `main` that changes it (`dashboard/` or `infra/`), once the dashboard tests and the secret scan pass (or already passed in the pull request). You can also start it by hand: *Actions*, *CI*, *Run workflow* on `main`. A run that is no longer the tip of `main` still publishes when nothing in `dashboard/`, `infra/` or `.github/workflows/` changed since (the newer push didn't publish); otherwise it leaves publishing to the newer one. Until the setup below is done, pushes skip publishing with a notice, and a manual run fails, so a manual run really checks the setup.
 
 **No secret is stored in GitHub** ([ADR-0010](adr/0010-dashboard-ci-deploy-oidc.md)). This matters because the repository is private on GitHub Free, which has no environment secrets limited to a branch: a repository secret would be readable by workflows on any branch.
-- The `deploy-dashboard` job signs in to Azure as a dedicated identity, `cix-dashboard-deploy-dev`, through a GitHub OIDC token. The identity trusts any workflow run on the `main` ref of this repository, whatever the trigger. Pull requests, other branches and forks get different token subjects and can't use it. A test keeps `id-token` in that one job and allows only the `push`, `pull_request` and `workflow_dispatch` triggers, as a guard against accidental changes (not a security control: whoever can change `main` can change the test).
+- The `deploy-dashboard` job signs in to Azure as a dedicated identity, `cix-dashboard-deploy-dev`, through a GitHub OIDC token. The identity trusts any workflow run on the `main` ref of this repository, whatever the trigger. Pull requests, other branches and forks get different token subjects and can't use it. A test keeps `id-token` in that job and `deploy-agents` (once each) and allows only the `push`, `pull_request` and `workflow_dispatch` triggers, as a guard against accidental changes (not a security control: whoever can change `main` can change the test).
 - The identity's only right is to read this Static Web App and its deployment token. The job reads the token at run time, signs out of Azure, and publishes with it.
 - npm install scripts run in a separate job with no Azure access. The deploy job checks the bundle's hash before unpacking it. The pinned Static Web Apps CLI itself still runs with the deployment token (it has to). The job signs out of Azure first, but that is hygiene, not a boundary: what limits the damage is that the identity can't do more than read that same token.
 
