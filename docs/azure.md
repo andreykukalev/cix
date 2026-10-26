@@ -222,6 +222,7 @@ The script:
 - checks everything before changing anything, and creates the trust for `main` last;
 - refuses to reuse an identity with any other way in: a secret, certificate or other owner on the app registration or its service principal, API permissions or directory roles, another trusted subject, issuer or audience, a broader role of the same name, or any other role assignment;
 - uses GitHub's own spelling of the repository name when the GitHub CLI is signed in (Entra matches the subject case-sensitively);
+- trusts GitHub's immutable subject, `repo:<owner>@<owner id>/<repo>@<repo id>:ref:refs/heads/main`, which a renamed or recreated repository can't match. It reads the IDs with the GitHub CLI, or takes `-RepositoryIds <owner id>/<repository id>`. GitHub sends only this form for repositories created, renamed or transferred since 15 July 2026; an older repository must opt in (its OIDC settings) first. A name-only trust from an earlier version of the script is removed, after asking, once the new one is in place;
 - prints four repository variables: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` and `DASHBOARD_ENVIRONMENT`. They are IDs, not secrets.
 
 Add those variables in GitHub: *Settings*, *Secrets and variables*, *Actions*, *Variables*. Or add `-SetGitHubVariables` to the script, which sets them with the GitHub CLI (`gh`, signed in). Then run *CI* on `main` once by hand to check it publishes.
