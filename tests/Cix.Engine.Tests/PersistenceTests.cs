@@ -318,6 +318,41 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StrategyVersions_AreCreatedOnce_AndASelectionWrittenByHandIsRead()
+    {
+        if (_db is null)
+            return;
+        var repository = new Strategy.CosmosStrategyRepository(_db, new CosmosSpecArchive(_db));
+        var balanced = StrategySchemaTests.Load("balanced", 1);
+
+        Assert.True(await repository.TryAddVersionAsync(balanced, CancellationToken.None));
+        Assert.False(await repository.TryAddVersionAsync(balanced with { Instructions = "changed" }, CancellationToken.None));
+        var read = (await repository.ReadVersionAsync("balanced", 1, CancellationToken.None))!;
+        Assert.Equal((balanced.Instructions, StrategyHash.Of(read)), (read.Instructions, read.Hash));
+        Assert.Equal(10m, read.Parameters["orderQuote"].GetDecimal()); // parameters keep their JSON numbers
+        Assert.Empty(StrategySchema.Validate(read, Rig.Limits, TradingMode.Paper));
+        Assert.Null(await repository.ReadVersionAsync("balanced", 9, CancellationToken.None));
+
+        // As the dashboard or Data Explorer would write it: plain JSON, version as a number.
+        var id = Strategy.CosmosStrategyRepository.SelectionId(TradingMode.Paper);
+        var selection = new JsonObject
+        {
+            ["id"] = id,
+            ["type"] = "strategy-selection",
+            ["value"] = new JsonObject { ["name"] = "balanced", ["version"] = 1, ["requestedBy"] = "owner", ["requestedAt"] = "2026-10-27T10:00:00Z" },
+        };
+        await _db.State.CreateItemAsync(selection, new PartitionKey(id));
+        Assert.Equal(new StrategySelection("balanced", 1, "owner", DateTimeOffset.Parse("2026-10-27T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture)),
+            await repository.ReadSelectionAsync(TradingMode.Paper, CancellationToken.None));
+        Assert.Null(await repository.ReadSelectionAsync(TradingMode.Live, CancellationToken.None));
+
+        await repository.SaveSchemaAsync(StrategySchema.Document(Rig.Limits, TradingMode.Paper, Rig.T0), CancellationToken.None);
+        using var raw = await _db.State.ReadItemStreamAsync(Strategy.CosmosStrategyRepository.SchemaId(TradingMode.Paper), new PartitionKey("strategy-schema-paper"));
+        using var schema = await JsonDocument.ParseAsync(raw.Content);
+        Assert.Equal("strategy-schema", schema.RootElement.GetProperty("type").GetString());
+    }
+
+    [Fact]
     public async Task ManualRequests_RoundTripThroughCosmos_AndAreExecutedOnce()
     {
         if (_db is null)

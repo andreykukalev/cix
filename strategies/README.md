@@ -5,7 +5,46 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 - One file per version: `<name>.v<N>.json`. Never edit a version that has run. Copy it to `v<N+1>` and change the copy, so the journal's record of what ran stays true. Each journal entry carries `name@vN#hash`; the hash shows if a file was edited anyway.
 - `status`: `draft` (never runs), `paper` (paper trading only), `live` (paper or live). Only the owner sets `live`; the `protect-live-mode` hook stops agents from writing it.
 - `allowedTools`: the tool server refuses any agent tool not listed here, except `get_strategy_spec`, which every agent may read to learn its own rules.
-- Pick the active spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration. The default is `good` v1.
+- Pick the starting spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration. The default is `good` v1. In paper trading, a selection in the database overrides it at run time (below).
+
+## Safe, Balanced and Risky
+
+Three paper strategies to choose from. Each states its purpose and risk profile in the file. None promises a return, and a riskier one is not expected to earn more: it takes larger and more frequent positions, so both gains and losses can be bigger.
+
+| | Safe v1 | Balanced v1 | Risky v2 |
+|---|---|---|---|
+| Order size (`orderQuote`) | 5 EUR | 10 EUR | 20 EUR |
+| Risk per trade (`scanner.riskPerTradeQuote`) | 0.5 | 1 | 2 |
+| Per coin (`maxPositionQuotePerSymbol`) | 10 EUR | 25 EUR | 50 EUR |
+| Total exposure (`maxExposureFraction` of the allocation) | 25% | 50% | 80% |
+| Daily loss stop (`dailyLossStopQuote`) | 3 EUR | 6 EUR | 12 EUR |
+| New positions per run | 1 | 1 | 2 |
+| Cooldown between buys | 4 h | 1 h | 15 min |
+| Trend EMAs (`fastEmaPeriod` / `slowEmaPeriod`) | 20 / 50 | 20 / 50 | 12 / 36 |
+| Stop / reward-to-risk | 1.5 ATR / 2.5 | 1.5 ATR / 2 | 1.2 ATR / 1.5 |
+| Entries | uptrend pullback, within 0.3 ATR of the fast EMA | uptrend pullback, within 0.5 ATR | uptrend pullback, within 1 ATR |
+| Trend exits | yes | yes | yes |
+| 24h volume, spread, hourly ATR (max; min as × cost) | ≥ 50,000 EUR, ≤ 0.3%, ≤ 3%; 1.5× | ≥ 20,000 EUR, ≤ 0.4%, ≤ 5%; 1× | ≥ 20,000 EUR, ≤ 0.5%, ≤ 7%; 0.8× |
+
+The engine enforces each strategy's own limits before the risk gate: a buy larger than the order size, or beyond the per-coin, exposure, daily loss, per-run or cooldown limits, is reduced or refused. They can only be tighter than the mandatory limits in `config/risk-limits.json`, which the risk gate enforces whatever the strategy says, and which only the owner edits. The order-size hook in the trader container still reads the configured spec's `orderQuote`, so with `good` v1 configured it blocks agent buys above 5.5 EUR.
+
+### Switching (paper)
+
+At startup the engine adds every paper spec in this folder to the database as `strategy-<name>-v<N>` (never overwriting one), and writes the parameter schema with every parameter's explanation and range as `strategy-schema-paper`. To switch, write the selection document in the `state` container (Data Explorer for now, the dashboard with #108):
+
+```json
+{ "id": "strategy-selection-paper", "type": "strategy-selection",
+  "value": { "name": "balanced", "version": 1, "requestedBy": "owner", "requestedAt": "2026-10-27T09:00:00Z", "note": "why" } }
+```
+
+Within 30 seconds the engine reads it, validates the version against the schema and the mandatory limits, waits for any trader run in progress to end, journals the switch (kind `strategy`) and applies it. A refused version leaves the running strategy as it is, and the reason is in the journal and in `strategySelection` on the engine status. Change `requestedAt` to have the same selection read again.
+
+What a switch affects:
+- New trades, from the next scan and trader run: order size, limits, filters, entry rules, stop and target distances.
+- Open positions too: the trend EMAs and `trendExits` decide trend exits from the next scan. Their stops and targets stay as they were when bought.
+- Nothing is cancelled or sold by a switch.
+
+Live trading has no selection yet: it runs the configured spec until live strategy changes are designed with #71.
 
 ## Trading strategies
 
@@ -24,7 +63,7 @@ Both are signal-driven (ADR-0006), trade the same coins (`AllowedSymbols`) and h
 - `entryMaxAboveEma20Atr` is ignored while `requireUptrendPullback` is false.
 - In both, the scanner skips an entry whose stop or target would be under 0.5% from the price, the distance `place_order` requires.
 
-Size is capped by the top-level `orderQuote`, which the order-size hook also reads. Set it there only, never inside `scanner`.
+Size is capped by the top-level `orderQuote`, which the engine enforces and the order-size hook also reads. Set it there only, never inside `scanner`.
 
 ## Other specs
 
