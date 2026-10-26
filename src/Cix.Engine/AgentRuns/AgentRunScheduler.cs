@@ -117,6 +117,7 @@ public sealed partial class AgentRunScheduler(
     private readonly AgentRunOptions _options = options;
     private readonly AgentRunPlanner _planner = new(options);
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _usedRuns = new(StringComparer.Ordinal);
     private AgentRunState? _state;
     private string? _etag;
     private string? _saved;
@@ -126,6 +127,27 @@ public sealed partial class AgentRunScheduler(
 
     /// <summary>The state as last saved, or null before it is loaded.</summary>
     public AgentRunState? State => Volatile.Read(ref _state);
+
+    /// <summary>
+    /// Whether <paramref name="runId"/> is a run of <paramref name="role"/>'s job that its job claimed and hasn't reported:
+    /// the only runs whose tool calls the tool server accepts in Azure. Never on an engine without the lease, whose state
+    /// may be stale. From memory, so a tool call costs no database read.
+    /// </summary>
+    public bool IsRunInProgress(string? runId, string? role) =>
+        IsActive && runId is not null && AgentRunKinds.ForRole(role) is { } kind
+        && State?.InFlight.Any(r => r.Id == runId && r.Kind == kind && r.ClaimedAt is not null) == true;
+
+    /// <summary>
+    /// Notes that a run in progress made a tool call, so a later <c>not-run</c> report for it counts as failed: a run that
+    /// used tools can't be refunded, whatever its job says. In memory: after a restart, a report is taken as given.
+    /// </summary>
+    public void NoteToolCall(string runId)
+    {
+        if (_usedRuns.Count > 64 && State is { } state) // runs that expired without a report: keep only those still in flight
+            foreach (var id in _usedRuns.Keys.Where(id => state.InFlight.All(r => r.Id != id)))
+                _usedRuns.TryRemove(id, out _);
+        _usedRuns.TryAdd(runId, 0);
+    }
 
     /// <summary>One look at the signals and requests: queues the runs that are due. Returns how many were queued.</summary>
     public async Task<int> PollOnceAsync(CancellationToken cancellationToken)
@@ -212,12 +234,17 @@ public sealed partial class AgentRunScheduler(
             return AgentRunAnswer.Unavailable;
         try
         {
+            var reported = outcome;
+            if (outcome == AgentRunOutcome.NotRun && _usedRuns.ContainsKey(runId))
+                outcome = AgentRunOutcome.Failed; // it used tools, so it ran: no refund
             var (state, run) = _planner.Complete(await LoadAsync(cancellationToken).ConfigureAwait(false), runId, kind, outcome, time.GetUtcNow());
             if (run is null)
                 return AgentRunAnswer.No;
             await SaveAsync(state, cancellationToken).ConfigureAwait(false);
+            _usedRuns.TryRemove(runId, out _);
             LogCompleted(logger, run.Id, outcome.Name());
-            await JournalAsync(run, outcome.Name(), Inv($"{Label(run)} {run.Id} ended: {outcome.Name()}")).ConfigureAwait(false);
+            var note = reported == outcome ? string.Empty : $" (reported {reported.Name()}, but it made tool calls)";
+            await JournalAsync(run, outcome.Name(), Inv($"{Label(run)} {run.Id} ended: {outcome.Name()}{note}")).ConfigureAwait(false);
             return AgentRunAnswer.Yes;
         }
         catch (AgentRunsUnavailableException)

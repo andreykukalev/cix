@@ -14,3 +14,4 @@ secrets
 .claude/settings.local.json
 .vs
 .idea
+tools/trader/test-*.py

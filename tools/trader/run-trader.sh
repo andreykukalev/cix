@@ -20,6 +20,9 @@
 # read tools and the two request tools, never place_order or cancel_order. A failed attempt is retried after 5 minutes; a
 # request the trader doesn't answer in time expires in the engine.
 #
+# In Azure the engine decides when to run (ADR-0013): with CIX_JOB_MODE=1 this script runs one queued run and exits, as the
+# cix-trader job (CIX_JOB=trader) or the cix-trader-requests job (CIX_JOB=trader-requests). See agent-job.sh.
+#
 # Settings (environment): TRADER_INTERVAL_MINUTES (60), TRADER_HEARTBEAT_MINUTES (240), TRADER_POLL_SECONDS (60),
 # TRADER_MIN_GAP_MINUTES (15), TRADER_MAX_RUNS_PER_DAY (30), TRADER_MAX_MANUAL_RUNS_PER_DAY (20), TRADER_MAX_TURNS (30),
 # TRADER_TIMEOUT_MINUTES (10),
@@ -84,7 +87,7 @@ has_new_signal() {
 
 run_once() {
   local run_id log why="${1:-scheduled}" prompt="${2:-$trading_prompt}" allowed="${3:-$tools}" refused="${4:-$trading_denied}" mcp="${5:-mcp.json}"
-  run_id="run-$(date -u +%Y%m%d-%H%M%S)"
+  run_id="${job_run_id:-run-$(date -u +%Y%m%d-%H%M%S)}"   # job mode: the run the engine queued
   log="$logs/$run_id.json"
   export CIX_RUN_ID="$run_id"
 
@@ -93,7 +96,7 @@ run_once() {
   wait_for_engine
   say "$run_id starting: $why ($auth, model $model)"
 
-  (cd "$dir" && timeout "${timeout_minutes}m" claude -p "$prompt" \
+  (cd "$dir" && timeout "${timeout_minutes}m" env -u IDENTITY_ENDPOINT -u IDENTITY_HEADER -u MSI_ENDPOINT -u MSI_SECRET claude -p "$prompt" \
       --append-system-prompt "$instructions" \
       --mcp-config "$dir/tools/trader/$mcp" --strict-mcp-config \
       --allowedTools "$allowed" --disallowedTools "$refused" \
@@ -113,9 +116,10 @@ run_once() {
   fi
   if ! jq -e . "$log" >/dev/null 2>&1; then
     if cat "$log" "$logs/$run_id.err" 2>/dev/null | grep -qiE 'invalid api key|authentication_error|unauthori[sz]ed|oauth token (has )?expired|401'; then
-      say "$run_id: Claude rejected the credentials ($auth). Renew with 'claude setup-token' (or a new API key), run tools/setup-secrets.ps1 -Claude, and restart the trader."
+      say "$run_id: Claude rejected the credentials ($auth). $(renew_hint)"
     else
-      say "$run_id failed (exit $code); see logs/trader/$run_id.json and .err."
+      say "$run_id failed (exit $code)."
+      failure_details "$logs" "$run_id"
     fi
     return 1
   fi
@@ -123,13 +127,29 @@ run_once() {
   if [[ "$(jq -r '.is_error // false' "$log")" == "true" ]]; then
     say "$run_id ended with an error: $(jq -r '.subtype // "unknown"' "$log")"
     if jq -r '.result // ""' "$log" | grep -qiE 'invalid api key|authentication|401|oauth'; then
-      say "Claude rejected the credentials ($auth). Renew them and restart the trader."
+      say "Claude rejected the credentials ($auth). $(renew_hint)"
     fi
   fi
   say "$run_id done. Models used: $(jq -r '(.modelUsage // {}) | keys | join(", ")' "$log"), cost: $(jq -r '.total_cost_usd // "?"' "$log") USD, turns: $(jq -r '.num_turns // "?"' "$log")"
   jq -r '.result // ""' "$log"
   [[ "$(jq -r '.is_error // false' "$log")" != "true" ]]
 }
+
+# One queued run, as an Azure job: strategy runs or owner-request runs, by the job's identity.
+job_run() {
+  if [[ "$CIX_JOB" == "trader-requests" ]]; then
+    run_once "owner requests" "$manual_prompt" "$manual_tools" "$manual_denied" "mcp-azure.json"
+  else
+    run_once "$1" "$trading_prompt" "$tools" "$trading_denied" "mcp-azure.json"
+  fi
+}
+
+if [[ "${CIX_JOB_MODE:-0}" == "1" ]]; then
+  # shellcheck source=tools/trader/agent-job.sh
+  source "$dir/tools/trader/agent-job.sh"
+  job_main "trader|trader-requests" job_run
+  exit $?
+fi
 
 if [[ "${TRADER_RUN_ONCE:-0}" == "1" ]]; then
   run_once

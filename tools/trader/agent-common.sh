@@ -36,7 +36,7 @@ check_expiry() {
   now="$(date -u +%s)"
   days=$(( (end - now) / 86400 ))
   if (( end <= now )); then
-    say "The Claude setup token expired on $expires. Run 'claude setup-token', then tools/setup-secrets.ps1 -Claude, and restart the $agent_name."
+    say "The Claude setup token expired on $expires. $(renew_hint)"
     return 1
   fi
   if (( days <= 14 )); then
@@ -58,8 +58,10 @@ has_engine_network() {
 # Waits until the engine says it is ready (GET /healthz). After a reboot the engine may itself be waiting for the database,
 # so this logs once a minute instead of failing. Exits (and Docker restarts the container) only when waiting can't help:
 # the engine's network is gone, or nothing has answered for 10 minutes.
+# Job mode skips it: the claim has just reached the engine.
 wait_for_engine() {
   local waited=0
+  [[ "${CIX_JOB_MODE:-0}" == 1 ]] && return 0
   until curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:5077/healthz" 2>/dev/null; do
     if (( waited >= 30 )) && ! has_engine_network; then
       say "The engine was restarted, so this container lost its network; exiting so Docker restarts the $agent_name with the new one."
@@ -82,6 +84,36 @@ wait_for_engine() {
 # Used by the scripts that source this file:
 # shellcheck disable=SC2034
 NOT_RUN=3
+
+# Where to read a failed run's output ($1: log directory, $2: run ID). In Compose, its files under logs/. A job's files go
+# with its container, so job mode prints the end of the run's stderr instead, for the job's log. Masked first: the
+# secrets this process holds (the engine token, the identity header, the Claude credential), word for word, then anything
+# shaped like a Claude key, a JWT, a bearer value or an auth header. The values reach awk through its environment only.
+failure_details() {
+  if [[ "${CIX_JOB_MODE:-0}" != 1 ]]; then
+    say "See logs/$agent_name/$2.json and .err."
+    return 0
+  fi
+  [[ -s "$1/$2.err" ]] || { say "$2 wrote nothing to stderr."; return 0; }
+  say "$2 stderr (last 30 lines):"
+  tail -n 30 "$1/$2.err" \
+    | CIX_MASK_1="${CIX_ENGINE_TOKEN:-}" CIX_MASK_2="${IDENTITY_HEADER:-}" CIX_MASK_3="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
+      CIX_MASK_4="${ANTHROPIC_API_KEY:-}" awk '
+        BEGIN { for (i = 1; i <= 4; i++) mask[i] = ENVIRON["CIX_MASK_" i] }
+        { for (i = 1; i <= 4; i++) if (length(mask[i]) >= 8) while ((p = index($0, mask[i])) > 0) $0 = substr($0, 1, p - 1) "***" substr($0, p + length(mask[i])); print }' \
+    | sed -E -e 's/sk-ant-[A-Za-z0-9_-]+/sk-ant-***/g' -e 's/eyJ[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]*)*/<token>/g' \
+      -e 's/([Bb]earer)[[:space:]]+[^[:space:]"]+/\1 ***/g' -e 's/(x-identity-header|authorization|secret)([[:space:]]*[:=]).*/\1\2 ***/Ig' \
+      -e 's/^/  | /'
+}
+
+# What to do about rejected or expired Claude credentials.
+renew_hint() {
+  if [[ "${CIX_JOB_MODE:-0}" == 1 ]]; then
+    echo "Renew with 'claude setup-token' (or a new API key) and update the Claude token secret in Key Vault; the next execution reads it."
+  else
+    echo "Renew with 'claude setup-token' (or a new API key), run tools/setup-secrets.ps1 -Claude, and restart the $agent_name."
+  fi
+}
 
 # Succeeds if a run ($1: JSON log, $2: stderr) was refused for usage or rate limits before doing any work. Judged from the
 # structured result when there is one: an error that cost nothing and whose message names a limit. Text inside a run that
