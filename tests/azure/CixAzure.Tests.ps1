@@ -158,6 +158,14 @@ Check 'the engine in Azure is given a journal folder under /tmp' {
   if ($apps -notmatch "\{ name: 'Journal__Directory', value: '/tmp/[a-z-]+' \}") { throw 'Journal__Directory is not set to a folder under /tmp' }
 }
 
+# A stopped engine (startEngine false) still runs once per new revision: it must not queue agent runs, or the jobs calling
+# it keep it awake and it trades until the cutover.
+Check 'the engine queues agent runs only when startEngine is true' {
+  $apps = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-apps.bicep'))
+  if ($apps -notmatch "\{ name: 'AgentRuns__Mode', value: startEngine \? 'Queue' : 'Off' \}") { throw 'AgentRuns__Mode does not follow startEngine' }
+  if (([regex]::Matches($apps, 'AgentRuns__Mode')).Count -ne 1) { throw 'AgentRuns__Mode is set more than once' }
+}
+
 # The engine in Azure signs in to Cosmos DB with its identity: no account key anywhere in the agents' templates, and its
 # roles reach CIX's containers only, never delete, and leave the journal append-only.
 Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal append-only' {

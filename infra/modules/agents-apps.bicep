@@ -1,6 +1,6 @@
 // The engine and the three agent jobs, on agents-platform.bicep (ADR-0013).
 //   - The engine: one replica at most, internal ingress only, paper mode, Entra-authenticated tool server, scheduling the
-//     agent runs onto the queues (AgentRuns:Mode Queue). Off (no replica) until startEngine: at the cutover the owner
+//     agent runs onto the queues (AgentRuns:Mode Queue). Off (no replica, no runs queued) until startEngine: at the cutover the owner
 //     stops the PC engine first; the engine lease keeps two engines from trading even if both run.
 //   - The jobs, each started by a message on its own queue, one execution at a time, never retried by the platform: the
 //     engine decides about retries (tools/trader/agent-job.sh).
@@ -146,7 +146,9 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
               { name: 'ToolServer__Auth', value: 'Entra' }
               { name: 'ToolServer__Entra__TenantId', value: tenant().tenantId }
               { name: 'ToolServer__Entra__Audience', value: engineAudience }
-              { name: 'AgentRuns__Mode', value: 'Queue' }
+              // Off while stopped: Azure still starts a new revision once, and an engine queuing runs is kept awake by the
+              // jobs calling it, so it would trade (on paper) until the cutover instead of scaling back to zero.
+              { name: 'AgentRuns__Mode', value: startEngine ? 'Queue' : 'Off' }
               { name: 'AgentRuns__Queues__ServiceUri', value: queueEndpoint }
               { name: 'AgentRuns__Queues__ManagedIdentityClientId', value: engineIdentity.properties.clientId }
             ],
