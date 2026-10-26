@@ -106,6 +106,7 @@ public sealed class ManualRequestTests
 
         Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-direct-1"));
         Assert.Equal(new[] { "placed" }, rig.History("req-direct-1")); // nothing is written between the claim and the order
+        Assert.False(((JsonObject)rig.Store.Find("req-direct-1")!.Document["outcome"]!).ContainsKey("runId")); // no run: left out, not null
         Assert.Equal((0.0005m, 60_000m), (Dec(rig.Outcome("req-direct-1", "requestedSize")), Dec(rig.Outcome("req-direct-1", "requestedPrice"))));
         var clientOrderId = rig.Outcome("req-direct-1", "clientOrderId")!;
         Assert.Equal((ManualRequestStatus.Placed, clientOrderId), (rig.InLedger("req-direct-1")!.Status, rig.InLedger("req-direct-1")!.ClientOrderId));

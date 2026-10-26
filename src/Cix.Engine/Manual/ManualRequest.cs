@@ -257,8 +257,8 @@ public static partial class ManualRequestDocument
                 next["outcome"] = target;
             }
 
-            foreach (var (key, value) in outcome)
-                target[key] = value;
+            foreach (var (key, value) in outcome.Where(o => o.Value is not null))
+                target[key] = value; // unknown values (no run, for example) are left out rather than written as null
         }
 
         if (next["events"] is not JsonArray events)
