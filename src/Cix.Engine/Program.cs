@@ -1,5 +1,6 @@
 using Cix.Domain.Risk;
 using Cix.Engine;
+using Cix.Engine.AgentRuns;
 using Cix.Engine.Analysis;
 using Cix.Engine.Execution;
 using Cix.Engine.Manual;
@@ -84,10 +85,15 @@ builder.Services.AddCixManualRequests(
 // A readable status record every minute (heartbeat, last sync, portfolio) and dependency health for /healthz.
 builder.Services.AddCixStatus();
 
+// In Azure the engine decides when the agents run and queues each run for its job (ADR-0013); Compose keeps its shell loops.
+var cosmos = builder.Configuration.GetSection(CosmosOptions.SectionName).Get<CosmosOptions>() ?? new CosmosOptions();
+builder.Services.AddCixAgentRuns(
+    builder.Configuration.GetSection(AgentRunOptions.SectionName).Get<AgentRunOptions>() ?? new AgentRunOptions(),
+    toolServer.Auth,
+    durableState: cosmos.Enabled);
+
 // Cosmos DB (emulator locally, or Azure) for the journal, engine state, status and paper account; off unless configured.
-builder.Services.AddCixCosmos(
-    builder.Configuration.GetSection(CosmosOptions.SectionName).Get<CosmosOptions>() ?? new CosmosOptions(),
-    mode);
+builder.Services.AddCixCosmos(cosmos, mode);
 
 builder.Services.AddHostedService<HeartbeatService>();
 

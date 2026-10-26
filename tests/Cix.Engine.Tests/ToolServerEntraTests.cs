@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Text.Json;
+using Cix.Engine.AgentRuns;
 using Cix.Engine.Tools;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -61,7 +63,7 @@ public sealed class ToolServerEntraTests
             SigningCredentials = new SigningCredentials(key ?? Key, SecurityAlgorithms.HmacSha256),
         });
 
-    private static async Task<(WebApplication App, string Address, ToolRig Tools)> StartAsync()
+    private static async Task<(WebApplication App, string Address, ToolRig Tools)> StartAsync(AgentRunScheduler? runs = null)
     {
         var tools = new ToolRig();
         var builder = WebApplication.CreateBuilder();
@@ -75,11 +77,29 @@ public sealed class ToolServerEntraTests
         builder.Services.AddSingleton(tools.Universe);
         builder.Services.AddSingleton(tools.Views);
         builder.Services.AddSingleton(tools.AnalystSpecs);
+        if (runs is not null)
+            builder.Services.AddSingleton(runs);
         builder.Services.AddCixToolServer(Options(), tools.Specs, tools.Journal);
         var app = builder.Build();
         app.UseCixToolServer();
         await app.StartAsync();
         return (app, app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First(), tools);
+    }
+
+    private static async Task<(HttpStatusCode Status, string Body)> PostAsync(
+        string url, string? token, string? json = "{}", bool origin = false)
+    {
+        using var client = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        if (token is not null)
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        if (origin)
+            request.Headers.Add("Origin", "https://example.com");
+        request.Content = json is null ? new StringContent("{}") : new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+        if (json is null)
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        using var response = await client.SendAsync(request);
+        return (response.StatusCode, await response.Content.ReadAsStringAsync());
     }
 
     private static async Task<HttpStatusCode> GetAsync(string url, string? token = null)
@@ -111,6 +131,55 @@ public sealed class ToolServerEntraTests
             Assert.Equal(HttpStatusCode.OK, await GetAsync(signals, Token(TraderId)));
             Assert.Equal(HttpStatusCode.OK, await GetAsync(signals, Token(TraderId, issuer: $"https://login.microsoftonline.com/{Tenant}/v2.0")));
             await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Jobs_ClaimAndReportOnlyTheirOwnRuns()
+    {
+        var setup = new AgentRunSchedulerTests.Setup();
+        await setup.Scheduler.PollOnceAsync(CancellationToken.None);
+        var run = setup.Queue.Sent.Single().Run; // a trader heartbeat
+        var (app, address, _) = await StartAsync(setup.Scheduler);
+        await using (app)
+        {
+            var claim = $"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/claim";
+            var outcome = $"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/outcome";
+
+            Assert.Equal(HttpStatusCode.Unauthorized, (await PostAsync(claim, token: null)).Status);
+            Assert.Equal(HttpStatusCode.Forbidden, (await PostAsync(claim, Token(TraderId), origin: true)).Status);
+            Assert.Equal(HttpStatusCode.UnsupportedMediaType, (await PostAsync(claim, Token(TraderId), json: null)).Status);
+            Assert.Equal(HttpStatusCode.NotFound, (await PostAsync(outcome, Token(TraderId), """{"outcome":"done"}""")).Status); // not claimed yet
+
+            var other = await PostAsync(claim, Token(RequestsId)); // another job's identity
+            Assert.Equal((HttpStatusCode.OK, false), (other.Status, JsonDocument.Parse(other.Body).RootElement.GetProperty("wanted").GetBoolean()));
+            var mine = await PostAsync(claim, Token(TraderId));
+            using (var body = JsonDocument.Parse(mine.Body))
+            {
+                Assert.True(body.RootElement.GetProperty("wanted").GetBoolean());
+                Assert.Equal("heartbeat", body.RootElement.GetProperty("purpose").GetString());
+            }
+
+            var again = await PostAsync(claim, Token(TraderId)); // a repeated message
+            Assert.False(JsonDocument.Parse(again.Body).RootElement.GetProperty("wanted").GetBoolean());
+
+            Assert.Equal(HttpStatusCode.BadRequest, (await PostAsync(outcome, Token(TraderId), """{"outcome":"great"}""")).Status);
+            Assert.Equal(HttpStatusCode.NotFound, (await PostAsync(outcome, Token(RequestsId), """{"outcome":"done"}""")).Status);
+            Assert.Equal(HttpStatusCode.NoContent, (await PostAsync(outcome, Token(TraderId), """{"outcome":"done"}""")).Status);
+            Assert.Equal(HttpStatusCode.NotFound, (await PostAsync(outcome, Token(TraderId), """{"outcome":"not-run"}""")).Status);
+            Assert.Equal((1, 0), (setup.Scheduler.State!.Runs, setup.Scheduler.State.Refunds));
+
+            setup.Lease.IsHeld = false; // a deployment: the other engine has the lease
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await PostAsync(claim, Token(TraderId))).Status);
+            await app.StopAsync();
+        }
+
+        var (plain, plainAddress, _) = await StartAsync();
+        await using (plain)
+        {
+            // No scheduler (Compose, or the agent runs off): nothing to claim.
+            Assert.Equal(HttpStatusCode.NotFound, (await PostAsync($"{plainAddress}{ToolServerRegistration.RunsEndpoint}/{run.Id}/claim", Token(TraderId))).Status);
+            await plain.StopAsync();
         }
     }
 

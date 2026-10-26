@@ -256,6 +256,25 @@ public sealed class CosmosManualLedgerStore(CosmosDb db, TradingMode mode) : Man
         CosmosDb.WriteStateAsync(db.State, Id, ledger, DocumentPrefix, About, cancellationToken);
 }
 
+/// <summary>
+/// The agent-run scheduler's state, as <c>agent-runs-&lt;mode&gt;</c> (ADR-0013): today's run counts, the signal and request keys
+/// last handled, the next heartbeat and analyst slot, and the runs queued and not yet ended.
+/// </summary>
+public sealed class CosmosAgentRunStateStore(CosmosDb db, TradingMode mode) : AgentRuns.IAgentRunStateStore
+{
+    public const string DocumentPrefix = "agent-runs";
+    public const string About =
+        "When the engine queues agent runs: today's counts against the daily caps, the signals and owner requests last handled, the next heartbeat and analyst slot, and the runs queued that haven't ended. Saved before each run is queued; the journal's agent-run entries keep the history.";
+
+    private string Id => $"{DocumentPrefix}-{mode.ToString().ToLowerInvariant()}";
+
+    public Task<AgentRuns.AgentRunState?> LoadAsync(CancellationToken cancellationToken) =>
+        CosmosDb.ReadStateAsync<AgentRuns.AgentRunState>(db.State, Id, cancellationToken);
+
+    public Task SaveAsync(AgentRuns.AgentRunState state, CancellationToken cancellationToken) =>
+        CosmosDb.WriteStateAsync(db.State, Id, state, DocumentPrefix, About, cancellationToken);
+}
+
 /// <summary>For tests.</summary>
 public sealed class InMemoryPaperAccountStore : IPaperAccountStore
 {

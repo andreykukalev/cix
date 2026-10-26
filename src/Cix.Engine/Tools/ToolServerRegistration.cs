@@ -75,6 +75,9 @@ public static class ToolServerRegistration
     /// <summary>Read-only summary of the latest scan, polled by the trader loop.</summary>
     public const string SignalsEndpoint = "/signals";
 
+    /// <summary>Where agent jobs claim their runs and report how they ended (ADR-0013): <c>/runs/{id}/claim</c>, <c>/runs/{id}/outcome</c>.</summary>
+    public const string RunsEndpoint = "/runs";
+
     /// <summary>Readiness for Docker and the agents: 200 once the engine has loaded its state and is listening.</summary>
     public const string HealthEndpoint = "/healthz";
 
@@ -91,7 +94,8 @@ public static class ToolServerRegistration
         app.Use(async (context, next) =>
         {
             if (context.Request.Path.StartsWithSegments(Endpoint, StringComparison.OrdinalIgnoreCase)
-                || context.Request.Path.StartsWithSegments(SignalsEndpoint, StringComparison.OrdinalIgnoreCase))
+                || context.Request.Path.StartsWithSegments(SignalsEndpoint, StringComparison.OrdinalIgnoreCase)
+                || context.Request.Path.StartsWithSegments(RunsEndpoint, StringComparison.OrdinalIgnoreCase))
             {
                 if (context.Request.Headers.Origin.Count > 0)
                 {
@@ -165,8 +169,43 @@ public static class ToolServerRegistration
                 manualPending = manual?.Pending.Count ?? 0,
             });
         });
+        MapAgentRuns(app);
         return app;
     }
+
+    /// <summary>
+    /// The agent jobs' side of the run queues. A job claims its run before it starts Claude (<c>{"wanted": false}</c> means
+    /// drop the message), then reports <c>{"outcome": "done" | "failed" | "not-run"}</c>. The job is known by its token's
+    /// role, so it can claim and report only its own kind of run. 503 while this engine doesn't hold the engine lease (a
+    /// deployment in progress): the job should try again shortly. 404 without the scheduler (Compose). A change is saved
+    /// whether or not the caller is still waiting, so a dropped connection can't leave a claim half made.
+    /// </summary>
+    private static void MapAgentRuns(WebApplication app)
+    {
+        app.MapPost(RunsEndpoint + "/{id}/claim", async (string id, HttpContext http) =>
+        {
+            if (http.RequestServices.GetService<AgentRuns.AgentRunScheduler>() is not { } scheduler)
+                return Results.NotFound();
+            if (!scheduler.IsActive)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            var run = await scheduler.ClaimAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, CancellationToken.None).ConfigureAwait(false);
+            return Results.Json(new { wanted = run is not null, purpose = run?.Purpose });
+        });
+        app.MapPost(RunsEndpoint + "/{id}/outcome", async (string id, RunOutcomeBody body, HttpContext http) =>
+        {
+            if (http.RequestServices.GetService<AgentRuns.AgentRunScheduler>() is not { } scheduler)
+                return Results.NotFound();
+            if (AgentRuns.AgentRunKinds.ParseOutcome(body.Outcome) is not { } outcome)
+                return Results.BadRequest();
+            if (!scheduler.IsActive)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            var recorded = await scheduler.CompleteAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, outcome, CancellationToken.None).ConfigureAwait(false);
+            return recorded ? Results.NoContent() : Results.NotFound(); // unknown, not claimed, another job's, or reported already
+        });
+    }
+
+    /// <summary>The body of <c>POST /runs/{id}/outcome</c>.</summary>
+    public sealed record RunOutcomeBody(string? Outcome);
 
     /// <summary>
     /// Listens on the configured port: on loopback only, or on every interface with Entra authentication. Endpoints from

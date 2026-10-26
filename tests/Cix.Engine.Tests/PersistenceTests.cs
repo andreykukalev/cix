@@ -205,6 +205,29 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AgentRunState_SurvivesARestart_PerMode()
+    {
+        if (_db is null)
+            return;
+        var at = new DateTimeOffset(2026, 10, 26, 8, 0, 0, TimeSpan.Zero);
+        var state = new Cix.Engine.AgentRuns.AgentRunState
+        {
+            Day = new DateOnly(2026, 10, 26),
+            Runs = 3,
+            LastKey = "buy:SOL-EUR",
+            NextHeartbeat = at.AddHours(4),
+            InFlight = [new Cix.Engine.AgentRuns.AgentRun("run-20261026-080000-abcdef", Cix.Engine.AgentRuns.AgentRunKind.Trader, "signals", "buy:SOL-EUR", at, at.AddMinutes(1))],
+        };
+        await new CosmosAgentRunStateStore(_db, TradingMode.Paper).SaveAsync(state, CancellationToken.None);
+
+        var loaded = await new CosmosAgentRunStateStore(_db, TradingMode.Paper).LoadAsync(CancellationToken.None);
+        Assert.NotNull(loaded);
+        Assert.Equal((state.Day, 3, "buy:SOL-EUR", state.NextHeartbeat), (loaded.Day, loaded.Runs, loaded.LastKey, loaded.NextHeartbeat));
+        Assert.Equal(state.InFlight.Single(), loaded.InFlight.Single());
+        Assert.Null(await new CosmosAgentRunStateStore(_db, TradingMode.Live).LoadAsync(CancellationToken.None));
+    }
+
+    [Fact]
     public async Task EngineLease_IsHeldByOneEngineAtATime_PerMode()
     {
         if (_db is null)
