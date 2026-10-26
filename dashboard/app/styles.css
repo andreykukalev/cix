@@ -205,3 +205,16 @@ details.collapsible[open] > summary { margin-bottom: 10px; }
 .explain details.raw .mono { white-space: pre-wrap; word-break: break-word; }
 ol.steps { margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
 [hidden] { display: none !important; } /* display rules above must not reveal what the page hides */
+
+/* Sign-out link and the signed-out page (ADR-0014) */
+a.button {
+  display: inline-block; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 10px; text-decoration: none;
+}
+a.button:hover { border-color: var(--accent); }
+a.button.ghost { background: transparent; }
+a.button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+body.gate { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+.gate-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; max-width: 420px; display: block; }
+.gate-card h1 { margin: 8px 0 12px; }
+.gate-card .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }

@@ -133,27 +133,21 @@
   /** Bars for the activity chart: buy and sell volume stacked per period, scaled to the largest turnover. */
   function chart(periods, { width = 640, height = 160, gap = 6, labelEvery = 1, period = 'day' } = {}) {
     const list = Array.isArray(periods) ? periods : [];
-    // Amounts for the owner; the public page gets counts only (amounts would give prices away), so it charts trades.
-    const amounts = list.length > 0 && list.every((p) => p.turnover !== null && p.turnover !== undefined);
-    const buyOf = (p) => (amounts ? p.buyVolume : p.buys);
-    const sellOf = (p) => (amounts ? p.sellVolume : p.sells);
-    const max = Math.max(0, ...list.map((p) => (amounts ? Number(p.turnover) : Number(p.buys) + Number(p.sells)) || 0));
+    const max = Math.max(0, ...list.map((p) => Number(p.turnover) || 0));
     const slot = list.length ? width / list.length : width;
     const bar = Math.max(2, slot - gap);
     const scale = (v) => (max > 0 ? ((Number(v) || 0) / max) * height : 0);
     return {
-      width, height, max, amounts,
+      width, height, max,
       bars: list.map((p, i) => {
-        const buy = scale(buyOf(p));
-        const sell = scale(sellOf(p));
+        const buy = scale(p.buyVolume);
+        const sell = scale(p.sellVolume);
         return {
           x: i * slot + gap / 2, width: bar,
           buy: { y: height - buy, height: buy },
           sell: { y: height - buy - sell, height: sell },
           label: i % labelEvery === 0 || i === list.length - 1 ? tick(p.from, period) : '',
-          title: amounts
-            ? `${p.label}: ${p.trades} trade${p.trades === 1 ? '' : 's'}, bought ${p.buyVolume}, sold ${p.sellVolume}`
-            : `${p.label}: ${p.trades} trade${p.trades === 1 ? '' : 's'}, ${p.buys} buy${p.buys === 1 ? '' : 's'}, ${p.sells} sell${p.sells === 1 ? '' : 's'}`,
+          title: `${p.label}: ${p.trades} trade${p.trades === 1 ? '' : 's'}, bought ${p.buyVolume}, sold ${p.sellVolume}`,
         };
       }),
     };

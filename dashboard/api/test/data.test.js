@@ -59,7 +59,7 @@ test('rejects unknown modes and malformed journal filters', async () => {
   await assert.rejects(() => loadJournalDay(fakeReader(), '2026-09-01', '', '10', NOW), RangeError); // older than 14 days
 });
 
-test('a journal day is one partition, parameterised, capped, and hides raw data', async () => {
+test('a journal day is one partition, parameterised, capped, and lists entries without their raw data', async () => {
   const reader = fakeReader();
   const entries = await loadJournalDay(reader, '2026-10-25', 'tool-call', '5000', NOW);
   const q = reader.queries[0];
@@ -75,35 +75,20 @@ test('journal requests are normalised so equal requests share one cache entry', 
   assert.equal(journalRequest('2026-10-25', '', '150', NOW).top, 200);
 });
 
-const { loadActivity, loadOwnerDecisions, loadRequests, KINDS } = require('../src/data');
+const { loadActivity, loadRequests, KINDS } = require('../src/data');
 
 test('activity reads only fills, across the day partitions the periods cover', async () => {
   const queries = [];
   const reader = { async query(container, sql, options) { queries.push({ container, sql, ...options }); return [{ at: '2026-10-25T10:00:00Z', data: { symbol: 'LINK-EUR', side: 'buy', filledQuote: '12.5', clientOrderId: 'c' } }]; } };
-  const pub = await loadActivity(reader, 'week', NOW);
-  assert.equal(pub.amounts, false);
-  assert.ok(pub.periods.every((p) => p.turnover === null && p.buyVolume === null && p.fees === null), 'no amounts in public');
-  assert.equal(pub.current.trades, 1);
-  assert.equal(pub.total.turnover, null);
-  queries.length = 0;
-  const view = await loadActivity(reader, 'week', NOW, { amounts: true });
+  const view = await loadActivity(reader, 'week', NOW);
   assert.equal(queries.length, 1);
   assert.equal(queries[0].partitionKey, undefined, 'cross-partition');
   assert.match(queries[0].sql, /c\.day >= @from AND c\.entry\.kind = @kind/);
   assert.deepEqual(queries[0].parameters, [{ name: '@from', value: '2026-08-03' }, { name: '@kind', value: 'fill' }]);
   assert.equal(view.current.turnover, '12.50');
+  assert.equal(view.current.trades, 1);
   assert.equal(view.truncated, false);
   await assert.rejects(loadActivity(reader, 'year', NOW), RangeError);
-});
-
-test('the owner\'s decisions keep prices; the public ones don\'t', async () => {
-  const entry = { id: 'o', at: '2026-10-25T12:00:00Z', kind: 'order', actor: 'trader', summary: 'buy 1 LINK-EUR @ 10.20: placed (ok)',
-    data: { tool: 'place_order', symbol: 'LINK-EUR', side: 'buy', status: 'placed', rule: 'ok', approvedPrice: '10.20', stopLoss: '9.90', rationale: 'Breakout at 10.20' } };
-  const reader = { async query(container, sql, options) { return options.partitionKey === '2026-10-25' ? [{ entry }] : []; } };
-  const owner = await loadOwnerDecisions(reader, NOW);
-  assert.equal(owner.decisions[0].rationale, 'Breakout at 10.20');
-  assert.match(owner.decisions[0].explanation.risk.text, /stop 9\.90/);
-  assert.equal(owner.decisions[0].summary, entry.summary);
 });
 
 test('request history covers the last week, newest first', async () => {

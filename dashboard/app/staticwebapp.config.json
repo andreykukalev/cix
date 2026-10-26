@@ -12,18 +12,42 @@
       "statusCode": 404
     },
     {
-      "route": "/api/owner/*",
-      "allowedRoles": [
-        "owner"
-      ]
+      "route": "/signed-out.html",
+      "headers": {
+        "cache-control": "no-store"
+      }
+    },
+    {
+      "route": "/styles.css"
     },
     {
       "route": "/api/*",
-      "methods": [
-        "GET"
-      ]
+      "allowedRoles": [
+        "owner"
+      ],
+      "headers": {
+        "cache-control": "no-store"
+      }
+    },
+    {
+      "route": "/*",
+      "allowedRoles": [
+        "owner"
+      ],
+      "headers": {
+        "cache-control": "no-store"
+      }
     }
   ],
+  "responseOverrides": {
+    "401": {
+      "statusCode": 302,
+      "redirect": "/.auth/login/aad?post_login_redirect_uri=/"
+    },
+    "403": {
+      "rewrite": "/signed-out.html"
+    }
+  },
   "navigationFallback": {
     "rewrite": "/index.html",
     "exclude": [

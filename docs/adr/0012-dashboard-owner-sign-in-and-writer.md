@@ -1,6 +1,6 @@
 # 0012. Dashboard owner sign-in and a create-only writer identity
 
-- Status: proposed
+- Status: proposed; its public view is superseded by [0014](0014-private-dashboard.md) (the whole dashboard is now the owner's)
 - Date: 2026-10-26
 
 ## Context

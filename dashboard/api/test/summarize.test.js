@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { summarize, engineHealth, publicText, publicSummary } = require('../src/summarize');
+const { summarize, engineHealth } = require('../src/summarize');
 
 const NOW = Date.parse('2026-10-25T13:00:00Z');
 
@@ -38,14 +38,18 @@ test('engine health follows the heartbeat', () => {
   assert.equal(engineHealth(null, NOW).state, 'unknown');
 });
 
-test('the public view never shows stops, targets or kill-switch reasons', () => {
+test('the owner sees levels, prices and the journal\'s own words (ADR-0014)', () => {
   const view = summarize({ mode: 'paper', status, engineState: null, paperAccount: null, journal, stateDocs: [] }, NOW);
-  const text = JSON.stringify(view);
-
-  for (const secret of ['1.1481', '1.1641', '1.1561', '1.1560', 'venue-9']) assert.ok(!text.includes(secret), `${secret} leaked`);
-  assert.deepEqual(view.portfolio.holdings, [{ symbol: 'XRP-EUR', valueQuote: '5.00', planStatus: 'open', protected: true }]);
-  assert.equal(view.decisions[1].rationale, 'signal entry XRP-EUR rank 1: test entry; stop …, target …, risk …');
-  assert.ok(!('price' in view.decisions[0]) && !('averagePrice' in view.trades[0]), 'no price fields at all');
+  assert.deepEqual(view.portfolio.holdings, [{ symbol: 'XRP-EUR', valueQuote: '5.00', planStatus: 'open', protected: true, entryPrice: '1.156', stopLoss: '1.1481', takeProfit: '1.1641' }]);
+  const placed = view.decisions.find((d) => d.status === 'placed');
+  assert.equal(placed.rationale, 'signal entry XRP-EUR rank 1: test entry; stop 1.1481, target 1.1641, risk 0.05');
+  assert.equal(placed.price, '1.1561');
+  assert.equal(placed.stopLoss, '1.1481');
+  assert.equal(placed.summary, 'Buy 4.3 XRP-EUR @ 1.1561: Placed (accepted)');
+  assert.match(placed.explanation.risk.text, /stop 1\.1481/);
+  assert.equal(view.trades[0].averagePrice, '1.1560');
+  assert.equal(view.trades[0].fee, '0.0045');
+  assert.equal(view.problems.find((p) => p.kind === 'kill-switch').message, "Engaged: Open orders the engine didn't send: venue-9.");
 });
 
 test('summarises portfolio, trades, decisions, problems, agents and sync', () => {
@@ -63,12 +67,11 @@ test('summarises portfolio, trades, decisions, problems, agents and sync', () =>
   assert.equal(view.trades[0].filledSize, '4.3');
   assert.deepEqual(view.decisions.map((d) => d.status), ['rejected', 'placed']);
   assert.deepEqual(view.problems.map((p) => p.kind), ['order-rejected', 'kill-switch']);
-  assert.equal(view.problems[1].message, 'Kill switch engaged by reconciler.');
   assert.equal(view.agents.trader.lastRun.runId, 'run-2');
   assert.equal(view.agents.trader.runsToday, 2);
   assert.equal(view.agents.analyst.runsToday, 0);
   assert.equal(view.agents.analyst.lastRun.runId, 'analyst-1');
-  assert.deepEqual(view.cycle.ordersInFlight, [{ clientOrderId: 'c-2', symbol: 'SOL-EUR', side: 'buy', size: '0.03', source: 'place_order', sentAt: '2026-10-25T12:59:00+00:00', confirmed: true, runId: null }]);
+  assert.deepEqual(view.cycle.ordersInFlight, [{ clientOrderId: 'c-2', symbol: 'SOL-EUR', side: 'buy', size: '0.03', limitPrice: '150', source: 'place_order', sentAt: '2026-10-25T12:59:00+00:00', confirmed: true, runId: null }]);
   assert.equal(view.sync.exchange, '2026-10-25T12:58:00+00:00');
   assert.equal(view.activity[0].kind, 'order');
   assert.deepEqual(view.stateDocuments.map((d) => d.id), ['engine-state-paper', 'paper-account']);
@@ -86,33 +89,17 @@ test('reconcile problems are shown as plain sentences', () => {
   assert.match(view.sync.reconcileProblem, /open orders the engine didn't send/);
 });
 
-test('masks prices in every text format the engine writes', () => {
-  // The exact formats of OrderTools, MarketScanService (protective exits, scan signals) and MarketScanner exit details.
-  const engineTexts = [
-    'Buy 0.0005 BTC-EUR @ 60010: Placed (accepted)',
-    'protective stop sell 4.32488 XRP-EUR @ 1.1481: Placed (accepted)',
-    'buy SOL-EUR rank 1 at 150.25: uptrend pullback 0.3 ATR above EMA20',
-    'bid 59800 at or below stop 61000',
-    'stopLoss=1.2 takeProfit: 1.3 target 2.5',
-    'stop at 58000', 'stop-loss 58000', 'SL 58000', 'tp: 70000', 'sell at 58k', 'Buy 1 DOT-EUR @ 15: Placed',
-  ];
-  for (const text of engineTexts) assert.doesNotMatch(publicText(text), /\d+\.\d+|\d{3,}|\d+k|@ \d/, text);
-  assert.equal(publicText('rank 1, 24h +3%'), 'rank 1, 24h +3%');
-  assert.equal(publicText(null), null);
-});
-
-test('the engine section says whether owner requests are taken; a direct sell\'s note stays private', () => {
+test('the engine section says whether owner requests are taken; a direct sell shows the owner\'s note', () => {
   const view = summarize({ mode: 'paper', status: { updatedAt: new Date(NOW).toISOString(), manualRequests: { state: 'off', awaitingAgent: 0, lastPollAt: null } }, engineState: null, journal: [
     { id: 'm', at: new Date(NOW).toISOString(), kind: 'order', actor: 'owner', summary: 'manual sell 1 LINK-EUR @ 10: placed (ok)', data: { tool: 'manual-direct', symbol: 'LINK-EUR', side: 'sell', status: 'placed', rule: 'ok', rationale: "Owner's direct sell: my secret plan" } },
   ], stateDocs: [] }, NOW);
   assert.deepEqual(view.engine.manualRequests, { state: 'off', awaitingAgent: 0, lastPollAt: null });
-  assert.ok(!JSON.stringify(view).includes('secret plan'));
+  assert.equal(view.decisions[0].explanation.points[0], 'Your note: my secret plan');
   assert.equal(summarize({ mode: 'paper', status: null, journal: [], stateDocs: [] }, NOW).engine.manualRequests, null);
 });
 
-test('a manual request in the public journal is built from its fields, never its summary (it carries the note)', () => {
-  const e = { kind: 'manual-request', actor: 'engine', summary: 'Owner request x: agent-assisted sell LINK-EUR, 0.5 of the position (worried about my divorce)', data: { mode: 'agent', side: 'sell', symbol: 'LINK-EUR', status: 'awaiting-agent', rule: 'sent-to-trader' } };
-  assert.equal(publicSummary(e), 'Owner request (trader sell LINK-EUR): awaiting-agent (sent-to-trader).');
-  assert.equal(publicSummary({ ...e, data: { mode: 'direct', side: 'sell', symbol: '<b>', status: 'Filled 64250', rule: 'x y' } }), 'Owner request (direct sell): update.');
-  assert.equal(publicSummary({ kind: 'manual-request', summary: 'note' }), 'Owner request: update.');
+test('the journal list shows a manual request\'s summary as the engine wrote it', () => {
+  const e = { id: 'm', at: '2026-10-25T12:00:00Z', kind: 'manual-request', actor: 'engine', summary: 'Owner request x: agent-assisted sell LINK-EUR, 0.5 of the position (worried)', data: { mode: 'agent' } };
+  const view = summarize({ mode: 'paper', status: null, journal: [e], stateDocs: [] }, NOW);
+  assert.deepEqual(view.activity, [{ id: 'm', at: e.at, kind: 'manual-request', actor: 'engine', runId: null, summary: e.summary }]);
 });

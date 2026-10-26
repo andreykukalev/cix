@@ -1,7 +1,7 @@
 'use strict';
-// The owner's part of the API, under /api/owner/: manual buy and sell requests (ADR-0011, ADR-0012) and the decisions with prices
-// kept. Static Web Apps lets only the owner role through (staticwebapp.config.json); each handler checks again. Nothing
-// here is cached, by the platform or by a browser.
+// The owner's requests, under /api/owner/: manual buy and sell requests (ADR-0011, ADR-0012) and their history. Static Web
+// Apps lets only the owner role through (staticwebapp.config.json); each handler checks again (ADR-0014). Nothing here is
+// cached, by the platform or by a browser.
 //
 // The one write is POST /api/owner/requests, with the writer identity whose Cosmos DB role can only create items in the
 // requests container. A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
@@ -10,9 +10,9 @@
 const { app } = require('@azure/functions');
 const { CosmosReader } = require('../cosmos');
 const { RequestWriter, WriterNotConfigured } = require('../writer');
-const { isOwner } = require('../auth');
+const { isOwner, forbidden } = require('../auth');
 const { requestDocument, historyItem, RequestError } = require('../requests');
-const { loadRequests, loadRequest, loadOwnerDecisions, loadActivity } = require('../data');
+const { loadRequests, loadRequest } = require('../data');
 
 const MAX_BODY = 4096;
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
@@ -45,7 +45,7 @@ function respond(status, body) {
 
 /** Runs handler for the owner only; a failure is logged by name and status, never with the request or a secret. */
 async function ownerOnly(request, context, what, handler) {
-  if (!isOwner(request)) return respond(403, { error: "Only the dashboard's confirmed owner can do this (setup-dashboard-requests.ps1 confirms you)." });
+  if (!isOwner(request)) return forbidden();
   try {
     return await handler();
   } catch (error) {
@@ -110,32 +110,6 @@ app.http('owner-request', {
     const item = await loadRequest(getReader(), request.params.day, request.params.id);
     return item ? respond(200, item) : respond(404, { error: 'Not there yet.' });
   }),
-});
-
-app.http('owner-decisions', {
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  route: 'owner/decisions',
-  handler: (request, context) => ownerOnly(request, context, 'decisions read', async () => respond(200, await loadOwnerDecisions(getReader(), Date.now()))),
-});
-
-// Amounts by period (turnover, volumes, fees): the owner's only, since with the public trade sizes they give fill prices
-// away. Kept a minute on the server (one query across up to a year of days); never cached by a browser.
-const activityCache = new Map();
-async function ownerActivity(period) {
-  if (!['day', 'week', 'month'].includes(period)) throw new RangeError('period must be day, week or month');
-  const hit = activityCache.get(period);
-  if (hit && Date.now() - hit.at < 60_000) return hit.body;
-  const body = await loadActivity(getReader(), period, Date.now(), { amounts: true });
-  activityCache.set(period, { at: Date.now(), body });
-  return body;
-}
-
-app.http('owner-activity', {
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  route: 'owner/activity',
-  handler: (request, context) => ownerOnly(request, context, 'activity read', async () => respond(200, await ownerActivity(request.query.get('period') ?? 'day'))),
 });
 
 module.exports = { createRequest, readBody, ownerOnly };

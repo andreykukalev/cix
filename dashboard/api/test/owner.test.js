@@ -53,7 +53,7 @@ function request({ method = 'GET', principal = OWNER, headers = {}, body = '', p
 const BODY = JSON.stringify({ id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f', side: 'sell', mode: 'direct', symbol: 'LINK-EUR', portion: '0.25' });
 
 test('the owner endpoints are registered under /api/owner', () => {
-  assert.deepEqual(Object.values(routes).map((r) => r.route).sort(), ['owner/activity', 'owner/decisions', 'owner/requests', 'owner/requests/{day}/{id}']);
+  assert.deepEqual(Object.values(routes).map((r) => r.route).sort(), ['owner/requests', 'owner/requests/{day}/{id}']);
 });
 
 test('the owner creates a request; the same click again is not a second request', async () => {
@@ -74,7 +74,7 @@ test('the owner creates a request; the same click again is not a second request'
 test('nobody else can write or read, whatever the route rules say', async () => {
   writes.length = 0;
   for (const principal of [VISITOR, OTHER_OWNER, null, 'garbage']) {
-    for (const name of ['owner-requests', 'owner-decisions', 'owner-request', 'owner-activity']) {
+    for (const name of ['owner-requests', 'owner-request']) {
       const method = name === 'owner-requests' ? 'POST' : 'GET';
       const r = await routes[name].handler(request({ method, principal, body: BODY }), context);
       assert.equal(r.status, 403, `${name} ${principal}`);
@@ -116,18 +116,6 @@ test('history and a single request are read with the read-only key, never cached
   assert.equal(bad.status, 400);
 });
 
-test('the site config lets only the owner role into /api/owner and only Microsoft accounts sign in', () => {
-  const config = require('../../app/staticwebapp.config.json');
-  const owner = config.routes.findIndex((r) => r.route === '/api/owner/*');
-  const api = config.routes.findIndex((r) => r.route === '/api/*');
-  assert.ok(owner >= 0 && owner < api, 'the owner rule comes first: the first matching route wins');
-  assert.deepEqual(config.routes[owner].allowedRoles, ['owner']);
-  assert.ok(!('methods' in config.routes[owner]), 'every method, so no request slips past the rule');
-  for (const provider of ['github', 'twitter']) {
-    assert.equal(config.routes.find((r) => r.route === `/.auth/login/${provider}`)?.statusCode, 404, provider);
-  }
-});
-
 test('a retry with other details is refused, and answered with the request as first sent', async () => {
   stored.clear();
   const id = '7a1b2c3d-1111-4222-8333-444455556666';
@@ -151,20 +139,11 @@ test('a retry just after midnight finds the request made the day before', async 
   assert.equal(writes.length, 0, 'not written a second time');
 });
 
-test('the owner gets activity with amounts, never cached by the browser', async () => {
-  const r = await routes['owner-activity'].handler({ ...request(), query: new URLSearchParams('period=week') }, context);
-  assert.equal(r.status, 200);
-  assert.equal(r.jsonBody.amounts, true);
-  assert.equal(r.jsonBody.current.turnover, '0.00');
-  assert.equal(r.headers['cache-control'], 'no-store');
-  assert.equal((await routes['owner-activity'].handler({ ...request(), query: new URLSearchParams('period=year') }, context)).status, 400);
-});
-
 test('without a confirmed owner, nobody is the owner', async () => {
   const saved = process.env.DASHBOARD_OWNER_USER_ID;
   delete process.env.DASHBOARD_OWNER_USER_ID;
   try {
-    assert.equal((await routes['owner-decisions'].handler(request(), context)).status, 403);
+    assert.equal((await routes['owner-requests'].handler(request(), context)).status, 403);
   } finally { process.env.DASHBOARD_OWNER_USER_ID = saved; }
 });
 

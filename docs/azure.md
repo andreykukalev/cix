@@ -236,28 +236,29 @@ The dashboard shows:
 - **Engine:** running, or not responding when the heartbeat is older than 3 minutes. Also its strategy, and the kill switch with who engaged it and why, as a category.
 - **Mode:** paper or live, a toggle at the top. Live shows data only if a live engine has written it.
 - **Market:** the analyst's market view, how fresh the prices are, and the last sync with the exchange and with the database.
-- **Portfolio:** equity, cash, today's P&L, peak, drawdown, exposure, holdings, and the paper account's balances.
-- **Trading cycle:** the last scan and its signals, orders still working (no prices), and the trader's and analyst's recent runs.
+- **Portfolio:** equity, cash, today's P&L, peak, drawdown, exposure, holdings with their entry, stop and target, and the paper account's balances.
+- **Trading cycle:** the last scan and its signals, orders still working, with their limits, and the trader's and analyst's recent runs.
 - **Coins:** each scanned coin's move over the last hour and the last 24 hours (up or down, with the scan time as the reference), and whether you hold it.
-- **Activity:** executed trades only, by UTC day, week (Monday to Sunday) or calendar month: the number of trades, buys and sells and how many were owner requests, this period against the previous one, and a chart of the periods shown. Signed in as the owner you also get the amounts: buy and sell volume, turnover (their sum, fees apart) and fees. The public page has counts only, since amounts next to the public trade sizes would give fill prices away.
-- **History:** executed trades, decisions with a plain-language reason first (what triggered it, the evidence, the risk plan, what the risk gate did) and the technical text one click away, and errors and safety events.
+- **Activity:** executed trades only, by UTC day, week (Monday to Sunday) or calendar month: buy and sell volume, turnover (their sum, fees apart), fees, the number of trades, buys and sells and how many were your requests, this period against the previous one, and a chart of the periods shown.
+- **History:** executed trades with their prices and fees, decisions with a plain-language reason first (what triggered it, the evidence, the risk plan, what the risk gate did) and the technical text one click away, and errors and safety events.
 - **Records:** journal activity (collapsible, browsable by day and kind), and the state documents with what each one is.
-- **For the owner, signed in:** Buy and Sell buttons on each coin, your requests and where each stands, and decisions with their stops, targets and risk in figures (see [Owner requests](#owner-requests)).
+- **Requests:** Buy and Sell buttons on each coin (paper), your requests and where each stands (see [Owner requests](#owner-requests)).
 
-It is **public** (anyone with the URL can open it), and **read-only for everyone but the owner**:
-- Its public API can only `GET`, and it reads with the account's read-only key, kept in the app's settings on the server.
-- It shows **no order levels**: no entry, stop, target or fill prices, and no limits of resting orders. In the journal's free text (summaries, the trader's reasoning) every number that could be a price is masked as `…`. Holdings show their value, and whether a stop is set. The journal in Cosmos DB keeps everything.
-- The briefing shows the analyst's own text unmasked: the analyst never sees the account's positions, stops or targets, so its text can't hold them, though it may quote public market prices. It is written from web pages, so the page shows it as plain text only, and opens only `https` source links (each must be one of the view's sources), in a new tab without access back to the dashboard. The coins' moves are percentages, never prices.
-- Responses are cached for 20 seconds, and identical requests share one database read. The journal browser accepts only the last 14 days, known kinds and three page sizes, so heavy traffic can't use up the database throughput the engine needs.
-- To make it private later, add `"allowedRoles": ["owner"]` to the `/*` and `/api/*` routes in `dashboard/app/staticwebapp.config.json` (the owner role below already exists).
+It is **private** ([ADR-0014](adr/0014-private-dashboard.md)): every page and API route needs your Microsoft sign-in, as the confirmed owner (see the setup below).
+- Signed out, any page sends you to the Microsoft sign-in. Signed in with another account, you get a page that says the dashboard is private, with Sign in and Sign out. That page and its stylesheet are the only things anyone can open.
+- The API checks again, in every function: a Microsoft sign-in with the `owner` role and the user ID the setup script confirmed (`DASHBOARD_OWNER_USER_ID`). Anything else gets `403` and nothing is read. With no confirmed ID, nobody gets in, you included: finish the setup below first.
+- **Sign out** is at the top of the page. It ends the dashboard's session; your browser may still be signed in to your Microsoft account, so signing in again may not ask for a password. When the session ends while the page is open, it says so and offers to sign in again.
+- It shows everything as recorded: entry, stop, target and fill prices, resting orders' limits, fees, and the journal's own text. Answers are never cached by a browser (`no-store`).
+- The reads use the account's read-only key, kept in the app's settings on the server; the API keeps answers 20 seconds (activity a minute), and the journal browser accepts only the last 14 days, known kinds and three page sizes, so the page can't use up the database throughput the engine needs.
+- The briefing shows the analyst's text from web pages as plain text only, and opens only `https` source links (each must be one of the view's sources), in a new tab without access back to the dashboard.
 
 ## Owner requests
 
-The Buy and Sell buttons send manual requests to the engine ([ADR-0011](adr/0011-owner-manual-requests.md)). Only you can see or use them, signed in with your Microsoft account ([ADR-0012](adr/0012-dashboard-owner-sign-in-and-writer.md)):
+The Buy and Sell buttons send manual requests to the engine ([ADR-0011](adr/0011-owner-manual-requests.md)). Only you can use them, signed in with your Microsoft account ([ADR-0012](adr/0012-dashboard-owner-sign-in-and-writer.md)):
 - **Sell:** pick 25%, 50% or 100% of the position, and **Direct** (the engine sells at the bid at once, no agent) or **Ask the trader** (the trader analyses it and may decline or sell less). **Buy** always asks the trader, with an amount in the quote currency; the trader sets the stop.
 - A confirmation shows exactly what will be sent. Each dialog has its own ID and is locked once sent, so a retry or a double click is still one request (also across midnight UTC), and the page follows it to the end: placed, filled, declined with the trader's reason, refused (by the engine or the risk gate, with the rule), expired.
 - The buttons pause, with the reason, when the engine isn't running or doesn't take requests (switched off, or the `requests` container missing).
-- Your note is for you and the trader: the public page shows "the owner's direct sell request", never the note.
+- Your note goes to the trader with the request, and shows in the request's history and decisions.
 - Requests are paper only. The engine checks each one again, and every order still goes through the risk gate.
 
 One-time setup, per environment (needs rights to create app registrations and to manage Cosmos DB roles on the shared account):
@@ -271,7 +272,7 @@ It creates a **writer identity**, `cix-dashboard-writer-dev`, whose only right i
 - **Rotate the secret** within a year (the script prints the date): run it again with `-RotateSecret`. The old secret stops working at once.
 - **`provision.ps1`** keeps the writer settings through a deployment (a deployment replaces the app's settings); if it can't, it says so and you run the setup again with `-RotateSecret`.
 - **Who has the role:** Azure portal, the Static Web App, *Role management*. Remove anyone you don't recognise. The script warns if more than one account has it.
-- Until the setup is done, the buttons answer that the writer isn't set up; everything else works as before.
+- Until the owner is confirmed, nobody can open the dashboard. Until the writer is set up, the buttons answer that it isn't; everything else works.
 
 ## How the PC connects to Azure
 
