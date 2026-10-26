@@ -517,11 +517,13 @@ foreach ($case in @(
   }
 }
 
-# A copy of dev.json as environment 'citest' (its own group and database), with agents.deploy set here rather than whatever
-# dev.json has; written to infra/environments/citest.json by the helpers below, and removed after.
+# A copy of dev.json as environment 'citest' (its own group and database), with agents.deploy set here and the engine
+# stopped, rather than whatever dev.json has; written to infra/environments/citest.json by the helpers below, and removed after.
 function Get-CitestJson([string]$Deploy) {
   $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest').Replace('"databaseName": "cix"', '"databaseName": "cix-citest"')
   if ($json -notmatch '"deploy": "(none|platform|apps)"') { throw 'dev.json has no agents.deploy to replace' }
+  if ($json -notmatch '"startEngine": (true|false)') { throw 'dev.json has no agents.startEngine to replace' }
+  $json = [regex]::Replace($json, '"startEngine": (true|false)', '"startEngine": false')
   return [regex]::Replace($json, '"deploy": "(none|platform|apps)"', "`"deploy`": `"$Deploy`"")
 }
 function Invoke-CitestProvision([hashtable]$Fake, [hashtable]$Arguments) {
