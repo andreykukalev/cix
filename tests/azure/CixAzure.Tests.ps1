@@ -521,7 +521,7 @@ $existingWriter = @{
   'cosmosdb sql role definition list'     = $writerRole
   'cosmosdb sql role assignment list'     = "[{`"principalId`":`"55555555-5555-5555-5555-555555555555`",`"roleDefinitionId`":`"/role/r1`",`"scope`":`"$writerScope`"},{`"principalId`":`"someone-else`",`"roleDefinitionId`":`"/role/other`",`"scope`":`"/`"}]"
   'rest'                                  = '{"value":[],"properties":{"COSMOS_WRITER_TENANT_ID":"00000000-0000-0000-0000-0000000000aa","COSMOS_WRITER_CLIENT_ID":"44444444-4444-4444-4444-444444444444","COSMOS_WRITER_SECRET":"set","DASHBOARD_OWNER_USER_ID":"owner-uid"}}'
-  'staticwebapp users list'               = '[{"displayName":"owner@example.com","userId":"owner-uid","roles":"anonymous,authenticated,owner"}]'
+  'staticwebapp users list'               = '[{"displayName":"owner@example.com","provider":"aad","userId":"owner-uid","roles":"anonymous,authenticated,owner"}]'
 }
 function Invoke-SetupWriter([hashtable]$Base, [hashtable]$Overrides = @{}, [hashtable]$More = @{}) {
   $extra = @{}; foreach ($k in $Base.Keys) { $extra[$k] = $Base[$k] }
@@ -545,6 +545,7 @@ Check 'setup-dashboard-requests.ps1 (-Yes) creates a create-only identity and st
   if ($r.Output.Contains($fakePassword) -or $r.Calls.Contains($fakePassword)) { throw 'the secret was printed or put on a command line' }
   if ($r.Output -notmatch 'auth/invitations/abc') { throw "the invitation link wasn't shown: $($r.Output)" }
   if ($r.Calls -notmatch 'users invite .*--invitation-expiration-in-hours 2 ') { throw 'the invitation should expire in 2 hours' }
+  if ($r.Calls -notmatch 'staticwebapp users list .*--authentication-provider all ') { throw 'users are listed for all providers only (the API refuses one provider)' }
   if ($r.Output -notmatch 'run this script again') { throw "it didn't say to run it again to confirm the owner: $($r.Output)" }
 }
 
@@ -557,9 +558,15 @@ Check 'setup-dashboard-requests.ps1 confirms the owner by user ID once the invit
 }
 
 Check 'setup-dashboard-requests.ps1 refuses when someone else holds the owner role' {
-  $r = Invoke-SetupWriter $existingWriter @{ 'staticwebapp users list' = '[{"displayName":"owner@example.com","userId":"owner-uid","roles":"owner"},{"displayName":"stranger@example.com","userId":"x","roles":"anonymous,owner"}]' }
-  if (-not $r.Error -or -not $r.Error.Contains('stranger@example.com also hold(s) the owner role')) { throw "got: $($r.Error)" }
-  if ($r.Calls -match '--method put|users invite') { throw "it changed the owner: $($r.Calls)" }
+  foreach ($case in @(
+      @{ Users = '[{"displayName":"owner@example.com","provider":"aad","userId":"owner-uid","roles":"owner"},{"displayName":"stranger@example.com","provider":"aad","userId":"x","roles":"anonymous,owner"}]'; Says = 'stranger@example.com also hold(s) the owner role' },
+      @{ Users = '[{"displayName":"owner@example.com","provider":"github","userId":"gh","roles":"owner"}]'; Says = 'owner@example.com also hold(s) the owner role' },
+      @{ Users = '[{"displayName":"owner@example.com","userId":"np","roles":"owner"}]'; Says = 'owner@example.com also hold(s) the owner role' },
+      @{ Users = '[{"displayName":"owner@example.com","provider":"aad","userId":"a","roles":"owner"},{"displayName":"owner@example.com","provider":"aad","userId":"b","roles":"owner"}]'; Says = 'More than one account named owner@example.com' })) {
+    $r = Invoke-SetupWriter $existingWriter @{ 'staticwebapp users list' = $case.Users }
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "for $($case.Users) got: $($r.Error)" }
+    if ($r.Calls -match '--method put|users invite') { throw "it changed the owner: $($r.Calls)" }
+  }
 }
 
 Check 'setup-dashboard-requests.ps1 run again changes nothing that is already in place' {
