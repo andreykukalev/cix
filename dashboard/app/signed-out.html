@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>CIX Dashboard: sign in</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="gate">
+  <!-- The one page anyone can open (with styles.css): it holds nothing about the account. Shown after signing out, and in
+       place of any page or API answer that needs the owner role the visitor doesn't have (staticwebapp.config.json). -->
+  <main class="gate-card">
+    <p class="brand"><span class="logo" aria-hidden="true">◆</span> <strong>CIX</strong></p>
+    <h1>The dashboard is private</h1>
+    <p>Only the owner's Microsoft account can open it. If you have just signed out, you're done.</p>
+    <p>Signed in with another account? Sign out first, then sign in with the owner's.</p>
+    <p class="actions">
+      <a class="button primary" href="/.auth/login/aad?post_login_redirect_uri=/">Sign in</a>
+      <a class="button" href="/.auth/logout?post_logout_redirect_uri=/signed-out.html">Sign out</a>
+    </p>
+  </main>
+</body>
+</html>

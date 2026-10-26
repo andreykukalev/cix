@@ -8,20 +8,7 @@ const { explain } = require('./explain');
 
 const STALE_AFTER_MS = 3 * 60 * 1000; // the engine writes its status every minute
 
-// The dashboard is public, so it never shows a price: not where a position was bought or will be sold (entry, stop,
-// target), not resting orders' limits, not fills' prices. Structured fields are allowlisted (no price field is passed on),
-// and free text from the journal goes through publicText, which masks every number that could be a price or a level:
-// anything with a decimal point, any whole number of three or more digits or written like 58k, and any number after "@",
-// "at", "stop", "target", "SL" or "TP". Small counts elsewhere (rank 1, 24h) stay readable.
-// The journal in Cosmos DB keeps everything for the owner.
-const MASK = '…';
-
-function publicText(text) {
-  if (typeof text !== 'string') return text ?? null;
-  return text
-    .replace(/(@|\bat\b|\b(?:stop|target|sl|tp)\b)(\s*[:=]?\s*)\d+(?:[.,]\d+)*k?/gi, `$1$2${MASK}`) // any number after @, at, stop, target
-    .replace(/\d+(?:[.,]\d+)+|\d{3,}|\b\d+k\b/gi, MASK);
-}
+// The dashboard is the owner's only (ADR-0014), so levels, prices and the journal's own text are passed on as written.
 
 const AGENTS = ['trader', 'analyst'];
 
@@ -32,26 +19,6 @@ const RECONCILE_PROBLEMS = {
   'holdings-not-compared': 'Holdings couldn\'t be compared (no fresh prices).',
 };
 const ERROR_ORDER_STATUSES = new Set(['rejected', 'failed', 'uncertain']);
-
-/**
- * A journal summary fit for a public page: levels blanked, and a kill switch's free-text reason (which can name orders and
- * amounts) replaced by who acted. The journal itself keeps everything.
- */
-const WORD = /^[a-z][a-z-]{0,40}$/;
-const SYMBOL = /^[A-Z0-9]{2,12}-[A-Z]{3,4}$/;
-
-function publicSummary(e) {
-  if (e.kind === 'kill-switch') return `Kill switch ${e.data?.action === 'released' ? 'released' : 'engaged'} by ${e.actor}.`;
-  if (e.kind === 'manual-request') {
-    // Built from checked fields only: the engine's summary carries the owner's note, which is for the owner and the trader.
-    const d = e.data ?? {};
-    const word = (v) => (typeof v === 'string' && WORD.test(v) ? v : null);
-    const symbol = typeof d.symbol === 'string' && SYMBOL.test(d.symbol) ? d.symbol : null;
-    const what = [word(d.mode) === 'direct' ? 'direct' : word(d.mode) ? 'trader' : null, word(d.side), symbol].filter(Boolean).join(' ');
-    return `Owner request${what ? ` (${what})` : ''}: ${word(d.status) ?? 'update'}${word(d.rule) ? ` (${d.rule})` : ''}.`;
-  }
-  return publicText(e.summary);
-}
 
 function num(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -110,14 +77,8 @@ function agentsSummary(entries, now) {
   }));
 }
 
-/**
- * Orders the agents and the engine decided, newest first. reveal is for the owner's view only (served with no-store
- * behind the owner role): it keeps levels and prices in the explanation; the public page gets them masked.
- */
-// Rationales that may carry the owner's note (a direct sell's quotes it; the trader's answer may): never public.
-const PRIVATE_RATIONALE = { 'manual-direct': "Owner's direct sell.", 'manual-agent': "The trader's answer to an owner request." };
-
-function decisions(entries, { reveal = false } = {}) {
+/** Orders the agents and the engine decided, newest first, each with a plain-language explanation. */
+function decisions(entries) {
   return entries.filter((e) => e.kind === 'order').map((e) => {
     const d = e.data ?? {};
     return {
@@ -128,14 +89,15 @@ function decisions(entries, { reveal = false } = {}) {
       symbol: d.symbol ?? null,
       side: d.side ?? null,
       size: d.approvedSize ?? d.requestedSize ?? null,
+      price: d.approvedPrice ?? d.requestedPrice ?? null,
       status: d.status ?? null,
       rule: d.rule ?? null,
-      // A direct sell's rationale carries the owner's note, which is for the owner and the trader only.
-      rationale: reveal ? d.rationale ?? null : PRIVATE_RATIONALE[d.tool] ?? publicText(d.rationale ?? null),
-      hasStop: d.stopLoss !== undefined,
+      rationale: d.rationale ?? null,
+      stopLoss: d.stopLoss ?? null,
+      takeProfit: d.takeProfit ?? null,
       clientOrderId: d.clientOrderId ?? null,
-      summary: reveal ? e.summary ?? null : publicSummary(e),
-      explanation: explain(e, { reveal, mask: publicText }),
+      summary: e.summary ?? null,
+      explanation: explain(e),
     };
   }).sort(byTimeDesc);
 }
@@ -148,6 +110,8 @@ function trades(entries) {
       symbol: d.symbol ?? null,
       side: d.side ?? null,
       filledSize: d.filledSize ?? null,
+      averagePrice: d.averagePrice ?? null,
+      fee: d.fee ?? null,
       source: d.source ?? null,
       status: d.status ?? null,
       clientOrderId: d.clientOrderId ?? null,
@@ -160,10 +124,10 @@ function problems(entries, status, readErrors) {
   const list = [];
   for (const e of entries) {
     const d = e.data ?? {};
-    if (e.kind === 'tool-denied') list.push({ at: e.at, source: e.actor, kind: 'tool-denied', message: publicSummary(e) });
-    else if (e.kind === 'kill-switch' && d.action !== 'released') list.push({ at: e.at, source: e.actor, kind: 'kill-switch', message: publicSummary(e) });
+    if (e.kind === 'tool-denied') list.push({ at: e.at, source: e.actor, kind: 'tool-denied', message: e.summary ?? null });
+    else if (e.kind === 'kill-switch' && d.action !== 'released') list.push({ at: e.at, source: e.actor, kind: 'kill-switch', message: e.summary ?? null });
     else if (e.kind === 'order' && ERROR_ORDER_STATUSES.has(d.status)) {
-      list.push({ at: e.at, source: e.actor, kind: `order-${d.status}`, message: d.reason ? `${publicSummary(e)}: ${publicText(d.reason)}` : publicSummary(e) });
+      list.push({ at: e.at, source: e.actor, kind: `order-${d.status}`, message: [e.summary, d.reason].filter(Boolean).join(': ') || null });
     }
   }
   if (status?.lastReconcileProblem) {
@@ -196,6 +160,7 @@ function portfolio(status, paperAccount) {
     drawdownPct: equity !== null && peak ? Math.round(((peak - equity) / peak) * 10000) / 100 : null,
     holdings: (p.holdings ?? []).map((h) => ({
       symbol: h.symbol, valueQuote: h.valueQuote ?? null, planStatus: h.planStatus ?? null, protected: h.stopLoss !== undefined && h.stopLoss !== null,
+      entryPrice: h.entryPrice ?? null, stopLoss: h.stopLoss ?? null, takeProfit: h.takeProfit ?? null,
     })),
     balances,
   };
@@ -243,7 +208,7 @@ function summarize(input, now) {
       lastScan: status?.lastScan ? withoutMarket(status.lastScan) : null, // the coins are in the briefing
       lastTraderRun,
       ordersInFlight: (engineState?.orders ?? []).map((o) => ({
-        clientOrderId: o.clientOrderId, symbol: o.symbol, side: o.side, size: o.size, source: o.source, sentAt: o.sentAt,
+        clientOrderId: o.clientOrderId, symbol: o.symbol, side: o.side, size: o.size, limitPrice: o.limitPrice ?? null, source: o.source, sentAt: o.sentAt,
         confirmed: Boolean(o.venueOrderId), runId: o.runId ?? null,
       })),
       positionPlans: Object.values(engineState?.positions ?? {}).map((p) => ({
@@ -257,9 +222,14 @@ function summarize(input, now) {
     decisions: decisions(entries).slice(0, 50),
     trades: trades(entries).slice(0, 50),
     problems: problems(entries, status, input.readErrors ?? []).slice(0, 50),
-    activity: entries.slice(0, 80).map((e) => ({ id: e.id, at: e.at, kind: e.kind, actor: e.actor, runId: e.runId ?? null, summary: publicSummary(e) })),
+    activity: entries.slice(0, 80).map(journalItem),
     stateDocuments: [...(input.stateDocs ?? [])].sort((a, b) => a.id.localeCompare(b.id)),
   };
 }
 
-module.exports = { summarize, decisions, engineHealth, agentRuns, publicText, publicSummary, STALE_AFTER_MS };
+/** A journal entry as the activity list shows it: the summary as written; the data stays in the journal. */
+function journalItem(e) {
+  return { id: e.id, at: e.at, kind: e.kind, actor: e.actor, runId: e.runId ?? null, summary: e.summary ?? null };
+}
+
+module.exports = { summarize, decisions, journalItem, engineHealth, agentRuns, STALE_AFTER_MS };

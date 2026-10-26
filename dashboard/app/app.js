@@ -1,13 +1,15 @@
 'use strict';
-// CIX dashboard: reads /api/dashboard, /api/activity and /api/journal and renders them. For the signed-in owner it also
-// reads /api/owner/* and sends paper buy and sell requests (ADR-0011, ADR-0012): the only writes, each one confirmed first.
+// CIX dashboard: reads /api/dashboard, /api/activity, /api/journal and /api/owner/requests and renders them, and sends paper
+// buy and sell requests (ADR-0011, ADR-0012): the only writes, each one confirmed first. The whole site is the owner's
+// (ADR-0014): the platform sends anyone else to sign in, and the API answers only the confirmed owner.
 // Every value is written with textContent, never as HTML, so journal text can't inject markup. view.js holds the logic.
 
 const REFRESH_MS = 30_000;
 const POLL_MS = 3_000;
 const POLL_FOR_MS = 15 * 60_000;
 const V = window.CixView;
-const state = { mode: 'paper', journal: null, period: 'day', viewer: { signedIn: false, owner: false, name: null }, view: null, pending: new Map() };
+const state = { mode: 'paper', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null };
+const SIGN_IN = '/.auth/login/aad?post_login_redirect_uri=/';
 
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -60,6 +62,11 @@ function amount(value, digits = 2) {
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
   return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: Math.max(digits, 8) });
+}
+
+/** A price or level as the engine wrote it (exact decimal string), or a dash. */
+function price(value) {
+  return value === null || value === undefined || value === '' ? '–' : String(value);
 }
 
 function money(value, currency) {
@@ -130,7 +137,10 @@ function renderPortfolio(view) {
     figure('Drawdown', p.drawdownPct === null || p.drawdownPct === undefined ? '–' : `${p.drawdownPct.toFixed(2)} %`, p.drawdownPct > 0 ? 'neg' : ''),
     figure('Exposure', money(p.exposure, p.currency)),
   );
-  rows('holdings', p.holdings ?? [], (h) => [h.symbol, td(money(h.valueQuote, p.currency), 'num'), h.planStatus ?? '–', h.protected ? 'yes' : 'no'], 'Nothing held.');
+  rows('holdings', p.holdings ?? [], (h) => [
+    h.symbol, td(money(h.valueQuote, p.currency), 'num'), td(price(h.entryPrice), 'num'),
+    td(h.protected ? price(h.stopLoss) : el('span', { class: 'badge bad', text: 'none' }), 'num'), td(price(h.takeProfit), 'num'), h.planStatus ?? '–',
+  ], 'Nothing held.');
   rows('balances', p.balances ?? [], (b) => [b.currency, td(amount(b.available), 'num'), td(amount(b.reserved), 'num')],
     view.mode === 'paper' ? 'No paper account yet.' : 'Balances are shown for paper trading only.');
 }
@@ -145,7 +155,7 @@ function renderCycle(view) {
     figure('Watching', scan?.signalKey || 'no signals'),
     figure('Last trader run', c.lastTraderRun ? ago(c.lastTraderRun.lastAt) : '–'),
   );
-  rows('orders', c.ordersInFlight ?? [], (o) => [when(o.sentAt), o.symbol, o.side, td(amount(o.size, 0), 'num'), o.source, shortId(o.clientOrderId)], 'No orders working.');
+  rows('orders', c.ordersInFlight ?? [], (o) => [when(o.sentAt), o.symbol, o.side, td(amount(o.size, 0), 'num'), td(price(o.limitPrice), 'num'), o.source, shortId(o.clientOrderId)], 'No orders working.');
   const agents = Object.entries(view.agents ?? {});
   rows('agents', agents, ([name, a]) => [
     name, a.lastRun ? shortId(a.lastRun.runId) : '–', a.lastRun ? when(a.lastRun.lastAt) : '–',
@@ -155,10 +165,11 @@ function renderCycle(view) {
 
 function renderTables(view) {
   rows('trades', view.trades, (t) => [
-    when(t.at), t.symbol ?? '–', t.side ?? '–', td(amount(t.filledSize, 0), 'num'), t.source ?? '–', t.status ?? '–', shortId(t.clientOrderId),
+    when(t.at), t.symbol ?? '–', t.side ?? '–', td(amount(t.filledSize, 0), 'num'), td(price(t.averagePrice), 'num'), td(price(t.fee), 'num'),
+    t.source ?? '–', t.status ?? '–', shortId(t.clientOrderId),
   ], 'No fills in the last 48 hours.');
-  rows('decisions', view.decisions, (d) => [ // for the owner, replaced by /api/owner/decisions (with levels) when that loads
-    when(d.at), d.actor, d.action ?? '–', d.symbol ?? '–', d.side ?? '–', td(amount(d.size, 0), 'num'),
+  rows('decisions', view.decisions, (d) => [
+    when(d.at), d.actor, d.action ?? '–', d.symbol ?? '–', d.side ?? '–', td(amount(d.size, 0), 'num'), td(price(d.price), 'num'),
     el('span', { class: `badge ${{ placed: 'ok', rejected: 'bad', failed: 'bad', uncertain: 'warn' }[d.status] ?? ''}`, text: d.status ?? '–' }),
     td(why(d), 'why'),
   ], 'No decisions in the last 48 hours.');
@@ -250,10 +261,10 @@ function renderCoins(view) {
   document.getElementById('coins-meta').textContent = b.scanAt
     ? `moves up to the scan at ${new Date(b.scanAt).toLocaleTimeString()} (${ago(b.scanAt)})${b.scanStale ? ', stale' : ''}`
     : 'no scan yet';
-  const owner = state.viewer.owner && state.mode === 'paper';
-  const blocked = owner ? V.requestsBlocked(view.engine) : null;
+  const trading = state.mode === 'paper'; // requests are paper only
+  const blocked = trading ? V.requestsBlocked(view.engine) : null;
   if (blocked) document.getElementById('coins-meta').textContent += ` · requests paused: ${blocked}`;
-  for (const node of document.querySelectorAll('#coins .owner-only')) node.hidden = !owner;
+  for (const node of document.querySelectorAll('#coins .paper-only')) node.hidden = !trading;
   rows('coins', V.coins(view), (c) => {
     const r = scan.get(c.symbol) ?? {};
     const cells = [
@@ -266,7 +277,7 @@ function renderCoins(view) {
       c.signal ? el('span', { class: `badge ${c.signal === 'buy' ? 'ok' : 'bad'}`, text: c.signal }) : '–',
       td(c.note ?? '', 'muted'),
     ];
-    if (owner) cells.push(td(tradeButtons(c), 'actions'));
+    if (trading) cells.push(td(tradeButtons(c), 'actions'));
     return cells;
   }, 'No scan yet.');
 }
@@ -285,21 +296,47 @@ function tradeButtons(c) {
   return c.held ? [buy, ' ', sell] : [buy];
 }
 
-function banner(text, bad) {
+function banner(text, bad, link) {
   const node = document.getElementById('banner');
   node.hidden = !text;
-  node.textContent = text ?? '';
+  node.replaceChildren(...(text ? [text] : []), ...(link ? [' ', el('a', { href: link.href, text: link.text })] : []));
   node.className = `banner ${bad ? 'bad' : ''}`;
 }
 
+/** The sign-in has ended (the platform answers with a redirect to Microsoft's sign-in, which fetch doesn't follow). */
+class SignedOut extends Error {
+  constructor() { super('Your sign-in has ended.'); }
+}
+
+/** A call to the dashboard's own API. Redirects aren't followed: one means the session is over. */
+async function api(url, options = {}) {
+  const response = await fetch(url, { ...options, redirect: 'manual', credentials: 'same-origin', headers: { accept: 'application/json', ...options.headers } });
+  if (response.type === 'opaqueredirect' || response.status === 401) throw new SignedOut();
+  return response;
+}
+
 async function getJson(url) {
-  const response = await fetch(url, { headers: { accept: 'application/json' } });
+  const response = await api(url);
   const body = await response.json().catch(() => ({}));
+  if (response.status === 403) throw new Error(body.error ?? "This account isn't the dashboard's confirmed owner (run setup-dashboard-requests.ps1 again).");
   if (!response.ok) throw new Error(body.error ?? `The dashboard API answered ${response.status}.`);
   return body;
 }
 
+/** The session is over: stop reading, and take the figures off the screen rather than leave them up as if current. */
+function signedOut() {
+  state.signedOut = true;
+  clearInterval(state.timer);
+  for (const p of state.pending.values()) clearInterval(p.timer);
+  state.pending.clear();
+  document.getElementById('request-dialog').close();
+  for (const node of document.querySelectorAll('main > :not(#banner)')) node.hidden = true;
+  banner('Your sign-in has ended.', true, { href: SIGN_IN, text: 'Sign in again' });
+  document.getElementById('updated').textContent = 'Signed out';
+}
+
 async function refresh() {
+  if (state.signedOut) return;
   try {
     const view = await getJson(`/api/dashboard?mode=${encodeURIComponent(state.mode)}`);
     state.view = view;
@@ -315,10 +352,11 @@ async function refresh() {
       : readErrors.length ? readErrors.map((p) => p.message).join(' ') : null, view.engine.state === 'stale');
     document.getElementById('updated').textContent = `Updated ${new Date(view.generatedAt).toLocaleTimeString()}`;
   } catch (error) {
+    if (error instanceof SignedOut) { signedOut(); return; }
     banner(`Couldn't load the dashboard: ${error.message}`, true);
     document.getElementById('updated').textContent = 'Update failed';
   }
-  await Promise.all([refreshActivity(), refreshOwner()]);
+  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests()]);
 }
 
 // --- Trading activity -------------------------------------------------------------------------------------------------------
@@ -333,6 +371,7 @@ function svg(tag, attrs, text) {
 }
 
 async function refreshActivity() {
+  if (state.signedOut) return;
   const meta = document.getElementById('volume-meta');
   if (state.mode !== 'paper') {
     meta.textContent = 'Activity is counted for paper trading only for now.';
@@ -341,11 +380,9 @@ async function refreshActivity() {
     return;
   }
   try {
-    // Amounts are the owner's only (with public trade sizes they'd give fill prices away); everyone else gets counts.
-    const base = state.viewer.owner ? '/api/owner/activity' : '/api/activity';
-    const a = await getJson(`${base}?period=${encodeURIComponent(state.period)}`);
-    renderVolume(a);
+    renderVolume(await getJson(`/api/activity?period=${encodeURIComponent(state.period)}`));
   } catch (error) {
+    if (error instanceof SignedOut) { signedOut(); return; }
     meta.textContent = `Couldn't load trading activity: ${error.message}`;
   }
 }
@@ -355,9 +392,8 @@ function renderVolume(a) {
   const p = a.previous ?? {};
   const unit = { day: 'today', week: 'this week', month: 'this month' }[a.period];
   const before = { day: 'yesterday', week: 'last week', month: 'last month' }[a.period];
-  const totals = a.amounts ? `${a.total.trades} trades, turnover ${a.total.turnover} ${a.currency}` : `${a.total.trades} trades`;
   document.getElementById('volume-meta').textContent =
-    `${c.label} (${unit}, UTC) against ${p.label ?? 'nothing'} (${before}). ${totals} from ${a.total.from} to ${a.total.to}.${a.amounts ? '' : ' Amounts are shown to the owner only.'}${a.truncated ? ' Not all fills could be counted: the totals are incomplete.' : ''}`;
+    `${c.label} (${unit}, UTC) against ${p.label ?? 'nothing'} (${before}). ${a.total.trades} trades, turnover ${a.total.turnover} ${a.currency} from ${a.total.from} to ${a.total.to}.${a.truncated ? ' Not all fills could be counted: the totals are incomplete.' : ''}`;
   const card = (label, value, now, prev, sub) => {
     const vs = V.versus(now, prev);
     return el('div', { class: 'figure' },
@@ -365,25 +401,18 @@ function renderVolume(a) {
       el('span', { class: 'amount', text: value }),
       el('span', { class: sub ? 'vs' : `vs ${vs.dir}`, text: sub ?? vs.text }));
   };
-  document.getElementById('volume-cards').replaceChildren(...(a.amounts ? [
+  document.getElementById('volume-cards').replaceChildren(
     card('Turnover', `${c.turnover} ${a.currency}`, c.turnover, p.turnover),
     card('Bought', `${c.buyVolume} ${a.currency}`, c.buyVolume, p.buyVolume),
     card('Sold', `${c.sellVolume} ${a.currency}`, c.sellVolume, p.sellVolume),
     card('Trades', String(c.trades), c.trades, p.trades, `${c.buys} buys · ${c.sells} sells`),
     card('Your requests', String(c.manual), c.manual, p.manual, 'trades from the dashboard'),
     card('Fees', `${c.fees} ${a.currency}`, c.fees, p.fees, 'not in turnover'),
-  ] : [
-    card('Trades', String(c.trades), c.trades, p.trades),
-    card('Buys', String(c.buys), c.buys, p.buys),
-    card('Sells', String(c.sells), c.sells, p.sells),
-    card('Owner requests', String(c.manual), c.manual, p.manual, 'trades from the dashboard'),
-  ]));
+  );
   const g = V.chart(a.periods, { width: 640, height: 160, labelEvery: a.periods.length > 12 ? 2 : 1, period: a.period });
   const chartNode = document.getElementById('volume-chart');
-  chartNode.replaceChildren(svg('title', { id: 'volume-chart-title' }, g.amounts
-    ? `Buy and sell volume by ${a.period}, largest ${g.max.toFixed(2)} ${a.currency}`
-    : `Buys and sells by ${a.period}, largest ${g.max} trades`));
-  document.getElementById('volume-unit').textContent = g.amounts ? `volume in ${a.currency}` : 'number of trades';
+  chartNode.replaceChildren(svg('title', { id: 'volume-chart-title' }, `Buy and sell volume by ${a.period}, largest ${g.max.toFixed(2)} ${a.currency}`));
+  document.getElementById('volume-unit').textContent = `volume in ${a.currency}`;
   for (const b of g.bars) {
     const group = svg('g', {});
     group.append(svg('title', {}, b.title));
@@ -402,51 +431,24 @@ function setPeriod(period) {
   refreshActivity();
 }
 
-// --- The owner: sign-in, decisions with levels, requests --------------------------------------------------------------------
+// --- Who is signed in, and the owner's requests -----------------------------------------------------------------------------
 
 async function loadViewer() {
   try {
-    const response = await fetch('/.auth/me', { headers: { accept: 'application/json' } });
+    const response = await fetch('/.auth/me', { headers: { accept: 'application/json' }, redirect: 'manual' });
     state.viewer = V.viewer(response.ok ? await response.json() : null);
   } catch {
     state.viewer = V.viewer(null);
   }
-  if (state.viewer.owner) {
-    // The role alone isn't enough: the API takes only the confirmed account (setup-dashboard-requests.ps1).
-    try {
-      const probe = await fetch('/api/owner/requests', { headers: { accept: 'application/json' } });
-      if (probe.status === 403) state.viewer = { ...state.viewer, owner: false, unconfirmed: true };
-    } catch { /* offline: the buttons' requests will say */ }
-  }
-  const who = document.getElementById('who');
-  const link = document.getElementById('sign-in');
-  if (state.viewer.signedIn) {
-    who.textContent = state.viewer.owner ? `Owner: ${state.viewer.name ?? 'signed in'}`
-      : state.viewer.unconfirmed ? `Signed in as ${state.viewer.name ?? '?'}: owner role, not confirmed yet (run the setup script again)`
-        : `Signed in as ${state.viewer.name ?? 'a guest'} (not the owner)`;
-    link.textContent = 'Sign out';
-    link.href = '/.auth/logout?post_logout_redirect_uri=/';
-  }
-  for (const node of document.querySelectorAll('section.owner-only')) node.hidden = !state.viewer.owner;
+  document.getElementById('who').textContent = state.viewer.signedIn ? state.viewer.name ?? 'Signed in' : '';
 }
 
-async function refreshOwner() {
-  if (!state.viewer.owner) return;
-  if (state.mode === 'paper') {
-    try {
-      const own = await getJson('/api/owner/decisions');
-      rows('decisions', own.decisions, (d) => [
-        when(d.at), d.actor, d.action ?? '–', d.symbol ?? '–', d.side ?? '–', td(amount(d.size, 0), 'num'),
-        el('span', { class: `badge ${{ placed: 'ok', rejected: 'bad', failed: 'bad', uncertain: 'warn' }[d.status] ?? ''}`, text: d.status ?? '–' }),
-        td(why(d), 'why'),
-      ], 'No decisions in the last 48 hours.');
-      document.getElementById('decisions-meta').textContent = 'the reason first, with stops, targets and risk in figures (only you see these)';
-    } catch { /* the public decisions stay */ }
-  }
+async function refreshRequests() {
   try {
     const history = await getJson('/api/owner/requests');
     renderRequests(history.requests);
   } catch (error) {
+    if (error instanceof SignedOut) { signedOut(); return; }
     rows('requests', [], () => [], `Couldn't load your requests: ${error.message}`);
   }
 }
@@ -520,17 +522,17 @@ async function sendRequest(event) {
   for (const input of document.getElementById('request-form').querySelectorAll('input')) input.disabled = true;
   send.textContent = 'Sending…';
   try {
-    const response = await fetch('/api/owner/requests', {
+    const response = await api('/api/owner/requests', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json', 'x-cix-request': '1' },
+      headers: { 'content-type': 'application/json', 'x-cix-request': '1' },
       body: JSON.stringify(r.body),
-      credentials: 'same-origin',
     });
     const answer = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(answer.error ?? `The dashboard answered ${response.status}.`);
     document.getElementById('request-dialog').close();
     track(answer.request);
   } catch (e) {
+    if (e instanceof SignedOut) { signedOut(); return; }
     error.textContent = `Not confirmed: ${e.message} Send again to retry: it stays the same, single request. To change it, cancel and start a new one.`;
     error.hidden = false;
     send.disabled = false;
@@ -556,7 +558,7 @@ function track(item) {
     clearInterval(entry.timer);
     state.pending.delete(item.id);
     if (state.view) renderCoins(state.view);
-    refreshOwner();
+    refreshRequests();
   };
   entry.timer = setInterval(async () => {
     if (Date.now() - entry.since > POLL_FOR_MS) {
@@ -565,11 +567,13 @@ function track(item) {
       return;
     }
     try {
-      const response = await fetch(`/api/owner/requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}`, { headers: { accept: 'application/json' } });
+      const response = await api(`/api/owner/requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}`);
       if (response.status === 404) return; // not readable yet
       if (!response.ok) return; // try again next time
       if (show(await response.json())) stop();
-    } catch { /* offline for a moment: try again */ }
+    } catch (error) {
+      if (error instanceof SignedOut) signedOut(); // else offline for a moment: try again
+    }
   }, POLL_MS);
 }
 
@@ -579,6 +583,7 @@ async function showJournalDay(day, kind) {
     state.journal = { day, kind };
     renderActivity(entries, `No ${kind || ''} entries on ${day}.`.replace('  ', ' '));
   } catch (error) {
+    if (error instanceof SignedOut) { signedOut(); return; }
     banner(`Couldn't load the journal: ${error.message}`, true);
   }
 }
@@ -625,5 +630,5 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('request-cancel').addEventListener('click', () => document.getElementById('request-dialog').close());
   await loadViewer();
   setMode(saved);
-  setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
+  state.timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
 });

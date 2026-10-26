@@ -9,8 +9,7 @@
 //   protective exit <SYM> <reason>: <detail>      (the engine's own stop or target sell)
 //   Owner's direct sell[: note]                   (manual request, ADR-0011)
 //
-// With reveal false (the public page) no price or level appears: stop and target show as set or not, and the entry's
-// distance from them as a percentage only when revealed. The owner's view reveals everything.
+// The dashboard is the owner's only (ADR-0014), so explanations keep every level and price.
 
 const ENTRY = /^signal entry (\S+) rank (\d+):\s*(.*?)(?:;\s*stop (\S+),\s*target (\S+),\s*risk (\S+))?\s*$/i;
 const EXIT = /^(signal|protective) exit (\S+) (stop|target|trend-down|[\w-]+):\s*(.*)$/i;
@@ -52,39 +51,22 @@ const GATE_RULES = {
   'exchange-refused': 'the exchange refused it',
 };
 
-// The parts of a rationale the public page may show as written, checked strictly: the trader writes the rationale freely,
-// so anything that doesn't look exactly like the engine's own format (a coin, a small rank, a ratio, a percentage) could
-// be a price, and is masked. The owner sees everything.
-const SAFE = {
-  symbol: /^[A-Z0-9]{2,12}-[A-Z]{3,4}$/,
-  rank: /^\d{1,2}$/,
-  ratio: /^-?\d{1,2}(\.\d{1,2})?$/,
-  move: /^[+-]?\d{1,2}(\.\d{1,2})?%$/,
-};
-const MASK = '…';
-
 function pctText(text) {
   return text && text !== 'n/a' ? text : null;
 }
 
-/** The part as written when revealed or when it matches its strict shape; otherwise masked. */
-function checked(part, shape, reveal) {
-  if (part === undefined || part === null) return part;
-  return reveal || SAFE[shape].test(part) ? part : MASK;
-}
-
 /** "uptrend pullback 0.31 ATR above EMA20, 1h +0.22%, 24h +0.38%" as readable points, or null if it doesn't match. */
-function entryEvidence(reason, shown = (t) => t, reveal = true) {
+function entryEvidence(reason) {
   const m = /^(.*?),?\s+(-?[\d.]+) ATR above EMA20,\s*1h (\S+),\s*24h (\S+)$/.exec(reason.trim());
   if (!m) return null;
   const setup = m[1].trim();
   const trend = /^test entry \(trend (up|down|flat)\)$/.exec(setup); // the engine's words only
   const points = [
-    trend ? `Test entry: the strategy buys whatever passes the filters, whatever the trend (now ${trend[1]})` : `Setup: ${shown(setup)}`,
-    `Price is ${checked(m[2], 'ratio', reveal)}× the hourly range (ATR) above its 20-hour average (EMA20)`,
+    trend ? `Test entry: the strategy buys whatever passes the filters, whatever the trend (now ${trend[1]})` : `Setup: ${setup}`,
+    `Price is ${m[2]}× the hourly range (ATR) above its 20-hour average (EMA20)`,
   ];
-  const hour = checked(pctText(m[3]), 'move', reveal);
-  const day = checked(pctText(m[4]), 'move', reveal);
+  const hour = pctText(m[3]);
+  const day = pctText(m[4]);
   if (hour || day) points.push(`Moves: last hour ${hour ?? 'n/a'}, last 24 hours ${day ?? 'n/a'}`);
   return points;
 }
@@ -97,15 +79,10 @@ function pctFrom(level, price) {
   return `${v > 0 ? '+' : ''}${v.toFixed(2)}%`;
 }
 
-function riskPoint(d, reveal, riskQuote) {
+function riskPoint(d, riskQuote) {
   const stop = d.stopLoss ?? null;
   const target = d.takeProfit ?? null;
   if (stop === null && target === null && riskQuote === null) return null;
-  if (!reveal) {
-    return {
-      text: stop !== null && target !== null ? 'Stop-loss and take-profit set' : stop !== null ? 'Stop-loss set, no take-profit' : 'No stop-loss',
-    };
-  }
   const price = d.approvedPrice ?? d.requestedPrice ?? null;
   const parts = [];
   if (stop !== null) parts.push(`stop ${stop}${pctFrom(stop, price) ? ` (${pctFrom(stop, price)})` : ''}`);
@@ -126,9 +103,9 @@ function rule(d) {
   return GATE_RULES[d.rule] ?? d.rule ?? null;
 }
 
-/** What happened to the order. reason is the gate's own text: shown to the owner, masked on the public page. */
-function outcome(d, shown) {
-  const why = d.reason ? ` (${shown(d.reason)})` : '';
+/** What happened to the order, with the gate's own text as its reason. */
+function outcome(d) {
+  const why = d.reason ? ` (${d.reason})` : '';
   switch (d.status) {
     case 'placed': return d.rule && d.rule !== 'ok' ? `Placed, ${rule(d)}${why}` : 'Placed';
     case 'uncertain': return "Sent; the exchange's answer was lost, so it is held until reconciled";
@@ -143,32 +120,27 @@ function outcome(d, shown) {
 
 /**
  * @param {{kind: string, actor: string, data?: object, summary?: string}} entry A journal "order" entry.
- * @param {{reveal?: boolean, mask?: (s: string) => string}} options mask hides levels in free text on the public page.
  * @returns {{headline: string, points: string[], risk: object|null, outcome: string|null, source: string, raw: string|null}}
  */
-function explain(entry, { reveal = false, mask = (s) => s } = {}) {
+function explain(entry) {
   const d = entry.data ?? {};
   const tool = d.tool ?? null;
   const symbol = d.symbol ?? '';
   const rationale = typeof d.rationale === 'string' ? d.rationale.trim() : '';
-  const shown = (text) => (reveal ? text : mask(text));
-  // A direct sell quotes the owner's note, and the trader's answer to a request may: neither is public.
-  const raw = !rationale ? null : !reveal && tool === 'manual-direct' ? "Owner's direct sell."
-    : !reveal && tool === 'manual-agent' ? "The trader's answer to an owner request." : shown(rationale);
-  const out = outcome(d, shown);
+  const raw = rationale || null;
+  const out = outcome(d);
 
   if (tool === 'cancel_order') {
-    return { headline: `Cancel an open order${symbol ? ` for ${symbol}` : ''}`, points: rationale ? [shown(rationale)] : [], risk: null, outcome: out, source: entry.actor ?? 'trader', raw };
+    return { headline: `Cancel an open order${symbol ? ` for ${symbol}` : ''}`, points: rationale ? [rationale] : [], risk: null, outcome: out, source: entry.actor ?? 'trader', raw };
   }
 
   const entryMatch = ENTRY.exec(rationale);
   if (entryMatch) {
     const [, sym, rank, reason, stop, target, risk] = entryMatch;
-    const evidence = entryEvidence(reason, shown, reveal);
     return {
-      headline: `${verb('buy')} ${checked(sym, 'symbol', reveal)}: the scanner's #${checked(rank, 'rank', reveal)} ranked coin had an entry signal`,
-      points: evidence ?? [shown(reason)],
-      risk: riskPoint({ ...d, stopLoss: d.stopLoss ?? stop ?? null, takeProfit: d.takeProfit ?? target ?? null }, reveal, risk ?? null),
+      headline: `${verb('buy')} ${sym}: the scanner's #${rank} ranked coin had an entry signal`,
+      points: entryEvidence(reason) ?? [reason],
+      risk: riskPoint({ ...d, stopLoss: d.stopLoss ?? stop ?? null, takeProfit: d.takeProfit ?? target ?? null }, risk ?? null),
       outcome: out,
       source: 'scanner signal',
       raw,
@@ -178,12 +150,12 @@ function explain(entry, { reveal = false, mask = (s) => s } = {}) {
   const exitMatch = EXIT.exec(rationale);
   if (exitMatch) {
     const [, origin, sym, reason, detail] = exitMatch;
-    const why = EXIT_REASON[reason] ?? `Exit signal: ${reveal ? reason : 'see the trader\'s text'}`;
+    const why = EXIT_REASON[reason] ?? `Exit signal: ${reason}`;
     return {
-      headline: `${verb('sell')} ${checked(sym, 'symbol', reveal)}: ${why.charAt(0).toLowerCase()}${why.slice(1)}`,
+      headline: `${verb('sell')} ${sym}: ${why.charAt(0).toLowerCase()}${why.slice(1)}`,
       points: [origin.toLowerCase() === 'protective'
         ? 'The engine sends this sell itself, without an agent run, whenever a stop or target is reached'
-        : 'The trader acted on the scanner\'s exit signal', ...(detail ? [reveal ? `Detail: ${detail}` : null] : [])].filter(Boolean),
+        : 'The trader acted on the scanner\'s exit signal', ...(detail ? [`Detail: ${detail}`] : [])],
       risk: null,
       outcome: out,
       source: origin.toLowerCase() === 'protective' ? 'protective exit' : 'scanner signal',
@@ -192,10 +164,9 @@ function explain(entry, { reveal = false, mask = (s) => s } = {}) {
   }
 
   if (tool === 'manual-direct' || DIRECT.test(rationale)) {
-    // The owner's note is for the owner and the trader: the public page doesn't show it.
-    const note = reveal ? DIRECT.exec(rationale)?.[1] : null;
+    const note = DIRECT.exec(rationale)?.[1];
     return {
-      headline: `${verb('sell')} ${symbol}: ${reveal ? 'your' : "the owner's"} direct sell request`,
+      headline: `${verb('sell')} ${symbol}: your direct sell request`,
       points: [note ? `Your note: ${note}` : 'Requested from the dashboard; the engine sells at the bid, without an agent run'],
       risk: null,
       outcome: out,
@@ -206,9 +177,9 @@ function explain(entry, { reveal = false, mask = (s) => s } = {}) {
 
   if (tool === 'manual-agent') {
     return {
-      headline: `${verb(d.side)} ${symbol}: the trader agreed to ${reveal ? 'your' : "the owner's"} request`,
-      points: !reveal ? ["The trader analysed the owner's request and decided to act on it"] : rationale ? [`Trader's reasoning: ${rationale}`] : [],
-      risk: d.side === 'buy' ? riskPoint(d, reveal, null) : null,
+      headline: `${verb(d.side)} ${symbol}: the trader agreed to your request`,
+      points: rationale ? [`Trader's reasoning: ${rationale}`] : [],
+      risk: d.side === 'buy' ? riskPoint(d, null) : null,
       outcome: out,
       source: 'owner request',
       raw,
@@ -218,8 +189,8 @@ function explain(entry, { reveal = false, mask = (s) => s } = {}) {
   // Anything else: the agent's own words, as written.
   return {
     headline: `${verb(d.side)}${symbol ? ` ${symbol}` : ''}`,
-    points: rationale ? [shown(rationale)] : [],
-    risk: d.side === 'buy' ? riskPoint(d, reveal, null) : null,
+    points: rationale ? [rationale] : [],
+    risk: d.side === 'buy' ? riskPoint(d, null) : null,
     outcome: out,
     source: tool ?? entry.actor ?? 'unknown',
     raw,

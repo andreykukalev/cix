@@ -24,7 +24,7 @@
       <button type="button" id="refresh" class="ghost" title="Refresh now">Refresh</button>
       <span id="updated" class="muted small" aria-live="polite">Loading…</span>
       <span id="who" class="small muted"></span>
-      <a id="sign-in" class="small" href="/.auth/login/aad?post_login_redirect_uri=/">Owner sign-in</a>
+      <a id="sign-out" class="button ghost small" href="/.auth/logout?post_logout_redirect_uri=/signed-out.html">Sign out</a>
     </div>
   </header>
 
@@ -60,12 +60,12 @@
         <span id="coins-meta" class="muted small"></span>
       </div>
       <p id="request-status" class="request-status" role="status" aria-live="polite" hidden></p>
-      <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Note</th><th class="owner-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
-      <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan; prices are never shown here.</p>
+      <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Note</th><th class="paper-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
+      <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan.</p>
     </section>
 
-    <section class="panel owner-only" aria-labelledby="h-requests" hidden>
-      <div class="panel-head"><h2 id="h-requests">Your requests</h2><span class="muted small">last 7 days, paper · only you see this</span></div>
+    <section class="panel" aria-labelledby="h-requests">
+      <div class="panel-head"><h2 id="h-requests">Your requests</h2><span class="muted small">last 7 days, paper</span></div>
       <table id="requests"><thead><tr><th>Sent</th><th>Request</th><th>How</th><th>Status</th><th>Outcome</th><th>Steps</th></tr></thead><tbody></tbody></table>
     </section>
 
@@ -92,7 +92,7 @@
       <div class="split">
         <div>
           <h3>Holdings</h3>
-          <table id="holdings"><thead><tr><th>Coin</th><th class="num">Value</th><th>Plan</th><th>Stop set</th></tr></thead><tbody></tbody></table>
+          <table id="holdings"><thead><tr><th>Coin</th><th class="num">Value</th><th class="num">Entry</th><th class="num">Stop</th><th class="num">Target</th><th>Plan</th></tr></thead><tbody></tbody></table>
         </div>
         <div>
           <h3>Balances <span class="muted small">(paper account)</span></h3>
@@ -107,7 +107,7 @@
       <div class="split">
         <div>
           <h3>Orders in flight</h3>
-          <table id="orders"><thead><tr><th>Sent</th><th>Coin</th><th>Side</th><th class="num">Size</th><th>Source</th><th>Order</th></tr></thead><tbody></tbody></table>
+          <table id="orders"><thead><tr><th>Sent</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Limit</th><th>Source</th><th>Order</th></tr></thead><tbody></tbody></table>
         </div>
         <div>
           <h3>Agents</h3>
@@ -118,12 +118,12 @@
 
     <section class="panel" aria-labelledby="h-trades">
       <div class="panel-head"><h2 id="h-trades">Executed trades</h2><span class="muted small">last 48 hours</span></div>
-      <table id="trades"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th class="num">Size</th><th>By</th><th>Status</th><th>Order</th></tr></thead><tbody></tbody></table>
+      <table id="trades"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Price</th><th class="num">Fee</th><th>By</th><th>Status</th><th>Order</th></tr></thead><tbody></tbody></table>
     </section>
 
     <section class="panel" aria-labelledby="h-decisions">
-      <div class="panel-head"><h2 id="h-decisions">Decisions</h2><span id="decisions-meta" class="muted small">orders placed, refused or cancelled: the reason first, the technical text under it</span></div>
-      <table id="decisions"><thead><tr><th>Time</th><th>By</th><th>Action</th><th>Coin</th><th>Side</th><th class="num">Size</th><th>Status</th><th>Why</th></tr></thead><tbody></tbody></table>
+      <div class="panel-head"><h2 id="h-decisions">Decisions</h2><span id="decisions-meta" class="muted small">orders placed, refused or cancelled: the reason first, with stops, targets and risk in figures, and the technical text under it</span></div>
+      <table id="decisions"><thead><tr><th>Time</th><th>By</th><th>Action</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Price</th><th>Status</th><th>Why</th></tr></thead><tbody></tbody></table>
     </section>
 
     <section class="panel" aria-labelledby="h-problems">
@@ -172,7 +172,7 @@
         <label><input type="radio" name="mode" value="agent"> Ask the trader: it analyses first, may decline</label>
       </fieldset>
       <label id="buy-amount" class="field">Amount <input type="text" name="quoteAmount" inputmode="decimal" autocomplete="off" placeholder="25"> <span id="buy-quote" class="muted"></span></label>
-      <label class="field">Note for the trader <span class="muted small">(optional; only you and the trader see it)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
+      <label class="field">Note for the trader <span class="muted small">(optional)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
       <p id="request-summary" class="summary"></p>
       <p id="request-error" class="error" role="alert" hidden></p>
       <div class="actions">
@@ -183,7 +183,7 @@
   </dialog>
 
   <footer class="muted small">
-    Public view: read-only, with no order levels (no entry, stop, target or fill prices; numbers in journal notes are masked as …). The journal keeps them. Signed in as the owner, you can send paper buy and sell requests; the engine checks each one and every order goes through the risk gate.
+    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; the engine checks each one and every order goes through the risk gate.
     News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.
   </footer>
 </body>

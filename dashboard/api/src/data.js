@@ -2,8 +2,8 @@
 // Reads what the dashboard shows from Cosmos DB: the state documents and the last two days of the journal. Each read can
 // fail on its own; the dashboard then shows what it has and says what it couldn't read.
 
-const { summarize, publicSummary, decisions } = require('./summarize');
-const { activity, publicActivity, fromDay } = require('./activity');
+const { summarize, journalItem } = require('./summarize');
+const { activity, fromDay } = require('./activity');
 const { history, historyItem } = require('./requests');
 
 const MODES = new Set(['paper', 'live']);
@@ -84,8 +84,7 @@ async function loadJournalDay(reader, day, kind, limit, now = Date.now()) {
     ? `SELECT TOP ${top} * FROM c WHERE c.entry.kind = @kind ORDER BY c.entry.at DESC`
     : `SELECT TOP ${top} * FROM c ORDER BY c.entry.at DESC`;
   const docs = await reader.query('journal', sql, { partitionKey: day, parameters: kind ? [{ name: '@kind', value: kind }] : [], maxItems: top });
-  // Public page: the same fields as the activity list, levels blanked; no raw data (it holds stops and targets).
-  return docs.map((d) => d.entry).filter(Boolean).map((e) => ({ id: e.id, at: e.at, kind: e.kind, actor: e.actor, runId: e.runId ?? null, summary: publicSummary(e) }));
+  return docs.map((d) => d.entry).filter(Boolean).map(journalItem);
 }
 
 const FILLS_MAX = 5000;
@@ -94,24 +93,13 @@ const FILLS_MAX = 5000;
  * Trading activity for the period switch (day, week or month): executed trades only (journal "fill" entries), read across
  * the day partitions the periods cover. Paper only for now: the journal has no mode tag yet (#65), and only paper runs.
  */
-async function loadActivity(reader, period, now, { amounts = false } = {}) {
+async function loadActivity(reader, period, now) {
   const from = fromDay(period, now); // throws RangeError for an unknown period
   const fills = await reader.query('journal', 'SELECT c.entry.at AS at, c.entry.data AS data FROM c WHERE c.day >= @from AND c.entry.kind = @kind', {
     parameters: [{ name: '@from', value: from }, { name: '@kind', value: 'fill' }],
     maxItems: FILLS_MAX,
   });
-  const full = { ...activity(fills, period, now), truncated: fills.length >= FILLS_MAX };
-  return amounts ? full : publicActivity(full);
-}
-
-/** The owner's view of recent decisions: the same list as the public page, with levels and prices kept. */
-async function loadOwnerDecisions(reader, now) {
-  const sql = `SELECT TOP ${JOURNAL_PER_DAY} * FROM c WHERE c.entry.kind = @kind ORDER BY c.entry.at DESC`;
-  const parameters = [{ name: '@kind', value: 'order' }];
-  const days = [utcDay(now), utcDay(now - 24 * 3600 * 1000)];
-  const pages = await Promise.all(days.map((day) => reader.query('journal', sql, { partitionKey: day, parameters, maxItems: JOURNAL_PER_DAY })));
-  const entries = pages.flat().map((d) => d.entry).filter(Boolean);
-  return { generatedAt: new Date(now).toISOString(), decisions: decisions(entries, { reveal: true }).slice(0, 50) };
+  return { ...activity(fills, period, now), truncated: fills.length >= FILLS_MAX };
 }
 
 const REQUEST_DAYS = 7;
@@ -134,4 +122,4 @@ async function loadRequest(reader, day, id) {
   return doc && doc.type === 'manual-request' ? historyItem(doc) : null;
 }
 
-module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadOwnerDecisions, loadRequests, loadRequest, utcDay, KINDS };
+module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadRequests, loadRequest, utcDay, KINDS };

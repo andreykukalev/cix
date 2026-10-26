@@ -1,14 +1,16 @@
 'use strict';
-// The dashboard's API (Static Web Apps managed functions, under /api). Read-only: GET only, and the Cosmos DB key it uses
-// is the read-only one, kept in the app's settings on the server. Responses are cached for a few seconds per instance, so
-// a busy (public) page can't use up the database throughput the engine needs.
+// The dashboard's reads (Static Web Apps managed functions, under /api): GET only, with the Cosmos DB read-only key kept in
+// the app's settings on the server. Only the confirmed owner gets an answer (ADR-0014): the routes require the owner role,
+// and each handler checks again before anything is read or taken from the cache. Answers are kept a few seconds per
+// instance, so refreshes and several open tabs share one database read; a browser never keeps them (no-store).
 
 const { app } = require('@azure/functions');
 const { CosmosReader } = require('../cosmos');
 const { loadDashboard, loadJournalDay, journalRequest, loadActivity } = require('../data');
+const { isOwner, forbidden } = require('../auth');
 
 const CACHE_MS = 20_000;
-const ACTIVITY_CACHE_MS = 5 * 60_000; // a query across up to a year of day partitions: rarely
+const ACTIVITY_CACHE_MS = 60_000; // a query across up to a year of day partitions: at most once a minute
 const cache = new Map();
 let reader;
 
@@ -36,14 +38,15 @@ async function cached(key, load, ttl = CACHE_MS) {
   }
 }
 
-function respond(body, status = 200, ttl = CACHE_MS) {
-  const cacheControl = status === 200 ? `public, max-age=${ttl / 1000}` : 'no-store'; // never keep an error around
-  return { status, jsonBody: body, headers: { 'cache-control': cacheControl, 'x-content-type-options': 'nosniff' } };
+function respond(body, status = 200) {
+  return { status, jsonBody: body, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } };
 }
 
-async function handle(context, load, ttl = CACHE_MS) {
+/** Runs load for the owner only: anyone else gets 403 before the database or the cache is touched. */
+async function handle(request, context, load) {
+  if (!isOwner(request)) return forbidden();
   try {
-    return respond(await load(), 200, ttl);
+    return respond(await load());
   } catch (error) {
     if (error instanceof RangeError) return respond({ error: error.message }, 400);
     context.error(`Dashboard read failed: ${error?.name ?? 'Error'} ${error?.status ?? ''}`); // never the key or the request
@@ -55,7 +58,7 @@ app.http('dashboard', {
   methods: ['GET'],
   authLevel: 'anonymous',
   route: 'dashboard',
-  handler: (request, context) => handle(context, () => {
+  handler: (request, context) => handle(request, context, () => {
     const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
     return cached(`dashboard:${mode}`, () => loadDashboard(getReader(), mode, Date.now()));
   }),
@@ -65,7 +68,7 @@ app.http('journal', {
   methods: ['GET'],
   authLevel: 'anonymous',
   route: 'journal',
-  handler: (request, context) => handle(context, () => {
+  handler: (request, context) => handle(request, context, () => {
     const now = Date.now();
     const r = journalRequest(request.query.get('day'), request.query.get('kind') ?? '', request.query.get('limit') ?? '100', now);
     return cached(r.key, () => loadJournalDay(getReader(), r.day, r.kind, String(r.top), now));
@@ -76,9 +79,11 @@ app.http('activity', {
   methods: ['GET'],
   authLevel: 'anonymous',
   route: 'activity',
-  handler: (request, context) => handle(context, () => {
+  handler: (request, context) => handle(request, context, () => {
     const period = request.query.get('period') ?? 'day';
     if (!['day', 'week', 'month'].includes(period)) throw new RangeError('period must be day, week or month');
     return cached(`activity:${period}`, () => loadActivity(getReader(), period, Date.now()), ACTIVITY_CACHE_MS);
-  }, ACTIVITY_CACHE_MS),
+  }),
 });
+
+module.exports = { handle };

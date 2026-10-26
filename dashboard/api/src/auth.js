@@ -1,8 +1,9 @@
 'use strict';
 // Who is calling, from what Static Web Apps tells the API. The platform signs the user in (Microsoft accounts only, see
 // staticwebapp.config.json) and passes the identity in the x-ms-client-principal header; a browser can't set it, because
-// the platform replaces it on every request to the managed API. The routes already require the owner role; this checks
-// again, so a route rule edited by mistake can't open the write path.
+// the platform replaces it on every request to the managed API. The whole dashboard is the owner's (ADR-0014): the routes
+// already require the owner role, and every API handler checks again with isOwner, so a route rule edited by mistake
+// can't open any read or the write path.
 
 const OWNER_ROLE = 'owner';
 const PROVIDER = 'aad';
@@ -30,4 +31,11 @@ function isOwner(request, ownerId = process.env.DASHBOARD_OWNER_USER_ID) {
     && typeof p.userId === 'string' && p.userId === ownerId);
 }
 
-module.exports = { principal, isOwner, OWNER_ROLE };
+const NOT_OWNER = "Only the dashboard's confirmed owner can see this (setup-dashboard-requests.ps1 confirms you).";
+
+/** The answer to anyone but the owner: nothing about the account, never cached. */
+function forbidden() {
+  return { status: 403, jsonBody: { error: NOT_OWNER }, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } };
+}
+
+module.exports = { principal, isOwner, forbidden, OWNER_ROLE };

@@ -23,7 +23,7 @@ To run paper trading (Cosmos DB emulator, engine and trader in Docker, restarted
 docker compose up -d --build
 ```
 
-See [`docs/docker.md`](docs/docker.md). To keep the data in Azure Cosmos DB and watch the bot on a read-only dashboard, see [`docs/azure.md`](docs/azure.md). To develop, you need the .NET 10 SDK:
+See [`docs/docker.md`](docs/docker.md). To keep the data in Azure Cosmos DB and watch the bot on a private dashboard, see [`docs/azure.md`](docs/azure.md). To develop, you need the .NET 10 SDK:
 
 ```bash
 dotnet build Cix.slnx
