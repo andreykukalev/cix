@@ -554,7 +554,7 @@ Check 'setup-dashboard-requests.ps1 run again changes nothing that is already in
 }
 
 Check 'setup-dashboard-requests.ps1 -RotateSecret replaces the secret only' {
-  $r = Invoke-SetupWriter $existingWriter @{} @{ RotateSecret = $true }
+  $r = Invoke-SetupWriter $existingWriter @{ 'ad app credential' = $newWriter['ad app credential'] } @{ RotateSecret = $true }
   if ($r.Error) { throw "failed: $($r.Error)" }
   if ($r.Calls -notmatch 'ad app credential reset' -or $r.Calls -notmatch '--method put') { throw "the secret wasn't replaced: $($r.Calls)" }
   if ($r.Calls -match '(?m)\bcreate\b') { throw 'it created something' }
