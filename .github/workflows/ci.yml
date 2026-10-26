@@ -265,22 +265,28 @@ jobs:
       - name: Is this still the tip of main?
         id: tip
         env:
-          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
-          TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }} # this step only
         run: |
           # Runs can finish out of order; an older one must not publish over a newer dashboard. A newer push that didn't
           # change the dashboard doesn't publish, so an older run still publishes when its dashboard (and the workflow that
-          # deploys it) is the tip's.
-          git() { command git -c "http.extraheader=AUTHORIZATION: bearer $TOKEN" "$@"; }
-          tip=$(git ls-remote "$REPO_URL" refs/heads/main | cut -f1)
+          # deploys it) is the tip's. Asked through the API, as the deploy job does: git over https with the job's token
+          # (a bearer header) couldn't read this private repository, so no run ever published.
+          if ! tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || [ -z "$tip" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Couldn't read the tip of main, so the dashboard isn't published."
+            exit 1
+          fi
           if [ "$tip" = "$GITHUB_SHA" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
-          elif git fetch -q --depth=1 --no-tags "$REPO_URL" "$tip" && git diff --quiet "$GITHUB_SHA" "$tip" -- dashboard infra .github/workflows; then
+          elif changed=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$tip" --jq '
+                 if .status == "ahead" and (.files | length) < 300
+                 then [.files[].filename | select(startswith("dashboard/") or startswith("infra/") or startswith(".github/workflows/"))] | length
+                 else -1 end') && [ "$changed" = 0 ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "::notice::main has moved on, but its dashboard is this one; publishing."
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::main has moved on with dashboard changes; the newer run publishes the dashboard."
+            echo "::notice::main has moved on with dashboard changes ($tip); the newer run publishes the dashboard."
           fi
 
       - uses: actions/setup-node@v4

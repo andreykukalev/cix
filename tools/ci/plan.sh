@@ -89,7 +89,12 @@ if [[ "$EVENT" == "push" && "$ci_changed" == false ]]; then
   # gh prints an HTTP error's body on stdout: anything that isn't a pull request number and a commit is no pull request.
   [[ "${number:-}" =~ ^[0-9]+$ && "${pr_head:-}" =~ ^[0-9a-f]{40}$ ]] || pr=""
   if [[ -n "$pr" ]]; then
-    git cat-file -e "$pr_head^{commit}" 2>/dev/null || git -c "http.extraheader=AUTHORIZATION: bearer $GH_TOKEN" fetch -q --no-tags origin "refs/pull/$number/head" 2>/dev/null || true
+    if ! git cat-file -e "$pr_head^{commit}" 2>/dev/null; then
+      # The job's token as actions/checkout sends it (basic, x-access-token): GitHub refuses a bearer header for git.
+      auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+      echo "::add-mask::$auth"
+      git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch -q --no-tags origin "refs/pull/$number/head" 2>/dev/null || true
+    fi
   fi
   # A base changed at any time (for example from a stacked branch to main) means a run may have tested another merge, with
   # another workflow file: reuse nothing. With no change the base was main, which only moves forward, so the run's merge
