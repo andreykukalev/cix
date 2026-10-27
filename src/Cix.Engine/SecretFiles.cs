@@ -40,7 +40,7 @@ public static class SecretFiles
             if (present.Count > 0)
             {
                 throw new InvalidOperationException(
-                    $"Paper mode holds no trading credentials, but {string.Join(" and ", present)} is in {directory}. Remove it; only the live engine gets the Revolut X keys.");
+                    $"Paper mode holds no trading credentials, but {directory} has {string.Join(" and ", present)}. Remove them; only the live engine gets the Revolut X keys.");
             }
         }
 

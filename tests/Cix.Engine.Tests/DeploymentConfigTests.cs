@@ -40,12 +40,14 @@ public sealed class DeploymentConfigTests
             File.WriteAllText(Path.Combine(dir, "RevolutX__ApiKey"), apiKey);
             File.WriteAllText(Path.Combine(dir, "RevolutX__PrivateKeyPem"), pem);
             File.WriteAllText(Path.Combine(dir, "RevolutX__BaseAddress"), "https://example.com");
+            File.WriteAllText(Path.Combine(dir, "Trading__Mode"), "Paper");
 
             var live = new ConfigurationBuilder().AddCixSecretFiles(dir, TradingMode.Live).Build();
 
             Assert.Equal(apiKey, live["RevolutX:ApiKey"]);
             Assert.Equal(pem.TrimEnd(), live["RevolutX:PrivateKeyPem"]?.TrimEnd());
             Assert.Null(live["RevolutX:BaseAddress"]); // only the keys, never an endpoint
+            Assert.Null(live["Trading:Mode"]);         // nor the mode, in Live as in Paper
         }
         finally
         {

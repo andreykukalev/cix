@@ -30,5 +30,5 @@ public sealed class RevolutXOptions
 
     /// <summary>Never prints credentials.</summary>
     public override string ToString() =>
-        $"RevolutXOptions {{ BaseAddress = {BaseAddress}, ApiKey = {(string.IsNullOrEmpty(ApiKey) ? "<missing>" : "<set>")}, PrivateKeyPem = {(string.IsNullOrEmpty(PrivateKeyPem) ? "<missing>" : "<set>")} }}";
+        $"RevolutXOptions {{ BaseAddress = {BaseAddress}, ApiKey = {(string.IsNullOrWhiteSpace(ApiKey) ? "<missing>" : "<set>")}, PrivateKeyPem = {(string.IsNullOrWhiteSpace(PrivateKeyPem) ? "<missing>" : "<set>")} }}";
 }
