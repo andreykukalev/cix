@@ -112,6 +112,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .figures { display: flex; flex-wrap: wrap; gap: 10px 28px; }
 .figure .label { display: block; font-size: 12px; color: var(--muted); }
 .figure .amount { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.figure .signal-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; max-width: 360px; }
+.badge.signal { text-transform: none; letter-spacing: 0; font-weight: 500; }
 .pos { color: var(--ok); }
 .neg { color: var(--bad); }
 
@@ -167,7 +169,13 @@ button.buy { color: var(--ok); border-color: var(--ok); }
 button.sell { color: var(--bad); border-color: var(--bad); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.request-status { margin: 0 0 10px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--chip); }
+.request-status { margin: 0 0 10px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--chip);
+  display: flex; align-items: flex-start; gap: 10px; }
+.request-status[hidden] { display: none; }
+.request-status-text { flex: 1; }
+.request-status-close { flex: none; border: 0; background: none; color: inherit; font-size: 18px; line-height: 1; padding: 0 2px; cursor: pointer; opacity: 0.7; }
+.request-status-close:hover, .request-status-close:focus-visible { opacity: 1; }
+
 .request-status.pending { border-left: 4px solid var(--accent); }
 .request-status.ok { background: var(--ok-bg); color: var(--ok); }
 .request-status.warn { background: var(--warn-bg); color: var(--warn); }

@@ -249,3 +249,11 @@ test('a pair with any balance or a working order can not be removed, and the pag
   assert.equal(V.removeBlock('LINK-EUR', view), null);
   assert.equal(V.removeBlock('LINK-EUR', null), null);
 });
+
+test('the signal key reads as one chip per coin, buys first, each with what the trader will do', () => {
+  const items = V.signalItems('buy:XRP-EUR|sell:BTC-EUR:trend-down|buy:BCH-EUR|stale-order:ETH-EUR|odd');
+  assert.deepEqual(items.map((i) => [i.kind, i.symbol]), [['buy', 'BCH-EUR'], ['buy', 'XRP-EUR'], ['sell', 'BTC-EUR'], ['stale', 'ETH-EUR']]);
+  assert.equal(items[2].title, 'Sell signal (the trend turned down): the trader sells it in its next run.');
+  assert.deepEqual(V.signalItems(''), []);
+  assert.deepEqual(V.signalItems(undefined), []);
+});

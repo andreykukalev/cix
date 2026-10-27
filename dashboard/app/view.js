@@ -403,6 +403,24 @@
       .replace(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/g, (m) => t(m));
   }
 
+  // The scanner's signal key (buy:SOL-EUR|sell:BTC-EUR:stop|stale-order:ETH-EUR), the items the next trader run acts on.
+  const SELL_REASONS = { stop: 'at the stop-loss', target: 'at the take-profit', 'trend-down': 'the trend turned down' };
+
+  /** The signal key as one item per coin, buys first: its kind (buy, sell or stale), the coin and a sentence for its title. */
+  function signalItems(key) {
+    const order = { buy: 0, sell: 1, stale: 2 };
+    return String(key ?? '').split('|').filter(Boolean).map((item) => {
+      const [kind, symbol, reason] = item.split(':');
+      if (kind === 'buy' && symbol) return { kind: 'buy', symbol, title: t('Buy signal: the trader may buy it in its next run.') };
+      if (kind === 'sell' && symbol) {
+        const why = Object.hasOwn(SELL_REASONS, reason) ? t(SELL_REASONS[reason]) : reason ?? '';
+        return { kind: 'sell', symbol, title: t('Sell signal ({why}): the trader sells it in its next run.', { why }) };
+      }
+      if (kind === 'stale-order' && symbol) return { kind: 'stale', symbol, title: t('An order older than 50 minutes: the trader cancels it in its next run.') };
+      return null;
+    }).filter(Boolean).sort((a, b) => order[a.kind] - order[b.kind] || a.symbol.localeCompare(b.symbol));
+  }
+
   /** Who is signed in, from /.auth/me, for the header. Who may see what is decided by the platform and the API, not here. */
   function viewer(me) {
     const p = me?.clientPrincipal ?? null;
@@ -412,6 +430,6 @@
   return {
     change, coins, why, removeBlock, BLOCK_DETAILS, WHY_LABELS, stepDetail, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
     paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES, pairsNote, SELECTION, SELL_DESCRIPTIONS,
-    contentLang, pick, months,
+    contentLang, pick, months, signalItems,
   };
 }));

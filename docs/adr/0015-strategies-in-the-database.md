@@ -33,7 +33,7 @@ The engine ran one strategy spec, chosen in configuration and loaded from a file
 - The owner switches paper strategies with one document, and each switch and refusal is in the journal.
 - Strategy limits are now engine-enforced; `config/risk-limits.json` and the risk gate are untouched.
 - A switch rescans at once and trims holdings above the new strategy's per-coin and total caps, once, with sells through the risk gate (source `strategy-trim`). Before that, a switch to a smaller strategy left the holdings as they were and only blocked new buys.
-- The order-size hook in the trader container still reads the configured spec's `orderQuote` (5.5 EUR with `good` v1). It needs the owner's change to allow Balanced and Risky orders above that.
+- The order-size hook in the trader container can't see the engine's active strategy, so it allows a buy up to the largest `orderQuote` of any spec in `strategies/` (+10%, 22 EUR with Risky v2), as the owner chose on 27 Oct 2026. The engine's strategy gate holds each buy to the active spec's `orderQuote`. Until then the hook read the configured spec (`good` v1, 5.5 EUR) and blocked every Balanced and Risky buy.
 - After a restart, the cooldown and the per-run counts know only buys still working or with an open plan.
 - Version documents hold parameters as JSON numbers, which Cosmos DB stores as doubles, unlike the engine's own documents (strings). Today's values (whole euros, short fractions) round-trip exactly, and the hash would show any change. The engine reads them into `decimal`.
 - Editing a version document in place is ignored until the selection is saved again; editing one is against the rule anyway.

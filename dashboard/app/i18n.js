@@ -435,6 +435,13 @@
     'Held back': 'Придержана',
     'New pair': 'Новая пара',
     'Why no buy': 'Почему нет покупки',
+    Close: 'Закрыть',
+    'Buy signal: the trader may buy it in its next run.': 'Сигнал на покупку: трейдер может купить её в следующем запуске.',
+    'Sell signal ({why}): the trader sells it in its next run.': 'Сигнал на продажу ({why}): трейдер продаст её в следующем запуске.',
+    'An order older than 50 minutes: the trader cancels it in its next run.': 'Ордер старше 50 минут: трейдер отменит его в следующем запуске.',
+    'at the stop-loss': 'достигнут stop-loss',
+    'at the take-profit': 'достигнут take-profit',
+    'the trend turned down': 'тренд развернулся вниз',
     'the market filters dropped it before ranking (trading volume, spread, volatility, costs, too few prices, or not a tradable pair), with the figure and the limit.':
       'рыночные фильтры убрали её до ранжирования (объём торгов, спред, волатильность, издержки, слишком мало цен или пара не торгуется); указаны значение и предел.',
     "ranked, but the strategy's entry rules turned it down (trend, pullback, last hour).":
@@ -717,7 +724,7 @@
 
   /** Words that stay as they are in Russian: names, tickers, technical identifiers the journal filter sends as values. */
   const UNTRANSLATED = new Set([
-    'CIX', 'RU', 'EN', '1h', '24h', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '–',
+    'CIX', 'RU', 'EN', '1h', '24h', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '–', '×',
     'order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request',
     'scanner-filters', 'scan-eligibility', 'strategy', 'pairs',
   ]);
