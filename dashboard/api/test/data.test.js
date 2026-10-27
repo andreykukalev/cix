@@ -37,6 +37,8 @@ test('reads today and yesterday as single-partition queries and the state list',
   assert.equal(views.length, 2);
   assert.ok(views.every((q) => q.sql.startsWith('SELECT TOP 1 * FROM c WHERE c.entry.kind = @kind') && q.parameters[0].value === 'market-view'));
   assert.ok(reader.queries.filter((q) => q.container === 'journal').every((q) => q.sql.includes('ORDER BY')));
+  const recentReads = reader.queries.filter((q) => q.container === 'journal' && q.maxItems !== 1);
+  assert.ok(recentReads.every((q) => q.sql.includes("c.entry.kind != 'balance-snapshot'")), 'snapshots have their own read');
   const stateList = reader.queries.find((q) => q.container === 'state');
   assert.equal(stateList.partitionKey, undefined);
   assert.ok(!stateList.sql.includes('ORDER BY'), 'a cross-partition query must stay simple for the REST gateway');
@@ -120,4 +122,34 @@ test('request history covers the last week, newest first', async () => {
 
 test('the journal filter knows the manual and scanner-filter kinds', () => {
   for (const kind of ['manual-request', 'scanner-filters', 'scan-eligibility']) assert.ok(KINDS.has(kind), kind);
+});
+
+const { loadBalanceHistory } = require('../src/data');
+
+test('balance history reads one mode\'s hourly snapshots across days, oldest first, with each holding\'s value', async () => {
+  const queries = [];
+  const reader = {
+    async query(container, sql, options) {
+      queries.push({ container, sql, ...options });
+      return [
+        { at: '2026-10-25T12:00:00+00:00', data: { source: 'exchange', currency: 'EUR', equity: '101.5', cash: '81.5', exposure: '20', pnlToday: '1.5', 'value:BTC-EUR': '20', 'base:BTC-EUR': '0.0003' } },
+        { at: '2026-10-25T11:00:00+00:00', data: { source: 'exchange', currency: 'EUR', equity: '100', cash: '100', exposure: '0', pnlToday: '0' } },
+      ];
+    },
+  };
+
+  const view = await loadBalanceHistory(reader, '7', NOW, 'live');
+
+  assert.equal(queries.length, 1);
+  assert.equal(queries[0].container, 'journal');
+  assert.equal(queries[0].partitionKey, undefined, 'cross-partition');
+  assert.match(queries[0].sql, /c\.day >= @from AND c\.entry\.kind = @kind AND c\.mode = @mode$/);
+  assert.deepEqual(queries[0].parameters, [{ name: '@from', value: '2026-10-19' }, { name: '@kind', value: 'balance-snapshot' }, { name: '@mode', value: 'live' }]);
+  assert.deepEqual(view.points.map((p) => p.equity), [100, 101.5]);
+  assert.deepEqual(view.points[1].holdings, { 'BTC-EUR': 20 });
+  assert.equal(view.points[1].source, 'exchange');
+  assert.equal(view.truncated, false);
+  assert.ok(KINDS.has('balance-snapshot'));
+  await assert.rejects(loadBalanceHistory(reader, '365', NOW), RangeError);
+  await assert.rejects(loadBalanceHistory(reader, '7', NOW, 'both'), RangeError);
 });
