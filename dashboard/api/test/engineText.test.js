@@ -28,6 +28,16 @@ const SENTENCES = [
   ['See the journal.', null],
   ["The order didn't fill at once; cancelled so it can't hold the position.", null],
   ["The engine has no record of how this order ended (it stopped while sending it, or lost track of it). Check the exchange's order history before sending the request again.", null],
+  // TradingControlService.cs
+  ['Trading halted; 2 open order(s) cancelled.', '2'],
+  ["Trading halted; 2 open order(s) cancelled, 1 couldn't be: check the exchange.", '1'],
+  ['Trading was already halted; the halt and its reason stay as they were.', null],
+  ["Trading wasn't halted; nothing to resume.", null],
+  ['Trading resumed. The risk limits still apply, and the automatic checks can halt it again.', null],
+  ['Trading halted again after you pressed Resume: A safety limit was reached (drawdown, daily loss or stale market data). Check why on the dashboard, then press Resume again if you still want to.', null],
+  ['A newer Pause or Resume request replaced this one.', null],
+  ['The request was more than 5 minutes old when the engine saw it; press the button again.', null],
+  ['Done.', null],
   // TradablePairs.cs, TradableSymbols.cs
   ['VVV-EUR is already tradable.', 'VVV-EUR'],
   ['VVV-EUR is not tradable; nothing to remove.', 'VVV-EUR'],

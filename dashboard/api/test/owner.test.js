@@ -13,8 +13,12 @@ Module._load = function load(request, ...rest) {
 };
 const writes = [];
 const { RequestWriter } = require('../src/writer');
+const writeDatabases = [];
+let writerAnswer = null; // a status the fake Cosmos DB answers instead of creating, e.g. 403 without the role
 RequestWriter.prototype.create = async function create(doc) {
+  if (writerAnswer) { const { WriterError } = require('../src/writer'); throw new WriterError(writerAnswer, 'Cosmos DB'); }
   writes.push(doc);
+  writeDatabases.push(this.database);
   if (stored.has(doc.id) && stored.get(doc.id).day === doc.day) return 'exists'; // ids are unique within a day's partition
   stored.set(doc.id, doc);
   return 'created';
@@ -55,8 +59,8 @@ const BODY = JSON.stringify({ id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f', side: 
 
 test('the owner endpoints are registered under /api/owner', () => {
   assert.deepEqual(Object.values(routes).map((r) => r.route).sort(),
-    ['owner/pair-requests', 'owner/pair-requests/{day}/{id}', 'owner/pairs', 'owner/requests', 'owner/requests/{day}/{id}', 'owner/strategies',
-      'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
+    ['owner/control-requests', 'owner/control-requests/{day}/{id}', 'owner/pair-requests', 'owner/pair-requests/{day}/{id}', 'owner/pairs',
+      'owner/requests', 'owner/requests/{day}/{id}', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
 });
 
 test('the owner creates a request; the same click again is not a second request', async () => {
@@ -255,4 +259,46 @@ test("live's strategy view reads the live engine's database, with paper's explan
   reads.length = 0;
   await routes['owner-requests'].handler(request(), context);
   assert.deepEqual([...new Set(reads.map((r) => r.database))], ['cix']);
+});
+
+test("Pause and Resume: paper's go to paper's database; live's need the owner's confirmation and go to the live engine's", async () => {
+  const post = (body) => routes['owner-control-requests'].handler(request({ method: 'POST', body: JSON.stringify(body) }), context);
+  const id = () => crypto.randomUUID();
+
+  writeDatabases.length = 0;
+  const paper = await post({ id: id(), action: 'pause', note: 'lunch' });
+  assert.equal(paper.status, 201);
+  assert.equal(paper.jsonBody.request.action, 'pause');
+  assert.equal(writes.at(-1).type, 'trading-control');
+  assert.equal(writes.at(-1).tradingMode, 'paper');
+  assert.deepEqual(writeDatabases, ['cix']);
+
+  const unconfirmed = await post({ id: id(), action: 'resume', tradingMode: 'live' });
+  assert.equal(unconfirmed.status, 400);
+  assert.match(unconfirmed.jsonBody.error, /real-money/);
+  assert.deepEqual(writeDatabases, ['cix'], 'nothing written without the confirmation');
+
+  const live = await post({ id: id(), action: 'resume', tradingMode: 'live', confirmLive: true });
+  assert.equal(live.status, 201);
+  assert.deepEqual(writeDatabases, ['cix', 'cix-live']);
+
+  for (const bad of [{ id: id(), action: 'sell-all' }, { id: 'nope', action: 'pause' }, { id: id(), action: 'pause', tradingMode: 'demo' }]) {
+    assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
+  }
+
+  writerAnswer = 403; // the live role isn't granted yet
+  try {
+    const refused = await post({ id: id(), action: 'pause', tradingMode: 'live', confirmLive: true });
+    assert.equal(refused.status, 503);
+    assert.match(refused.jsonBody.error, /-LiveRequests/);
+  } finally { writerAnswer = null; }
+
+  const saved = process.env.COSMOS_LIVE_DATABASE;
+  delete process.env.COSMOS_LIVE_DATABASE;
+  try {
+    const off = await post({ id: id(), action: 'pause', tradingMode: 'live', confirmLive: true });
+    assert.equal(off.status, 503, 'never written to paper\'s database instead');
+    assert.match(off.jsonBody.error, /-LiveRequests/);
+  } finally { process.env.COSMOS_LIVE_DATABASE = saved; }
+  assert.deepEqual(writeDatabases, ['cix', 'cix-live']);
 });

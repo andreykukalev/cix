@@ -10,6 +10,16 @@ const { reasonRu } = require('./explain');
 
 const TREND_RU = { up: 'вверх', down: 'вниз', flat: 'боковой', unknown: 'неизвестен' };
 const SIDE_RU = { buy: 'покупку', sell: 'продажу' };
+// The engine's halt categories (src/Cix.Engine/Status/EngineStatus.cs, HaltCategoryFor), as a refused Resume names them.
+const HALT_RU = {
+  'Paused by the owner.': 'приостановлена владельцем.',
+  'Reconciliation found the account changed outside the engine.': 'сверка обнаружила изменения на счёте, сделанные не движком.',
+  'A safety limit was reached (drawdown, daily loss or stale market data).': 'достигнут предел безопасности (просадка, дневной убыток или устаревшие рыночные данные).',
+  'Too many orders in a row were rejected by the risk gate.': 'риск-контроль отклонил слишком много ордеров подряд.',
+  'Waiting for the owner to confirm before trading starts.': 'ждёт подтверждения владельца перед началом торговли.',
+  "The saved trading pairs couldn't all be restored; check holdings before resuming.": 'не все сохранённые торговые пары удалось восстановить; проверьте позиции перед возобновлением.',
+  'Halted.': 'остановлена.',
+};
 
 /** [pattern, Russian]: the Russian is a string, or a function of the match. Checked in order; the first match wins. */
 const FORMATS = [
@@ -43,6 +53,21 @@ const FORMATS = [
   [/^The order didn't fill at once; cancelled so it can't hold the position\.$/, 'Ордер не исполнился сразу; он отменён, чтобы не удерживать позицию.'],
   [/^The engine has no record of how this order ended/,
     'У движка нет записи о том, чем закончился этот ордер (он остановился во время отправки или потерял ордер из виду). Проверьте историю ордеров на бирже, прежде чем отправлять запрос снова.'],
+
+  // --- Pause and Resume (TradingControlService.cs) -------------------------------------------------------------------------
+  [/^Trading halted; (\d+) open order\(s\) cancelled\.$/, (m) => `Торговля остановлена; отменено открытых ордеров: ${m[1]}.`],
+  [/^Trading halted; (\d+) open order\(s\) cancelled, (\d+) couldn't be: check the exchange\.$/,
+    (m) => `Торговля остановлена; отменено открытых ордеров: ${m[1]}, не удалось отменить: ${m[2]}. Проверьте биржу.`],
+  [/^Trading was already halted; the halt and its reason stay as they were\.$/, 'Торговля уже была остановлена; остановка и её причина не изменились.'],
+  [/^Trading wasn't halted; nothing to resume\.$/, 'Торговля не была остановлена; возобновлять нечего.'],
+  [/^Trading resumed\. The risk limits still apply, and the automatic checks can halt it again\.$/,
+    'Торговля возобновлена. Лимиты риска продолжают действовать, и автоматические проверки могут снова её остановить.'],
+  [/^Trading halted again after you pressed Resume: (.+) Check why on the dashboard, then press Resume again if you still want to\.$/,
+    (m) => `Торговля снова остановилась после нажатия «Возобновить»: ${HALT_RU[m[1]] ?? m[1]} Проверьте причину на панели и нажмите «Возобновить» ещё раз, если нужно.`],
+  [/^A newer Pause or Resume request replaced this one\.$/, 'Его заменил более новый запрос на паузу или возобновление.'],
+  [/^The request was more than 5 minutes old when the engine saw it; press the button again\.$/,
+    'Когда движок увидел запрос, ему было больше 5 минут; нажмите кнопку ещё раз.'],
+  [/^Done\.$/, 'Готово.'],
 
   // --- Pair changes (TradablePairs.cs, TradableSymbols.cs) ----------------------------------------------------------------
   [/^(\S+) is already tradable\.$/, (m) => `${m[1]} уже торгуется.`],

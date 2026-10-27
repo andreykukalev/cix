@@ -852,6 +852,12 @@ $existingWriter = @{
   'rest'                                  = '{"value":[],"properties":{"COSMOS_WRITER_TENANT_ID":"00000000-0000-0000-0000-0000000000aa","COSMOS_WRITER_CLIENT_ID":"44444444-4444-4444-4444-444444444444","COSMOS_WRITER_SECRET":"set","DASHBOARD_OWNER_USER_ID":"owner-uid"}}'
   'staticwebapp users list'               = '[{"displayName":"owner@example.com","provider":"aad","userId":"owner-uid","roles":"anonymous,authenticated,owner"}]'
 }
+# The second role, on the live engine's requests (ADR-0018): dev's account also holds prod's database, cix-live.
+$liveScope = $writerScope.Replace('/dbs/cix/', '/dbs/cix-live/')
+$liveRoleJson = $writerRole.Replace('"/role/r1"', '"/role/r2"').Replace('"r1"', '"r2"').Replace('CIX dashboard request writer (dev)', 'CIX dashboard live request writer (dev)').Replace($writerScope, $liveScope)
+$bothRoles = $writerRole.Substring(0, $writerRole.Length - 1) + ',' + $liveRoleJson.Substring(1)
+$writerAssignment = "{`"principalId`":`"55555555-5555-5555-5555-555555555555`",`"roleDefinitionId`":`"/role/r1`",`"scope`":`"$writerScope`"}"
+$liveAssignment = "{`"principalId`":`"55555555-5555-5555-5555-555555555555`",`"roleDefinitionId`":`"/role/r2`",`"scope`":`"$liveScope`"}"
 function Invoke-SetupWriter([hashtable]$Base, [hashtable]$Overrides = @{}, [hashtable]$More = @{}) {
   $extra = @{}; foreach ($k in $Base.Keys) { $extra[$k] = $Base[$k] }
   foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
@@ -920,11 +926,34 @@ foreach ($case in @(
     @{ Name = 'an Azure role'; Overrides = @{ 'role assignment' = '[{"roleDefinitionName":"Reader","scope":"/subscriptions/x"}]' }; Says = 'holds Azure roles (Reader on /subscriptions/x)' },
     @{ Name = 'a broader Cosmos DB role of the same name'; Overrides = @{ 'cosmosdb sql role definition list' = $writerRole.Replace('items/create', 'items/*') }; Says = 'allows more than creating items' },
     @{ Name = 'a same-named role on the whole account'; Overrides = @{ 'cosmosdb sql role definition list' = $writerRole.Replace($writerScope, '/') }; Says = 'allows more than creating items' },
-    @{ Name = 'another Cosmos DB role assignment'; Overrides = @{ 'cosmosdb sql role assignment list' = '[{"principalId":"55555555-5555-5555-5555-555555555555","roleDefinitionId":"/role/data-contributor","scope":"/"}]' }; Says = 'other Cosmos DB role assignments' })) {
+    @{ Name = 'another Cosmos DB role assignment'; Overrides = @{ 'cosmosdb sql role assignment list' = '[{"principalId":"55555555-5555-5555-5555-555555555555","roleDefinitionId":"/role/data-contributor","scope":"/"}]' }; Says = 'other Cosmos DB role assignments' },
+    @{ Name = 'a broader live request role'; Overrides = @{ 'cosmosdb sql role definition list' = $writerRole.Substring(0, $writerRole.Length - 1) + ',' + $liveRoleJson.Replace('items/create', 'items/*').Substring(1) }; Says = 'allows more than creating items in cix-live/requests' },
+    @{ Name = 'the live request role on the paper container'; Overrides = @{ 'cosmosdb sql role definition list' = $bothRoles.Replace("`"assignableScopes`":[`"$liveScope`"]", "`"assignableScopes`":[`"$writerScope`"]") }; Says = 'allows more than creating items in cix-live/requests' },
+    @{ Name = 'the live request role assigned to someone else'; Overrides = @{ 'cosmosdb sql role definition list' = $bothRoles; 'cosmosdb sql role assignment list' = "[$writerAssignment,$liveAssignment,$($liveAssignment.Replace('55555555-5555-5555-5555-555555555555', 'intruder'))]" }; Says = 'is also assigned to intruder' },
+    @{ Name = 'the paper role assigned on the live container'; Overrides = @{ 'cosmosdb sql role assignment list' = "[$writerAssignment,$($writerAssignment.Replace($writerScope, $liveScope))]" }; Says = 'other Cosmos DB role assignments' })) {
   Check "setup-dashboard-requests.ps1 refuses a reused identity with $($case.Name), changing nothing" {
     $r = Invoke-SetupWriter $existingWriter $case.Overrides @{ RotateSecret = $true }
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
     if ($r.Calls -match '(?m)\bcreate\b|credential reset|--method put|users invite') { throw "it changed something before refusing: $($r.Calls)" }
+  }
+}
+
+Check 'setup-dashboard-requests.ps1 -LiveRequests adds a create-only role on the live requests container, and nothing else' {
+  $r = Invoke-SetupWriter $existingWriter @{} @{ LiveRequests = $true }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -notmatch 'cosmosdb sql role definition create .*--body @') { throw "no live role created from a file: $($r.Calls)" }
+  if ($r.Calls -notmatch 'cosmosdb sql role assignment create .*--principal-id 55555555-5555-5555-5555-555555555555 --scope /dbs/cix-live/colls/requests ') { throw "the live assignment isn't on cix-live/requests: $($r.Calls)" }
+  if (@([regex]::Matches($r.Calls, 'role assignment create')).Count -ne 1) { throw "it assigned more than the live role: $($r.Calls)" }
+  if ($r.Calls -match 'credential reset|--method put|users invite') { throw "it changed something else: $($r.Calls)" }
+  if ($r.Output -notmatch 'real money') { throw "it didn't say what the role allows: $($r.Output)" }
+}
+
+Check 'setup-dashboard-requests.ps1 accepts the live role once in place, with or without -LiveRequests, and changes nothing' {
+  foreach ($more in @(@{}, @{ LiveRequests = $true })) {
+    $r = Invoke-SetupWriter $existingWriter @{ 'cosmosdb sql role definition list' = $bothRoles; 'cosmosdb sql role assignment list' = "[$writerAssignment,$liveAssignment]" } $more
+    if ($r.Error) { throw "failed: $($r.Error)" }
+    if ($r.Calls -match '(?m)\bcreate\b|credential reset|--method put|users invite') { throw "it changed something: $($r.Calls)" }
+    if ($r.Output -notmatch 'Live requests|Already assigned') { throw "no line about live requests: $($r.Output)" }
   }
 }
 

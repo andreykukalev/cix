@@ -165,8 +165,11 @@
       'затрагивают уже купленные монеты со следующего сканирования. Затем движок сразу сканирует рынок и продаёт через риск-контроль только ту часть монеты, что превышает лимит новой стратегии на монету или в целом. Ничего не отменяется. Движок ещё раз проверяет стратегию и записывает смену в журнал.',
     '(optional, kept in the journal)': '(необязательно, сохраняется в журнале)',
     Send: 'Отправить',
-    'Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests, strategy switches and pair changes are paper only; the engine checks each one and every order goes through the risk gate. News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.':
-      'Доступно только владельцу: каждая страница и ответ API требуют входа через ваш аккаунт Microsoft. Запросы на покупку и продажу, смены стратегии и изменения пар — только для бумажной торговли; движок проверяет каждый, и каждый ордер проходит риск-контроль. Ссылки на новости в обзоре выбраны агентом-аналитиком в интернете и ведут на внешние сайты.',
+    Pause: 'Пауза',
+    'Pause trading': 'Приостановить торговлю',
+    'I understand this changes real-money trading on Revolut X.': 'Я понимаю, что это меняет торговлю реальными деньгами на Revolut X.',
+    'Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests, strategy switches and pair changes are paper only; Pause and Resume work for live too, after you confirm. The engine checks each one and every order goes through the risk gate. News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.':
+      'Доступно только владельцу: каждая страница и ответ API требуют входа через ваш аккаунт Microsoft. Запросы на покупку и продажу, смены стратегии и изменения пар — только для бумажной торговли; пауза и возобновление работают и для реальной торговли, после вашего подтверждения. Движок проверяет каждый запрос, и каждый ордер проходит риск-контроль. Ссылки на новости в обзоре выбраны агентом-аналитиком в интернете и ведут на внешние сайты.',
 
     // --- Words app.js and view.js write ------------------------------------------------------------------------------------
     paper: 'бумажная',
@@ -405,6 +408,19 @@
     'Adding {symbol}': 'Добавление {symbol}',
     '{label}: sent, waiting for the engine…': '{label}: отправлено, ждём движок…',
     '{label}: no answer after 5 minutes; see Your pair changes.': '{label}: нет ответа за 5 минут; смотрите «Ваши изменения пар».',
+    Resume: 'Возобновить',
+    'Resume trading': 'Возобновить торговлю',
+    'Pause live trading (real money)': 'Приостановить реальную торговлю (реальные деньги)',
+    'Pause paper trading': 'Приостановить бумажную торговлю',
+    'Resume live trading (real money)': 'Возобновить реальную торговлю (реальные деньги)',
+    'Resume paper trading': 'Возобновить бумажную торговлю',
+    'The engine cancels open orders and refuses every new one, sells at a stop or target included, until you press Resume. Coins you hold stay held. The pause and your note go in the journal.':
+      'Движок отменит открытые ордера и будет отклонять все новые, включая продажи по стоп-лоссу и тейк-профиту, пока вы не нажмёте «Возобновить». Купленные монеты остаются у вас. Пауза и ваша заметка записываются в журнал.',
+    'The engine releases the halt in place now ({category}). The risk limits still apply, and the automatic checks can halt trading again. A halt that starts after you press Resume stays, and the engine says why.':
+      'Движок снимет текущую остановку ({category}). Лимиты риска продолжают действовать, и автоматические проверки могут снова остановить торговлю. Остановка, начавшаяся после нажатия «Возобновить», остаётся, и движок объяснит почему.',
+    'Tick the box first: this changes real-money trading.': 'Сначала поставьте галочку: это меняет торговлю реальными деньгами.',
+    '{label}: no answer after 5 minutes; the request has expired. Check the Trading tile and press again if needed.':
+      '{label}: нет ответа за 5 минут, запрос истёк. Проверьте плитку «Торговля» и нажмите снова, если нужно.',
     'Couldn\'t load the journal: {error}': 'Не удалось загрузить журнал: {error}',
     'No {kind} entries on {day}.': 'Записей типа {kind} за {day} нет.',
     'No entries on {day}.': 'Записей за {day} нет.',
@@ -623,6 +639,16 @@
     reconcile: 'сверка',
     read: 'чтение',
     'Halted (the reason is in the journal).': 'Остановлена (причина в журнале).',
+    'Paused by the owner.': 'Приостановлена владельцем.',
+    'Reconciliation found the account changed outside the engine.': 'Сверка обнаружила изменения на счёте, сделанные не движком.',
+    'A safety limit was reached (drawdown, daily loss or stale market data).': 'Достигнут предел безопасности (просадка, дневной убыток или устаревшие рыночные данные).',
+    'Too many orders in a row were rejected by the risk gate.': 'Риск-контроль отклонил слишком много ордеров подряд.',
+    'Waiting for the owner to confirm before trading starts.': 'Ждёт подтверждения владельца перед началом торговли.',
+    "The saved trading pairs couldn't all be restored; check holdings before resuming.": 'Не все сохранённые торговые пары удалось восстановить; проверьте позиции перед возобновлением.',
+    'Halted.': 'Остановлена.',
+    'Confirm that this changes real-money trading.': 'Подтвердите, что это меняет торговлю реальными деньгами.',
+    'Live requests are not set up on this dashboard yet: run tools/azure/setup-dashboard-requests.ps1 -LiveRequests.':
+      'Запросы для реальной торговли на этой панели ещё не настроены: запустите tools/azure/setup-dashboard-requests.ps1 -LiveRequests.',
 
     // Strategy texts the engine and the strategy files write (strategies/*.json, StrategySchema.cs)
     'Trades rarely and small: only clear pullbacks in established uptrends of liquid, calm coins.':

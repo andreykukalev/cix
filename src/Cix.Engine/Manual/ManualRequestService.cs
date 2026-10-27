@@ -817,6 +817,10 @@ public static class ManualRequestRegistration
         services.AddSingleton<IManualLedgerStore>(new InMemoryManualLedgerStore());
         services.AddSingleton<ManualRequestService>();
         services.AddHostedService(sp => sp.GetRequiredService<ManualRequestService>());
+
+        // The owner's Pause and Resume buttons (ADR-0018), in both modes: the same container, its own request type.
+        services.AddSingleton<TradingControlService>();
+        services.AddHostedService(sp => sp.GetRequiredService<TradingControlService>());
         return services;
     }
 }
