@@ -22,6 +22,19 @@ public static class ExchangeRegistration
         ArgumentNullException.ThrowIfNull(revolutX);
         ArgumentNullException.ThrowIfNull(paper);
 
+        // Keys only where they are used, and there both of them: a missing one stops startup rather than the first order.
+        // Trimmed first, so a file saved with a Windows line ending can't pass here and then fail every signed call.
+        revolutX.ApiKey = revolutX.ApiKey?.Trim() ?? string.Empty;
+        revolutX.PrivateKeyPem = revolutX.PrivateKeyPem?.Trim() ?? string.Empty;
+        var hasKey = revolutX.ApiKey.Length > 0;
+        var hasPrivateKey = revolutX.PrivateKeyPem.Length > 0;
+        if (mode != TradingMode.Live && (hasKey || hasPrivateKey))
+            throw new InvalidOperationException("Paper mode holds no trading credentials: remove RevolutX:ApiKey and RevolutX:PrivateKeyPem from its configuration.");
+        if (mode == TradingMode.Live && !(hasKey && hasPrivateKey))
+            throw new InvalidOperationException("Live mode needs both RevolutX:ApiKey and RevolutX:PrivateKeyPem (the secret files RevolutX__ApiKey and RevolutX__PrivateKeyPem).");
+        if (mode == TradingMode.Live && revolutX.ApiKey.Any(char.IsWhiteSpace))
+            throw new InvalidOperationException("RevolutX:ApiKey contains whitespace; save the key again on one line.");
+
         services.AddSingleton(revolutX);
 
         // Market data never needs credentials, in either mode: public endpoints only.

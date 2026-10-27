@@ -10,12 +10,93 @@ namespace Cix.Engine.Tests;
 
 public sealed class ExchangeRegistrationTests
 {
-    private static ServiceCollection Services(TradingMode mode)
+    private static ServiceCollection Services(TradingMode mode, RevolutXOptions? revolutX = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton(TimeProvider.System);
-        services.AddCixExchange(mode, new RevolutXOptions(), new PaperOptions());
+        services.AddCixExchange(mode, revolutX ?? (mode == TradingMode.Live ? WithKeys() : new RevolutXOptions()), new PaperOptions());
         return services;
+    }
+
+    /// <summary>Placeholders built at runtime: not keys, and never used to sign anything here.</summary>
+    private static RevolutXOptions WithKeys(bool apiKey = true, bool privateKey = true) => new()
+    {
+        ApiKey = apiKey ? new string('a', 64) : string.Empty,
+        PrivateKeyPem = privateKey ? TestKeys.FakePem() : string.Empty,
+    };
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void Paper_RefusesToStartWithRevolutXKeys_AndNamesNoValue(bool apiKey, bool privateKey)
+    {
+        var keys = WithKeys(apiKey, privateKey);
+
+        var error = Assert.Throws<InvalidOperationException>(() => Services(TradingMode.Paper, keys));
+
+        Assert.Contains("Paper mode holds no trading credentials", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('a', 16), error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('p', 16), error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void Live_RefusesToStartWithoutBothKeys(bool apiKey, bool privateKey)
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => Services(TradingMode.Live, WithKeys(apiKey, privateKey)));
+
+        Assert.Contains("Live mode needs both", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Live_TrimsTheKeys_AndRefusesAnApiKeyWithWhitespaceInside()
+    {
+        var keys = WithKeys();
+        var apiKey = keys.ApiKey;
+        keys.ApiKey += "\r"; // a file saved with a Windows line ending: the secret files strip only the \n
+        Services(TradingMode.Live, keys);
+        Assert.Equal(apiKey, keys.ApiKey);
+
+        var split = WithKeys();
+        split.ApiKey = split.ApiKey[..32] + " " + split.ApiKey[32..];
+        var error = Assert.Throws<InvalidOperationException>(() => Services(TradingMode.Live, split));
+        Assert.DoesNotContain(new string('a', 16), error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NothingTheStatusOrTheToolsKeep_CanReachTheKeys()
+    {
+        // The status document and tool output are built from these types: none may hold the settings the keys live in.
+        var forbidden = new[] { typeof(RevolutXOptions), typeof(Microsoft.Extensions.Configuration.IConfiguration) };
+        const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static
+            | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        var types = typeof(ExchangeRegistration).Assembly.GetTypes()
+            .Where(t => t.Namespace is "Cix.Engine.Status" or "Cix.Engine.Tools")
+            .ToList();
+
+        var holders = types.SelectMany(t =>
+                t.GetFields(all).Select(f => (t, f.Name, f.FieldType))
+                    .Concat(t.GetProperties(all).Select(p => (t, p.Name, p.PropertyType)))
+                    .Concat(t.GetConstructors(all).SelectMany(c => c.GetParameters()).Select(p => (t, p.Name ?? "", p.ParameterType))))
+            .Where(m => forbidden.Any(f => f.IsAssignableFrom(m.Item3)))
+            .Select(m => $"{m.t.Name}.{m.Item2}")
+            .ToList();
+
+        Assert.NotEmpty(types);
+        Assert.Empty(holders);
+    }
+
+    [Fact]
+    public void RevolutXOptions_NeverPrintTheKeys()
+    {
+        var text = WithKeys().ToString();
+
+        Assert.DoesNotContain(new string('a', 8), text, StringComparison.Ordinal);
+        Assert.DoesNotContain("PRIVATE KEY", text, StringComparison.Ordinal);
+        Assert.Contains("ApiKey = <set>", text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -76,4 +157,12 @@ public sealed class ExchangeRegistrationTests
         Assert.Equal(new[] { "BTC-EUR" }, poller.Symbols);
         Assert.IsType<PaperExchange>(Assert.Single(provider.GetServices<IQuoteListener>()));
     }
+}
+
+/// <summary>Key-shaped placeholders, assembled at runtime so the source holds nothing a secret scanner takes for a key.</summary>
+internal static class TestKeys
+{
+    private const string Kind = "PRIVATE" + " KEY";
+
+    public static string FakePem() => string.Join('\n', "-----BEGIN " + Kind + "-----", new string('p', 64), "-----END " + Kind + "-----");
 }
