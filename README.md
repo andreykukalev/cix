@@ -31,7 +31,7 @@ dotnet test Cix.slnx
 dotnet run --project src/Cix.Engine
 ```
 
-Risk limits live in [`config/risk-limits.json`](config/risk-limits.json) and are validated at startup against [`HardCeilings.cs`](src/Cix.Domain/Risk/HardCeilings.cs). Only the owner edits either file.
+Risk limits live in [`config/risk-limits.json`](config/risk-limits.json) (the live engine's in `config/risk-limits.live.json`) and are validated at startup against [`HardCeilings.cs`](src/Cix.Domain/Risk/HardCeilings.cs). Only the owner edits these files.
 
 ## Revolut X API spike
 
