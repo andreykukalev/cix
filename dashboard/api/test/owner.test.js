@@ -29,7 +29,8 @@ const stored = new Map(); // what the fake writer created, by id, for reads afte
 CosmosReader.prototype.readDocument = async function readDocument(container, id, pk) {
   reads.push({ container, id, pk });
   if (container === 'requests' && stored.has(id)) return stored.get(id).day === pk ? stored.get(id) : null;
-  return id === '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f' && pk === '2026-10-26' ? { id, type: 'manual-request', status: 'placed' } : null;
+  // The looked-up request has its own id, so the request created in these tests never finds it as yesterday's.
+  return id === 'a1b2c3d4-0000-4000-8000-000000000001' && pk === '2026-10-26' ? { id, type: 'manual-request', status: 'placed' } : null;
 };
 Object.assign(process.env, {
   COSMOS_ENDPOINT: 'https://acct.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('k').toString('base64'), COSMOS_DATABASE: 'cix',
@@ -53,7 +54,8 @@ function request({ method = 'GET', principal = OWNER, headers = {}, body = '', p
 const BODY = JSON.stringify({ id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f', side: 'sell', mode: 'direct', symbol: 'LINK-EUR', portion: '0.25' });
 
 test('the owner endpoints are registered under /api/owner', () => {
-  assert.deepEqual(Object.values(routes).map((r) => r.route).sort(), ['owner/requests', 'owner/requests/{day}/{id}']);
+  assert.deepEqual(Object.values(routes).map((r) => r.route).sort(),
+    ['owner/requests', 'owner/requests/{day}/{id}', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
 });
 
 test('the owner creates a request; the same click again is not a second request', async () => {
@@ -106,7 +108,7 @@ test('history and a single request are read with the read-only key, never cached
   assert.equal(reads[0].container, 'requests');
   assert.equal(list.headers['cache-control'], 'no-store');
 
-  const one = await routes['owner-request'].handler(request({ params: { day: '2026-10-26', id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f' } }), context);
+  const one = await routes['owner-request'].handler(request({ params: { day: '2026-10-26', id: 'a1b2c3d4-0000-4000-8000-000000000001' } }), context);
   assert.equal(one.status, 200);
   assert.equal(one.jsonBody.status, 'placed');
   assert.equal(reads[1].pk, '2026-10-26');
@@ -166,4 +168,42 @@ test('with no writer settings, the owner is told requests aren\'t set up', async
     Module._load = originalLoad;
     process.env.COSMOS_WRITER_SECRET = saved;
   }
+});
+
+const STRATEGY_BODY = JSON.stringify({ id: '7c9e6679-7425-40de-944b-e07fc1f90ae7', name: 'balanced', version: 1, note: 'calmer' });
+
+test('the owner asks to switch strategy: a request in the requests container, never the state', async () => {
+  writes.length = 0;
+  const first = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: STRATEGY_BODY }), context);
+  const again = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: STRATEGY_BODY }), context);
+
+  assert.equal(first.status, 201);
+  assert.equal(again.status, 200); // the same dialog sent twice is one request
+  assert.equal(writes.length, 2);
+  assert.deepEqual({ type: writes[0].type, name: writes[0].name, version: writes[0].version, status: writes[0].status, requestedBy: writes[0].requestedBy },
+    { type: 'strategy-selection', name: 'balanced', version: 1, status: 'new', requestedBy: 'owner' });
+  assert.equal(first.jsonBody.request.name, 'balanced');
+});
+
+test('strategy requests: owner only, paper only, well formed', async () => {
+  const visitor = await routes['owner-strategy-requests'].handler(request({ method: 'POST', principal: VISITOR, body: STRATEGY_BODY }), context);
+  const live = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(STRATEGY_BODY), id: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d', tradingMode: 'live' }) }), context);
+  const bad = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(STRATEGY_BODY), version: '1' }) }), context);
+  const noHeader = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: STRATEGY_BODY, headers: { 'x-cix-request': null } }), context);
+
+  assert.equal(visitor.status, 403);
+  assert.equal(live.status, 400);
+  assert.match(live.jsonBody.error, /#71/);
+  assert.equal(bad.status, 400);
+  assert.equal(noHeader.status, 400);
+});
+
+test('the strategy view is the owner\'s only', async () => {
+  const visitor = await routes['owner-strategies'].handler(request({ principal: VISITOR }), context);
+  const owner = await routes['owner-strategies'].handler(request(), context);
+
+  assert.equal(visitor.status, 403);
+  assert.equal(owner.status, 200);
+  assert.equal(owner.jsonBody.mode, 'paper');
+  assert.equal(owner.headers['cache-control'], 'no-store');
 });

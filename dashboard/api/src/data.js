@@ -5,6 +5,7 @@
 const { summarize, journalItem } = require('./summarize');
 const { activity, fromDay } = require('./activity');
 const { history, historyItem } = require('./requests');
+const { strategiesView, requestItem, REQUEST_TYPE } = require('./strategies');
 
 const MODES = new Set(['paper', 'live']);
 const JOURNAL_PER_DAY = 300;
@@ -58,7 +59,7 @@ async function loadDashboard(reader, mode, now) {
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const KINDS = new Set(['order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request', 'scanner-filters', 'scan-eligibility']);
+const KINDS = new Set(['order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request', 'scanner-filters', 'scan-eligibility', 'strategy']);
 const LIMITS = [50, 100, 200];
 const JOURNAL_DAYS = 14;
 
@@ -122,4 +123,38 @@ async function loadRequest(reader, day, id) {
   return doc && doc.type === 'manual-request' ? historyItem(doc) : null;
 }
 
-module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadRequests, loadRequest, utcDay, KINDS };
+const VERSIONS_MAX = 100;
+
+/**
+ * The Strategy tab for one mode: the engine's parameter schema, every strategy version (without its instructions), the
+ * running strategy and what became of the latest selection, and the owner's switch requests of the last week. The schema
+ * and selection exist for paper only (#105); live shows the versions read-only.
+ */
+async function loadStrategies(reader, mode, now) {
+  if (!MODES.has(mode)) throw new RangeError('mode must be paper or live');
+  const from = utcDay(now - (REQUEST_DAYS - 1) * 24 * 3600 * 1000);
+  const [schemaDoc, versionDocs, statusDoc, requestDocs] = await Promise.all([
+    reader.readDocument('state', `strategy-schema-${mode === 'live' ? 'paper' : mode}`), // live shares paper's explanations until #71
+    reader.query('state', 'SELECT c["value"].name, c["value"].version, c["value"].status, c["value"].purpose, c["value"].riskProfile, c["value"].parameters, c["value"].allowedTools FROM c WHERE c.type = @type', {
+      parameters: [{ name: '@type', value: 'strategy-version' }],
+      maxItems: VERSIONS_MAX,
+    }),
+    reader.readDocument('state', `engine-status-${mode}`),
+    mode === 'paper'
+      ? reader.query('requests', 'SELECT * FROM c WHERE c.day >= @from AND c.type = @type', {
+        parameters: [{ name: '@from', value: from }, { name: '@type', value: REQUEST_TYPE }],
+        maxItems: REQUESTS_MAX,
+      })
+      : [],
+  ]);
+  return strategiesView({ mode, schema: schemaDoc?.value ?? null, versions: versionDocs, status: statusDoc?.value ?? null, requests: requestDocs }, now);
+}
+
+/** One switch request, for the page to follow it after a click; null if it isn't there (yet). */
+async function loadStrategyRequest(reader, day, id) {
+  if (!DAY.test(day ?? '') || !/^[0-9a-f-]{36}$/.test(id ?? '')) throw new RangeError('day and id must be a request\'s');
+  const doc = await reader.readDocument('requests', id, day);
+  return doc && doc.type === REQUEST_TYPE ? requestItem(doc) : null;
+}
+
+module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadRequests, loadRequest, loadStrategies, loadStrategyRequest, utcDay, KINDS };

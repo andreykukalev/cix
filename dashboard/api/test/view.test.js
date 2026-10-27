@@ -114,3 +114,37 @@ test('a refusal names its rule: the engine refuses some, the risk gate others', 
   assert.equal(V.requestState({ status: 'rejected', final: true, outcome: { rule: 'daily-cap', reason: 'At most 20 a day.' } }).label, 'Refused (daily-cap)');
   assert.equal(V.requestState({ status: 'rejected', final: true, outcome: {} }).label, 'Refused');
 });
+
+test('strategy parameters read in words, with their range and whose limit they are', () => {
+  assert.equal(V.paramValue(0.25, { unit: 'fraction' }), '25%');
+  assert.equal(V.paramValue(0.003, { unit: 'fraction' }), '0.3%');
+  assert.equal(V.paramValue(240, { unit: 'minutes' }), '4 h');
+  assert.equal(V.paramValue(15, { unit: 'minutes' }), '15 min');
+  assert.equal(V.paramValue(0, { unit: 'minutes' }), 'none');
+  assert.equal(V.paramValue(true, { kind: 'boolean' }), 'on');
+  assert.equal(V.paramValue('10', { unit: 'EUR' }), '10 EUR');
+  assert.equal(V.paramValue(null, {}), '–');
+  assert.equal(V.paramRange({ kind: 'number', min: '1', max: '40', unit: 'EUR' }), '1 EUR to 40 EUR');
+  assert.equal(V.paramRange({ kind: 'boolean', min: null, max: null }), 'on or off');
+  const mandatory = [{ key: 'maxOrderQuote', label: 'Largest order', value: '40' }];
+  assert.equal(V.paramLimit({ boundBy: 'maxOrderQuote' }, mandatory), 'Strategy-specific, within the mandatory largest order (40)');
+  assert.equal(V.paramLimit({}, mandatory), 'Strategy-specific');
+});
+
+test('a switch lists what changes, and which changes reach open positions', () => {
+  const groups = [{ parameters: [
+    { key: 'orderQuote', label: 'Largest order', unit: 'EUR', appliesToOpenPositions: false },
+    { key: 'scanner.trendExits', label: 'Trend exits', kind: 'boolean', appliesToOpenPositions: true },
+    { key: 'scanner.stopAtr', label: 'Stop', unit: 'ATR', appliesToOpenPositions: false },
+  ] }];
+  const from = { values: { orderQuote: 10, 'scanner.trendExits': true, 'scanner.stopAtr': 1.5 } };
+  const to = { values: { orderQuote: 20, 'scanner.trendExits': false, 'scanner.stopAtr': 1.5 } };
+  assert.deepEqual(V.strategyChanges(from, to, groups), [
+    { key: 'orderQuote', label: 'Largest order', from: '10 EUR', to: '20 EUR', openPositions: false },
+    { key: 'scanner.trendExits', label: 'Trend exits', from: 'on', to: 'off', openPositions: true },
+  ]);
+  assert.equal(V.strategyName({ name: 'safe', version: 1 }), 'Safe v1');
+  assert.deepEqual(V.strategyRequestBody({ name: 'safe', version: 1, note: ' a\nb ' }, ID), { body: { id: ID, name: 'safe', version: 1, note: 'a b', tradingMode: 'paper' } });
+  assert.ok(V.strategyRequestBody({ name: 'safe', version: '1' }, ID).error);
+  assert.equal(V.selectionState({ state: 'refused' }).tone, 'bad');
+});

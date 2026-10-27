@@ -113,6 +113,10 @@ The engine reads a request document once, while it is `new`. From then on it tru
 
 A request is claimed in that record, with its `clientOrderId`, **before** its order is sent. If the engine stops at that moment, it finds the claim at the next start: the order is reconciled if it was sent (`unconfirmed`, then `filled` or `closed`). If there is no trace of it after 2 minutes, the request is closed as `outcome-unknown`, with a reminder to check the exchange's order history before sending it again. The same happens to a placed order the engine stops tracking without a record of how it ended. A manual order still unfilled after 4 minutes is cancelled, and the request closes with what filled. A request is never executed twice.
 
+### Strategy switch requests
+
+The dashboard's Strategy tab writes a switch as a request too (`type: "strategy-selection"`), because its writer identity can only create documents in this container: `id`, `day`, `createdAt`, `name`, `version` (a JSON number), `note`, `requestedBy` (`owner`), `tradingMode` (`paper` only) and `status: "new"`. Manual requests skip this type. The strategy selection service reads new ones every 30 seconds: the newest valid one is saved as `strategy-selection-paper` and handled like any selection (validated, journaled as kind `strategy`, applied between trader runs); its document becomes `accepted`. Earlier ones become `superseded`; a malformed one `invalid`; one more than 5 minutes old when the engine first sees it `expired`. Whether the switch then ran or was refused is in the journal and in `strategySelection` on the engine status.
+
 Example, for testing in Data Explorer (`requests` container, New Item; set `day` and `createdAt` to now, in UTC):
 
 ```json

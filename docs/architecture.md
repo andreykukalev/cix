@@ -63,7 +63,7 @@ flowchart LR
 | Portfolio | Deterministic | Built from polled orders and fills; reconciled with balances; halts on mismatch |
 | Decision journal | Append-only Cosmos DB container (`journal`) | Every agent run: inputs, spec version, tool calls, rationale, risk verdict, orders, fills, PnL |
 | Operational state | Cosmos DB container (`state`) | What is true now: kill switch, loss baselines, orders in flight, position plans (stop and target), the paper account, archived specs. Recovery after a restart starts here and reconciles with the exchange ([persistence.md](persistence.md)) |
-| Owner requests | Cosmos DB container (`requests`) and engine service | The owner's manual buy and sell requests from the dashboard. Direct sells are placed by the engine; agent-assisted requests go to the trader, which may execute (never beyond the request) or decline. Every order still passes the risk gate (ADR-0011) |
+| Owner requests | Cosmos DB container (`requests`) and engine service | The owner's manual buy and sell requests from the dashboard. Direct sells are placed by the engine; agent-assisted requests go to the trader, which may execute (never beyond the request) or decline. Every order still passes the risk gate (ADR-0011). Strategy switches from the Strategy tab arrive here too and become the selection (ADR-0015) |
 | Tool server | C# MCP server | Agent tools and operator tools; the only path from agents to the exchange. Who may call it is below |
 
 ### Who may call the tool server
