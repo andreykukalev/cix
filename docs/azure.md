@@ -228,7 +228,7 @@ The script:
 
 Add those variables in GitHub: *Settings*, *Secrets and variables*, *Actions*, *Variables*. Or add `-SetGitHubVariables` to the script, which sets them with the GitHub CLI (`gh`, signed in). Then run *CI* on `main` once by hand to check it publishes.
 
-What the identity could still do, if a workflow on `main` misused it: read the deployment token, publish other code as the dashboard, and that code would run with the dashboard's settings, including the shared account's read-only key (which can read every project's database there) and the writer identity's secret (which can create paper requests the engine then checks). `main` has no branch protection on GitHub Free, so this trusts everyone who can push to `main`, merge into it, or start a workflow on it. That includes the Claude coding agents: their GitHub access could merge pull requests or push to `main` directly (in this repository they have merged at the owner's request). Only the rules in CLAUDE.md, not GitHub, stop them. GitHub Pro with branch protection on `main` would make that a technical limit. If you suspect misuse, remove the identity's role assignment, reset the deployment token (portal: `stapp-cix-dev`, *Manage deployment token*, *Reset*), and regenerate the account's read-only keys, then run `provision.ps1` again to update the dashboard's settings, and `setup-dashboard-requests.ps1 -RotateSecret`.
+What the identity could still do, if a workflow on `main` misused it: read the deployment token, publish other code as the dashboard, and that code would run with the dashboard's settings, including the shared account's read-only key (which can read every project's database there) and the writer identity's secret (which can create paper requests the engine then checks and, once `-LiveRequests` has run, Pause and Resume requests for the live engine, ADR-0018). `main` has no branch protection on GitHub Free, so this trusts everyone who can push to `main`, merge into it, or start a workflow on it. That includes the Claude coding agents: their GitHub access could merge pull requests or push to `main` directly (in this repository they have merged at the owner's request). Only the rules in CLAUDE.md, not GitHub, stop them. GitHub Pro with branch protection on `main` would make that a technical limit. If you suspect misuse, remove the identity's role assignment, reset the deployment token (portal: `stapp-cix-dev`, *Manage deployment token*, *Reset*), and regenerate the account's read-only keys, then run `provision.ps1` again to update the dashboard's settings, and `setup-dashboard-requests.ps1 -RotateSecret`.
 
 The script command above still works for publishing by hand.
 
@@ -262,7 +262,7 @@ The Buy and Sell buttons send manual requests to the engine ([ADR-0011](adr/0011
 - A confirmation shows exactly what will be sent. Each dialog has its own ID and is locked once sent, so a retry or a double click is still one request (also across midnight UTC), and the page follows it to the end: placed, filled, declined with the trader's reason, refused (by the engine or the risk gate, with the rule), expired.
 - The buttons pause, with the reason, when the engine isn't running or doesn't take requests (switched off, or the `requests` container missing).
 - Your note goes to the trader with the request, and shows in the request's history and decisions.
-- Requests are paper only. The engine checks each one again, and every order still goes through the risk gate.
+- Buy and sell requests are paper only. The Trading tile's **Pause** and **Resume** work in both views; in Live they need a tick in the box that names real money, and the one-time `-LiveRequests` setup below ([live-trading.md](live-trading.md#pausing-and-resuming-from-the-dashboard-adr-0018)). The engine checks each one again, and every order still goes through the risk gate.
 
 One-time setup, per environment (needs rights to create app registrations and to manage Cosmos DB roles on the shared account):
 
@@ -275,6 +275,7 @@ It creates a **writer identity**, `cix-dashboard-writer-dev`, whose only right i
 - **Rotate the secret** within a year (the script prints the date): run it again with `-RotateSecret`. The old secret stops working at once.
 - **`provision.ps1`** keeps the writer settings through a deployment (a deployment replaces the app's settings); if it can't, it says so and you run the setup again with `-RotateSecret`.
 - **Who has the role:** Azure portal, the Static Web App, *Role management*. Remove anyone you don't recognise. The script warns if more than one account has it.
+- **Live Pause and Resume:** run it once with `-LiveRequests`. That adds a second create-only role, `CIX dashboard live request writer (dev)`, on `cix-live/requests` only. Delete that one role assignment to take it away again.
 - Until the owner is confirmed, nobody can open the dashboard. Until the writer is set up, the buttons answer that it isn't; everything else works.
 
 ## How the PC connects to Azure

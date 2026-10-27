@@ -14,28 +14,42 @@
 // cross-origin only after a preflight this API never answers.
 
 const { app } = require('@azure/functions');
-const { readerCache } = require('../cosmos');
-const { RequestWriter, WriterNotConfigured } = require('../writer');
+const { readerCache, databaseFor } = require('../cosmos');
+const { RequestWriter, WriterError, WriterNotConfigured } = require('../writer');
 const { isOwner, forbidden } = require('../auth');
 const { requestDocument, historyItem, RequestError } = require('../requests');
 const { loadRequests, loadRequest, loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest } = require('../data');
 const { strategyRequestDocument, requestItem } = require('../strategies');
 const { pairRequestDocument, pairRequestItem } = require('../pairs');
+const { controlRequestDocument, controlRequestItem } = require('../controls');
 
 const MAX_BODY = 4096;
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 const getReader = readerCache(); // each mode's database: live's engine writes to its own (ADR-0017); requests are paper's
-let writer;
+const writers = new Map();
+const LIVE_NOT_SET_UP = 'Live requests are not set up on this dashboard yet: run tools/azure/setup-dashboard-requests.ps1 -LiveRequests.';
 
-function getWriter() {
-  writer ??= new RequestWriter({
-    endpoint: process.env.COSMOS_ENDPOINT,
-    database: process.env.COSMOS_DATABASE ?? 'cix',
-    tenantId: process.env.COSMOS_WRITER_TENANT_ID,
-    clientId: process.env.COSMOS_WRITER_CLIENT_ID,
-    clientSecret: process.env.COSMOS_WRITER_SECRET,
-  });
-  return writer;
+/**
+ * The writer for one mode's requests container: paper's database, or the live engine's own (ADR-0018), where the same
+ * identity holds a separate create-only role. Live without its database setting is refused, never written to paper's.
+ */
+function requireLiveDatabase(mode) {
+  if (mode === 'live' && !process.env.COSMOS_LIVE_DATABASE) throw new WriterNotConfigured(LIVE_NOT_SET_UP);
+}
+
+function getWriter(mode = 'paper') {
+  requireLiveDatabase(mode);
+  const database = databaseFor(mode);
+  if (!writers.has(database)) {
+    writers.set(database, new RequestWriter({
+      endpoint: process.env.COSMOS_ENDPOINT,
+      database,
+      tenantId: process.env.COSMOS_WRITER_TENANT_ID,
+      clientId: process.env.COSMOS_WRITER_CLIENT_ID,
+      clientSecret: process.env.COSMOS_WRITER_SECRET,
+    }));
+  }
+  return writers.get(database);
 }
 
 function respond(status, body) {
@@ -118,6 +132,30 @@ async function createPairRequest(request, context) {
   });
 }
 
+async function createControlRequest(request, context) {
+  return ownerOnly(request, context, 'pause or resume request', async () => {
+    const doc = controlRequestDocument(await readBody(request), Date.now());
+    const mode = doc.tradingMode;
+    requireLiveDatabase(mode); // before any read: live's reads would fall back to paper's database
+    const earlier = await getReader(mode).readDocument('requests', doc.id, previousDay(doc.day));
+    let result;
+    try {
+      result = earlier ? 'exists' : await getWriter(mode).create(doc);
+    } catch (error) {
+      // The live role is the owner's to grant (setup-dashboard-requests.ps1 -LiveRequests): without it, say so.
+      if (mode === 'live' && error instanceof WriterError && error.status === 403) throw new WriterNotConfigured(LIVE_NOT_SET_UP);
+      throw error;
+    }
+    context.log(`Owner ${mode} ${doc.action} request ${result} (${doc.id})`);
+    if (result === 'created') return respond(201, { result, request: controlRequestItem(doc) });
+    const stored = earlier ?? await getReader(mode).readDocument('requests', doc.id, doc.day);
+    if (!stored) return respond(200, { result, request: controlRequestItem(doc) });
+    return stored.type === doc.type && stored.action === doc.action && stored.tradingMode === doc.tradingMode && stored.haltSince === doc.haltSince
+      ? respond(200, { result, request: controlRequestItem(stored) })
+      : respond(409, { error: 'This request was already sent with different details; it stands as first sent. Close the dialog to make a new one.' });
+  });
+}
+
 function previousDay(day) {
   return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 }
@@ -195,4 +233,25 @@ app.http('owner-pair-request', {
   }),
 });
 
-module.exports = { createRequest, createStrategyRequest, createPairRequest, readBody, ownerOnly };
+app.http('owner-control-requests', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'owner/control-requests',
+  handler: createControlRequest,
+});
+
+app.http('owner-control-request', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'owner/control-requests/{day}/{id}',
+  handler: (request, context) => ownerOnly(request, context, 'pause or resume lookup', async () => {
+    const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
+    const { day, id } = request.params;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day ?? '') || !/^[0-9a-f-]{36}$/.test(id ?? '')) throw new RangeError('day and id must be a request\'s');
+    requireLiveDatabase(mode);
+    const doc = await getReader(mode).readDocument('requests', id, day);
+    return doc && doc.type === 'trading-control' && (doc.tradingMode ?? 'paper') === mode ? respond(200, controlRequestItem(doc)) : respond(404, { error: 'Not there yet.' });
+  }),
+});
+
+module.exports = { createRequest, createStrategyRequest, createPairRequest, createControlRequest, readBody, ownerOnly };

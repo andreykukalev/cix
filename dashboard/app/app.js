@@ -156,7 +156,11 @@ function renderTiles(view) {
     e.heartbeatAt ? t('heartbeat {ago}', { ago: ago(e.heartbeatAt) }) : t('no status record yet'));
 
   tile('tile-trading', e.halted ? 'bad' : e.halted === false ? 'ok' : 'warn', e.halted ? t('Halted') : e.halted === false ? t('Active') : '–',
-    e.halted ? `${e.haltCategory ? t(e.haltCategory) : ''} ${e.haltedSince ? t('since {ago}', { ago: ago(e.haltedSince) }) : ''}`.trim() : view.mode === 'live' ? t('real money') : t('paper money'));
+    e.halted
+      ? [`${e.haltCategory ? t(e.haltCategory) : ''} ${e.haltedSince ? t('since {ago}', { ago: ago(e.haltedSince) }) : ''}`.trim(),
+        e.haltAlsoCategory ? el('span', { class: 'line', text: t('Also, {ago}: {category}', { ago: ago(e.haltAlsoAt), category: t(e.haltAlsoCategory) }) }) : null]
+      : view.mode === 'live' ? t('real money') : t('paper money'));
+  renderControl(view);
 
   renderStrategyTile(e);
 
@@ -1022,6 +1026,112 @@ function trackPair(item) {
   }, POLL_MS * 2);
 }
 
+// --- Pause and Resume (ADR-0018): a trading-control request for the mode on screen; live needs the box ticked ----------
+
+/** The Trading tile's button: Pause while trading, Resume while halted, nothing until the engine reports either. */
+function renderControl(view) {
+  const button = document.getElementById('control-open');
+  const halted = view.engine?.halted;
+  button.hidden = !state.viewer.signedIn || (halted !== true && halted !== false);
+  button.textContent = halted ? t('Resume') : t('Pause');
+  button.disabled = !!state.controlPending;
+}
+
+let controlChoice = null;
+
+function openControl() {
+  const view = state.view;
+  if (!view || view.mode !== state.mode || state.controlPending) return;
+  const e = view.engine;
+  const action = e.halted ? 'resume' : 'pause';
+  const live = view.mode === 'live';
+  // Resume names the halt on screen (its start and any later cause): the engine refuses it if the halt has changed since.
+  controlChoice = { action, mode: view.mode, id: crypto.randomUUID(), haltSince: e.haltedSince ?? null, haltAlsoAt: e.haltAlsoAt ?? null };
+  const form = document.getElementById('control-form');
+  form.reset();
+  for (const input of form.querySelectorAll('input')) input.disabled = false;
+  document.getElementById('control-title').textContent = action === 'pause'
+    ? (live ? t('Pause live trading (real money)') : t('Pause paper trading'))
+    : (live ? t('Resume live trading (real money)') : t('Resume paper trading'));
+  document.getElementById('control-summary').textContent = action === 'pause'
+    ? t('The engine cancels open orders and refuses every new one, sells at a stop or target included, until you press Resume. Coins you hold stay held. The pause and your note go in the journal.')
+    : t('The engine releases the halt shown here ({category}). The risk limits still apply, and the automatic checks can halt trading again. If the halt has changed since this page showed it, the engine refuses and says why.',
+      { category: [e.haltCategory, e.haltAlsoCategory].filter(Boolean).map((c) => t(c)).join(' ') || '–' });
+  document.getElementById('control-live').hidden = !live;
+  document.getElementById('control-send').textContent = action === 'pause' ? t('Pause trading') : t('Resume trading');
+  document.getElementById('control-error').hidden = true;
+  document.getElementById('control-send').disabled = false;
+  document.getElementById('control-dialog').showModal();
+}
+
+async function sendControl(event) {
+  event.preventDefault();
+  const form = document.getElementById('control-form');
+  const error = document.getElementById('control-error');
+  const body = { id: controlChoice.id, action: controlChoice.action, tradingMode: controlChoice.mode };
+  if (controlChoice.action === 'resume') Object.assign(body, { haltSince: controlChoice.haltSince, haltAlsoAt: controlChoice.haltAlsoAt });
+  if (controlChoice.mode === 'live') {
+    if (!form.elements.confirmLive.checked) {
+      error.textContent = t('Tick the box first: this changes real-money trading.');
+      error.hidden = false;
+      return;
+    }
+    body.confirmLive = true;
+  }
+  const note = form.elements.note.value.trim();
+  if (note) body.note = note;
+  const send = document.getElementById('control-send');
+  const label = send.textContent;
+  send.disabled = true;
+  for (const input of form.querySelectorAll('input')) input.disabled = true; // from the first send on, a retry sends the same request
+  send.textContent = t('Sending…');
+  try {
+    const response = await api('/api/owner/control-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cix-request': '1' },
+      body: JSON.stringify(body),
+    });
+    const answer = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(answer.error ? t(answer.error) : t('The dashboard answered {status}.', { status: response.status }));
+    document.getElementById('control-dialog').close();
+    trackControl(answer.request);
+  } catch (e) {
+    if (e instanceof SignedOut) { signedOut(); return; }
+    error.textContent = t('Not confirmed: {error} Send again to retry: it stays the same, single request.', { error: e.message });
+    error.hidden = false;
+    send.disabled = false;
+  } finally {
+    send.textContent = label;
+  }
+}
+
+/** Follows Pause or Resume until the engine has decided it (it checks these requests every 10 seconds). */
+function trackControl(item) {
+  state.controlPending = true;
+  if (state.view) renderControl(state.view);
+  const started = Date.now();
+  const label = item.action === 'resume' ? t('Resume') : t('Pause');
+  requestStatus(t('{label}: sent, waiting for the engine…', { label }), 'pending');
+  const timer = setInterval(async () => {
+    const stop = (text, tone) => {
+      clearInterval(timer);
+      state.controlPending = false;
+      requestStatus(text, tone);
+      refresh(); // the Trading tile shows the change
+    };
+    if (Date.now() - started > 5 * 60_000) { stop(t('{label}: no answer after 5 minutes; the request has expired. Check the Trading tile and press again if needed.', { label }), 'warn'); return; }
+    try {
+      const response = await api(`/api/owner/control-requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}?mode=${encodeURIComponent(item.tradingMode)}`);
+      if (!response.ok) return; // not readable yet, or offline for a moment
+      const it = await response.json();
+      if (it.status === 'new') return;
+      stop(`${label}: ${t(it.status)}. ${it.detail ? engineSays(it.detail, it.detailRu) : ''}`.trim(), it.status === 'accepted' ? 'ok' : 'bad');
+    } catch (error) {
+      if (error instanceof SignedOut) { clearInterval(timer); signedOut(); }
+    }
+  }, POLL_MS);
+}
+
 async function showJournalDay(day, kind) {
   const { mode } = state;
   try {
@@ -1203,6 +1313,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('pair-form').addEventListener('submit', sendPair);
   document.getElementById('pair-cancel').addEventListener('click', () => document.getElementById('pair-dialog').close());
+  document.getElementById('control-open').addEventListener('click', openControl);
+  document.getElementById('control-form').addEventListener('submit', sendControl);
+  document.getElementById('control-cancel').addEventListener('click', () => document.getElementById('control-dialog').close());
   await loadViewer();
   setMode(saved);
   state.timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);

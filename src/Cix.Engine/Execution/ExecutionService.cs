@@ -503,6 +503,8 @@ public sealed partial class ExecutionService
         }
 
         LogKillSwitch(_logger, by, reason);
+        if (!newly)
+            await NoteAlsoTriggeredAsync(reason, by).ConfigureAwait(false);
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -574,6 +576,29 @@ public sealed partial class ExecutionService
         {
             _lock.Release();
         }
+    }
+
+    /// <summary>
+    /// A check that would halt trading found a problem while trading already was: recorded beside the halt and journaled
+    /// (once per cause and reason), so the dashboard's Resume can't release a halt the owner hasn't seen (ADR-0018). Cancels nothing.
+    /// </summary>
+    internal async Task NoteAlsoTriggeredAsync(string reason, string by)
+    {
+        reason = Truncate(reason);
+        by = Truncate(by);
+        bool noted;
+        try
+        {
+            noted = _killSwitch.NoteAlso(reason, by);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            noted = true; // kept in memory until saved (KillSwitch.State); the journal still gets it
+            LogStateWriteFailed(_logger, ex.Message);
+        }
+
+        if (noted)
+            await RecordAsync("kill-switch", by, $"Also triggered: {reason}", new Dictionary<string, string> { ["action"] = "also-triggered", ["reason"] = reason }).ConfigureAwait(false);
     }
 
     /// <summary>

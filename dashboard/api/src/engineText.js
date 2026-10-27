@@ -10,6 +10,16 @@ const { reasonRu } = require('./explain');
 
 const TREND_RU = { up: 'вверх', down: 'вниз', flat: 'боковой', unknown: 'неизвестен' };
 const SIDE_RU = { buy: 'покупку', sell: 'продажу' };
+// The engine's halt categories (src/Cix.Engine/Status/EngineStatus.cs, HaltCategoryFor), as a refused Resume names them.
+const HALT_RU = {
+  'Paused by the owner.': 'приостановлена владельцем.',
+  'Reconciliation found the account changed outside the engine.': 'сверка обнаружила изменения на счёте, сделанные не движком.',
+  'A safety limit was reached (drawdown, daily loss or stale market data).': 'достигнут предел безопасности (просадка, дневной убыток или устаревшие рыночные данные).',
+  'Too many orders in a row were rejected by the risk gate.': 'риск-контроль отклонил слишком много ордеров подряд.',
+  'Waiting for the owner to confirm before trading starts.': 'ждёт подтверждения владельца перед началом торговли.',
+  "The saved trading pairs couldn't all be restored; check holdings before resuming.": 'не все сохранённые торговые пары удалось восстановить; проверьте позиции перед возобновлением.',
+  'Halted.': 'остановлена.',
+};
 
 /** [pattern, Russian]: the Russian is a string, or a function of the match. Checked in order; the first match wins. */
 const FORMATS = [
@@ -43,6 +53,26 @@ const FORMATS = [
   [/^The order didn't fill at once; cancelled so it can't hold the position\.$/, 'Ордер не исполнился сразу; он отменён, чтобы не удерживать позицию.'],
   [/^The engine has no record of how this order ended/,
     'У движка нет записи о том, чем закончился этот ордер (он остановился во время отправки или потерял ордер из виду). Проверьте историю ордеров на бирже, прежде чем отправлять запрос снова.'],
+
+  // --- Pause and Resume (TradingControlService.cs) -------------------------------------------------------------------------
+  [/^Trading halted; (\d+) open order\(s\) cancelled\.$/, (m) => `Торговля остановлена; отменено открытых ордеров: ${m[1]}.`],
+  [/^Trading halted; (\d+) open order\(s\) cancelled, (\d+) couldn't be: check the exchange\.$/,
+    (m) => `Торговля остановлена; отменено открытых ордеров: ${m[1]}, не удалось отменить: ${m[2]}. Проверьте биржу.`],
+  [/^Trading was already halted; the halt and its reason stay as they were\.$/, 'Торговля уже была остановлена; остановка и её причина не изменились.'],
+  [/^Trading wasn't halted; nothing to resume\.$/, 'Торговля не была остановлена; возобновлять нечего.'],
+  [/^Trading resumed\. The risk limits still apply, and the automatic checks can halt it again\.$/,
+    'Торговля возобновлена. Лимиты риска продолжают действовать, и автоматические проверки могут снова её остановить.'],
+  [/^The halt changed after the page showed it: (.+) Check why on the dashboard, then press Resume again if you still want to\.$/,
+    (m) => `Остановка изменилась после того, как страница её показала: ${HALT_RU[m[1]] ?? m[1]} Проверьте причину на панели и нажмите «Возобновить» ещё раз, если нужно.`],
+  [/^This halt has no start time, so the engine can't tell it is the one you saw\. Resume it with the operator tool resume_trading\.$/,
+    'У этой остановки нет времени начала, поэтому движок не может проверить, что это та, которую вы видели. Снимите её инструментом оператора resume_trading.'],
+  [/^At most (\d+) Pause or Resume requests a day reach the engine; this one didn't\. To stop live trading now, see docs\/live-trading\.md\.$/,
+    (m) => `До движка доходит не больше ${m[1]} запросов на паузу или возобновление в день; этот не дошёл. Чтобы срочно остановить реальную торговлю, смотрите docs/live-trading.md.`],
+  [/^A Resume request needs haltSince: the start of the halt the page showed\.$/, 'Запросу на возобновление нужен haltSince: время начала остановки, которую показала страница.'],
+  [/^A newer Pause or Resume request replaced this one\.$/, 'Его заменил более новый запрос на паузу или возобновление.'],
+  [/^The request was more than 5 minutes old when the engine saw it; press the button again\.$/,
+    'Когда движок увидел запрос, ему было больше 5 минут; нажмите кнопку ещё раз.'],
+  [/^Done\.$/, 'Готово.'],
 
   // --- Pair changes (TradablePairs.cs, TradableSymbols.cs) ----------------------------------------------------------------
   [/^(\S+) is already tradable\.$/, (m) => `${m[1]} уже торгуется.`],

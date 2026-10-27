@@ -22,6 +22,8 @@ namespace Cix.Engine.Status;
 /// <param name="OldestQuoteAt">The oldest latest quote among the tradable coins that have one.</param>
 /// <param name="UnquotedSymbols">Tradable coins with no quote yet.</param>
 /// <param name="StrategySelection">What the engine made of the strategy selected in the database (#105); null when switching is off.</param>
+/// <param name="HaltAlsoCategory">While halted: the fixed description of a later cause found while trading already was (ADR-0018).</param>
+/// <param name="HaltAlsoAt">When that cause was found; the dashboard's Resume sends it back with <paramref name="HaltedSince"/>.</param>
 public sealed record EngineStatus(
     string Mode,
     DateTimeOffset UpdatedAt,
@@ -41,7 +43,9 @@ public sealed record EngineStatus(
     PortfolioStatus? Portfolio,
     FiltersStatus? Filters = null,
     ManualRequestsStatus? ManualRequests = null,
-    StrategySelectionStatus? StrategySelection = null);
+    StrategySelectionStatus? StrategySelection = null,
+    string? HaltAlsoCategory = null,
+    DateTimeOffset? HaltAlsoAt = null);
 
 /// <summary>
 /// The coin filters the scanner applies, from the active strategy spec (a change is a new spec version). Fractions as
@@ -256,7 +260,9 @@ public sealed partial class EngineStatusService(
             Portfolio(),
             Filters(),
             manual is null ? null : new ManualRequestsStatus(manual.State, manual.Pending.Count, manual.LastPollAt),
-            selection?.Status);
+            selection?.Status,
+            kill.Engaged && kill.AlsoAt is not null ? HaltCategoryFor(kill.AlsoBy) : null,
+            kill.Engaged ? kill.AlsoAt : null);
     }
 
     private FiltersStatus? Filters()

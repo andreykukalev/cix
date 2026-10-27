@@ -28,6 +28,19 @@ const SENTENCES = [
   ['See the journal.', null],
   ["The order didn't fill at once; cancelled so it can't hold the position.", null],
   ["The engine has no record of how this order ended (it stopped while sending it, or lost track of it). Check the exchange's order history before sending the request again.", null],
+  // TradingControlService.cs
+  ['Trading halted; 2 open order(s) cancelled.', '2'],
+  ["Trading halted; 2 open order(s) cancelled, 1 couldn't be: check the exchange.", '1'],
+  ['Trading was already halted; the halt and its reason stay as they were.', null],
+  ["Trading wasn't halted; nothing to resume.", null],
+  ['Trading resumed. The risk limits still apply, and the automatic checks can halt it again.', null],
+  ['The halt changed after the page showed it: A safety limit was reached (drawdown, daily loss or stale market data). Check why on the dashboard, then press Resume again if you still want to.', null],
+  ["This halt has no start time, so the engine can't tell it is the one you saw. Resume it with the operator tool resume_trading.", 'resume_trading'],
+  ["At most 20 Pause or Resume requests a day reach the engine; this one didn't. To stop live trading now, see docs/live-trading.md.", '20'],
+  ['A Resume request needs haltSince: the start of the halt the page showed.', 'haltSince'],
+  ['A newer Pause or Resume request replaced this one.', null],
+  ['The request was more than 5 minutes old when the engine saw it; press the button again.', null],
+  ['Done.', null],
   // TradablePairs.cs, TradableSymbols.cs
   ['VVV-EUR is already tradable.', 'VVV-EUR'],
   ['VVV-EUR is not tradable; nothing to remove.', 'VVV-EUR'],
@@ -86,7 +99,7 @@ test('every sentence the engine writes for the owner has its Russian, figures ke
     assert.ok(ru, `no Russian for: ${en}`);
     assert.ok(/[а-яё]/i.test(ru), `not Russian: ${ru}`);
     // No English words left, apart from the names, codes and abbreviations kept on purpose.
-    const rest = ru.replace(/config\/risk-limits\.json|ManualRequests:MaxPerDay|Revolut X|risk-off|taking profit|ask|UTC|ATR|EMA\d*|[A-Z]{2,}-[A-Z]{3}/g, '');
+    const rest = ru.replace(/config\/risk-limits\.json|docs\/live-trading\.md|resume_trading|haltSince|ManualRequests:MaxPerDay|Revolut X|risk-off|taking profit|ask|UTC|ATR|EMA\d*|[A-Z]{2,}-[A-Z]{3}/g, '');
     assert.ok(!/[a-z]{3,}/.test(rest), `English left in: ${ru}`);
     if (kept) assert.ok(ru.includes(kept), `${kept} lost in: ${ru}`);
   }

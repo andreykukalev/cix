@@ -61,7 +61,7 @@
         </div>
         <h2 class="health-title">Trading</h2>
         <div class="tiles">
-          <article class="tile" id="tile-trading"><h2>Trading</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-trading"><h2>Trading</h2><p class="value">–</p><p class="sub">–</p><button type="button" id="control-open" class="ghost tile-action" hidden>Pause</button></article>
           <article class="tile" id="tile-strategy"><h2>Active strategy</h2><p class="value">–</p><p class="sub">–</p></article>
           <article class="tile" id="tile-view"><h2>Market view</h2><p class="value">–</p><p class="sub">–</p></article>
           <article class="tile" id="tile-scanner"><h2>Scanner</h2><p class="value">–</p><p class="sub">–</p></article>
@@ -298,8 +298,22 @@
     </form>
   </dialog>
 
+  <dialog id="control-dialog" aria-labelledby="control-title">
+    <form id="control-form" method="dialog">
+      <h2 id="control-title">Pause trading</h2>
+      <p id="control-summary" class="summary"></p>
+      <label class="field">Why <span class="muted small">(optional, kept in the journal)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
+      <label id="control-live" class="confirm"><input type="checkbox" name="confirmLive"> <span>I understand this changes real-money trading on Revolut X.</span></label>
+      <p id="control-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="control-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="control-send" class="primary">Pause trading</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer class="muted small">
-    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests, strategy switches and pair changes are paper only; the engine checks each one and every order goes through the risk gate.
+    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests, strategy switches and pair changes are paper only; Pause and Resume work for live too, after you confirm. The engine checks each one and every order goes through the risk gate.
     News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.
   </footer>
 </body>

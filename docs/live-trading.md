@@ -136,6 +136,20 @@ It starts a new revision, which reads the keys, checks them against the live lim
 
 **Every deployment of the live environment puts the engine back on standby**, because the template pins it to paper. After promoting a new image (step 2 again, without the key files) or uploading new keys, run the switch command again.
 
+### Pausing and resuming from the dashboard (ADR-0018)
+
+On its first start the live engine has no state yet, so it starts halted until you confirm ("Waiting for the owner to confirm" on the Trading tile). The dashboard's Live view confirms it, and pauses and resumes trading later:
+
+1. Once, from your own sign-in: `.\tools\azure\setup-dashboard-requests.ps1 -Environment dev -LiveRequests`. It gives the dashboard's writer identity a second create-only role, on `cix-live`'s `requests` container only, and asks before each change. Until then the live buttons answer that live requests aren't set up.
+2. On the dashboard, switch to Live and press **Resume** (or **Pause**) on the Trading tile, tick the box that names real money, and send. The engine takes it within about 10 seconds and the line under the header says what it did.
+
+- **Pause** engages the kill switch as the owner: open orders are cancelled and the risk gate refuses every new order, sells at a stop included, until you resume. Your note stays on the request; the halt's reason is a fixed sentence, since the agents read it.
+- **Resume** releases only the halt the page showed you. If trading halted again, or a check (the reconciler, a safety limit) found something while it was halted, the Trading tile shows it ("Also, …") and a Resume sent from an older view is refused with the reason: look at it, then press Resume again if you still want to.
+- A request more than 5 minutes old when the engine sees it expires, and at most 20 act a day. Each change is journaled as the owner's (kind `kill-switch`).
+- To take the dashboard's live access away, delete the `CIX dashboard live request writer (dev)` role assignment in the shared Cosmos DB account (`az cosmosdb sql role assignment list`, then `delete`). Paper requests keep working.
+
+Pause is not the emergency stop: it needs the engine running and the dashboard reachable. For that, use the steps below and [Stopping live trading at once](#stopping-live-trading-at-once).
+
 ### Back to standby, and stopping
 
 - **Stop at once**: deactivate the active revision. Nothing runs until you switch it on again (or run `provision.ps1`):

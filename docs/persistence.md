@@ -40,7 +40,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 
 | Field | Meaning |
 |---|---|
-| `killSwitch` | Whether trading is halted (`engaged`), why (`reason`), by whom (`by`) and since when (`since`). A new Live state starts engaged until the owner confirms. |
+| `killSwitch` | Whether trading is halted (`engaged`), why (`reason`), by whom (`by`) and since when (`since`). A new Live state starts engaged until the owner confirms. `alsoBy`, `alsoReason` and `alsoAt`: the latest other cause found while it was already engaged (journaled as `also-triggered`), so the dashboard's Resume can't release it unseen (ADR-0018). |
 | `peakEquity` | Highest equity seen, for the drawdown limit. |
 | `day`, `dayStartEquity` | The UTC day and the equity at its start, for the daily loss limit. |
 | `holdings` | Balances per currency at the last reconciliation, and the value of the engine's open orders then. Used to spot deposits, withdrawals or outside trades, including while the engine was down. |
@@ -54,7 +54,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 |---|---|
 | `updatedAt` | When the engine wrote it: its heartbeat, and its last successful database write. Older than a few minutes means the engine is down or can't reach the database. |
 | `startedAt`, `mode`, `strategy` | When this engine process started, paper or live, and the active strategy spec. |
-| `halted`, `haltedBy`, `haltCategory`, `haltedSince` | The kill switch: which part of the engine engaged it and a fixed description of why. The exact reason (which can name orders or amounts) is only in the journal's `kill-switch` entry. |
+| `halted`, `haltedBy`, `haltCategory`, `haltedSince`, `haltAlsoCategory`, `haltAlsoAt` | The kill switch: which part of the engine engaged it and a fixed description of why. The exact reason (which can name orders or amounts) is only in the journal's `kill-switch` entry. `haltAlso*`: a later cause found while already halted, and when. |
 | `lastReconciledAt`, `lastReconcileAttemptAt`, `lastReconcileProblem` | The last full comparison with the exchange (the portfolio's last sync), the last attempt, and a problem code: `exchange-unreadable`, `unknown-open-orders`, `unexplained-holdings-change`, `holdings-not-compared` (no fresh prices to value the holdings), or empty. |
 | `lastScan` | The latest scan: when, how many coins ranked and excluded, entry and exit signals, and the signal key the trader watches. `market` lists every coin: rank, trend, 1h and 24h return, hourly range (ATR) and volume ratio as fractions, its signal (`buy`, `sell (stop)`, ...) and why it has no entry or was excluded. Excluded coins also carry their 1h and 24h return when their data is fresh. No prices. |
 | `marketView` | The analyst's current view: regime, until when, coins to avoid. |
@@ -120,6 +120,10 @@ A request is claimed in that record, with its `clientOrderId`, **before** its or
 ### Strategy switch requests
 
 The dashboard's Strategy tab writes a switch as a request too (`type: "strategy-selection"`), because its writer identity can only create documents in this container: `id`, `day`, `createdAt`, `name`, `version` (a JSON number), `note`, `requestedBy` (`owner`), `tradingMode` (`paper` only) and `status: "new"`. Manual requests skip this type. The strategy selection service reads new ones every 30 seconds: the newest valid one is saved as `strategy-selection-paper` and handled like any selection (validated, journaled as kind `strategy`, applied between trader runs); its document becomes `accepted`. Earlier ones become `superseded`; a malformed one `invalid`; one more than 5 minutes old when the engine first sees it `expired`. Whether the switch then ran or was refused is in the journal and in `strategySelection` on the engine status.
+
+### Pause and Resume requests
+
+The Trading tile's Pause and Resume buttons write `type: "trading-control"` (ADR-0018): `id`, `day`, `createdAt`, `action` (`pause` or `resume`), `note`, `requestedBy` (`owner`), `tradingMode` (`paper` or `live`) and `status: "new"`; a Resume also carries `haltSince` and `haltAlsoAt`, the halt the page showed (from `haltedSince` and `haltAlsoAt` on the engine status). Unlike the other types, a Live engine takes its own mode's: the dashboard writes those to `cix-live`'s `requests`, only after the owner confirms on the page. The control service reads new ones every 10 seconds (at most 10 a poll, 20 acting a day), and the newest valid one acts: Pause engages the kill switch as the owner with a fixed reason (the note stays on the document); Resume releases it only if the halt is still the one the page showed, and otherwise becomes `rejected` with the halt's category. The document becomes `accepted` or `rejected` with what happened, older ones `superseded`, a malformed one `invalid`, and one more than 5 minutes old when first seen `expired`. The kill switch change itself is journaled (kind `kill-switch`, actor `owner`).
 
 ### Pair requests
 
