@@ -75,3 +75,31 @@ test('words it doesn\'t recognise are shown as written, never paraphrased', () =
   assert.equal(cancel.outcome, 'Nothing to cancel: it had already filled or been cancelled');
   assert.deepEqual(cancel.points, ['stale at 1.234']);
 });
+
+test('every explanation also comes in Russian, with the terms, levels and the records\' own text kept', () => {
+  const { explain: x, GATE_RULES, GATE_RULES_RU } = require('../src/explain');
+  const ru = x(ENTRY, 'ru');
+  assert.equal(ru.headline, 'Покупка LINK-EUR: у монеты №3 в рейтинге сканера появился сигнал входа');
+  assert.deepEqual(ru.points, [
+    'Сетап: uptrend pullback',
+    'Цена выше своей 20-часовой средней (EMA20) на 0.31× часового диапазона (ATR)',
+    'Движение: за последний час +0.22%, за 24 часа +0.38%',
+  ]);
+  assert.equal(ru.risk.text, 'План риска: stop 9.90 (-2.94%), target 10.80 (+5.88%), около 1.47 EUR убытка, если сработает stop');
+  assert.equal(ru.outcome, 'Размещён');
+  assert.equal(ru.raw, ENTRY.data.rationale, 'the technical text stays as the engine wrote it');
+
+  const stop = { actor: 'engine', data: { tool: 'protective-exit', symbol: 'UNI-EUR', side: 'sell', status: 'placed', rule: 'ok', rationale: 'protective exit UNI-EUR stop: bid 6.10 at or below stop 6.12' } };
+  assert.equal(x(stop, 'ru').headline, 'Продажа UNI-EUR: цена опустилась до stop-loss позиции');
+  assert.ok(x(stop, 'ru').points.includes('Подробности: bid 6.10 at or below stop 6.12'));
+
+  const refused = { actor: 'trader', data: { tool: 'place_order', symbol: 'SOL-EUR', side: 'buy', status: 'rejected', rule: 'daily-loss', reason: 'Daily loss 5.20 reached.', rationale: 'my own words' } };
+  assert.equal(x(refused, 'ru').outcome, 'Отклонён до отправки: дневной лимит убытка остановил новые покупки (Daily loss 5.20 reached.)');
+  assert.deepEqual(x(refused, 'ru').points, ['my own words'], "an agent's words are never paraphrased");
+
+  const odd = { actor: 'trader', data: { tool: 'place_order', symbol: 'SOL-EUR', side: 'buy', status: 'rejected', rule: 'constructor', rationale: 'signal exit SOL-EUR constructor: x' } };
+  assert.equal(x(odd, 'ru').outcome, 'Отклонён до отправки: constructor', 'only the table\'s own codes are translated');
+  assert.equal(x(odd, 'ru').headline, 'Продажа SOL-EUR: сигнал выхода: constructor');
+  assert.equal(x(ENTRY, 'xx').headline, x(ENTRY).headline, 'an unknown language is English');
+  assert.deepEqual(Object.keys(GATE_RULES_RU).sort(), Object.keys(GATE_RULES).sort(), 'every rule has its Russian');
+});

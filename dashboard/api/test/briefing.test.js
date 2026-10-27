@@ -114,3 +114,23 @@ test('excluded coins that look abnormal need attention too, more so when held', 
     ['SUI-EUR', 1, 'watch', 'Excluded: no fresh market data'],
   ]);
 });
+
+test('the analyst\'s Russian summary and highlights, and every attention reason in Russian, reach the page', () => {
+  const ruHighlights = JSON.stringify([
+    { title: 'FOMC decision at 18:00 UTC today', titleRu: 'Решение FOMC сегодня в 18:00 UTC​', detail: 'A surprise could move every coin.', detailRu: 'Неожиданность может сдвинуть все монеты.', impact: 'high', direction: 'risk', source: 'https://example.com/fed' },
+    { title: 'Large unlock for SOL this week', titleRu: 42, detailRu: 'д'.repeat(500), impact: 'medium', direction: 'watch', source: 'https://example.com/unlock' },
+  ]);
+  const b = briefing(status, [view('2026-10-25T10:00:00+00:00', { regime: 'neutral', validUntil: '2026-10-25T16:00:00+00:00', summaryRu: 'Спокойно перед заседанием Fed.', highlights: ruHighlights })], NOW);
+
+  assert.equal(b.analyst.summaryRu, 'Спокойно перед заседанием Fed.');
+  assert.equal(b.analyst.highlights[0].titleRu, 'Решение FOMC сегодня в 18:00 UTC', 'format characters removed');
+  assert.equal(b.analyst.highlights[0].detailRu, 'Неожиданность может сдвинуть все монеты.');
+  assert.equal(b.analyst.highlights[1].titleRu, null, 'not text: left out, the page shows the English');
+  assert.equal(b.analyst.highlights[1].detailRu.length, 400);
+  assert.equal(briefing(status, [view('2026-10-25T10:00:00+00:00', { regime: 'neutral', validUntil: '2026-10-25T16:00:00+00:00' })], NOW).analyst.summaryRu, null, 'analyst v2 views have none');
+
+  assert.deepEqual(b.attention[0].reasonsRu, ['-12.0% за 24 часа', '-2.5% за последний час', 'Объём в 3.1 раза выше обычного', 'Волатильность: часовой диапазон 2.4%']);
+  assert.deepEqual(b.attention[1].reasonsRu, ['Сигнал sell: stop']);
+  assert.deepEqual(b.attention[2].reasonsRu, ['Сканер дал сигнал buy']);
+  for (const item of b.attention) assert.equal(item.reasonsRu.length, item.reasons.length);
+});

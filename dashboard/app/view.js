@@ -242,6 +242,24 @@
     return SELECTION[selection?.state] ?? { label: 'Unknown', tone: 'warn' };
   }
 
+  // --- Content language ------------------------------------------------------------------------------------------------
+
+  const LANGS = ['ru', 'en'];
+
+  /** The content language to use: a saved choice, else Russian (the owner's language). Labels and buttons stay English. */
+  function contentLang(saved) {
+    return LANGS.includes(saved) ? saved : 'ru';
+  }
+
+  /**
+   * The text to show for something that comes in English and maybe Russian: the Russian when that's the language and
+   * there is some, else the English. lang says which it is, for the page's lang attribute.
+   */
+  function pick(en, ru, lang) {
+    if (lang === 'ru' && typeof ru === 'string' && ru.trim()) return { text: ru, lang: 'ru' };
+    return { text: en ?? null, lang: 'en' };
+  }
+
   /** Who is signed in, from /.auth/me, for the header. Who may see what is decided by the platform and the API, not here. */
   function viewer(me) {
     const p = me?.clientPrincipal ?? null;
@@ -251,5 +269,6 @@
   return {
     change, coins, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
     paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState,
+    contentLang, pick,
   };
 }));

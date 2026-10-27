@@ -68,7 +68,8 @@ Size is capped by the top-level `orderQuote`, which the engine enforces and the 
 ## Other specs
 
 - `analyst.v1.json`: the market analyst (ADR-0007). It cannot trade.
-- `analyst.v2.json` (active): v1 plus up to five sourced highlights (important news and events) for the owner's dashboard. Highlights never reach the trader.
+- `analyst.v2.json`: v1 plus up to five sourced highlights (important news and events) for the owner's dashboard. Highlights never reach the trader.
+- `analyst.v3.json` (active): v2 plus the summary and each highlight in Russian (`summaryRu`, `titleRu`, `detailRu`), with names, tickers, abbreviations and trading terms kept in English. The dashboard shows them when its content language is RU; a translation that doesn't fit is left out and the English shows instead.
 - `observer.v1.json`: only reads; it checks the tool server works.
 
 The earlier `trend` v1 to v4 were removed. The journal keeps their instructions and labels (`trend@vN#hash`) for runs that used them.

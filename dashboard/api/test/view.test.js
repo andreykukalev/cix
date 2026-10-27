@@ -148,3 +148,14 @@ test('a switch lists what changes, and which changes reach open positions', () =
   assert.ok(V.strategyRequestBody({ name: 'safe', version: '1' }, ID).error);
   assert.equal(V.selectionState({ state: 'refused' }).tone, 'bad');
 });
+
+test('content language: Russian by default, the English when there is no Russian', () => {
+  assert.equal(V.contentLang(null), 'ru');
+  assert.equal(V.contentLang('en'), 'en');
+  assert.equal(V.contentLang('de'), 'ru');
+  assert.deepEqual(V.pick('Calm market.', 'Спокойный рынок.', 'ru'), { text: 'Спокойный рынок.', lang: 'ru' });
+  assert.deepEqual(V.pick('Calm market.', 'Спокойный рынок.', 'en'), { text: 'Calm market.', lang: 'en' });
+  assert.deepEqual(V.pick('Calm market.', null, 'ru'), { text: 'Calm market.', lang: 'en' }, 'analyst v2 views have no Russian');
+  assert.deepEqual(V.pick('Calm market.', '  ', 'ru'), { text: 'Calm market.', lang: 'en' });
+  assert.deepEqual(V.pick(undefined, undefined, 'ru'), { text: null, lang: 'en' });
+});
