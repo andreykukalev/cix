@@ -3,7 +3,8 @@
 #   1. pushes the two images CI built to the environment's registry, tagged with the commit (agents.deploy platform stops
 #      here: the apps don't exist yet, and provision.ps1 -ImageTag creates them from these images);
 #   2. points the engine at its new image and, when it runs a replica (minimum replicas 1, set by agents.startEngine),
-#      waits for that revision to be healthy (its startup and readiness probes passed);
+#      stops the old revision, so that the new one can take the engine lease, then waits for the new one to be healthy
+#      (its startup and readiness probes passed);
 #   3. points the three jobs at the new agent image.
 # The apps get the images by digest, as the registry gave them on the push: what runs can't change if a tag is pushed again.
 # If anything fails once the engine has changed, the engine and the jobs go back to the images they ran before, and the
@@ -109,6 +110,31 @@ set_image() {
   done
 }
 
+# Stops every active engine revision but the one running this image, once Azure lists it as the latest. Container Apps
+# keeps the old revision running until the new one is ready, but the new engine only gets ready once it holds the engine
+# lease, which the old one gives up only when it stops (ADR-0013, docs/persistence.md): without this, the new revision
+# waits out its startup probe and fails. Only while the engine runs a replica: with none, nothing holds the lease.
+retire_old_revisions() {
+  local image="$1" deadline replicas revision list names name ok=true
+  replicas="$(get "$engine_id" | jq -r '.properties.template.scale.minReplicas // 0')" || return 1
+  (( replicas >= 1 )) || return 0
+  deadline=$(( $(date +%s) + update_timeout ))
+  while :; do
+    revision="$(get "$engine_id" | jq -r .properties.latestRevisionName)" || return 1
+    [[ "$(get "$engine_id/revisions/$revision" | jq -r '.properties.template.containers[0].image')" == "$image" ]] && break
+    if (( $(date +%s) >= deadline )); then echo "::error::Azure listed no revision of $engine running $image after $update_timeout seconds."; return 1; fi
+    sleep "$poll"
+  done
+  list="$(get "$engine_id/revisions")" || return 1
+  names="$(jq -er --arg keep "$revision" '[.value[] | select(.properties.active == true and .name != $keep) | .name] | join(" ")' <<<"$list")" || return 1
+  for name in $names; do
+    say "Stopping the engine's revision $name, so that $revision can take the engine lease."
+    az rest --method post --url "https://management.azure.com$engine_id/revisions/$name/deactivate?api-version=$api" -o none \
+      || { echo "::error::Azure refused to stop the engine's revision $name. The deploy identity needs the right to (run tools/azure/setup-ci-deploy.ps1 -For agents again)."; ok=false; }
+  done
+  [[ "$ok" == true ]]
+}
+
 # Puts back the images in a rollback file: the engine first, then every job, trying them all even if one fails. Only
 # images from the registry they came from.
 roll_back_from() {
@@ -116,7 +142,16 @@ roll_back_from() {
   server_of_file="$(jq -er .server "$1")" || server_of_file=""
   valid() { [[ -n "$server_of_file" && "$1" == "$server_of_file/cix-"* ]] || { echo "::error::The rollback file holds no usable image for $2."; return 1; }; }
   previous="$(jq -r '.engine // ""' "$1")"
-  if valid "$previous" "$engine"; then set_image "$engine_id" "$previous" || ok=false; else ok=false; fi
+  if valid "$previous" "$engine"; then
+    if set_image "$engine_id" "$previous"; then
+      # The images are back either way; a revision left running only keeps the lease from the rolled-back one.
+      retire_old_revisions "$previous" || echo "::warning::A revision of $engine other than the latest may still be running: check its revisions in the Azure portal."
+    else
+      ok=false
+    fi
+  else
+    ok=false
+  fi
   for job in "${jobs[@]}"; do
     previous="$(jq -r --arg j "$job" '.jobs[$j] // ""' "$1")"
     if valid "$previous" "$job"; then set_image "$(job_id "$job")" "$previous" || ok=false; else ok=false; fi
@@ -222,6 +257,7 @@ set_image "$engine_id" "$engine_image"
 if (( min_replicas < 1 )); then
   echo "::notice::The engine runs no replica (minimum replicas 0, agents.startEngine false): its new image starts with it, so there is no health to wait for."
 else
+  retire_old_revisions "$engine_image"
   deadline=$(( $(date +%s) + health_timeout ))
   while :; do
     revision="$(get "$engine_id" | jq -r .properties.latestRevisionName)"

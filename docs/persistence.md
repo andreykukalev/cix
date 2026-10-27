@@ -164,7 +164,7 @@ With a shared database, two engines of the same mode can briefly run at once: a 
 - **Taking it.** A waiting engine takes the lease when there is none, when it was released, or when the document has stayed unchanged for 2 minutes by the waiting engine's own clock. The gap between 60 seconds and 2 minutes lets the old holder stop first. No two clocks are compared, and every write is an ETag check, so two engines can't both take it.
 - **Shutting down.** A clean shutdown releases the lease after everything else has stopped, so the next engine starts at once. After a crash, the next engine waits the 2 minutes.
 - **Compose.** `docker compose up -d --build` stops the old engine before starting the new one, so the lease passes over at once.
-- **Container Apps.** A new revision waits for the lease while the old one runs, so the deployment has to stop the old revision first, or report readiness while waiting. A liveness probe mustn't restart a waiting engine within 2 minutes, because the wait starts again with each restart (#80).
+- **Container Apps.** A new revision waits for the lease while the old one runs, and Container Apps keeps the old one running until the new one is ready. So the deployment (`tools/ci/deploy-agents.sh`) stops the old revision once the new one exists, and the lease passes over as with Compose. A liveness probe mustn't restart a waiting engine within 2 minutes, because the wait starts again with each restart (#80). A revision changed by hand (in the portal, or `provision.ps1`) needs its old revision stopped the same way.
 - **Without Cosmos DB** there is nothing to share, and the engine always holds the lease.
 
 ### Reconciliation (every 2 minutes, and right after startup)

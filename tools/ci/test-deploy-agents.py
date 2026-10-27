@@ -68,7 +68,7 @@ FAKE_AZ = textwrap.dedent(r'''
         if body != {"properties": {"template": {"containers": [{"name": "engine", "image": image}]}}}: sys.exit("ERROR: sent more than the containers")
         if image in s["fail_patch"].get(name, []): sys.exit("ERROR: (BadRequest) update failed")
         if s["conflict_once"]: s["conflict_once"] = False; save(); sys.exit("ERROR: (Conflict) an operation is in progress")
-        for r in e["revisions"]: r["active"] = False
+        # Single revision mode: the revisions running stay active until the new one is ready (below).
         rev = {"name": "rev-%d" % (len(e["revisions"]) + 1), "image": image, "active": True, "polls": 0}
         e["revisions"].append(rev)
         if s["stale"]: e["pending"] = image  # applied only after a few reads: until then Azure still shows the old image
@@ -88,13 +88,26 @@ FAKE_AZ = textwrap.dedent(r'''
                  "latestRevisionName": latest, "provisioningState": provisioning}
         if e.get("runningStatus"): props["runningStatus"] = e["runningStatus"]
         out({"properties": props})
+    elif rest == ["revisions"]:
+        out({"value": [{"name": r["name"], "properties": {"active": r["active"]}} for r in e["revisions"]]})
+    elif method == "post":
+        rev = next((r for r in e["revisions"] if r["name"] == rest[1]), None) or sys.exit("ERROR: (NotFound) revision")
+        if rest[2:] != ["deactivate"] or s["fail_deactivate"]: sys.exit("ERROR: (AuthorizationFailed) " + "/".join(rest))
+        rev["active"] = False; save()
     else:
         rev = next((r for r in e["revisions"] if r["name"] == rest[1]), None) or sys.exit("ERROR: (NotFound) revision")
         if rev["image"] == s["new_engine"]:
-            rev["polls"] += 1; save()
+            rev["polls"] += 1
+            # The new engine starts only once it holds the engine lease, which a running older revision keeps.
+            waiting = any(r["active"] and r is not rev for r in e["revisions"])
             if s["new_fails"]: health, running, provisioning = "Unhealthy", "Failed", "Succeeded"
-            elif s["healthy_after"] is not None and rev["polls"] >= s["healthy_after"]: health, running, provisioning = "Healthy", s["running_value"], "Succeeded"
+            elif waiting and rev["polls"] >= s["lease_fails_after"]: health, running, provisioning = "Unhealthy", "ActivationFailed", "Provisioned"
+            elif not waiting and s["healthy_after"] is not None and rev["polls"] >= s["healthy_after"]:
+                health, running, provisioning = "Healthy", s["running_value"], "Succeeded"
+                for r in e["revisions"]:
+                    if r is not rev: r["active"] = False
             else: health, running, provisioning = "None", "Activating", "Provisioning"
+            save()
         else: health, running, provisioning = "Healthy", "Running", "Succeeded"
         out({"properties": {"template": {"containers": [{"image": rev["image"]}]}, "active": rev["active"],
                             "healthState": health, "runningState": running, "provisioningState": provisioning}})
@@ -133,7 +146,7 @@ def names(prefix, env):
 def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", registry_env=None, min_replicas=1,
         running_status=None, revisions=None, engine_image=None, job_images=None, missing_engine=False, healthy_after=2,
         running_value="Running", new_fails=False, fail_patch=None, rev_lag=0, prov_lag=1, stale=0, conflict_once=False,
-        flaky_every=0, fail_push=False, no_digest=False,
+        flaky_every=0, fail_push=False, no_digest=False, fail_deactivate=False, lease_fails_after=6,
         timeout=5, update_timeout=20, args=(), rollback_state=None, expect_rc=0, expect_engine=None, expect_jobs=None, expect_in_output=(),
         expect_calls=(), never_calls=(), expect_rollback_file=False):
     engine, jobs = names(prefix, env)
@@ -151,7 +164,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
             "jobs": job_images or {j: old_agent for j in jobs},
             "healthy_after": healthy_after, "running_value": running_value, "new_fails": new_fails, "new_engine": new_engine,
             "fail_patch": fail_patch or {}, "rev_lag": rev_lag, "prov_lag": prov_lag, "stale": stale, "conflict_once": conflict_once,
-            "flaky_every": flaky_every, "gets": 0,
+            "flaky_every": flaky_every, "gets": 0, "fail_deactivate": fail_deactivate, "lease_fails_after": lease_fails_after,
         }
         json.dump(state, open(os.path.join(d, "state.json"), "w"))
         for tool, body in (("az", FAKE_AZ), ("docker", FAKE_DOCKER)):
@@ -225,6 +238,17 @@ results = [
     run("deploys the engine, waits for it to be healthy, then the jobs",
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["Engine revision rev-2 is healthy", f"Deployed {NEW}"],
         expect_calls=[f"docker push --quiet {new_engine_tag}", f"docker push --quiet {new_agent_tag}", f"az acr login --name {REGISTRY}"]),
+    run("the old revision is stopped, so the new engine can take the engine lease",
+        expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["Stopping the engine's revision rev-1, so that rev-2 can take"],
+        expect_calls=["rev-1/deactivate"], never_calls=["rev-2/deactivate"]),
+    run("every older revision still running is stopped",
+        revisions=[{"name": "rev-0", "image": old_engine, "active": True, "polls": 0}, {"name": "rev-1", "image": old_engine, "active": True, "polls": 0}],
+        expect_engine=new_engine, expect_jobs=new_agent, expect_calls=["rev-0/deactivate", "rev-1/deactivate"]),
+    run("an old revision that can't be stopped rolls back, rather than wait out the startup probe", fail_deactivate=True, expect_rc=1,
+        expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["refused to stop the engine's revision rev-1", "Rolled back"],
+        never_calls=["rev-2 is healthy"]),
+    run("the rollback stops the failed revision too", new_fails=True, expect_rc=1,
+        expect_engine=old_engine, expect_jobs=old_agent, expect_calls=["rev-1/deactivate", "rev-2/deactivate"], expect_in_output=["Rolled back"]),
     run("apps that ran images by tag, from before digests, get digests",
         engine_image=old_engine_tag, job_images={j: old_agent_tag for j in jobs_dev}, revisions=[{"name": "rev-1", "image": old_engine_tag, "active": True, "polls": 0}],
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Engine: {old_engine_tag} -> {new_engine}", f"Deployed {NEW}"]),
@@ -246,7 +270,7 @@ results = [
     run("long names are cut to 32 characters, as the templates cut them", prefix="cixlongprefix", env="abcdefghijkl",
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Deployed {NEW}"]),
     run("an engine with no replica gets its new image without waiting", min_replicas=0,
-        expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["The engine runs no replica"], never_calls=["/revisions/rev-2"]),
+        expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["The engine runs no replica"], never_calls=["/revisions/rev-2", "deactivate"]),
     run("an engine that fails comes back to the old image, and the jobs stay", new_fails=True, expect_rc=1,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["failed (provisioning Succeeded, running Failed)", "Rolled back"]),
     run("an engine that never becomes healthy is rolled back after the timeout", healthy_after=None, timeout=1, expect_rc=1,
