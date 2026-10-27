@@ -22,19 +22,19 @@ RequestWriter.prototype.create = async function create(doc) {
 const { CosmosReader } = require('../src/cosmos');
 const reads = [];
 CosmosReader.prototype.query = async function query(container, sql, options) {
-  reads.push({ container, sql, options });
+  reads.push({ database: this.database, container, sql, options });
   return container === 'requests' ? [{ id: 'r1', type: 'manual-request', createdAt: '2026-10-26T10:00:00Z', status: 'filled' }] : [];
 };
 const stored = new Map(); // what the fake writer created, by id, for reads after a retry
 CosmosReader.prototype.readDocument = async function readDocument(container, id, pk) {
-  reads.push({ container, id, pk });
+  reads.push({ database: this.database, container, id, pk });
   if (container === 'requests' && stored.has(id)) return stored.get(id).day === pk ? stored.get(id) : null;
   // The looked-up request has its own id, so the request created in these tests never finds it as yesterday's.
   return id === 'a1b2c3d4-0000-4000-8000-000000000001' && pk === '2026-10-26' ? { id, type: 'manual-request', status: 'placed' } : null;
 };
 Object.assign(process.env, {
   COSMOS_ENDPOINT: 'https://acct.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('k').toString('base64'), COSMOS_DATABASE: 'cix',
-  DASHBOARD_OWNER_USER_ID: 'owner-user-id',
+  COSMOS_LIVE_DATABASE: 'cix-live', DASHBOARD_OWNER_USER_ID: 'owner-user-id',
   COSMOS_WRITER_TENANT_ID: '11111111-2222-3333-4444-555555555555', COSMOS_WRITER_CLIENT_ID: 'app', COSMOS_WRITER_SECRET: ['x', 'y'].join(''),
 });
 require('../src/functions/owner.js');
@@ -46,9 +46,9 @@ const VISITOR = b64({ identityProvider: 'aad', userId: 'visitor', userRoles: ['a
 const OTHER_OWNER = b64({ identityProvider: 'aad', userId: 'redeemed-the-link', userRoles: ['authenticated', 'owner'] }); // has the role, isn't the owner
 const context = { log() {}, error() {} };
 
-function request({ method = 'GET', principal = OWNER, headers = {}, body = '', params = {} } = {}) {
+function request({ method = 'GET', principal = OWNER, headers = {}, body = '', params = {}, query = '' } = {}) {
   const all = { 'x-ms-client-principal': principal, 'content-type': 'application/json', 'x-cix-request': '1', ...headers };
-  return { method, params, query: new URLSearchParams(), headers: { get: (n) => all[n.toLowerCase()] ?? null }, text: async () => body };
+  return { method, params, query: new URLSearchParams(query), headers: { get: (n) => all[n.toLowerCase()] ?? null }, text: async () => body };
 }
 
 const BODY = JSON.stringify({ id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f', side: 'sell', mode: 'direct', symbol: 'LINK-EUR', portion: '0.25' });
@@ -243,4 +243,16 @@ test('the pairs view is the owner\'s only', async () => {
   assert.equal(visitor.status, 403);
   assert.equal(owner.status, 200);
   assert.equal(owner.jsonBody.mode, 'paper');
+});
+
+test("live's strategy view reads the live engine's database, with paper's explanations as a stand-in; requests stay paper's", async () => {
+  reads.length = 0;
+  const live = await routes['owner-strategies'].handler(request({ query: 'mode=live' }), context);
+  assert.equal(live.status, 200);
+  const where = Object.fromEntries(reads.map((r) => [r.id ?? r.container, r.database]));
+  assert.deepEqual(where, { 'strategy-schema-live': 'cix-live', state: 'cix-live', 'engine-status-live': 'cix-live', 'strategy-schema-paper': 'cix' },
+    "live's own schema first; paper's explanations only while the live engine hasn't written its own (the fake has none)");
+  reads.length = 0;
+  await routes['owner-requests'].handler(request(), context);
+  assert.deepEqual([...new Set(reads.map((r) => r.database))], ['cix']);
 });

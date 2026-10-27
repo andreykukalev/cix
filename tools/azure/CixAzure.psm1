@@ -87,6 +87,12 @@ function Read-CixEnvironment {
         $o.cosmos.PSObject.Properties['databaseName'] -and $o.cosmos.databaseName -eq $s.cosmos.databaseName) {
       throw "${path}: database '$($s.cosmos.databaseName)' is also used by $($other.Name) in the same shared account. Give each environment its own."
     }
+    # The protected environment's database in the same account, for this one's dashboard to show its live engine (ADR-0017).
+    if (-not $s.protected -and $o.PSObject.Properties['protected'] -and $o.protected -eq $true -and $o.PSObject.Properties['sharedCosmos'] -and
+        $o.sharedCosmos -eq $s.sharedCosmos -and $o.PSObject.Properties['cosmos'] -and $o.cosmos.PSObject.Properties['databaseName']) {
+      if (-not $s.ContainsKey('liveDatabases')) { $s['liveDatabases'] = @() }
+      $s['liveDatabases'] += [string]$o.cosmos.databaseName
+    }
   }
   if ($s.shared.resourceGroup -eq $s.resourceGroup) { throw "${path}: the shared Cosmos DB account needs its own resource group, not $($s.resourceGroup)." }
   if ($s.ContainsKey('agents')) { Assert-CixAgentSettings -Settings $s -Path $path }
@@ -287,6 +293,11 @@ function Get-CixDeploymentValues {
     protectedEnvironment    = [bool]$Settings.protected
     deployDashboard         = [bool]$Settings.deployDashboard
     tags                    = $tags
+  }
+  if ($Settings.deployDashboard -and $Settings.ContainsKey('liveDatabases')) {
+    $live = @($Settings.liveDatabases)
+    if ($live.Count -gt 1) { throw "$($Settings.path): protected environments with databases $($live -join ', ') share this account; the dashboard's live view shows one." }
+    if ($live.Count -eq 1) { $values['liveDatabaseName'] = $live[0] }
   }
   if ($Settings.ContainsKey('agents')) {
     $a = $Settings.agents

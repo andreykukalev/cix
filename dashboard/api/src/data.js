@@ -94,7 +94,7 @@ function journalRequest(day, kind, limit, now) {
   return { day, kind: kind || '', top, key: `journal:${day}:${kind || ''}:${top}` };
 }
 
-/** One UTC day of one mode's journal, newest first, optionally one kind only. Paper until the dashboard switches modes (#71). */
+/** One UTC day of one mode's journal, newest first, optionally one kind only. */
 async function loadJournalDay(reader, day, kind, limit, now = Date.now(), mode = 'paper') {
   ({ day, kind, top: limit } = journalRequest(day, kind, limit, now));
   const top = limit;
@@ -111,7 +111,7 @@ const FILLS_MAX = 5000;
 
 /**
  * Trading activity for the period switch (day, week or month): one mode's executed trades only (journal "fill" entries),
- * read across the day partitions the periods cover. Paper until the dashboard switches modes (#71).
+ * read across the day partitions the periods cover.
  */
 async function loadActivity(reader, period, now, mode = 'paper') {
   const from = fromDay(period, now); // throws RangeError for an unknown period
@@ -190,13 +190,14 @@ const VERSIONS_MAX = 100;
 /**
  * The Strategy tab for one mode: the engine's parameter schema, every strategy version (without its instructions), the
  * running strategy and what became of the latest selection, and the owner's switch requests of the last week. The schema
- * and selection exist for paper only (#105); live shows the versions read-only.
+ * and selection exist for paper only (#105); live shows the versions read-only. reader is the mode's database (live's is its
+ * own, ADR-0017) and paperReader paper's, whose schema stands in until the mode's engine has written its own.
  */
-async function loadStrategies(reader, mode, now) {
+async function loadStrategies(reader, mode, now, paperReader = reader) {
   if (!MODES.has(mode)) throw new RangeError('mode must be paper or live');
   const from = utcDay(now - (REQUEST_DAYS - 1) * 24 * 3600 * 1000);
-  const [schemaDoc, versionDocs, statusDoc, requestDocs] = await Promise.all([
-    reader.readDocument('state', `strategy-schema-${mode === 'live' ? 'paper' : mode}`), // live shares paper's explanations until #71
+  const [ownSchema, versionDocs, statusDoc, requestDocs] = await Promise.all([
+    reader.readDocument('state', `strategy-schema-${mode}`), // the engine writes its own at startup, with its own limits
     reader.query('state', 'SELECT c["value"].name, c["value"].version, c["value"].status, c["value"].purpose, c["value"].riskProfile, c["value"].parameters, c["value"].allowedTools FROM c WHERE c.type = @type', {
       parameters: [{ name: '@type', value: 'strategy-version' }],
       maxItems: VERSIONS_MAX,
@@ -209,6 +210,8 @@ async function loadStrategies(reader, mode, now) {
       })
       : [],
   ]);
+  // Paper's explanations stand in until this mode's engine has written its own.
+  const schemaDoc = ownSchema ?? (mode === 'paper' ? null : await paperReader.readDocument('state', 'strategy-schema-paper'));
   return strategiesView({ mode, schema: schemaDoc?.value ?? null, versions: versionDocs, status: statusDoc?.value ?? null, requests: requestDocs }, now);
 }
 

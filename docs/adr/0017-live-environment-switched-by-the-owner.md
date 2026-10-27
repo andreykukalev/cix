@@ -43,5 +43,5 @@ The live environment, `prod` (`infra/environments/prod.json`), uses paper's temp
 - Every deployment of the live environment, a promotion included, puts the engine back on standby: the owner runs the switch again after it. That is the fail-safe direction.
 - The live environment has its own Container Apps environment, registry, Key Vault, queues, logs and budget (20 a month), and the three agent jobs for the live engine, with their own identities.
 - Its outbound IP is probably not paper's (another Container Apps environment), but that isn't guaranteed. The market-data budget across both engines is #67.
-- No dashboard is deployed for live yet: the owner watches the live engine through its logs, and its journal and balance snapshots in `cix-live`.
+- No dashboard is deployed for live. Paper's dashboard shows the live engine in its live view: for that mode its API reads `cix-live` (`COSMOS_LIVE_DATABASE`, the protected environment's database in the same account). It uses the account's read-only key, which reached that database already. The owner also has the engine's logs.
 - The switch command needs the owner's own Azure sign-in, and `az containerapp` (an Azure CLI extension it may offer to install).

@@ -5,23 +5,14 @@
 // instance, so refreshes and several open tabs share one database read; a browser never keeps them (no-store).
 
 const { app } = require('@azure/functions');
-const { CosmosReader } = require('../cosmos');
+const { readerCache } = require('../cosmos');
 const { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadBalanceHistory } = require('../data');
 const { isOwner, forbidden } = require('../auth');
 
 const CACHE_MS = 20_000;
 const ACTIVITY_CACHE_MS = 60_000; // a query across up to a year of day partitions: at most once a minute
 const cache = new Map();
-let reader;
-
-function getReader() {
-  reader ??= new CosmosReader({
-    endpoint: process.env.COSMOS_ENDPOINT,
-    key: process.env.COSMOS_READONLY_KEY,
-    database: process.env.COSMOS_DATABASE ?? 'cix',
-  });
-  return reader;
-}
+const getReader = readerCache(); // each mode's database: live's engine writes to its own (ADR-0017)
 
 // Concurrent requests for the same thing share one database read (the promise is cached, not just the result).
 async function cached(key, load, ttl = CACHE_MS) {
@@ -60,7 +51,7 @@ app.http('dashboard', {
   route: 'dashboard',
   handler: (request, context) => handle(request, context, () => {
     const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
-    return cached(`dashboard:${mode}`, () => loadDashboard(getReader(), mode, Date.now()));
+    return cached(`dashboard:${mode}`, () => loadDashboard(getReader(mode), mode, Date.now()));
   }),
 });
 
@@ -70,8 +61,9 @@ app.http('journal', {
   route: 'journal',
   handler: (request, context) => handle(request, context, () => {
     const now = Date.now();
+    const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
     const r = journalRequest(request.query.get('day'), request.query.get('kind') ?? '', request.query.get('limit') ?? '100', now);
-    return cached(r.key, () => loadJournalDay(getReader(), r.day, r.kind, String(r.top), now));
+    return cached(`${mode}:${r.key}`, () => loadJournalDay(getReader(mode), r.day, r.kind, String(r.top), now, mode));
   }),
 });
 
@@ -80,9 +72,10 @@ app.http('activity', {
   authLevel: 'anonymous',
   route: 'activity',
   handler: (request, context) => handle(request, context, () => {
+    const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
     const period = request.query.get('period') ?? 'day';
     if (!['day', 'week', 'month'].includes(period)) throw new RangeError('period must be day, week or month');
-    return cached(`activity:${period}`, () => loadActivity(getReader(), period, Date.now()), ACTIVITY_CACHE_MS);
+    return cached(`activity:${mode}:${period}`, () => loadActivity(getReader(mode), period, Date.now(), mode), ACTIVITY_CACHE_MS);
   }),
 });
 
@@ -94,7 +87,7 @@ app.http('balance-history', {
     const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
     const days = request.query.get('days') ?? '7';
     if (!['7', '30', '90'].includes(days)) throw new RangeError('days must be 7, 30 or 90');
-    return cached(`balance-history:${mode}:${days}`, () => loadBalanceHistory(getReader(), days, Date.now(), mode), ACTIVITY_CACHE_MS);
+    return cached(`balance-history:${mode}:${days}`, () => loadBalanceHistory(getReader(mode), days, Date.now(), mode), ACTIVITY_CACHE_MS);
   }),
 });
 

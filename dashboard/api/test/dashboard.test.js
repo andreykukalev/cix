@@ -14,16 +14,16 @@ Module._load = function load(request, ...rest) {
 const { CosmosReader } = require('../src/cosmos');
 const reads = [];
 CosmosReader.prototype.query = async function query(container, sql, options) {
-  reads.push({ container, sql, options });
+  reads.push({ database: this.database, container, sql, options });
   return [];
 };
 CosmosReader.prototype.readDocument = async function readDocument(container, id) {
-  reads.push({ container, id });
+  reads.push({ database: this.database, container, id });
   return null;
 };
 Object.assign(process.env, {
   COSMOS_ENDPOINT: 'https://acct.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('k').toString('base64'), COSMOS_DATABASE: 'cix',
-  DASHBOARD_OWNER_USER_ID: 'owner-user-id',
+  COSMOS_LIVE_DATABASE: 'cix-live', DASHBOARD_OWNER_USER_ID: 'owner-user-id',
 });
 require('../src/functions/dashboard.js');
 Module._load = originalLoad;
@@ -37,9 +37,9 @@ const context = { log() {}, error() {} };
 const today = new Date().toISOString().slice(0, 10);
 const QUERIES = { dashboard: 'mode=paper', journal: `day=${today}`, activity: 'period=week', 'balance-history': 'mode=live&days=30' };
 
-function request(name, principal = OWNER) {
+function request(name, principal = OWNER, query = QUERIES[name]) {
   const headers = { 'x-ms-client-principal': principal };
-  return { method: 'GET', params: {}, query: new URLSearchParams(QUERIES[name]), headers: { get: (n) => headers[n.toLowerCase()] ?? null } };
+  return { method: 'GET', params: {}, query: new URLSearchParams(query), headers: { get: (n) => headers[n.toLowerCase()] ?? null } };
 }
 
 test('the reads are registered under /api', () => {
@@ -112,4 +112,24 @@ test('anyone else is sent to the Microsoft sign-in, or to the signed-out page; G
   assert.deepEqual(config.responseOverrides['401'], { statusCode: 302, redirect: '/.auth/login/aad?post_login_redirect_uri=/' });
   assert.deepEqual(config.responseOverrides['403'], { rewrite: '/signed-out.html' });
   for (const provider of ['github', 'twitter']) assert.equal(ruleFor(`/.auth/login/${provider}`)?.statusCode, 404, provider);
+});
+
+test("each mode reads its own engine's database: live's is its own (ADR-0017)", async () => {
+  const cases = [
+    ['dashboard', 'mode=live', 'cix-live'], // paper's dashboard is in the cache from the first test
+    ['journal', `day=${today}&kind=fill&mode=live`, 'cix-live'], ['journal', `day=${today}&kind=fill`, 'cix'],
+    ['activity', 'period=month&mode=live', 'cix-live'], ['activity', 'period=month', 'cix'],
+    ['balance-history', 'mode=live&days=90', 'cix-live'], ['balance-history', 'mode=paper&days=90', 'cix'],
+  ];
+  for (const [name, query, database] of cases) {
+    reads.length = 0;
+    const r = await routes[name].handler(request(name, OWNER, query), context);
+    assert.equal(r.status, 200, `${name} ${query}`);
+    assert.ok(reads.length > 0, `${name} ${query}: read the database, not another mode's cached answer`);
+    assert.deepEqual([...new Set(reads.map((x) => x.database))], [database], `${name} ${query}`);
+    const mode = database === 'cix-live' ? 'live' : 'paper';
+    for (const q of reads.filter((x) => x.options?.parameters)) {
+      assert.deepEqual(q.options.parameters.filter((p) => p.name === '@mode'), [{ name: '@mode', value: mode }], `${name} ${query}: ${mode}'s entries only`);
+    }
+  }
 });

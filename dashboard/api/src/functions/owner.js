@@ -14,7 +14,7 @@
 // cross-origin only after a preflight this API never answers.
 
 const { app } = require('@azure/functions');
-const { CosmosReader } = require('../cosmos');
+const { readerCache } = require('../cosmos');
 const { RequestWriter, WriterNotConfigured } = require('../writer');
 const { isOwner, forbidden } = require('../auth');
 const { requestDocument, historyItem, RequestError } = require('../requests');
@@ -24,17 +24,8 @@ const { pairRequestDocument, pairRequestItem } = require('../pairs');
 
 const MAX_BODY = 4096;
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
-let reader;
+const getReader = readerCache(); // each mode's database: live's engine writes to its own (ADR-0017); requests are paper's
 let writer;
-
-function getReader() {
-  reader ??= new CosmosReader({
-    endpoint: process.env.COSMOS_ENDPOINT,
-    key: process.env.COSMOS_READONLY_KEY,
-    database: process.env.COSMOS_DATABASE ?? 'cix',
-  });
-  return reader;
-}
 
 function getWriter() {
   writer ??= new RequestWriter({
@@ -156,7 +147,7 @@ app.http('owner-strategies', {
   route: 'owner/strategies',
   handler: (request, context) => ownerOnly(request, context, 'strategy view', async () => {
     const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
-    return respond(200, await loadStrategies(getReader(), mode, Date.now()));
+    return respond(200, await loadStrategies(getReader(mode), mode, Date.now(), getReader('paper')));
   }),
 });
 
@@ -183,7 +174,7 @@ app.http('owner-pairs', {
   route: 'owner/pairs',
   handler: (request, context) => ownerOnly(request, context, 'pairs view', async () => {
     const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
-    return respond(200, await loadPairs(getReader(), mode, Date.now()));
+    return respond(200, await loadPairs(getReader(mode), mode, Date.now()));
   }),
 });
 

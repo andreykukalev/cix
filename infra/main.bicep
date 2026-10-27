@@ -37,6 +37,10 @@ param sharedAccountName string
 @minLength(1)
 param databaseName string = 'cix'
 
+// The protected environment's database in the same account (ADR-0017), which the dashboard reads for its live view.
+@description('The protected environment\'s database in the same account, for the dashboard. Empty when there is none.')
+param liveDatabaseName string = ''
+
 @description('Throughput shared by CIX\'s two containers. The free tier covers 1000 RU/s for the whole account, shared with other projects\' databases.')
 @minValue(400)
 @maxValue(1000)
@@ -131,6 +135,7 @@ module dashboard 'modules/dashboard.bicep' = if (deployDashboard) {
     cosmosAccountName: sharedAccountName
     cosmosResourceGroupName: sharedResourceGroupName
     databaseName: databaseName
+    liveDatabaseName: liveDatabaseName
     tags: allTags
   }
 }
