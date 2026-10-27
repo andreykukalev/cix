@@ -115,9 +115,15 @@ set_image() {
 # lease, which the old one gives up only when it stops (ADR-0013, docs/persistence.md): without this, the new revision
 # waits out its startup probe and fails. Only while the engine runs a replica: with none, nothing holds the lease.
 retire_old_revisions() {
-  local image="$1" deadline replicas revision list names name ok=true
-  replicas="$(get "$engine_id" | jq -r '.properties.template.scale.minReplicas // 0')" || return 1
+  local image="$1" deadline app replicas revision list names name ok=true
+  app="$(get "$engine_id")" || return 1
+  replicas="$(jq -r '.properties.template.scale.minReplicas // 0' <<<"$app")"
   (( replicas >= 1 )) || return 0
+  # In multiple revision mode (set by hand: the templates set single) other revisions may run on purpose.
+  if [[ "$(jq -r '.properties.configuration.activeRevisionsMode // "Single"' <<<"$app")" != Single ]]; then
+    echo "::error::$engine runs several revisions at once, set by hand: CI stops none of them. Deploy with provision.ps1."
+    return 1
+  fi
   deadline=$(( $(date +%s) + update_timeout ))
   while :; do
     revision="$(get "$engine_id" | jq -r .properties.latestRevisionName)" || return 1
@@ -126,8 +132,12 @@ retire_old_revisions() {
     sleep "$poll"
   done
   list="$(get "$engine_id/revisions")" || return 1
-  names="$(jq -er --arg keep "$revision" '[.value[] | select(.properties.active == true and .name != $keep) | .name] | join(" ")' <<<"$list")" || return 1
-  for name in $names; do
+  mapfile -t names < <(jq -r --arg keep "$revision" '.value[] | select(.properties.active == true and .name != $keep) | .name' <<<"$list")
+  # Azure names an app's revisions <app>--<suffix>: anything else isn't put in a URL.
+  for name in "${names[@]}"; do
+    [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,99}$ && "$name" == "$engine--"* ]] || { echo "::error::Unexpected revision name from Azure."; return 1; }
+  done
+  for name in "${names[@]}"; do
     say "Stopping the engine's revision $name, so that $revision can take the engine lease."
     az rest --method post --url "https://management.azure.com$engine_id/revisions/$name/deactivate?api-version=$api" -o none \
       || { echo "::error::Azure refused to stop the engine's revision $name. The deploy identity needs the right to (run tools/azure/setup-ci-deploy.ps1 -For agents again)."; ok=false; }
