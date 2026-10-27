@@ -102,6 +102,54 @@ public sealed class PaperAccountPersistenceTests
     }
 }
 
+/// <summary>The journal's mode filter without a database (#65); the emulator tests below run it for real.</summary>
+public sealed class JournalModeTests
+{
+    private static readonly JournalEntry Entry = new("e1", new DateTimeOffset(2026, 10, 27, 12, 0, 0, TimeSpan.Zero), "fill", "engine", null, null, "fill");
+
+    [Fact]
+    public void EachModeQueriesItsOwnEntries_AndPaperAlsoTheUntaggedOnes()
+    {
+        var query = new JournalQuery(Kind: "fill", ClientOrderId: "c-1");
+        var paper = CosmosJournal.Sql(query, TradingMode.Paper);
+        var live = CosmosJournal.Sql(query, TradingMode.Live);
+
+        Assert.StartsWith("SELECT * FROM c WHERE (NOT IS_DEFINED(c.mode) OR c.mode = @mode) AND ", paper.QueryText, StringComparison.Ordinal);
+        Assert.StartsWith("SELECT * FROM c WHERE c.mode = @mode AND ", live.QueryText, StringComparison.Ordinal);
+        Assert.DoesNotContain("IS_DEFINED", live.QueryText, StringComparison.Ordinal);
+        Assert.Equal("paper", paper.GetQueryParameters().Single(p => p.Name == "@mode").Value);
+        Assert.Equal("live", live.GetQueryParameters().Single(p => p.Name == "@mode").Value);
+    }
+
+    [Fact]
+    public void ReadDocumentsAreCheckedAgain_SoNoQueryMistakeShowsOneModeToTheOther()
+    {
+        var untagged = new CosmosJournal.JournalDocument("e1", "2026-10-27", Entry);
+        var paper = untagged with { Mode = "paper" };
+        var live = untagged with { Mode = "live" };
+        var odd = untagged with { Mode = "Live" };
+
+        Assert.True(CosmosJournal.IsVisible(untagged, TradingMode.Paper));
+        Assert.False(CosmosJournal.IsVisible(untagged, TradingMode.Live));
+        Assert.True(CosmosJournal.IsVisible(paper, TradingMode.Paper));
+        Assert.False(CosmosJournal.IsVisible(paper, TradingMode.Live));
+        Assert.True(CosmosJournal.IsVisible(live, TradingMode.Live));
+        Assert.False(CosmosJournal.IsVisible(live, TradingMode.Paper));
+        Assert.False(CosmosJournal.IsVisible(odd, TradingMode.Live));
+        Assert.False(CosmosJournal.IsVisible(odd, TradingMode.Paper));
+    }
+
+    [Fact]
+    public void FileJournals_OfTheTwoModesNeverShareAFolder()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cix-journal");
+        var options = new Tools.JournalOptions { Directory = root };
+
+        Assert.Equal(Path.Combine(root, "paper"), options.Resolve(TradingMode.Paper));
+        Assert.Equal(Path.Combine(root, "live"), options.Resolve(TradingMode.Live));
+    }
+}
+
 internal static class TestExtensions
 {
     public static T Also<T>(this T value, Action<T> action)
@@ -145,7 +193,7 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
     {
         if (_db is null)
             return;
-        var journal = new CosmosJournal(_db);
+        var journal = new CosmosJournal(_db, TradingMode.Paper);
         var day1 = new DateTimeOffset(2026, 10, 22, 23, 59, 0, TimeSpan.Zero);
         var day2 = day1.AddMinutes(2);
         await journal.AppendAsync(Entry(day1, "tool-call", "r1"), CancellationToken.None);
@@ -165,11 +213,51 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Journal_EachModeSeesOnlyItsOwnEntries_AndUntaggedEntriesCountAsPaper()
+    {
+        if (_db is null)
+            return;
+        var paper = new CosmosJournal(_db, TradingMode.Paper);
+        var live = new CosmosJournal(_db, TradingMode.Live);
+        var at = new DateTimeOffset(2026, 10, 27, 12, 0, 0, TimeSpan.Zero);
+        var day = "2026-10-27";
+
+        // An entry written before the tag (#65): no mode on the document.
+        var legacy = Entry(at.AddMinutes(-5), "fill", "r0", "c-old");
+        await _db.Journal.CreateItemAsync(new { id = legacy.Id, day, entry = legacy }, new PartitionKey(day));
+
+        // The same client order ID in both modes, as recovery and reconciliation look it up.
+        await paper.AppendAsync(Entry(at, "order", "rp", "c-1"), CancellationToken.None);
+        await paper.AppendAsync(Entry(at.AddMinutes(1), "fill", "rp", "c-1"), CancellationToken.None);
+        await live.AppendAsync(Entry(at.AddMinutes(2), "order", "rl", "c-1"), CancellationToken.None);
+        await live.AppendAsync(Entry(at.AddMinutes(3), "market-view", "rl"), CancellationToken.None);
+
+        var paperAll = await paper.QueryAsync(new JournalQuery(), CancellationToken.None);
+        var liveAll = await live.QueryAsync(new JournalQuery(), CancellationToken.None);
+
+        Assert.Equal(new[] { "rp", "rp", "r0" }, paperAll.Select(e => e.RunId));
+        Assert.Equal(new[] { "rl", "rl" }, liveAll.Select(e => e.RunId));
+
+        // The reads the engine recovers from: fills and orders (position plans), a client order ID (reconciliation) and the
+        // market view (restored at startup).
+        Assert.Empty(await live.QueryAsync(new JournalQuery(Kind: "fill"), CancellationToken.None));
+        Assert.Equal("rl", Assert.Single(await live.QueryAsync(new JournalQuery(Kind: "order"), CancellationToken.None)).RunId);
+        Assert.Equal("rl", Assert.Single(await live.QueryAsync(new JournalQuery(ClientOrderId: "c-1"), CancellationToken.None)).RunId);
+        Assert.Equal(2, (await paper.QueryAsync(new JournalQuery(Kind: "fill"), CancellationToken.None)).Count);
+        Assert.Equal(new[] { "fill", "order" }, (await paper.QueryAsync(new JournalQuery(ClientOrderId: "c-1"), CancellationToken.None)).Select(e => e.Kind));
+        Assert.Empty(await paper.QueryAsync(new JournalQuery(Kind: "market-view"), CancellationToken.None));
+        Assert.Empty(await live.QueryAsync(new JournalQuery(ClientOrderId: "c-old"), CancellationToken.None));
+
+        var stored = await _db.Journal.ReadItemAsync<JsonObject>(liveAll[0].Id, new PartitionKey(day));
+        Assert.Equal("live", (string?)stored.Resource["mode"]);
+    }
+
+    [Fact]
     public async Task Journal_RefusesToOverwriteAnEntry()
     {
         if (_db is null)
             return;
-        var journal = new CosmosJournal(_db);
+        var journal = new CosmosJournal(_db, TradingMode.Paper);
         var entry = Entry(DateTimeOffset.UtcNow, "order", "r1");
         await journal.AppendAsync(entry, CancellationToken.None);
 

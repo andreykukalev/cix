@@ -11,7 +11,17 @@ const { pairsView, pairRequestItem, REQUEST_TYPE: PAIR_REQUEST_TYPE } = require(
 const MODES = new Set(['paper', 'live']);
 const JOURNAL_PER_DAY = 300;
 const STATE_LIST_MAX = 200;
-const LATEST_VIEW_SQL = 'SELECT TOP 1 * FROM c WHERE c.entry.kind = @kind ORDER BY c.entry.at DESC';
+
+/**
+ * Journal entries of one mode only (#65): each engine tags what it writes with its mode, and entries from before the tag
+ * are paper's. Takes the `@mode` parameter from modeParameter.
+ */
+function modeFilter(mode) {
+  if (!MODES.has(mode)) throw new RangeError('mode must be paper or live');
+  return mode === 'paper' ? '(NOT IS_DEFINED(c.mode) OR c.mode = @mode)' : 'c.mode = @mode';
+}
+
+const modeParameter = (mode) => ({ name: '@mode', value: mode });
 
 function utcDay(ms) {
   return new Date(ms).toISOString().slice(0, 10);
@@ -33,13 +43,18 @@ async function loadDashboard(reader, mode, now) {
   const today = utcDay(now);
   const yesterday = utcDay(now - 24 * 3600 * 1000);
 
-  const latestView = (day) => reader.query('journal', LATEST_VIEW_SQL, { partitionKey: day, parameters: [{ name: '@kind', value: 'market-view' }], maxItems: 1 });
+  const inMode = modeFilter(mode);
+  const recentSql = `SELECT TOP ${JOURNAL_PER_DAY} * FROM c WHERE ${inMode} ORDER BY c.entry.at DESC`;
+  const recent = (day) => reader.query('journal', recentSql, { partitionKey: day, parameters: [modeParameter(mode)], maxItems: JOURNAL_PER_DAY });
+  const latestView = (day) => reader.query('journal', `SELECT TOP 1 * FROM c WHERE c.entry.kind = @kind AND ${inMode} ORDER BY c.entry.at DESC`, {
+    partitionKey: day, parameters: [{ name: '@kind', value: 'market-view' }, modeParameter(mode)], maxItems: 1,
+  });
   const [statusDoc, stateDoc, accountDoc, todayEntries, yesterdayEntries, stateDocs, todayView, yesterdayView] = await Promise.all([
     attempt('the engine status', readErrors, () => reader.readDocument('state', `engine-status-${mode}`)),
     attempt('the engine state', readErrors, () => reader.readDocument('state', `engine-state-${mode}`)),
     mode === 'paper' ? attempt('the paper account', readErrors, () => reader.readDocument('state', 'paper-account')) : null,
-    attempt("today's journal", readErrors, () => reader.query('journal', `SELECT TOP ${JOURNAL_PER_DAY} * FROM c ORDER BY c.entry.at DESC`, { partitionKey: today, maxItems: JOURNAL_PER_DAY })),
-    attempt("yesterday's journal", readErrors, () => reader.query('journal', `SELECT TOP ${JOURNAL_PER_DAY} * FROM c ORDER BY c.entry.at DESC`, { partitionKey: yesterday, maxItems: JOURNAL_PER_DAY })),
+    attempt("today's journal", readErrors, () => recent(today)),
+    attempt("yesterday's journal", readErrors, () => recent(yesterday)),
     attempt('the list of state documents', readErrors, () => reader.query('state', 'SELECT c.id, c.type, c.about, c.updatedAt FROM c', { maxItems: STATE_LIST_MAX })),
     attempt("today's market view", readErrors, () => latestView(today)),
     attempt("yesterday's market view", readErrors, () => latestView(yesterday)),
@@ -78,27 +93,29 @@ function journalRequest(day, kind, limit, now) {
   return { day, kind: kind || '', top, key: `journal:${day}:${kind || ''}:${top}` };
 }
 
-/** One UTC day of the journal, newest first, optionally one kind only. */
-async function loadJournalDay(reader, day, kind, limit, now = Date.now()) {
+/** One UTC day of one mode's journal, newest first, optionally one kind only. Paper until the dashboard switches modes (#71). */
+async function loadJournalDay(reader, day, kind, limit, now = Date.now(), mode = 'paper') {
   ({ day, kind, top: limit } = journalRequest(day, kind, limit, now));
   const top = limit;
+  const inMode = modeFilter(mode);
   const sql = kind
-    ? `SELECT TOP ${top} * FROM c WHERE c.entry.kind = @kind ORDER BY c.entry.at DESC`
-    : `SELECT TOP ${top} * FROM c ORDER BY c.entry.at DESC`;
-  const docs = await reader.query('journal', sql, { partitionKey: day, parameters: kind ? [{ name: '@kind', value: kind }] : [], maxItems: top });
+    ? `SELECT TOP ${top} * FROM c WHERE c.entry.kind = @kind AND ${inMode} ORDER BY c.entry.at DESC`
+    : `SELECT TOP ${top} * FROM c WHERE ${inMode} ORDER BY c.entry.at DESC`;
+  const parameters = kind ? [{ name: '@kind', value: kind }, modeParameter(mode)] : [modeParameter(mode)];
+  const docs = await reader.query('journal', sql, { partitionKey: day, parameters, maxItems: top });
   return docs.map((d) => d.entry).filter(Boolean).map(journalItem);
 }
 
 const FILLS_MAX = 5000;
 
 /**
- * Trading activity for the period switch (day, week or month): executed trades only (journal "fill" entries), read across
- * the day partitions the periods cover. Paper only for now: the journal has no mode tag yet (#65), and only paper runs.
+ * Trading activity for the period switch (day, week or month): one mode's executed trades only (journal "fill" entries),
+ * read across the day partitions the periods cover. Paper until the dashboard switches modes (#71).
  */
-async function loadActivity(reader, period, now) {
+async function loadActivity(reader, period, now, mode = 'paper') {
   const from = fromDay(period, now); // throws RangeError for an unknown period
-  const fills = await reader.query('journal', 'SELECT c.entry.at AS at, c.entry.data AS data FROM c WHERE c.day >= @from AND c.entry.kind = @kind', {
-    parameters: [{ name: '@from', value: from }, { name: '@kind', value: 'fill' }],
+  const fills = await reader.query('journal', `SELECT c.entry.at AS at, c.entry.data AS data FROM c WHERE c.day >= @from AND c.entry.kind = @kind AND ${modeFilter(mode)}`, {
+    parameters: [{ name: '@from', value: from }, { name: '@kind', value: 'fill' }, modeParameter(mode)],
     maxItems: FILLS_MAX,
   });
   return { ...activity(fills, period, now), truncated: fills.length >= FILLS_MAX };
