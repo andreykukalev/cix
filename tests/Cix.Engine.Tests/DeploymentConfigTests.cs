@@ -17,7 +17,7 @@ public sealed class DeploymentConfigTests
             File.WriteAllText(Path.Combine(dir, "Trading__Mode"), "Live");
             File.WriteAllText(Path.Combine(dir, "Risk__MaxOrderQuote"), "100000");
 
-            var config = new ConfigurationBuilder().AddCixSecretFiles(dir).Build();
+            var config = new ConfigurationBuilder().AddCixSecretFiles(dir, TradingMode.Paper).Build();
 
             Assert.Equal(key, config["ToolServer:OperatorKey"]);
             Assert.Null(config["Trading:Mode"]);
@@ -30,11 +30,57 @@ public sealed class DeploymentConfigTests
     }
 
     [Fact]
+    public void SecretFiles_TheRevolutXKeysAreReadInLiveModeOnly()
+    {
+        var dir = Directory.CreateTempSubdirectory("cix-secrets-").FullName;
+        try
+        {
+            var apiKey = new string('a', 64); // built at runtime: not a secret
+            var pem = TestKeys.FakePem();
+            File.WriteAllText(Path.Combine(dir, "RevolutX__ApiKey"), apiKey);
+            File.WriteAllText(Path.Combine(dir, "RevolutX__PrivateKeyPem"), pem);
+            File.WriteAllText(Path.Combine(dir, "RevolutX__BaseAddress"), "https://example.com");
+
+            var live = new ConfigurationBuilder().AddCixSecretFiles(dir, TradingMode.Live).Build();
+
+            Assert.Equal(apiKey, live["RevolutX:ApiKey"]);
+            Assert.Equal(pem.TrimEnd(), live["RevolutX:PrivateKeyPem"]?.TrimEnd());
+            Assert.Null(live["RevolutX:BaseAddress"]); // only the keys, never an endpoint
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("RevolutX__ApiKey")]
+    [InlineData("RevolutX__PrivateKeyPem")]
+    public void SecretFiles_APaperEngineWithARevolutXKeyThere_RefusesToStart_WithoutShowingIt(string name)
+    {
+        var dir = Directory.CreateTempSubdirectory("cix-secrets-").FullName;
+        try
+        {
+            var value = new string('s', 48); // built at runtime: not a secret
+            File.WriteAllText(Path.Combine(dir, name), value);
+
+            var error = Assert.Throws<InvalidOperationException>(() => new ConfigurationBuilder().AddCixSecretFiles(dir, TradingMode.Paper));
+
+            Assert.Contains(name, error.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(value, error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void SecretFiles_MissingOrRelativeDirectory_IsIgnored()
     {
         var config = new ConfigurationBuilder()
-            .AddCixSecretFiles(Path.Combine(Path.GetTempPath(), "cix-no-such-dir-" + Guid.NewGuid().ToString("N")))
-            .AddCixSecretFiles("relative/secrets")
+            .AddCixSecretFiles(Path.Combine(Path.GetTempPath(), "cix-no-such-dir-" + Guid.NewGuid().ToString("N")), TradingMode.Live)
+            .AddCixSecretFiles("relative/secrets", TradingMode.Live)
             .Build();
 
         Assert.Empty(config.AsEnumerable());

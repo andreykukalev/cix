@@ -15,15 +15,17 @@ using Cix.Exchange.RevolutX;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Docker secrets (files under /run/secrets) for the few settings that are secrets; anything else there is ignored.
-builder.Configuration.AddCixSecretFiles(builder.Configuration["SecretsDirectory"] ?? SecretFiles.DefaultDirectory);
+// Paper unless the owner configures Live, and Live only in Production (CLAUDE.md rule 6). Resolved before the secret files are
+// read, which can't set it, because the mode decides which of them may be.
+var mode = TradingModeResolver.Resolve(builder.Configuration, builder.Environment.EnvironmentName);
+
+// Docker secrets (files under /run/secrets) for the few settings that are secrets; anything else there is ignored. The Revolut X
+// keys are read in Live mode only; a Paper engine with them there refuses to start.
+builder.Configuration.AddCixSecretFiles(builder.Configuration["SecretsDirectory"] ?? SecretFiles.DefaultDirectory, mode);
 
 // Human-only file, copied next to the binary (see CLAUDE.md rule 3). Read on its own: no environment variable, command line or
 // other settings file can add to the limits or loosen them.
 var limits = RiskLimitsOptions.Load(Path.Combine(AppContext.BaseDirectory, "risk-limits.json"), builder.Configuration);
-
-// Paper unless the owner configures Live, and Live only in Production (CLAUDE.md rule 6).
-var mode = TradingModeResolver.Resolve(builder.Configuration, builder.Environment.EnvironmentName);
 
 // The pairs tradable now: the allowlist at start, then the owner's list from the dashboard, always within the limits.
 var tradable = new TradableSymbols(limits);
