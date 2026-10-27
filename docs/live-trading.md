@@ -4,6 +4,31 @@ Live trading runs next to paper, never instead of it (epic #72). The live engine
 
 Every step on this page is yours: agents can't set the live mode, add the keys, change the live limits or resume trading (CLAUDE.md rules 3, 5 and 6). This page grows as each part of #72 lands.
 
+## The live limits (#66)
+
+The live engine reads its own limits file, `config/risk-limits.live.json`, never paper's `config/risk-limits.json`. Without it, a Live engine refuses to start. Like paper's file, only you write it (CLAUDE.md rule 3; the hook blocks agents from both), and the hard ceilings in `HardCeilings.cs` still cap whatever it says. It is built into the image, so a change reaches the live engine with the next image you promote.
+
+A proposal for the first run, 100 EUR on the fixed Safe strategy. Safe's own limits are tighter still: 5 EUR orders, at most 10 EUR per coin, 25% of the allocation in coins, and no buys after a 3 EUR loss in a day.
+
+```json
+{
+  "Risk": {
+    "AllocationQuote": 100,
+    "MaxOrderQuote": 20,
+    "MaxPositionQuotePerSymbol": 25,
+    "MaxDailyLossQuote": 5,
+    "MaxDrawdownFraction": 0.10,
+    "MaxOrdersPerMinute": 4,
+    "MaxPriceDeviationFraction": 0.01,
+    "AllowedSymbols": [ "BTC-EUR", "ETH-EUR", "SOL-EUR", "XRP-EUR" ]
+  }
+}
+```
+
+- **Drawdown 10%**, not paper's 15%: trading halts after a 10 EUR fall from the peak.
+- **Daily loss 5 EUR**, half the ceiling (10% of the allocation).
+- **Four of the most liquid pairs.** There is no `AllowedQuoteCurrency` for now, because adding pairs from the dashboard is paper-only until #71. Revolut X's smallest order on these pairs is 0.1 EUR (its public pairs list, 27 Oct), well under Safe's 5 EUR.
+
 ## The Revolut X keys (#68)
 
 ### The sub-account
