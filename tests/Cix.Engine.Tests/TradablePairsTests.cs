@@ -118,6 +118,21 @@ public sealed class TradablePairsTests
     }
 
     [Fact]
+    public async Task Remove_CoinWithAnOrderWorking_IsRefused()
+    {
+        var setup = new Setup();
+        Assert.Empty(setup.Tradable.TrySet([Btc, Sol], Rig.T0));
+        Assert.Equal(ExecutionStatus.Placed, (await setup.Rig.Buy(0.0005m, 59_950m)).Status); // rests below the ask
+        setup.Request("r-1", "remove", Btc);
+
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal(ManualRequestStatus.Rejected, setup.RequestStatus("r-1"));
+        Assert.Contains("order", setup.RequestDetail("r-1"), StringComparison.Ordinal);
+        Assert.True(setup.Tradable.Contains(Btc));
+    }
+
+    [Fact]
     public async Task Remove_LastPair_IsRefused()
     {
         var setup = new Setup();
@@ -167,6 +182,7 @@ public sealed class TradablePairsTests
         await setup.Service.InitializeAsync(CancellationToken.None);
 
         Assert.Equal(new[] { Btc, Sol }, setup.Tradable.Current.Order(StringComparer.Ordinal));
+        Assert.Equal(new[] { Btc, Sol }, setup.Repository.Saved[TradingMode.Paper].Symbols); // saved as it now is
         Assert.NotNull(setup.Repository.Catalog);
 
         // ETH-USD may still be held: trading halts until the owner has looked.

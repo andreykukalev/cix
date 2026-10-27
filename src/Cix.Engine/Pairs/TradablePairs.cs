@@ -175,6 +175,10 @@ public sealed partial class TradablePairsService(
             if (problems.Count > 0)
                 LogRestoreRefused(logger, string.Join(" ", problems));
 
+            // Save what is tradable now, so the dashboard shows it, not the list as it was saved.
+            if (!tradable.Current.SetEquals(saved.Symbols ?? []))
+                await repository.SaveAsync(trading.Mode, new TradablePairsDocument(tradable.Current.Order(StringComparer.Ordinal).ToList(), now, Actor), cancellationToken).ConfigureAwait(false);
+
             // A pair left out may still be held: it would drop out of equity and its exits would be refused. Halt until the owner looks.
             if (dropped.Count > 0 || problems.Count > 0)
                 _restoreProblem = problems.Count > 0

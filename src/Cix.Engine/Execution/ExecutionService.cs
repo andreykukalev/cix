@@ -392,13 +392,10 @@ public sealed partial class ExecutionService
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            IReadOnlyList<PendingPlacement> pending;
-            lock (_pending)
-                pending = _pending.Values.ToList();
             return await work(new ExclusiveView(
                 ct => _exchange.GetOpenOrdersAsync(null, ct),
                 SampleAsync,
-                pending)).ConfigureAwait(false);
+                PendingSnapshot())).ConfigureAwait(false);
         }
         finally
         {
