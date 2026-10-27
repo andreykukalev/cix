@@ -117,6 +117,11 @@ function says(en, ru, cls) {
   return el('span', { class: cls, lang: p.lang, title: p.lang === 'ru' && en ? `EN: ${en}` : null, text: p.text ?? '' });
 }
 
+/** The engine's sentence in the page's language: its Russian from the API when it sent one, else the page's own (t). */
+function engineSays(en, ru) {
+  return state.lang === 'ru' && typeof ru === 'string' && ru.trim() ? ru : t(en);
+}
+
 function tile(id, tone, value, sub) {
   const node = document.getElementById(id);
   node.className = `tile ${tone ?? ''}`;
@@ -558,16 +563,18 @@ function renderRequests(items) {
     return [
       when(r.createdAt), V.what(r), r.mode === 'direct' ? t('direct') : t('trader'),
       el('span', { class: `badge ${st.tone}`, text: st.label }),
-      td([st.filled ? `${t('Filled {filled}.', { filled: st.filled })} ` : '', st.detail ?? (st.final ? '' : t('in progress'))].join(''), 'why'),
+      el('td', { class: 'why', title: st.english ? `EN: ${st.english}` : null },
+        [st.filled ? `${t('Filled {filled}.', { filled: st.filled })} ` : '', st.detail ?? (st.final ? '' : t('in progress'))].join('')),
       steps,
     ];
   }, t('No requests in the last 7 days.'));
 }
 
-function requestStatus(text, tone) {
+function requestStatus(text, tone, english) {
   const node = document.getElementById('request-status');
   node.hidden = !text;
   node.textContent = text ?? '';
+  if (english) node.title = `EN: ${english}`; else node.removeAttribute('title');
   node.className = `request-status ${tone ?? ''}`;
 }
 
@@ -648,7 +655,7 @@ function track(item) {
   const show = (it) => {
     const st = V.requestState(it, state.lang);
     const extra = [st.filled ? t('filled {filled}', { filled: st.filled }) : null, st.detail].filter(Boolean).join(' · ');
-    requestStatus(`${V.what(it)}: ${st.label}${extra ? ` (${extra})` : ''}${st.final ? '' : '…'}`, st.final ? st.tone : 'pending');
+    requestStatus(`${V.what(it)}: ${st.label}${extra ? ` (${extra})` : ''}${st.final ? '' : '…'}`, st.final ? st.tone : 'pending', st.english);
     return st.final;
   };
   show(item);
@@ -758,7 +765,7 @@ function renderStrategies(view) {
   rows('switches', view.requests, (r) => [
     when(r.createdAt), `${r.name}@v${r.version}${r.note ? ` · ${r.note}` : ''}`,
     el('span', { class: `badge ${{ accepted: 'ok', new: 'pending', superseded: '', invalid: 'bad', expired: 'warn' }[r.status] ?? 'warn'}`, text: t(r.status) }),
-    td(r.detail ? V.pick(r.detail, r.detailRu, state.lang).text : (r.status === 'new' ? t('waiting for the engine') : ''), 'why'),
+    td(r.detail ? engineSays(r.detail, r.detailRu) : (r.status === 'new' ? t('waiting for the engine') : ''), 'why'),
   ], view.editable ? t('No switches in the last 7 days.') : t('Live has no switches yet.'));
 }
 
@@ -911,7 +918,7 @@ function renderPairs(view) {
   rows('pair-requests', view.requests, (r) => [
     when(r.createdAt), `${t(r.action === 'remove' ? 'Remove {symbol}' : 'Add {symbol}', { symbol: r.symbol ?? '?' })}${r.note ? ` · ${r.note}` : ''}`,
     el('span', { class: `badge ${{ accepted: 'ok', new: 'pending', invalid: 'bad', rejected: 'bad', expired: 'warn' }[r.status] ?? 'warn'}`, text: t(r.status) }),
-    td(r.detail ? V.pick(r.detail, r.detailRu, state.lang).text : (r.status === 'new' ? t('waiting for the engine') : ''), 'why'),
+    td(r.detail ? engineSays(r.detail, r.detailRu) : (r.status === 'new' ? t('waiting for the engine') : ''), 'why'),
   ], view.editable ? t('No pair changes in the last 7 days.') : t('Live has no pair changes.'));
 }
 
@@ -986,7 +993,7 @@ function trackPair(item) {
       if (!response.ok) return; // not readable yet, or offline for a moment
       const it = await response.json();
       if (it.status === 'new') return;
-      stop(`${label}: ${t(it.status)}. ${it.detail ? V.pick(it.detail, it.detailRu, state.lang).text : ''}`.trim(), it.status === 'accepted' ? 'ok' : 'bad');
+      stop(`${label}: ${t(it.status)}. ${it.detail ? engineSays(it.detail, it.detailRu) : ''}`.trim(), it.status === 'accepted' ? 'ok' : 'bad');
     } catch (error) {
       if (error instanceof SignedOut) { clearInterval(timer); signedOut(); }
     }

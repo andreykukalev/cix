@@ -439,9 +439,11 @@ public sealed partial class TradablePairsService(
         if (portfolio.SellableBaseBySymbol?.ContainsKey(symbol) == true)
             return string.Create(CultureInfo.InvariantCulture,
                 $"You still hold it (about {portfolio.PositionQuoteBySymbol.GetValueOrDefault(symbol):0.##} {symbol.Split('-')[^1]}); sell it first.");
+        // What is left is a residual below the exchange minimum (an order reserving it was refused above). The owner asked for
+        // a pair to go only at a zero balance; it can be cleared by buying up to the minimum and selling all.
         if (portfolio.PositionQuoteBySymbol.GetValueOrDefault(symbol) > 0m)
             return string.Create(CultureInfo.InvariantCulture,
-                $"A balance of it is still on the account (about {portfolio.PositionQuoteBySymbol[symbol]:0.##} {symbol.Split('-')[^1]}), too small to sell or reserved by an order; a pair can be removed only when its balance is zero.");
+                $"A residual of it is still on the account (about {portfolio.PositionQuoteBySymbol[symbol]:0.##} {symbol.Split('-')[^1]}), below the exchange minimum, so it can't be sold on its own; a pair can be removed only when its balance is zero. To clear it, buy enough to reach the minimum, then sell all.");
         if (portfolio.OpenBuyQuoteBySymbol?.GetValueOrDefault(symbol) > 0m)
             return "A buy in it is still being settled; send the request again in a minute.";
         return null;

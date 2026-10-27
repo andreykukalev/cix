@@ -116,7 +116,8 @@ test("an agent's Russian rationale is shown in Russian, its English in English, 
   const agreed = { actor: 'trader-requests', data: { tool: 'manual-agent', symbol: 'ETH-EUR', side: 'sell', status: 'placed', rule: 'ok', rationale: 'Trend turned down; selling half.', rationaleRu: 'Тренд развернулся вниз; продаю половину.' } };
   assert.deepEqual(x(agreed, 'ru').points, ['Обоснование трейдера: Тренд развернулся вниз; продаю половину.']);
   assert.deepEqual(x(agreed).points, ["Trader's reasoning: Trend turned down; selling half."]);
-  assert.equal(x(agreed, 'ru').raw, null);
+  assert.equal(x(agreed, 'ru').raw, 'Trend turned down; selling half.', 'the English behind the Russian stays one click away');
+  assert.equal(x(agreed).raw, null, 'in English it is shown once');
   const free = { actor: 'trader', data: { tool: 'place_order', symbol: 'ETH-EUR', side: 'buy', status: 'placed', rule: 'ok', rationale: 'Breakout with volume.', rationaleRu: '  ' } };
   assert.deepEqual(x(free, 'ru').points, ['Breakout with volume.'], 'no Russian: the English as written');
 });
@@ -131,6 +132,7 @@ test('every reason the gate, the strategy and the execution service write has it
     'Size must be a multiple of 0.0001 and price of 0.01.',
     'No valid market data for this symbol.',
     'Market data is too old (or from the future) to price this order.',
+    'Limit price is 2.50 % from the reference price; the maximum is 2.00 %.', // .NET's P2 in the invariant culture: a space
     'Limit price is 2.50% from the reference price; the maximum is 2.00%.',
     'At most 4 orders per minute.',
     'Order reduced to the exchange maximum of 200.',
@@ -139,7 +141,7 @@ test('every reason the gate, the strategy and the execution service write has it
     'Spot only: there is no position to sell.',
     'The position is too small to sell at this price.',
     'Sell reduced to the current position size.',
-    'Drawdown is 15.20%; new buys are halted until the owner resumes trading.',
+    'Drawdown is 15.20 %; new buys are halted until the owner resumes trading.',
     'The daily loss limit is reached; new buys are halted until tomorrow (UTC).',
     'No room left under allocation-cap.',
     'Remaining room under max-order is too small for one unit.',

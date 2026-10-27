@@ -130,7 +130,7 @@ const REASONS_RU = [
   [/^Size must be a multiple of (\S+) and price of (\S+)\.$/, (m) => `Размер должен быть кратен ${m[1]}, а цена — ${m[2]}.`],
   [/^No valid market data for this symbol\.$/, () => 'Нет актуальных рыночных данных по этой монете.'],
   [/^Market data is too old \(or from the future\) to price this order\.$/, () => 'Рыночные данные слишком старые, чтобы оценить ордер.'],
-  [/^Limit price is (\S+) from the reference price; the maximum is (\S+)\.$/, (m) => `Лимитная цена отличается от рыночной на ${m[1]}; допустимо не больше ${m[2]}.`],
+  [/^Limit price is ([\d.,-]+ ?%) from the reference price; the maximum is ([\d.,-]+ ?%)\.$/, (m) => `Лимитная цена отличается от рыночной на ${m[1]}; допустимо не больше ${m[2]}.`],
   [/^At most (\d+) orders per minute\.$/, (m) => `Не больше ${m[1]} ордеров в минуту.`],
   [/^Order reduced to the exchange maximum of (\S+)\.$/, (m) => `Ордер уменьшен до максимума биржи: ${m[1]}.`],
   [/^After (\S+), the order is below the exchange minimum \((\S+) base, (\S+) quote\)\.$/,
@@ -139,7 +139,7 @@ const REASONS_RU = [
   [/^Spot only: there is no position to sell\.$/, () => 'Только спот: позиции для продажи нет.'],
   [/^The position is too small to sell at this price\.$/, () => 'Позиция слишком мала, чтобы продать её по этой цене.'],
   [/^Sell reduced to the current position size\.$/, () => 'Продажа уменьшена до текущего размера позиции.'],
-  [/^Drawdown is (\S+); new buys are halted until the owner resumes trading\.$/, (m) => `Просадка ${m[1]}: новые покупки остановлены, пока владелец не возобновит торговлю.`],
+  [/^Drawdown is ([\d.,-]+ ?%); new buys are halted until the owner resumes trading\.$/, (m) => `Просадка ${m[1]}: новые покупки остановлены, пока владелец не возобновит торговлю.`],
   [/^The daily loss limit is reached; new buys are halted until tomorrow \(UTC\)\.$/, () => 'Достигнут дневной лимит убытка: новые покупки остановлены до завтра (UTC).'],
   [/^No room left under (.+)\.$/, (m) => (limitRu(m[1]) ? `Не осталось места в пределах ${limitRu(m[1])}.` : null)],
   [/^(?:Remaining room|The room left) under (.+) is too small for one unit\.$/, (m) => (limitRu(m[1]) ? `Оставшегося места в пределах ${limitRu(m[1])} не хватает даже на минимальный размер.` : null)],
@@ -342,13 +342,16 @@ function explain(entry, lang = 'en') {
   const symbol = d.symbol ?? '';
   const rationale = typeof d.rationale === 'string' ? d.rationale.trim() : '';
   // The agent's own words: in Russian when it wrote them in Russian too. Shown once, in the points: the "Technical" fold
-  // (raw) is only for the engine's formats the explanation has read for you.
+  // (raw) holds the engine's formats the explanation has read for you, or the English behind the agent's Russian.
   const own = (lang === 'ru' && typeof d.rationaleRu === 'string' && d.rationaleRu.trim()) || rationale;
   const raw = rationale || null;
+  // The agent wrote its Russian apart from its English: the English, which the journal keeps, stays one click away so the
+  // owner can always check the one against the other.
+  const original = own !== rationale ? raw : null;
   const out = outcome(d, w);
 
   if (tool === 'cancel_order') {
-    return { headline: w.cancel(symbol), points: own ? [own] : [], risk: null, outcome: out, source: entry.actor ?? 'trader', raw: null };
+    return { headline: w.cancel(symbol), points: own ? [own] : [], risk: null, outcome: out, source: entry.actor ?? 'trader', raw: original };
   }
 
   const entryMatch = ENTRY.exec(rationale);
@@ -397,7 +400,7 @@ function explain(entry, lang = 'en') {
       risk: d.side === 'buy' ? riskPoint(d, null, w) : null,
       outcome: out,
       source: 'owner request',
-      raw: null,
+      raw: original,
     };
   }
 
@@ -408,7 +411,7 @@ function explain(entry, lang = 'en') {
     risk: d.side === 'buy' ? riskPoint(d, null, w) : null,
     outcome: out,
     source: tool ?? entry.actor ?? 'unknown',
-    raw: null,
+    raw: original,
   };
 }
 

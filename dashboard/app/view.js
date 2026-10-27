@@ -27,8 +27,9 @@
   }
 
   // Why a coin got no buy signal, in three kinds the page keeps apart: filtered out by the market filters before ranking
-  // (the scanner's exclusions), turned down by the strategy's entry rules, or held back by a limit or a block although
-  // the rules were not what stopped it (the signal limit, the strategy's pause, a halt, a holding or an order).
+  // (the scanner's exclusions, except the analyst's news flag), turned down by the strategy's entry rules, or held back by
+  // a limit or a block although the rules were not what stopped it (the signal limit, the strategy's pause, a halt, a news
+  // flag, a holding or an order).
   const BLOCKS = new Set(['trading halted', 'risk-off (market view)', 'already held', 'open order', 'signal limit reached', 'strategy exposure cap reached']);
   const BLOCK_DETAILS = {
     'trading halted': 'Trading is halted, so the scanner suggests no buys.',
@@ -44,7 +45,8 @@
     const note = typeof r?.note === 'string' && r.note ? r.note : null;
     if (!note || r.signal === 'buy') return null;
     const said = pick(r.detail ?? null, r.detailRu ?? null, lang).text;
-    const kind = r.rank === null || r.rank === undefined ? 'filtered' : BLOCKS.has(note) || /^cooldown until /.test(note) ? 'blocked' : 'rule';
+    const kind = note === 'news' || BLOCKS.has(note) || /^cooldown until /.test(note) ? 'blocked'
+      : r.rank === null || r.rank === undefined ? 'filtered' : 'rule';
     const detail = said ?? (Object.hasOwn(BLOCK_DETAILS, note) ? t(BLOCK_DETAILS[note])
       : /^cooldown until /.test(note) ? t('The strategy waits between buys.') : null);
     return { kind, label: t(WHY_LABELS[kind]), text: t(note), detail };
@@ -175,9 +177,12 @@
     const s = item?.status === 'rejected' && o.rule ? { ...known, label: t('Refused ({rule})', { rule: o.rule }) } : { ...known, label: t(known.label) };
     const rationale = typeof o.rationale === 'string' && o.rationale.trim() ? o.rationale.trim() : null;
     const reason = typeof o.reason === 'string' && o.reason.trim() && o.reason.trim() !== rationale ? o.reason.trim() : null;
-    const detail = [pick(rationale, o.rationaleRu, lang).text, pick(reason, o.reasonRu, lang).text].filter(Boolean).join(' · ') || null;
+    const said = [pick(rationale, o.rationaleRu, lang), pick(reason, o.reasonRu, lang)];
+    const detail = said.map((p) => p.text).filter(Boolean).join(' · ') || null;
+    // Shown in Russian, the English it came from stays a hover away: the trader writes its Russian apart from its English.
+    const english = said.some((p) => p.lang === 'ru') ? [rationale, reason].filter(Boolean).join(' · ') : null;
     const filled = item?.status === 'filled' && o.filledSize ? (o.averagePrice ? t('{size} at {price}', { size: o.filledSize, price: o.averagePrice }) : String(o.filledSize)) : null;
-    return { label: s.label, tone: s.tone, final: Boolean(item?.final), detail, filled };
+    return { label: s.label, tone: s.tone, final: Boolean(item?.final), detail, english, filled };
   }
 
   /** A request's step as the page lists it: the engine's words in the page's language, and none where they repeat the rationale. */

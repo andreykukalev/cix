@@ -132,6 +132,10 @@ public sealed class OrderToolTests
         var orders = tools.Journal.Entries.Where(e => e.Kind == "order").ToList();
         Assert.Equal("Откат в восходящем тренде, стоп ниже EMA20.", orders[0].Data!["rationaleRu"]);
         Assert.False(orders[1].Data!.ContainsKey("rationaleRu")); // optional: a translation that says nothing is dropped, the order still goes
+
+        await tools.Orders.CancelOrder(orders[0].Data!["orderId"], "Trend turned; stepping aside.", rationaleRu: "Тренд развернулся, выхожу.", cancellationToken: CancellationToken.None);
+        var cancel = Assert.Single(tools.Journal.Entries, e => e.Kind == "order" && e.Data!["tool"] == "cancel_order");
+        Assert.Equal("Тренд развернулся, выхожу.", cancel.Data!["rationaleRu"]);
     }
 
     [Fact]

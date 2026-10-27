@@ -318,7 +318,8 @@ public static class MarketScanner
 
     /// <summary>
     /// The signal, or the short reason there is none and a sentence with the figure and the threshold behind it. The sentence
-    /// names no price: it goes into the engine status as it is.
+    /// names no price level (ask, stop or target): it goes into the engine status as it is. The exchange-minimum one gives the
+    /// sized order, from the strategy's settings and the exchange's rules.
     /// </summary>
     private static (EntrySignal? Signal, string? NoEntryReason, string? Detail) Entry(ScanInput input, Metrics m, int rank, ScannerParameters p)
     {
@@ -357,10 +358,12 @@ public static class MarketScanner
         var size = Math.Min(p.RiskPerTradeQuote / lossPerUnit, p.OrderQuote / entry);
         size = FloorToStep(size, pair.BaseStep > 0 ? pair.BaseStep : 0.00000001m);
         var quote = size * entry;
-        if (size <= 0 || size < pair.MinOrderSize || quote < pair.MinOrderSizeQuote)
+        if (size <= 0)
+            return (null, "below exchange minimum", "The sized order rounds down to zero at the exchange's size step.");
+        if (size < pair.MinOrderSize || quote < pair.MinOrderSizeQuote)
             return (null, "below exchange minimum", quote < pair.MinOrderSizeQuote
                 ? Inv($"The sized order, {quote:0.##} {pair.Quote} (at most {p.OrderQuote:0.##} per order and {p.RiskPerTradeQuote:0.##} at risk), is below the exchange minimum of {pair.MinOrderSizeQuote:0.##} {pair.Quote}.")
-                : Inv($"The sized order, {size} {pair.Base} (at most {p.OrderQuote:0.##} {pair.Quote} per order and {p.RiskPerTradeQuote:0.##} at risk), is below the exchange minimum of {pair.MinOrderSize} {pair.Base}."));
+                : Inv($"The sized order, {size:0.########} {pair.Base} (at most {p.OrderQuote:0.##} {pair.Quote} per order and {p.RiskPerTradeQuote:0.##} at risk), is below the exchange minimum of {pair.MinOrderSize:0.########} {pair.Base}."));
 
         var setup = p.RequireUptrendPullback ? "uptrend pullback" : Inv($"test entry (trend {trend}),");
         var reason = Inv($"{setup} {aboveEma:0.##} ATR above EMA20, 1h {hour}, 24h {(f.Return24h ?? 0m):+0.##%;-0.##%;0%}");

@@ -11,7 +11,8 @@ namespace Cix.Engine.Status;
 /// The engine's status for people and the dashboard, rewritten every minute as the <c>engine-status-&lt;mode&gt;</c> document
 /// in the state container (docs/persistence.md). Built only from what the engine already holds in memory: building it makes
 /// no exchange call and changes no state, and nothing reads it back, so it can't affect trading. It holds fixed codes and
-/// categories, never free text that could carry order IDs or amounts (those stay in the journal).
+/// categories, never free text that could carry order IDs or account amounts (those stay in the journal); the scan rows' details
+/// are the scanner's own sentences, from market data and the strategy's settings.
 /// </summary>
 /// <param name="UpdatedAt">When this was written: the engine's heartbeat, and its last successful database write.</param>
 /// <param name="HaltedBy">What engaged the kill switch: <c>owner</c>, <c>reconciler</c>, <c>safety-monitor</c>, <c>execution</c> or <c>engine</c>.</param>
@@ -70,7 +71,7 @@ public sealed record ScanStatus(
 
 /// <summary>
 /// One symbol in the latest scan: how it moved and what the scanner made of it. Moves and volatility are fractions
-/// (0.05 = 5%); no prices. Excluded symbols carry only the reason.
+/// (0.05 = 5%); no prices. Excluded symbols carry the filter's code and its sentence.
 /// </summary>
 /// <param name="Volatility">Hourly ATR as a fraction of the price.</param>
 /// <param name="VolumeRatio">The last hour's volume against the 24h hourly average.</param>
@@ -78,7 +79,7 @@ public sealed record ScanStatus(
 /// <param name="Note">Why there is no entry (for example <c>trend down</c>), or the code of the filter that excluded the symbol.</param>
 /// <param name="Detail">
 /// The scanner's sentence behind <paramref name="Note"/>: the figure and the threshold it was held to (for example
-/// <c>Spread 0.0031 is above 0.002.</c>). Written by the scanner from market data and the strategy's settings only.
+/// <c>Spread 0.31% is above the maximum 0.2%.</c>). Written by the scanner from market data and the strategy's settings only.
 /// </param>
 public sealed record MarketRow(
     string Symbol,

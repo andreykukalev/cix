@@ -435,12 +435,12 @@
     'Held back': 'Придержана',
     'New pair': 'Новая пара',
     'Why no buy': 'Почему нет покупки',
-    'the market filters dropped it before ranking (trading volume, spread, volatility, costs), with the figure and the limit.':
-      'рыночные фильтры убрали её до ранжирования (объём торгов, спред, волатильность, издержки); указаны значение и предел.',
+    'the market filters dropped it before ranking (trading volume, spread, volatility, costs, too few prices, or not a tradable pair), with the figure and the limit.':
+      'рыночные фильтры убрали её до ранжирования (объём торгов, спред, волатильность, издержки, слишком мало цен или пара не торгуется); указаны значение и предел.',
     "ranked, but the strategy's entry rules turned it down (trend, pullback, last hour).":
       'попала в рейтинг, но её отклонили правила входа стратегии (тренд, откат, последний час).',
-    "not the rules: a limit or a block stopped it, such as the strategy's buy signals per scan already taken by higher-ranked coins, a pause between buys, a holding or an open order.":
-      'дело не в правилах: её остановил лимит или блокировка, например сигналы на покупку за скан уже заняли монеты выше в рейтинге, пауза между покупками, позиция в портфеле или открытый ордер.',
+    "not the rules: a limit or a block stopped it, such as the strategy's buy signals per scan already taken by higher-ranked coins, a pause between buys, a news flag from the market analyst, a holding or an open order.":
+      'дело не в правилах: её остановил лимит или блокировка, например сигналы на покупку за скан уже заняли монеты выше в рейтинге, пауза между покупками, новостной флаг аналитика, позиция в портфеле или открытый ордер.',
     'Remove is off while a pair still has a balance or a working order; the engine refuses it too:':
       'Удаление недоступно, пока по паре есть остаток или работающий ордер; движок тоже его отклонит:',
     'There is still a {coin} balance (about {value} {quote}). A pair can be removed only when its balance is zero: sell it first.':
