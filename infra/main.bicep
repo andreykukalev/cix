@@ -37,7 +37,8 @@ param sharedAccountName string
 @minLength(1)
 param databaseName string = 'cix'
 
-@description('The protected environment\'s database in the same account (ADR-0017), which the dashboard reads for its live view. Empty when there is none.')
+// The protected environment's database in the same account (ADR-0017), which the dashboard reads for its live view.
+@description('The protected environment\'s database in the same account, for the dashboard. Empty when there is none.')
 param liveDatabaseName string = ''
 
 @description('Throughput shared by CIX\'s two containers. The free tier covers 1000 RU/s for the whole account, shared with other projects\' databases.')

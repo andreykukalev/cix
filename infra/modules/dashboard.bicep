@@ -8,7 +8,7 @@ param location string
 param cosmosAccountName string
 param cosmosResourceGroupName string
 param databaseName string
-@description('The live engine\'s own database (ADR-0017), read for the dashboard\'s live view; empty when there is none.')
+// The live engine's own database (ADR-0017), read for the dashboard's live view; empty when there is none.
 param liveDatabaseName string = ''
 param tags object
 
