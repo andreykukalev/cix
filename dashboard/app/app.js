@@ -196,7 +196,8 @@ function renderStrategyTile(engine) {
     a.switchingTo ? line(t('switching to {name}…', { name: a.switchingTo })) : null,
     a.refused ? line(t('switch to {name} refused', { name: a.refused })) : null,
   ] : [stale ? t('the engine isn\'t reporting') : t('not reported yet')];
-  tile('tile-strategy', a ? (stale ? 'warn' : a.tone) : 'warn', a ? a.title : '–', notes);
+  // The tile reports health, not risk: a running strategy is ok whatever its profile (the header badge shows the profile).
+  tile('tile-strategy', a ? (stale || a.refused ? 'warn' : 'ok') : 'warn', a ? a.title : '–', notes);
 
   const badge = document.getElementById('strategy-badge');
   badge.textContent = a ? `${a.title}${a.profileKey === 'custom' ? ` · ${a.profile}` : ''} · ${a.mode}${a.switchingTo ? ` → ${a.switchingTo}` : ''}` : t('strategy: –');
@@ -579,7 +580,8 @@ function renderRequests(items) {
       when(r.createdAt), V.what(r), r.mode === 'direct' ? t('direct') : t('trader'),
       el('span', { class: `badge ${st.tone}`, text: st.label }),
       el('td', { class: 'why', title: st.english ? `EN: ${st.english}` : null },
-        [st.filled ? `${t('Filled {filled}.', { filled: st.filled })} ` : '', st.detail ?? (st.final ? '' : t('in progress'))].join('')),
+        [st.filled ? `${t('Filled {filled}.', { filled: st.filled })} ` : '', st.detail ?? (st.final ? '' : t('in progress'))].join(''),
+        st.onlyEnglish ? el('span', { class: 'only-english muted small', text: t('The trader wrote this answer in English only.') }) : null),
       steps,
     ];
   }, t('No requests in the last 7 days.'));

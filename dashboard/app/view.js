@@ -181,8 +181,10 @@
     const detail = said.map((p) => p.text).filter(Boolean).join(' · ') || null;
     // Shown in Russian, the English it came from stays a hover away: the trader writes its Russian apart from its English.
     const english = said.some((p) => p.lang === 'ru') ? [rationale, reason].filter(Boolean).join(' · ') : null;
+    // On the Russian page, a text the trader wrote without its Russian (answers from before it was asked for one).
+    const onlyEnglish = lang === 'ru' && said.some((p) => p.text && p.lang === 'en' && /[A-Za-z]{3,}/.test(p.text));
     const filled = item?.status === 'filled' && o.filledSize ? (o.averagePrice ? t('{size} at {price}', { size: o.filledSize, price: o.averagePrice }) : String(o.filledSize)) : null;
-    return { label: s.label, tone: s.tone, final: Boolean(item?.final), detail, english, filled };
+    return { label: s.label, tone: s.tone, final: Boolean(item?.final), detail, english, onlyEnglish, filled };
   }
 
   /** A request's step as the page lists it: the engine's words in the page's language, and none where they repeat the rationale. */

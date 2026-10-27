@@ -59,9 +59,14 @@ test('every engine status has words, and only final ones end the wait', () => {
     assert.ok(V.STATUS[status], status);
   }
   const done = V.requestState({ status: 'filled', final: true, outcome: { filledSize: '0.5', averagePrice: '10.2' } });
-  assert.deepEqual(done, { label: 'Filled', tone: 'ok', final: true, detail: null, english: null, filled: '0.5 at 10.2' });
+  assert.deepEqual(done, { label: 'Filled', tone: 'ok', final: true, detail: null, english: null, onlyEnglish: false, filled: '0.5 at 10.2' });
   const declined = V.requestState({ status: 'declined', final: true, outcome: { rationale: 'Trend still up.' } });
   assert.equal(declined.detail, 'Trend still up.');
+  // On the Russian page, an answer from before the trader wrote Russian says it is English only; one with its Russian doesn't.
+  const old = { status: 'declined', final: true, outcome: { rationale: 'The strategy only buys uptrend pullbacks.' } };
+  assert.equal(V.requestState(old, 'ru').onlyEnglish, true);
+  assert.equal(V.requestState({ ...old, outcome: { ...old.outcome, rationaleRu: 'Стратегия покупает только откаты в восходящем тренде.' } }, 'ru').onlyEnglish, false);
+  assert.equal(V.requestState(old, 'en').onlyEnglish, false);
   assert.equal(V.requestState({ status: 'awaiting-agent', final: false }).tone, 'pending');
   assert.equal(V.what({ side: 'sell', portion: '0.25', symbol: 'LINK-EUR' }), 'Sell 25% LINK-EUR');
   assert.equal(V.what({ side: 'buy', quoteAmount: '20', symbol: 'UNI-EUR' }), 'Buy UNI-EUR for 20 EUR');

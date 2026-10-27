@@ -20,18 +20,21 @@
       <a id="strategy-badge" class="badge strategy" href="#strategy" title="The strategy the engine runs now: open the Strategy tab">–</a>
     </div>
     <div class="controls">
-      <div class="segmented" role="group" aria-label="Trading mode">
-        <button type="button" data-mode="paper" aria-pressed="true">Paper</button>
-        <button type="button" data-mode="live" aria-pressed="false">Live</button>
+      <div class="switches">
+        <div class="segmented" role="group" aria-label="Trading mode">
+          <button type="button" data-mode="paper" aria-pressed="true">Paper</button>
+          <button type="button" data-mode="live" aria-pressed="false">Live</button>
+        </div>
+        <div class="segmented" role="group" aria-label="Language" title="Language of the whole dashboard; coin tickers and figures stay as they are">
+          <button type="button" data-lang="ru" lang="ru" aria-pressed="true">RU</button>
+          <button type="button" data-lang="en" aria-pressed="false">EN</button>
+        </div>
       </div>
-      <div class="segmented" role="group" aria-label="Language" title="Language of the whole dashboard; coin tickers and figures stay as they are">
-        <button type="button" data-lang="ru" lang="ru" aria-pressed="true">RU</button>
-        <button type="button" data-lang="en" aria-pressed="false">EN</button>
+      <button type="button" id="refresh" class="ghost refresh" title="Refresh now"><span class="icon" aria-hidden="true">↻</span><span id="updated" aria-live="polite">Loading…</span></button>
+      <div class="account">
+        <span id="who" class="small muted"></span>
+        <a id="sign-out" class="small" href="/.auth/logout?post_logout_redirect_uri=/signed-out.html">Sign out</a>
       </div>
-      <button type="button" id="refresh" class="ghost" title="Refresh now">Refresh</button>
-      <span id="updated" class="muted small" aria-live="polite">Loading…</span>
-      <span id="who" class="small muted"></span>
-      <a id="sign-out" class="button ghost small" href="/.auth/logout?post_logout_redirect_uri=/signed-out.html">Sign out</a>
     </div>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button type="button" role="tab" id="tab-overview" data-tab="overview" aria-controls="panel-overview" aria-selected="true"><span class="icon" aria-hidden="true">◧</span>Overview</button>
