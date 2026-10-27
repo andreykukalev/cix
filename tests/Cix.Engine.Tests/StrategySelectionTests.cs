@@ -431,6 +431,66 @@ public sealed class StrategySelectionTests
     }
 
     [Fact]
+    public async Task ARequestSavedBeforeTheEngineStopped_IsAccepted_NotExpired()
+    {
+        var setup = new Setup();
+        await setup.Service.SeedAsync("strategies", CancellationToken.None);
+        setup.Request("r-late", "safe", 1);
+        setup.Repository.Selections[TradingMode.Paper] = new StrategySelection("safe", 1, "owner", Rig.T0, null); // saved, not yet marked
+        setup.Time.Advance(TimeSpan.FromMinutes(10));
+
+        await setup.Poll();
+
+        Assert.Equal("accepted", setup.RequestStatus("r-late"));
+    }
+
+    [Fact]
+    public async Task WhenTheSelectionCantBeSaved_TheRequestsStayNew_AndAreTakenNextTime()
+    {
+        var setup = new Setup();
+        await setup.Service.SeedAsync("strategies", CancellationToken.None);
+        setup.Request("r-old", "risky", 2);
+        setup.Request("r-new", "safe", 1, minute: 1);
+        setup.Time.Advance(TimeSpan.FromMinutes(2));
+        setup.Repository.Failure = new HttpRequestException("database down");
+
+        Assert.False(await setup.Poll());
+        Assert.Equal(("new", "new"), (setup.RequestStatus("r-new"), setup.RequestStatus("r-old")));
+
+        setup.Repository.Failure = null;
+        Assert.True(await setup.Poll());
+        Assert.Equal(("accepted", "superseded", "safe"), (setup.RequestStatus("r-new"), setup.RequestStatus("r-old"), setup.Specs.Active!.Name));
+    }
+
+    [Fact]
+    public async Task ARequestFromTheFuture_OrWithAnotherDay_OrCarryingEngineFields_IsRefused()
+    {
+        var setup = new Setup();
+        await setup.Service.SeedAsync("strategies", CancellationToken.None);
+        setup.Request("r-future", "safe", 1, minute: 10);
+        var at = Rig.T0.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        setup.Requests.Add(new JsonObject
+        {
+            ["id"] = "r-day", ["day"] = "2026-01-01", ["createdAt"] = at, ["type"] = StrategySelectionService.RequestType,
+            ["name"] = "safe", ["version"] = 1, ["status"] = "new",
+        });
+        setup.Requests.Add(new JsonObject
+        {
+            ["id"] = "r-shape", ["day"] = Rig.T0.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), ["createdAt"] = at,
+            ["type"] = StrategySelectionService.RequestType, ["name"] = "safe", ["version"] = 1, ["status"] = "new", ["events"] = new JsonArray(), ["secret"] = "x",
+        });
+
+        Assert.False(await setup.Poll());
+
+        Assert.Equal("invalid", setup.RequestStatus("r-future"));
+        Assert.Equal("new", setup.RequestStatus("r-day")); // not in the days the engine reads: the dashboard never writes one like it
+        Assert.Equal("invalid", setup.RequestStatus("r-shape"));
+        Assert.Null(setup.Requests.Find("r-shape")!.Document["secret"]); // written back as id, day and type only
+        Assert.Equal("good", setup.Specs.Active!.Name);
+        Assert.Contains("day must be the UTC date", StrategySelectionService.ParseRequest(setup.Requests.Find("r-day")!.Document, Rig.T0).Problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task StrategyRequests_AreNotManualRequests()
     {
         var setup = new Setup();

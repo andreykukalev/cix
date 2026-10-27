@@ -132,7 +132,7 @@ public sealed class CosmosManualRequestStore(CosmosDb db) : IManualRequestStore
     {
         // The mode and type are filtered here, not after reading: documents for another mode or kind of request cost nothing.
         var modeFilter = mode == "paper" ? "(NOT IS_DEFINED(c.tradingMode) OR c.tradingMode = @mode)" : "c.tradingMode = @mode";
-        var typeFilter = type == ManualRequestDocument.Type ? "(NOT IS_DEFINED(c.type) OR c.type = @type)" : "c.type = @type";
+        var typeFilter = type == ManualRequestDocument.Type ? "(NOT IS_DEFINED(c.type) OR IS_NULL(c.type) OR c.type = @type)" : "c.type = @type";
         return QueryAsync(
             new QueryDefinition(
                     $"SELECT TOP {IManualRequestStore.MaxListed} * FROM c WHERE c.day >= @from AND c.day <= @to AND (NOT IS_DEFINED(c.status) OR c.status = @new) AND {modeFilter} AND {typeFilter}")

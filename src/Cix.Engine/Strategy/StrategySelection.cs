@@ -416,10 +416,31 @@ public sealed partial class StrategySelectionService(
         var parsed = found.Select(r => (Stored: r, Parsed: ParseRequest(r.Document, now))).OrderBy(p => p.Parsed.CreatedAt ?? DateTimeOffset.MinValue)
             .ThenBy(p => p.Stored.Id, StringComparer.Ordinal).ToList();
         var newest = parsed.LastOrDefault(p => p.Parsed.Selection is not null).Stored;
-        foreach (var (stored, request) in parsed)
+        StrategySelection? saved = null;
+        if (parsed.Any(p => p.Parsed.Expired))
+        {
+            try
+            {
+                saved = await repository.ReadSelectionAsync(trading.Mode, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                LogRequestsFailed(logger, ex.GetType().Name);
+                return;
+            }
+        }
+
+        // The newest first: older ones are superseded only once it is saved, so a failed save drops none of them.
+        foreach (var (stored, request) in parsed.OrderBy(p => ReferenceEquals(p.Stored, newest) ? 0 : 1))
         {
             string status, detail;
-            if (request.Selection is null)
+            if (request.Selection is null && request.Candidate is { } late && saved is not null
+                && saved.Key == late.Key && saved.RequestedAt == late.RequestedAt)
+            {
+                // Saved before the engine stopped, but not marked: it was applied, not expired.
+                (status, detail) = ("accepted", $"Selected {late.Key}.");
+            }
+            else if (request.Selection is null)
             {
                 (status, detail) = (request.Expired ? ManualRequestStatus.Expired : ManualRequestStatus.Invalid, request.Problem!);
             }
@@ -436,7 +457,7 @@ public sealed partial class StrategySelectionService(
                 catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
                     LogRequestsFailed(logger, ex.GetType().Name);
-                    continue; // still new: taken at the next poll
+                    return; // all still new: taken at the next poll
                 }
 
                 (status, detail) = ("accepted", $"Selected {request.Selection.Key}. The engine validates it and switches before the next trader run; the journal (kind strategy) and the engine status say what happened.");
@@ -457,7 +478,8 @@ public sealed partial class StrategySelectionService(
         }
     }
 
-    internal sealed record ParsedRequest(StrategySelection? Selection, DateTimeOffset? CreatedAt, string? Problem, bool Expired = false);
+    /// <param name="Candidate">For an expired request, the selection it asked for: it may have been saved before the engine stopped.</param>
+    internal sealed record ParsedRequest(StrategySelection? Selection, DateTimeOffset? CreatedAt, string? Problem, bool Expired = false, StrategySelection? Candidate = null);
 
     /// <summary>A dashboard request as a selection, or why it can't be one. The engine trusts nothing in the document.</summary>
     internal static ParsedRequest ParseRequest(System.Text.Json.Nodes.JsonObject document, DateTimeOffset now)
@@ -468,8 +490,8 @@ public sealed partial class StrategySelectionService(
             && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at) ? at : (DateTimeOffset?)null;
         if (createdAt is null)
             return new ParsedRequest(null, null, "The request has no valid createdAt.");
-        if (now - createdAt > RequestMaxAge)
-            return new ParsedRequest(null, createdAt, "The request was more than 5 minutes old when the engine saw it; send it again.", Expired: true);
+        if (ManualRequestDocument.Day(document) != createdAt.Value.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))
+            return new ParsedRequest(null, createdAt, "day must be the UTC date of createdAt.");
         if (createdAt - now > TimeSpan.FromMinutes(1))
             return new ParsedRequest(null, createdAt, "The request's time is in the future.");
         var name = ManualRequestDocument.Field(document, "name");
@@ -477,7 +499,10 @@ public sealed partial class StrategySelectionService(
             return new ParsedRequest(null, createdAt, "name must be a strategy name (lowercase letters, digits and dashes).");
         if (document["version"] is not System.Text.Json.Nodes.JsonValue v || !v.TryGetValue<int>(out var version) || version is < 1 or > 9999)
             return new ParsedRequest(null, createdAt, "version must be a whole number from 1 to 9999.");
-        return new ParsedRequest(new StrategySelection(name, version, "owner", createdAt, Clean(ManualRequestDocument.Field(document, "note"), 280)), createdAt, null);
+        var selection = new StrategySelection(name, version, "owner", createdAt, Clean(ManualRequestDocument.Field(document, "note"), 280));
+        if (now - createdAt > RequestMaxAge)
+            return new ParsedRequest(null, createdAt, "The request was more than 5 minutes old when the engine saw it; send it again.", Expired: true, Candidate: selection);
+        return new ParsedRequest(selection, createdAt, null);
     }
 
     [System.Text.RegularExpressions.GeneratedRegex("^[a-z0-9-]{1,40}$")]

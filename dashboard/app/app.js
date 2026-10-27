@@ -739,7 +739,8 @@ function trackStrategy(item) {
       // Accepted: the engine validates and switches; its status reports within a minute.
       await refreshStrategies();
       const sel = state.strategies?.selection;
-      if (sel?.requested === label && ['active', 'refused'].includes(sel.state)) {
+      // The status names this request when its time matches (an earlier switch to the same version has another).
+      if (sel?.requested === label && Date.parse(sel.requestedAt ?? '') === Date.parse(item.createdAt) && ['active', 'refused'].includes(sel.state)) {
         stop(sel.state === 'active'
           ? `Strategy switch to ${label}: active. New trades follow it from the next scan.`
           : `Strategy switch to ${label}: refused. ${sel.problems.join(' ')}`, sel.state === 'active' ? 'ok' : 'bad');
