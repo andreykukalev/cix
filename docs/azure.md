@@ -262,7 +262,7 @@ The Buy and Sell buttons send manual requests to the engine ([ADR-0011](adr/0011
 - A confirmation shows exactly what will be sent. Each dialog has its own ID and is locked once sent, so a retry or a double click is still one request (also across midnight UTC), and the page follows it to the end: placed, filled, declined with the trader's reason, refused (by the engine or the risk gate, with the rule), expired.
 - The buttons pause, with the reason, when the engine isn't running or doesn't take requests (switched off, or the `requests` container missing).
 - Your note goes to the trader with the request, and shows in the request's history and decisions.
-- Buy and sell requests are paper only. The Trading tile's **Pause** and **Resume** work in both views; in Live they need a tick in the box that names real money, and the one-time `-LiveRequests` setup below ([live-trading.md](live-trading.md#pausing-and-resuming-from-the-dashboard-adr-0018)). The engine checks each one again, and every order still goes through the risk gate.
+- Buy and sell requests are paper only. The Trading tile's **Pause** and **Resume**, strategy switches and coin changes work in both views; in Live they need a tick in the box that names real money, and the one-time `-LiveRequests` setup below ([live-trading.md](live-trading.md#pausing-and-resuming-from-the-dashboard-adr-0018)). The engine checks each one again, and every order still goes through the risk gate.
 
 One-time setup, per environment (needs rights to create app registrations and to manage Cosmos DB roles on the shared account):
 

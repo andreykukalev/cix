@@ -190,17 +190,31 @@ test('the owner asks to switch strategy: a request in the requests container, ne
   assert.equal(first.jsonBody.request.name, 'balanced');
 });
 
-test('strategy requests: owner only, paper only, well formed', async () => {
+test('strategy requests: owner only, live only when confirmed and to the live engine, well formed', async () => {
+  const liveBody = { ...JSON.parse(STRATEGY_BODY), id: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d', name: 'safe', version: 2, tradingMode: 'live' };
   const visitor = await routes['owner-strategy-requests'].handler(request({ method: 'POST', principal: VISITOR, body: STRATEGY_BODY }), context);
-  const live = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(STRATEGY_BODY), id: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d', tradingMode: 'live' }) }), context);
+  writeDatabases.length = 0;
+  const unconfirmed = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify(liveBody) }), context);
+  assert.deepEqual(writeDatabases, [], 'nothing written without the confirmation');
+  const live = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, confirmLive: true }) }), context);
   const bad = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(STRATEGY_BODY), version: '1' }) }), context);
   const noHeader = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: STRATEGY_BODY, headers: { 'x-cix-request': null } }), context);
 
   assert.equal(visitor.status, 403);
-  assert.equal(live.status, 400);
-  assert.match(live.jsonBody.error, /#71/);
+  assert.equal(unconfirmed.status, 400);
+  assert.match(unconfirmed.jsonBody.error, /real-money/);
+  assert.equal(live.status, 201);
+  assert.deepEqual(writeDatabases, ['cix-live']);
+  assert.deepEqual({ name: writes.at(-1).name, version: writes.at(-1).version, tradingMode: writes.at(-1).tradingMode }, { name: 'safe', version: 2, tradingMode: 'live' });
+  assert.equal('confirmLive' in writes.at(-1), false);
   assert.equal(bad.status, 400);
   assert.equal(noHeader.status, 400);
+
+  // The page follows it in the live engine's database, and a paper lookup never finds it.
+  const day = writes.at(-1).day;
+  const lookup = (query) => routes['owner-strategy-request'].handler(request({ params: { day, id: liveBody.id }, query }), context);
+  assert.equal((await lookup('mode=live')).status, 200);
+  assert.equal((await lookup('')).status, 404);
 });
 
 test('the strategy view is the owner\'s only', async () => {
@@ -227,17 +241,40 @@ test('the owner asks to add a pair: a request in the requests container, never t
   assert.equal(first.jsonBody.request.symbol, 'SOL-EUR');
 });
 
-test('pair requests: owner only, paper only, well formed', async () => {
+test('pair requests: owner only, live only when confirmed and to the live engine, well formed', async () => {
+  const liveBody = { ...JSON.parse(PAIR_BODY), id: '2c1f7c3e-1b7a-4c1d-8a7e-3f0a9b1c2d3e', tradingMode: 'live' };
   const visitor = await routes['owner-pair-requests'].handler(request({ method: 'POST', principal: VISITOR, body: PAIR_BODY }), context);
-  const live = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(PAIR_BODY), id: '2c1f7c3e-1b7a-4c1d-8a7e-3f0a9b1c2d3e', tradingMode: 'live' }) }), context);
+  writeDatabases.length = 0;
+  const unconfirmed = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify(liveBody) }), context);
+  assert.deepEqual(writeDatabases, [], 'nothing written without the confirmation');
+  const live = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, confirmLive: true }) }), context);
   const bad = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(PAIR_BODY), action: 'swap' }) }), context);
   const noHeader = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: PAIR_BODY, headers: { 'x-cix-request': null } }), context);
 
   assert.equal(visitor.status, 403);
-  assert.equal(live.status, 400);
-  assert.match(live.jsonBody.error, /#71/);
+  assert.equal(unconfirmed.status, 400);
+  assert.match(unconfirmed.jsonBody.error, /real-money/);
+  assert.equal(live.status, 201);
+  assert.deepEqual(writeDatabases, ['cix-live']);
+  assert.equal(writes.at(-1).tradingMode, 'live');
   assert.equal(bad.status, 400);
   assert.equal(noHeader.status, 400);
+
+  const day = writes.at(-1).day;
+  const lookup = (query) => routes['owner-pair-request'].handler(request({ params: { day, id: liveBody.id }, query }), context);
+  assert.equal((await lookup('mode=live')).status, 200);
+  assert.equal((await lookup('')).status, 404);
+
+  const saved = process.env.COSMOS_LIVE_DATABASE;
+  delete process.env.COSMOS_LIVE_DATABASE;
+  try {
+    reads.length = 0;
+    const off = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, id: crypto.randomUUID(), confirmLive: true }) }), context);
+    assert.equal(off.status, 503, 'never written to paper\'s database instead');
+    assert.equal((await lookup('mode=live')).status, 503, 'a live lookup never reads paper\'s database instead');
+    assert.equal(reads.length, 0);
+  } finally { process.env.COSMOS_LIVE_DATABASE = saved; }
+  assert.deepEqual(writeDatabases, ['cix-live']);
 });
 
 test('the pairs view is the owner\'s only', async () => {
@@ -249,12 +286,12 @@ test('the pairs view is the owner\'s only', async () => {
   assert.equal(owner.jsonBody.mode, 'paper');
 });
 
-test("live's strategy view reads the live engine's database, with paper's explanations as a stand-in; requests stay paper's", async () => {
+test("live's strategy view reads the live engine's database, its requests too, with paper's explanations as a stand-in", async () => {
   reads.length = 0;
   const live = await routes['owner-strategies'].handler(request({ query: 'mode=live' }), context);
   assert.equal(live.status, 200);
   const where = Object.fromEntries(reads.map((r) => [r.id ?? r.container, r.database]));
-  assert.deepEqual(where, { 'strategy-schema-live': 'cix-live', state: 'cix-live', 'engine-status-live': 'cix-live', 'strategy-schema-paper': 'cix' },
+  assert.deepEqual(where, { 'strategy-schema-live': 'cix-live', state: 'cix-live', 'engine-status-live': 'cix-live', requests: 'cix-live', 'strategy-schema-paper': 'cix' },
     "live's own schema first; paper's explanations only while the live engine hasn't written its own (the fake has none)");
   reads.length = 0;
   await routes['owner-requests'].handler(request(), context);

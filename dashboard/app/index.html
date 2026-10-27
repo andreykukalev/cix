@@ -277,6 +277,7 @@
       <ul id="strategy-changes" class="changes"></ul>
       <p class="summary">Applies to new trades from the next scan and trader run, after any run in progress ends. Open positions keep their stop and target; changes marked <strong>open positions too</strong> reach the coins you already hold from the next scan. The engine then scans at once and sells only the part of any coin held above the new strategy's per-coin or total cap, through the risk gate. Nothing is cancelled. The engine checks the strategy again and records the switch in the journal.</p>
       <label class="field">Why <span class="muted small">(optional, kept in the journal)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
+      <label id="strategy-live" class="confirm" hidden><input type="checkbox" name="confirmLive"> <span>I understand this changes real-money trading on Revolut X.</span></label>
       <p id="strategy-error" class="error" role="alert" hidden></p>
       <div class="actions">
         <button type="button" id="strategy-cancel" class="ghost">Cancel</button>
@@ -290,6 +291,7 @@
       <h2 id="pair-title">Add a pair</h2>
       <p id="pair-summary" class="summary"></p>
       <label class="field">Why <span class="muted small">(optional, kept in the journal)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
+      <label id="pair-live" class="confirm" hidden><input type="checkbox" name="confirmLive"> <span>I understand this changes real-money trading on Revolut X.</span></label>
       <p id="pair-error" class="error" role="alert" hidden></p>
       <div class="actions">
         <button type="button" id="pair-cancel" class="ghost">Cancel</button>

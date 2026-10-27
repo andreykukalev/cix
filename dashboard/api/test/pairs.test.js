@@ -16,13 +16,16 @@ test('a pair request: the server\'s time, the owner as a role, a normalised symb
   });
 });
 
-test('a pair request is refused unless well formed and for paper', () => {
+test('a pair request is refused unless well formed, and for live unless the owner confirmed it', () => {
   const ok = { id: ID, action: 'remove', symbol: 'SOL-EUR' };
   for (const bad of [null, [], 'x', { ...ok, id: 'x' }, { ...ok, action: 'delete' }, { ...ok, action: undefined }, { ...ok, symbol: 'SOL' },
     { ...ok, symbol: 'SOL-EUR-X' }, { ...ok, symbol: '../x' }, { ...ok, symbol: 5 }, { ...ok, symbol: 'A'.repeat(21) + '-EUR' },
-    { ...ok, tradingMode: 'live' }, { ...ok, note: 5 }]) {
+    { ...ok, tradingMode: 'live' }, { ...ok, tradingMode: 'live', confirmLive: 'yes' }, { ...ok, tradingMode: 'demo' }, { ...ok, note: 5 }]) {
     assert.throws(() => pairRequestDocument(bad, NOW), RequestError, JSON.stringify(bad));
   }
+  const live = pairRequestDocument({ ...ok, tradingMode: 'live', confirmLive: true }, NOW);
+  assert.equal(live.tradingMode, 'live');
+  assert.equal('confirmLive' in live, false, 'the confirmation is the dashboard\'s check, not part of the request');
 });
 
 const catalog = {
@@ -61,11 +64,13 @@ test('the saved list wins over the catalog\'s copy, and a full list says so', ()
   assert.deepEqual(view.available, []);
 });
 
-test('without a catalog, or in live, the panel is read-only', () => {
+test('without a catalog the panel is read-only; live is editable like paper once its engine has written one', () => {
   assert.equal(pairsView({ mode: 'paper', catalog: null, list: null, requests: [] }, NOW).editable, false);
-  const live = pairsView({ mode: 'live', catalog, list: null, requests: [] }, NOW);
-  assert.equal(live.editable, false);
-  assert.match(live.readOnlyReason, /live/i);
+  assert.equal(pairsView({ mode: 'live', catalog: null, list: null, requests: [] }, NOW).editable, false);
+  const live = pairsView({ mode: 'live', catalog, list: null, requests: [{ id: 'a', createdAt: '2026-10-27T09:00:00Z', action: 'add', symbol: 'SOL-EUR', tradingMode: 'live' }] }, NOW);
+  assert.equal(live.editable, true);
+  assert.equal(live.readOnlyReason, null);
+  assert.equal(live.requests[0].tradingMode, 'live');
 });
 
 // The catalog as the engine writes it when config/risk-limits.json has no AllowedQuoteCurrency: the list's own quote
@@ -95,7 +100,9 @@ test('the pairs note: what the panel says in each case, and what the empty add l
   assert.match(full.note, /remove one to add another/);
   assert.equal(full.empty, 'the limit is reached');
 
-  assert.match(V.pairsNote(pairsView({ mode: 'live', catalog, list: null, requests: [] }, NOW)).note, /live/i);
+  // Live names its own limits file.
+  const liveNote = V.pairsNote(pairsView({ mode: 'live', catalog: configuredOnly, list: { symbols: ['BTC-EUR'] }, requests: [] }, NOW)).note;
+  assert.match(liveNote, /turn the pairs in config\/risk-limits\.live\.json off and on again/);
   assert.equal(pairsView({ mode: 'paper', catalog: configuredOnly, list: null, requests: [] }, NOW).configuredOnly, true);
   assert.equal(pairsView({ mode: 'paper', catalog, list: null, requests: [] }, NOW).configuredOnly, false);
   assert.equal(pairsView({ mode: 'paper', catalog: null, list: null, requests: [] }, NOW).configuredOnly, false);

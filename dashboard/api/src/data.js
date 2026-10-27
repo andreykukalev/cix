@@ -23,6 +23,12 @@ function modeFilter(mode) {
 
 const modeParameter = (mode) => ({ name: '@mode', value: mode });
 
+/** The requests of one mode, with the `@mode` parameter: requests from before the mode was recorded are paper's. */
+function requestModeFilter(mode) {
+  if (!MODES.has(mode)) throw new RangeError('mode must be paper or live');
+  return mode === 'paper' ? '(NOT IS_DEFINED(c.tradingMode) OR c.tradingMode = @mode)' : 'c.tradingMode = @mode';
+}
+
 function utcDay(ms) {
   return new Date(ms).toISOString().slice(0, 10);
 }
@@ -189,9 +195,10 @@ const VERSIONS_MAX = 100;
 
 /**
  * The Strategy tab for one mode: the engine's parameter schema, every strategy version (without its instructions), the
- * running strategy and what became of the latest selection, and the owner's switch requests of the last week. The schema
- * and selection exist for paper only (#105); live shows the versions read-only. reader is the mode's database (live's is its
- * own, ADR-0017) and paperReader paper's, whose schema stands in until the mode's engine has written its own.
+ * running strategy and what became of the latest selection, and the owner's switch requests of the last week, for paper or
+ * live (live lists only the spec files the owner marked live, which its engine seeds: ADR-0018). reader is the mode's
+ * database (live's is its own, ADR-0017) and paperReader paper's, whose schema stands in until the mode's engine has written
+ * its own.
  */
 async function loadStrategies(reader, mode, now, paperReader = reader) {
   if (!MODES.has(mode)) throw new RangeError('mode must be paper or live');
@@ -203,49 +210,46 @@ async function loadStrategies(reader, mode, now, paperReader = reader) {
       maxItems: VERSIONS_MAX,
     }),
     reader.readDocument('state', `engine-status-${mode}`),
-    mode === 'paper'
-      ? reader.query('requests', 'SELECT * FROM c WHERE c.day >= @from AND c.type = @type', {
-        parameters: [{ name: '@from', value: from }, { name: '@type', value: REQUEST_TYPE }],
-        maxItems: REQUESTS_MAX,
-      })
-      : [],
+    reader.query('requests', `SELECT * FROM c WHERE c.day >= @from AND c.type = @type AND ${requestModeFilter(mode)}`, {
+      parameters: [{ name: '@from', value: from }, { name: '@type', value: REQUEST_TYPE }, { name: '@mode', value: mode }],
+      maxItems: REQUESTS_MAX,
+    }),
   ]);
   // Paper's explanations stand in until this mode's engine has written its own.
   const schemaDoc = ownSchema ?? (mode === 'paper' ? null : await paperReader.readDocument('state', 'strategy-schema-paper'));
   return strategiesView({ mode, schema: schemaDoc?.value ?? null, versions: versionDocs, status: statusDoc?.value ?? null, requests: requestDocs }, now);
 }
 
-/** One switch request, for the page to follow it after a click; null if it isn't there (yet). */
-async function loadStrategyRequest(reader, day, id) {
+/** One switch request of the mode, for the page to follow it after a click; null if it isn't there (yet). */
+async function loadStrategyRequest(reader, day, id, mode = 'paper') {
   if (!DAY.test(day ?? '') || !/^[0-9a-f-]{36}$/.test(id ?? '')) throw new RangeError('day and id must be a request\'s');
   const doc = await reader.readDocument('requests', id, day);
-  return doc && doc.type === REQUEST_TYPE ? requestItem(doc) : null;
+  return doc && doc.type === REQUEST_TYPE && (doc.tradingMode ?? 'paper') === mode ? requestItem(doc) : null;
 }
 
 /**
  * The pairs panel for one mode: the engine's catalog of pairs the owner can add, the list it trades now, and the owner's add
- * and remove requests of the last week. Paper only (#71 brings live).
+ * and remove requests of the last week, for paper or live (ADR-0018). reader is the mode's database.
  */
 async function loadPairs(reader, mode, now) {
   if (!MODES.has(mode)) throw new RangeError('mode must be paper or live');
-  if (mode !== 'paper') return pairsView({ mode, catalog: null, list: null, requests: [] }, now);
   const from = utcDay(now - (REQUEST_DAYS - 1) * 24 * 3600 * 1000);
   const [catalogDoc, listDoc, requestDocs] = await Promise.all([
     reader.readDocument('state', `pair-catalog-${mode}`),
     reader.readDocument('state', `tradable-pairs-${mode}`),
-    reader.query('requests', 'SELECT * FROM c WHERE c.day >= @from AND c.type = @type', {
-      parameters: [{ name: '@from', value: from }, { name: '@type', value: PAIR_REQUEST_TYPE }],
+    reader.query('requests', `SELECT * FROM c WHERE c.day >= @from AND c.type = @type AND ${requestModeFilter(mode)}`, {
+      parameters: [{ name: '@from', value: from }, { name: '@type', value: PAIR_REQUEST_TYPE }, { name: '@mode', value: mode }],
       maxItems: REQUESTS_MAX,
     }),
   ]);
   return pairsView({ mode, catalog: catalogDoc?.value ?? null, list: listDoc?.value ?? null, requests: requestDocs }, now);
 }
 
-/** One pair request, for the page to follow it after a click; null if it isn't there (yet). */
-async function loadPairRequest(reader, day, id) {
+/** One pair request of the mode, for the page to follow it after a click; null if it isn't there (yet). */
+async function loadPairRequest(reader, day, id, mode = 'paper') {
   if (!DAY.test(day ?? '') || !/^[0-9a-f-]{36}$/.test(id ?? '')) throw new RangeError('day and id must be a request\'s');
   const doc = await reader.readDocument('requests', id, day);
-  return doc && doc.type === PAIR_REQUEST_TYPE ? pairRequestItem(doc) : null;
+  return doc && doc.type === PAIR_REQUEST_TYPE && (doc.tradingMode ?? 'paper') === mode ? pairRequestItem(doc) : null;
 }
 
 module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadBalanceHistory, loadRequests, loadRequest, loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest, utcDay, KINDS };

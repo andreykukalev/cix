@@ -46,7 +46,7 @@ What a switch affects:
 - Holdings above the new strategy's caps are trimmed: in that scan the engine sells, at the bid and through the risk gate, only the part of a coin above `maxPositionQuotePerSymbol`, then the part of the total (with buys still working, as the strategy gate counts it) above `maxExposureFraction` of the allocation, largest holdings first. Coins within the caps, coins with an open order or a protective sell, and amounts below the exchange minimum are left alone, so the total can stay up to about one minimum order above its cap. Each sell is journaled (kind `order`, tool `strategy-trim`). It runs once per switch; while trading is halted or the portfolio can't be read, it waits for the next scan. A refused sell isn't tried again, and one still unfilled after 4 minutes is cancelled like a protective sell, so it never keeps a stop from selling; the strategy's limits then only block new buys.
 - Nothing is cancelled by a switch.
 
-Live trading has no selection yet: it runs the configured spec until live strategy changes are designed with #71.
+Live trading switches the same way from the dashboard's Live view, with a real-money confirmation, but only between the files here whose `status` the owner set to `live`, exactly as merged (ADR-0018). The live engine adds only those to its database; marking a spec `live` is the owner's edit.
 
 ## Trading strategies
 

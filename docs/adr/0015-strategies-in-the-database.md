@@ -17,7 +17,7 @@ The engine ran one strategy spec, chosen in configuration and loaded from a file
 - **The dashboard switches through a request** (#108). Its writer identity can only create documents in the `requests` container, and stays that way: giving it write access to `state` would let it overwrite the engine's own state. So the Strategy tab creates a `strategy-selection` request, and the engine, which alone writes `state`, turns the newest valid one into the selection.
 - **The engine enforces the strategy's own limits** (`StrategyGate`, before the risk gate): order size, per-coin position, total exposure, daily loss stop, new positions per run and cooldown. They can only reduce or refuse a buy; sells always pass. They count the agents' buys only: the owner's requests are not governed by the strategy. Buys without a run ID share one count. The risk gate remains final and unchanged.
 - Each scan and each `place_order` reads the active spec once, so one decision never mixes two versions.
-- **Live is out of scope.** Validation refuses live mode and live-status versions, and the selection service runs in paper only. Live strategy changes, with explicit confirmation, come with #71.
+- **Live is out of scope.** Validation refuses live mode and live-status versions, and the selection service runs in paper only. Live strategy changes, with explicit confirmation, come with #71. (ADR-0018 later added them: live switches only between spec files the owner marked `live`.)
 
 ## Alternatives considered
 

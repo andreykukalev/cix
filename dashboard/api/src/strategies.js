@@ -2,13 +2,15 @@
 // The Strategy tab (#108): Safe, Balanced, Risky and the other strategy versions, every parameter explained with its value,
 // range and whether it is the strategy's own or a mandatory safety limit, and the owner's switch requests. The engine
 // writes the schema and the versions (state container) and does every check again; a switch is a request document the
-// engine takes (ADR-0015), because the dashboard's writer can only create documents in the requests container. Pure
-// functions: tested on their own.
+// engine takes (ADR-0015), because the dashboard's writer can only create documents in the requests container. Live switches
+// too, only between the spec files the owner marked live and only with confirmLive, which the page sends once the owner has
+// ticked the box that names real money (ADR-0018). Pure functions: tested on their own.
 
 const { cleanNote, RequestError } = require('./requests');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const NAME = /^[a-z0-9-]{1,40}$/;
+const MODES = new Set(['paper', 'live']);
 const REQUEST_TYPE = 'strategy-selection';
 const FEATURED = ['safe', 'balanced', 'risky'];
 const GROUPS = {
@@ -30,7 +32,7 @@ const APPLIES = {
 
 /**
  * The request document for a switch, or a RequestError saying what is wrong.
- * @param {object} body id (a fresh UUID per dialog), name, version, note, tradingMode.
+ * @param {object} body id (a fresh UUID per dialog), name, version, note, tradingMode, confirmLive.
  * @param {number} now Milliseconds since the epoch: the request's time is the server's.
  */
 function strategyRequestDocument(body, now) {
@@ -40,7 +42,8 @@ function strategyRequestDocument(body, now) {
   if (typeof name !== 'string' || !NAME.test(name)) throw new RequestError('name must be a strategy name.');
   if (!Number.isInteger(version) || version < 1 || version > 9999) throw new RequestError('version must be a whole number from 1 to 9999.');
   const tradingMode = body.tradingMode ?? 'paper';
-  if (tradingMode !== 'paper') throw new RequestError('Only paper trading switches strategy from the dashboard; live strategy changes come with live trading (#71).');
+  if (!MODES.has(tradingMode)) throw new RequestError('tradingMode must be paper or live.');
+  if (tradingMode === 'live' && body.confirmLive !== true) throw new RequestError('Confirm that this changes real-money trading.');
   const at = new Date(now).toISOString();
   const doc = {
     id: id.toLowerCase(),
@@ -67,6 +70,7 @@ function requestItem(doc) {
     createdAt: doc.createdAt ?? null,
     name: doc.name ?? null,
     version: doc.version ?? null,
+    tradingMode: doc.tradingMode ?? 'paper',
     note: doc.note ?? null,
     status: doc.status ?? 'new',
     detail: last.detail ?? null,
@@ -151,8 +155,10 @@ function strategiesView({ mode, schema, versions, status, requests }, now) {
   return {
     generatedAt: new Date(now).toISOString(),
     mode,
-    editable: mode === 'paper',
-    readOnlyReason: mode === 'paper' ? null : 'Live trading runs the strategy set in its configuration. Switching it here comes with live trading (#71), with an explicit confirmation.',
+    editable: MODES.has(mode),
+    readOnlyReason: null,
+    // Live lists only what its engine seeded: the spec files the owner marked live, exactly as reviewed.
+    note: mode === 'live' ? 'Live trading switches only between the strategies you marked live in strategies/; every switch asks you to confirm it.' : null,
     active: active ? { ...active, since: selection?.activatedAt ?? status?.startedAt ?? null } : null,
     selection: selection ? {
       state: selection.state ?? null,

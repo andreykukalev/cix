@@ -744,6 +744,7 @@ function renderStrategies(view) {
   const problems = view.selection?.problems ?? [];
   document.getElementById('strategy-note').textContent = [
     view.readOnlyReason ? t(view.readOnlyReason) : null,
+    view.note ? t(view.note) : null,
     problems.length ? problems.map((p) => t(p)).join(' ') : null,
     running?.riskProfile ? t(running.riskProfile) : null,
   ].filter(Boolean).join(' ');
@@ -785,7 +786,8 @@ function renderStrategies(view) {
 
   rows('mandatory', view.mandatory, (m) => [
     el('strong', { text: t(m.label) }), td(t(m.value), 'num'), td(t(m.explanation), 'why'),
-    m.source === 'risk-limits' ? t('config/risk-limits.json (owner only)') : t('the engine (fixed)'),
+    m.source !== 'risk-limits' ? t('the engine (fixed)')
+      : view.mode === 'live' ? t('config/risk-limits.live.json (owner only)') : t('config/risk-limits.json (owner only)'),
   ], t('Not reported yet.'));
 
   rows('switches', view.requests, (r) => [
@@ -801,11 +803,14 @@ function openStrategy(target) {
   const view = state.strategies;
   if (!view?.editable) return;
   const running = view.strategies.find((s) => s.active) ?? null;
-  strategyChoice = { name: target.name, version: target.version, id: crypto.randomUUID() }; // one id per dialog: a retry is the same request
+  const live = view.mode === 'live';
+  // One id per dialog: a retry is the same request. The mode is the view's, as the dialog opened.
+  strategyChoice = { name: target.name, version: target.version, mode: view.mode, id: crypto.randomUUID() };
   const form = document.getElementById('strategy-form');
   form.reset();
   for (const input of form.querySelectorAll('input')) input.disabled = false;
-  document.getElementById('strategy-title').textContent = t('Switch to {name} (paper)', { name: V.strategyName(target) });
+  document.getElementById('strategy-title').textContent = t(live ? 'Switch live trading to {name} (real money)' : 'Switch to {name} (paper)', { name: V.strategyName(target) });
+  document.getElementById('strategy-live').hidden = !live;
   document.getElementById('strategy-purpose').textContent = [target.purpose, target.riskProfile].filter(Boolean).map((x) => t(x)).join(' ');
   const changes = V.strategyChanges(running, target, view.groups);
   document.getElementById('strategy-changes').replaceChildren(...(changes.length
@@ -823,6 +828,14 @@ async function sendStrategy(event) {
   const r = V.strategyRequestBody({ ...strategyChoice, note: form.elements.note.value }, strategyChoice.id);
   const error = document.getElementById('strategy-error');
   if (r.error) { error.textContent = r.error; error.hidden = false; return; }
+  if (strategyChoice.mode === 'live') {
+    if (!form.elements.confirmLive.checked) {
+      error.textContent = t('Tick the box first: this changes real-money trading.');
+      error.hidden = false;
+      return;
+    }
+    r.body.confirmLive = true;
+  }
   const send = document.getElementById('strategy-send');
   send.disabled = true;
   for (const input of form.querySelectorAll('input')) input.disabled = true; // from the first send on, a retry sends the same request
@@ -852,6 +865,7 @@ function trackStrategy(item) {
   state.strategyPending = true;
   const started = Date.now();
   const label = `${item.name}@v${item.version}`;
+  const mode = item.tradingMode ?? 'paper';
   requestStatus(t('Strategy switch to {label}: sent, waiting for the engine…', { label }), 'pending');
   if (state.strategies) renderStrategies(state.strategies);
   const timer = setInterval(async () => {
@@ -867,7 +881,7 @@ function trackStrategy(item) {
     };
     if (Date.now() - started > 5 * 60_000) { stop(t('Strategy switch to {label}: no answer after 5 minutes; see Your strategy switches.', { label }), 'warn'); return; }
     try {
-      const response = await api(`/api/owner/strategy-requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}`);
+      const response = await api(`/api/owner/strategy-requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}?mode=${encodeURIComponent(mode)}`);
       if (!response.ok) return; // not readable yet, or offline for a moment
       const it = await response.json();
       if (it.status === 'new') return;
@@ -952,11 +966,15 @@ let pairChoice = null;
 
 function openPair(action, symbol) {
   if (!state.pairs?.editable || !symbol) return;
-  pairChoice = { action, symbol, id: crypto.randomUUID() }; // one id per dialog: a retry is the same request
+  const live = state.pairs.mode === 'live';
+  pairChoice = { action, symbol, mode: state.pairs.mode, id: crypto.randomUUID() }; // one id per dialog: a retry is the same request
   const form = document.getElementById('pair-form');
   form.reset();
   for (const input of form.querySelectorAll('input')) input.disabled = false;
-  document.getElementById('pair-title').textContent = t(action === 'remove' ? 'Remove {symbol} (paper)' : 'Add {symbol} (paper)', { symbol });
+  document.getElementById('pair-title').textContent = live
+    ? t(action === 'remove' ? 'Remove {symbol} from live trading (real money)' : 'Add {symbol} to live trading (real money)', { symbol })
+    : t(action === 'remove' ? 'Remove {symbol} (paper)' : 'Add {symbol} (paper)', { symbol });
+  document.getElementById('pair-live').hidden = !live;
   document.getElementById('pair-summary').textContent = action === 'remove'
     ? t('The engine stops trading {symbol}: no new orders, prices no longer polled. It refuses if you still hold {coin} or have an open order in it.', { symbol, coin: symbol.split('-')[0] })
     : t('The engine checks that the exchange lists {symbol} as active and that it traded enough over the last 24 hours, then starts loading its prices. The scanner can signal it once it has a day of hourly candles. Every order in it goes through the same safety limits.', { symbol });
@@ -969,10 +987,18 @@ function openPair(action, symbol) {
 async function sendPair(event) {
   event.preventDefault();
   const form = document.getElementById('pair-form');
-  const body = { id: pairChoice.id, action: pairChoice.action, symbol: pairChoice.symbol, tradingMode: 'paper' };
+  const body = { id: pairChoice.id, action: pairChoice.action, symbol: pairChoice.symbol, tradingMode: pairChoice.mode };
   const note = form.elements.note.value.trim();
   if (note) body.note = note;
   const error = document.getElementById('pair-error');
+  if (pairChoice.mode === 'live') {
+    if (!form.elements.confirmLive.checked) {
+      error.textContent = t('Tick the box first: this changes real-money trading.');
+      error.hidden = false;
+      return;
+    }
+    body.confirmLive = true;
+  }
   const send = document.getElementById('pair-send');
   const label = send.textContent;
   send.disabled = true;
@@ -1015,7 +1041,7 @@ function trackPair(item) {
     };
     if (Date.now() - started > 5 * 60_000) { stop(t('{label}: no answer after 5 minutes; see Your pair changes.', { label }), 'warn'); return; }
     try {
-      const response = await api(`/api/owner/pair-requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}`);
+      const response = await api(`/api/owner/pair-requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}?mode=${encodeURIComponent(item.tradingMode ?? 'paper')}`);
       if (!response.ok) return; // not readable yet, or offline for a moment
       const it = await response.json();
       if (it.status === 'new') return;

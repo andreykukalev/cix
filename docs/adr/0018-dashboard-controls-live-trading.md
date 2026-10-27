@@ -36,9 +36,10 @@ On 2026-10-27 the owner chose, on a decision card, to let the dashboard control 
   - **A cause found while trading is already halted is recorded beside the halt** (`alsoBy`, `alsoAt` on the kill switch, journaled as `also-triggered`; a finding repeated with the same reason stays quiet), and the Trading tile shows it. A cause that can't be saved is kept in memory until it is. Without this, a one-off finding such as the reconciler's "the account changed outside the engine" during a pause would leave no trace, and Resume would release it unseen. The halt's first reason is kept.
   - A halt without a start time (an old or hand-edited state document) is refused: resume it with the operator tool.
   - Each request acts at most once per engine run and keeps its outcome if its document can't be updated at once. A restart re-reads only requests younger than 5 minutes, and acting twice changes nothing.
-- **Strategies and pairs in live** follow in a second step (#71): the same request types, taken by the live engine.
-  - A live engine runs only versions whose spec file in `strategies/` the owner marked `live`, exactly as reviewed.
-  - Pairs stay within `config/risk-limits.live.json`.
+- **Strategies and pairs in live** use the same request types as paper's (`strategy-selection`, `tradable-pair`), taken by the live engine from its own `requests` container, with `confirmLive` as above.
+  - The live engine seeds its database only with the spec files in `strategies/` the owner marked `live` (other files are skipped), and switches only to a version that one of those files holds, exactly as reviewed: same canonical hash, `live` status. A database document that says `live` but matches no such file is refused, so nothing but a reviewed pull request can add a live strategy. The Strategy tab lists only those specs and says so.
+  - Pairs change within `config/risk-limits.live.json`, which keeps its own list (`tradable-pairs-live`); refusals name that file. Removing a pair still needs nothing held, reserved or working in it, and every order still goes through the risk gate.
+  - Paper is unchanged: it switches between `paper` specs only.
 
 ## Alternatives considered
 
@@ -55,6 +56,6 @@ On 2026-10-27 the owner chose, on a decision card, to let the dashboard control 
 - The Data Explorer step for the first start isn't needed: Resume does it, journaled as the owner's.
 - **CI-deployed dashboard code can now send requests to the live engine**:
   - Pause or Resume;
-  - (next step) a switch between live-marked strategies, or a pair change within the live limits.
+  - a switch between live-marked strategies, or a pair change within the live limits.
 - It still can't place an order, read live state through the writer, or exceed any risk limit, and the engine journals every request.
 - The live writer role is in the shared Cosmos DB account, not in `rg-cix-live`, so `provision.ps1`'s outside-access check for the live environment doesn't list it. `setup-dashboard-requests.ps1` checks that only the writer identity holds it.

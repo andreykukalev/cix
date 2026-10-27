@@ -16,12 +16,15 @@ test('a switch request: the server\'s time, the owner as a role, a clean note', 
   });
 });
 
-test('a switch request is refused unless well formed and for paper', () => {
+test('a switch request is refused unless well formed, and for live unless the owner confirmed it', () => {
   const ok = { id: ID, name: 'safe', version: 1 };
   for (const bad of [null, [], { ...ok, id: 'x' }, { ...ok, name: 'Safe' }, { ...ok, name: '../x' }, { ...ok, version: '1' }, { ...ok, version: 1.5 },
-    { ...ok, version: 0 }, { ...ok, version: 10000 }, { ...ok, tradingMode: 'live' }, { ...ok, note: 5 }]) {
+    { ...ok, version: 0 }, { ...ok, version: 10000 }, { ...ok, tradingMode: 'live' }, { ...ok, tradingMode: 'live', confirmLive: 1 },
+    { ...ok, tradingMode: 'demo' }, { ...ok, note: 5 }]) {
     assert.throws(() => strategyRequestDocument(bad, NOW), RequestError, JSON.stringify(bad));
   }
+  const live = strategyRequestDocument({ ...ok, version: 2, tradingMode: 'live', confirmLive: true }, NOW);
+  assert.deepEqual([live.tradingMode, live.name, live.version, 'confirmLive' in live], ['live', 'safe', 2, false]);
 });
 
 test('values are read at schema keys, top level or under scanner', () => {
@@ -70,10 +73,12 @@ test('the view: Safe, Balanced, Risky first, the running one marked, every param
   assert.equal(view.requests[0].detail, 'Selected balanced@v1.');
 });
 
-test('live is read-only, and the view copes with nothing written yet', () => {
+test('live switches too, saying only specs marked live are listed, and the view copes with nothing written yet', () => {
   const view = strategiesView({ mode: 'live', schema: null, versions: [], status: null, requests: [] }, NOW);
-  assert.equal(view.editable, false);
-  assert.match(view.readOnlyReason, /#71/);
+  assert.equal(view.editable, true);
+  assert.equal(view.readOnlyReason, null);
+  assert.match(view.note, /marked live/);
+  assert.equal(strategiesView({ mode: 'paper', schema: null, versions: [], status: null, requests: [] }, NOW).note, null);
   assert.equal(view.active, null);
   assert.deepEqual([view.groups, view.strategies, view.mandatory], [[], [], []]);
 });

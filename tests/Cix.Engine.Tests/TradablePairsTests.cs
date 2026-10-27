@@ -87,6 +87,35 @@ public sealed class TradablePairsTests
     }
 
     [Fact]
+    public async Task Live_ChangesItsOwnList_FromLiveRequestsOnly()
+    {
+        var setup = new Setup(mode: TradingMode.Live);
+        setup.Request("r-paper", "add", "ADA-EUR", mode: TradingMode.Paper);
+        setup.Request("r-live", "add", Sol, minute: 1);
+        setup.Rig.Time.Advance(TimeSpan.FromMinutes(2));
+
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { Btc, Sol }, setup.Tradable.Current.Order(StringComparer.Ordinal));
+        Assert.Equal(("accepted", "new"), (setup.RequestStatus("r-live"), setup.RequestStatus("r-paper")));
+        Assert.Equal(new[] { Btc, Sol }, setup.Repository.Saved[TradingMode.Live].Symbols);
+        Assert.False(setup.Repository.Saved.ContainsKey(TradingMode.Paper));
+        Assert.Equal("live", Assert.Single(setup.Changes).Data!["mode"]);
+    }
+
+    [Fact]
+    public async Task Live_NamesItsOwnLimitsFile_WhenAPairIsntPermitted()
+    {
+        var setup = new Setup(Rig.Limits, mode: TradingMode.Live);
+        setup.Request("r-1", "add", Sol);
+
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal(ManualRequestStatus.Rejected, setup.RequestStatus("r-1"));
+        Assert.StartsWith("config/risk-limits.live.json doesn't permit it", setup.RequestDetail("r-1"), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Remove_HeldCoin_IsRefused()
     {
         var setup = new Setup(btc: 0.001m);
@@ -287,15 +316,17 @@ public sealed class TradablePairsTests
 
     private sealed class Setup
     {
-        public Setup(RiskLimits? limits = null, decimal btc = 0m, FixedLease? lease = null)
+        public Setup(RiskLimits? limits = null, decimal btc = 0m, FixedLease? lease = null, TradingMode mode = TradingMode.Paper)
         {
+            Mode = mode;
             Tradable = new TradableSymbols(limits ?? OpenLimits);
             Rig = new Rig(btc: btc, pairSource: Market, journal: Journal, tradable: Tradable);
             Service = new TradablePairsService(
-                Tradable, Repository, Rig.Pairs, Market, Rig.Execution, Journal, new TradingContext(TradingMode.Paper), Rig.Time,
+                Tradable, Repository, Rig.Pairs, Market, Rig.Execution, Journal, new TradingContext(mode), Rig.Time,
                 NullLogger<TradablePairsService>.Instance, Requests, scanner: null, lease: lease, liquidityFloor: () => 100_000m);
         }
 
+        public TradingMode Mode { get; }
         public PairMarket Market { get; } = new();
         public InMemoryJournal Journal { get; } = new();
         public InMemoryManualRequestStore Requests { get; } = new("ok");
@@ -307,7 +338,7 @@ public sealed class TradablePairsTests
         public IReadOnlyList<JournalEntry> Changes => Journal.Entries.Where(e => e.Kind == TradablePairsService.Kind).ToList();
 
         /// <summary>A pair request as the dashboard creates it, <paramref name="minute"/> minutes after T0.</summary>
-        public void Request(string id, string action, string symbol, int minute = 0, string? note = null)
+        public void Request(string id, string action, string symbol, int minute = 0, string? note = null, TradingMode? mode = null)
         {
             var at = Rig.T0.AddMinutes(minute);
             Requests.Add(new JsonObject
@@ -315,7 +346,7 @@ public sealed class TradablePairsTests
                 ["id"] = id, ["day"] = at.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 ["createdAt"] = at.ToString("O", CultureInfo.InvariantCulture),
                 ["type"] = TradablePairsService.RequestType, ["action"] = action, ["symbol"] = symbol, ["note"] = note,
-                ["requestedBy"] = "owner", ["tradingMode"] = "paper", ["status"] = "new",
+                ["requestedBy"] = "owner", ["tradingMode"] = (mode ?? Mode).ToString().ToLowerInvariant(), ["status"] = "new",
             });
         }
 
