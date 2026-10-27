@@ -30,8 +30,13 @@ public sealed class RiskGate
 {
     private readonly RiskLimits _limits;
     private readonly TimeProvider _time;
+    private readonly TradableSymbols? _tradable;
 
-    public RiskGate(RiskLimits limits, TimeProvider? time = null)
+    /// <param name="tradable">
+    /// The pairs tradable now, which the owner may change at run time within <paramref name="limits"/>. Without it, only
+    /// <see cref="RiskLimits.AllowedSymbols"/> can be traded.
+    /// </param>
+    public RiskGate(RiskLimits limits, TimeProvider? time = null, TradableSymbols? tradable = null)
     {
         var errors = limits.Validate();
         if (errors.Count > 0)
@@ -39,6 +44,9 @@ public sealed class RiskGate
 
         _limits = limits;
         _time = time ?? TimeProvider.System;
+        if (tradable is not null && !ReferenceEquals(tradable.Limits, limits))
+            throw new ArgumentException("The tradable list must follow the gate's own limits.", nameof(tradable));
+        _tradable = tradable;
     }
 
     /// <summary>
@@ -55,7 +63,8 @@ public sealed class RiskGate
         if (portfolio.KillSwitchEngaged)
             return RiskVerdict.Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
-        if (!_limits.AllowedSymbols.Contains(intent.Symbol))
+        // Both: on the list of the moment, and permitted by the configured limits (a list can never widen them).
+        if (!(_tradable?.Current ?? _limits.AllowedSymbols).Contains(intent.Symbol) || !_limits.Permits(intent.Symbol))
             return RiskVerdict.Reject("symbol-allowlist", $"{intent.Symbol} is not in the allowed symbols.");
 
         if (intent.BaseSize <= 0 || intent.LimitPrice <= 0 || string.IsNullOrWhiteSpace(intent.ClientOrderId))

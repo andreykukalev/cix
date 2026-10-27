@@ -27,6 +27,7 @@ public sealed partial class SafetyMonitor : BackgroundService
     private readonly SafetyOptions _options;
     private readonly TimeProvider _time;
     private readonly ILogger<SafetyMonitor> _logger;
+    private readonly TradableSymbols? _tradable;
     private readonly DateTimeOffset _startedAt;
     private DateTimeOffset _lastReconcile = DateTimeOffset.MinValue;
 
@@ -37,7 +38,8 @@ public sealed partial class SafetyMonitor : BackgroundService
         RiskLimits limits,
         SafetyOptions options,
         TimeProvider time,
-        ILogger<SafetyMonitor> logger)
+        ILogger<SafetyMonitor> logger,
+        TradableSymbols? tradable = null)
     {
         options.Validate(limits);
         _execution = execution;
@@ -47,6 +49,7 @@ public sealed partial class SafetyMonitor : BackgroundService
         _options = options;
         _time = time;
         _logger = logger;
+        _tradable = tradable;
         _startedAt = time.GetUtcNow();
     }
 
@@ -76,8 +79,12 @@ public sealed partial class SafetyMonitor : BackgroundService
         // Give the poller time to deliver first quotes after a start.
         if (reason is null && now - _startedAt >= _options.StaleDataKillAfter)
         {
-            foreach (var symbol in _limits.AllowedSymbols.Order(StringComparer.Ordinal))
+            foreach (var symbol in (_tradable?.Current ?? _limits.AllowedSymbols).Order(StringComparer.Ordinal))
             {
+                // A pair the owner just added gets the same time as the engine's start to deliver its first quotes.
+                if (_tradable?.AddedAt(symbol) is { } added && now - added < _options.StaleDataKillAfter)
+                    continue;
+
                 var quote = _market.Quote(symbol);
                 if (quote is null || now - quote.AsOf > _options.StaleDataKillAfter)
                 {

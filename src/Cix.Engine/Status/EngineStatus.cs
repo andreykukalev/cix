@@ -172,7 +172,8 @@ public sealed partial class EngineStatusService(
     MarketViewStore? views = null,
     IStrategySpecStore? specs = null,
     Manual.ManualRequestService? manual = null,
-    StrategySelectionService? selection = null) : BackgroundService
+    StrategySelectionService? selection = null,
+    TradableSymbols? tradable = null) : BackgroundService
 {
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
@@ -186,6 +187,7 @@ public sealed partial class EngineStatusService(
         SafetyMonitor.By => "A safety limit was reached (drawdown, daily loss or stale market data).",
         ExecutionService.RejectStreakBy => "Too many orders in a row were rejected by the risk gate.",
         "engine" => "Waiting for the owner to confirm before trading starts.",
+        Pairs.TradablePairsService.By => "The saved trading pairs couldn't all be restored; check holdings before resuming.",
         _ => "Halted.",
     };
 
@@ -216,8 +218,8 @@ public sealed partial class EngineStatusService(
         var view = views?.Current;
         var reconcile = execution.LastReconcile;
         var quoteTimes = market.QuoteTimes();
-        var tradable = limits.AllowedSymbols.Select(MarketDataPoller.NormaliseSymbol).Order(StringComparer.Ordinal).ToList();
-        var quoted = tradable.Where(quoteTimes.ContainsKey).ToList();
+        var symbols = (tradable?.Current ?? limits.AllowedSymbols).Select(MarketDataPoller.NormaliseSymbol).Order(StringComparer.Ordinal).ToList();
+        var quoted = symbols.Where(quoteTimes.ContainsKey).ToList();
 
         return new EngineStatus(
             trading.Mode.ToString().ToLowerInvariant(),
@@ -236,7 +238,7 @@ public sealed partial class EngineStatusService(
                 ? null
                 : new MarketViewStatus(view.Regime.ToString(), view.RecordedAt, view.ValidUntil, view.IsActive(now), view.Flags.Select(f => f.Symbol).ToList()),
             quoted.Count == 0 ? null : quoted.Min(s => quoteTimes[s]),
-            tradable.Where(s => !quoteTimes.ContainsKey(s)).ToList(),
+            symbols.Where(s => !quoteTimes.ContainsKey(s)).ToList(),
             Portfolio(),
             Filters(),
             manual is null ? null : new ManualRequestsStatus(manual.State, manual.Pending.Count, manual.LastPollAt),

@@ -6,6 +6,7 @@ const { summarize, journalItem } = require('./summarize');
 const { activity, fromDay } = require('./activity');
 const { history, historyItem } = require('./requests');
 const { strategiesView, requestItem, REQUEST_TYPE } = require('./strategies');
+const { pairsView, pairRequestItem, REQUEST_TYPE: PAIR_REQUEST_TYPE } = require('./pairs');
 
 const MODES = new Set(['paper', 'live']);
 const JOURNAL_PER_DAY = 300;
@@ -59,7 +60,7 @@ async function loadDashboard(reader, mode, now) {
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const KINDS = new Set(['order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request', 'scanner-filters', 'scan-eligibility', 'strategy']);
+const KINDS = new Set(['order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request', 'scanner-filters', 'scan-eligibility', 'strategy', 'pairs']);
 const LIMITS = [50, 100, 200];
 const JOURNAL_DAYS = 14;
 
@@ -157,4 +158,30 @@ async function loadStrategyRequest(reader, day, id) {
   return doc && doc.type === REQUEST_TYPE ? requestItem(doc) : null;
 }
 
-module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadRequests, loadRequest, loadStrategies, loadStrategyRequest, utcDay, KINDS };
+/**
+ * The pairs panel for one mode: the engine's catalog of pairs the owner can add, the list it trades now, and the owner's add
+ * and remove requests of the last week. Paper only (#71 brings live).
+ */
+async function loadPairs(reader, mode, now) {
+  if (!MODES.has(mode)) throw new RangeError('mode must be paper or live');
+  if (mode !== 'paper') return pairsView({ mode, catalog: null, list: null, requests: [] }, now);
+  const from = utcDay(now - (REQUEST_DAYS - 1) * 24 * 3600 * 1000);
+  const [catalogDoc, listDoc, requestDocs] = await Promise.all([
+    reader.readDocument('state', `pair-catalog-${mode}`),
+    reader.readDocument('state', `tradable-pairs-${mode}`),
+    reader.query('requests', 'SELECT * FROM c WHERE c.day >= @from AND c.type = @type', {
+      parameters: [{ name: '@from', value: from }, { name: '@type', value: PAIR_REQUEST_TYPE }],
+      maxItems: REQUESTS_MAX,
+    }),
+  ]);
+  return pairsView({ mode, catalog: catalogDoc?.value ?? null, list: listDoc?.value ?? null, requests: requestDocs }, now);
+}
+
+/** One pair request, for the page to follow it after a click; null if it isn't there (yet). */
+async function loadPairRequest(reader, day, id) {
+  if (!DAY.test(day ?? '') || !/^[0-9a-f-]{36}$/.test(id ?? '')) throw new RangeError('day and id must be a request\'s');
+  const doc = await reader.readDocument('requests', id, day);
+  return doc && doc.type === PAIR_REQUEST_TYPE ? pairRequestItem(doc) : null;
+}
+
+module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadRequests, loadRequest, loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest, utcDay, KINDS };

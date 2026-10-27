@@ -27,8 +27,11 @@ internal sealed class Rig
         PaperExchange? paper = null,
         MutableTime? time = null,
         InMemoryJournal? journal = null,
-        Persistence.IEngineLease? lease = null)
+        Persistence.IEngineLease? lease = null,
+        TradableSymbols? tradable = null)
     {
+        Tradable = tradable;
+        var limits = tradable?.Limits ?? Limits;
         Journal = journal ?? new InMemoryJournal();
         Time = time ?? new MutableTime(T0);
         Safety = safety ?? new SafetyOptions();
@@ -47,15 +50,18 @@ internal sealed class Rig
         KillSwitch = new KillSwitch(Store, Time);
         Pairs = new PairCatalog(pairSource ?? new FakeMarketData(), Time);
         var pairs = Pairs;
-        Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, Limits, Time);
+        Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, limits, Time, tradable);
         Execution = new ExecutionService(
-            Exchange, new RiskGate(Limits, Time), Portfolio, State, pairs, KillSwitch, Store, Time,
+            Exchange, new RiskGate(limits, Time, tradable), Portfolio, State, pairs, KillSwitch, Store, Time,
             NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety, Journal, lease);
-        Monitor = new SafetyMonitor(Execution, KillSwitch, State, Limits, Safety, Time, NullLogger<SafetyMonitor>.Instance);
+        Monitor = new SafetyMonitor(Execution, KillSwitch, State, limits, Safety, Time, NullLogger<SafetyMonitor>.Instance, tradable);
         Quote(60_000.00m, 60_010.00m);
     }
 
     public static RiskLimits Limits { get; } = new(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, new HashSet<string> { Btc });
+
+    /// <summary>The run-time pair list, when the test gives one; otherwise <see cref="Limits"/>' allowlist is tradable.</summary>
+    public TradableSymbols? Tradable { get; }
 
     public MutableTime Time { get; }
     public InMemoryJournal Journal { get; }

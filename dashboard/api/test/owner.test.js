@@ -55,7 +55,8 @@ const BODY = JSON.stringify({ id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f', side: 
 
 test('the owner endpoints are registered under /api/owner', () => {
   assert.deepEqual(Object.values(routes).map((r) => r.route).sort(),
-    ['owner/requests', 'owner/requests/{day}/{id}', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
+    ['owner/pair-requests', 'owner/pair-requests/{day}/{id}', 'owner/pairs', 'owner/requests', 'owner/requests/{day}/{id}', 'owner/strategies',
+      'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
 });
 
 test('the owner creates a request; the same click again is not a second request', async () => {
@@ -206,4 +207,40 @@ test('the strategy view is the owner\'s only', async () => {
   assert.equal(owner.status, 200);
   assert.equal(owner.jsonBody.mode, 'paper');
   assert.equal(owner.headers['cache-control'], 'no-store');
+});
+
+const PAIR_BODY = JSON.stringify({ id: 'c56a4180-65aa-42ec-a945-5fd21dec0538', action: 'add', symbol: 'SOL-EUR', note: 'more coins' });
+
+test('the owner asks to add a pair: a request in the requests container, never the state', async () => {
+  writes.length = 0;
+  const first = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: PAIR_BODY }), context);
+  const again = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: PAIR_BODY }), context);
+
+  assert.equal(first.status, 201);
+  assert.equal(again.status, 200); // the same dialog sent twice is one request
+  assert.deepEqual({ type: writes[0].type, action: writes[0].action, symbol: writes[0].symbol, status: writes[0].status, requestedBy: writes[0].requestedBy },
+    { type: 'tradable-pair', action: 'add', symbol: 'SOL-EUR', status: 'new', requestedBy: 'owner' });
+  assert.equal(first.jsonBody.request.symbol, 'SOL-EUR');
+});
+
+test('pair requests: owner only, paper only, well formed', async () => {
+  const visitor = await routes['owner-pair-requests'].handler(request({ method: 'POST', principal: VISITOR, body: PAIR_BODY }), context);
+  const live = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(PAIR_BODY), id: '2c1f7c3e-1b7a-4c1d-8a7e-3f0a9b1c2d3e', tradingMode: 'live' }) }), context);
+  const bad = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(PAIR_BODY), action: 'swap' }) }), context);
+  const noHeader = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: PAIR_BODY, headers: { 'x-cix-request': null } }), context);
+
+  assert.equal(visitor.status, 403);
+  assert.equal(live.status, 400);
+  assert.match(live.jsonBody.error, /#71/);
+  assert.equal(bad.status, 400);
+  assert.equal(noHeader.status, 400);
+});
+
+test('the pairs view is the owner\'s only', async () => {
+  const visitor = await routes['owner-pairs'].handler(request({ principal: VISITOR }), context);
+  const owner = await routes['owner-pairs'].handler(request(), context);
+
+  assert.equal(visitor.status, 403);
+  assert.equal(owner.status, 200);
+  assert.equal(owner.jsonBody.mode, 'paper');
 });

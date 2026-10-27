@@ -158,6 +158,11 @@ public static class PersistenceRegistration
                 sp, sp.GetRequiredService<IStrategySpecStore>() as Strategy.RuntimeStrategySpecs
                     ?? throw new InvalidOperationException("Strategy switching needs the run-time spec store (AddCixToolServer).")));
             services.AddHostedService(sp => sp.GetRequiredService<Strategy.StrategySelectionService>());
+
+            // Tradable pairs added and removed from the dashboard, within config/risk-limits.json: paper only, like strategies.
+            services.AddSingleton<Pairs.ITradablePairsRepository>(sp => new Pairs.CosmosTradablePairsRepository(sp.GetRequiredService<CosmosDb>()));
+            services.AddSingleton<Pairs.TradablePairsService>();
+            services.AddHostedService(sp => sp.GetRequiredService<Pairs.TradablePairsService>());
             services.AddSingleton<IPaperAccountStore, CosmosPaperAccountStore>();
             services.AddSingleton<PaperAccountSaver>();
             services.AddHostedService(sp => sp.GetRequiredService<PaperAccountSaver>());
@@ -188,6 +193,8 @@ public static class PersistenceRegistration
             var strategy = services.GetRequiredService<StrategyOptions>();
             await selection.InitializeAsync(strategy.Directory, cancellationToken).ConfigureAwait(false); // the saved selection runs from the first scan
         }
+        if (services.GetService<Pairs.TradablePairsService>() is { } tradablePairs)
+            await tradablePairs.InitializeAsync(cancellationToken).ConfigureAwait(false); // the owner's pairs are polled and tradable from the start
         if (services.GetService<PaperAccountSaver>() is { } saver)
             await saver.RestoreAsync(cancellationToken).ConfigureAwait(false);
     }

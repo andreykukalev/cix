@@ -27,8 +27,12 @@ public sealed class PortfolioService(
     KillSwitch killSwitch,
     IEngineStateStore store,
     RiskLimits limits,
-    TimeProvider time)
+    TimeProvider time,
+    TradableSymbols? tradable = null)
 {
+    /// <summary>The pairs tradable now. Removing a pair is refused while it is held, so equity never drops a holding.</summary>
+    private IReadOnlySet<string> Tradable => tradable?.Current ?? limits.AllowedSymbols;
+
     public async Task<PortfolioSnapshot> GetSnapshotAsync(
         int ordersInLastMinute,
         IReadOnlyCollection<PendingPlacement> pending,
@@ -36,7 +40,7 @@ public sealed class PortfolioService(
     {
         ArgumentNullException.ThrowIfNull(pending);
         var symbolPairs = new List<PairInfo>();
-        foreach (var symbol in limits.AllowedSymbols.Order(StringComparer.Ordinal))
+        foreach (var symbol in Tradable.Order(StringComparer.Ordinal))
         {
             PairInfo? pair;
             try
@@ -150,7 +154,7 @@ public sealed class PortfolioService(
         ArgumentNullException.ThrowIfNull(after);
         var prices = new Dictionary<string, decimal?>(StringComparer.OrdinalIgnoreCase);
         var now = time.GetUtcNow();
-        foreach (var symbol in limits.AllowedSymbols)
+        foreach (var symbol in Tradable)
         {
             var pair = await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false);
             if (pair is null)

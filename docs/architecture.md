@@ -56,14 +56,14 @@ flowchart LR
 | Trader | Claude agent | Only when the scanner signals (plus a slow heartbeat): reads signals, positions and the spec; places and cancels orders through tools |
 | Daily reviewer | Claude agent | Reads the journal, writes a daily report, proposes a new spec version |
 | Strategy spec store | Versioned documents in Cosmos DB, seeded from files | Instructions, parameters (scanner settings and the strategy's own limits) and allowed tools; versions go draft → paper → live. The owner selects a version per mode; the engine validates it against the parameter schema and the mandatory limits, journals the switch and applies it between trader runs (ADR-0015) |
-| Risk gate | Deterministic, final authority | Allocation cap, drawdown halt, per-order and daily-loss caps, order rate, price band, symbol allowlist, kill switch |
+| Risk gate | Deterministic, final authority | Allocation cap, drawdown halt, per-order and daily-loss caps, order rate, price band, symbol allowlist (the owner's run-time pair list, within the rule in `config/risk-limits.json`, ADR-0016), kill switch |
 | Strategy limits | Deterministic, before the risk gate | The active spec's own, tighter limits on buys: order size, per-coin position, total exposure, daily loss stop, new positions per run, cooldown between buys. They can only reduce or refuse a buy; sells always pass, and the risk gate still decides last |
 | Order execution | Deterministic | Idempotent client order IDs, pair filters (step sizes, min size), partial fills, retries |
 | Paper execution | Deterministic | Simulates fills from live Revolut X prices and fees; the default until go-live |
 | Portfolio | Deterministic | Built from polled orders and fills; reconciled with balances; halts on mismatch |
 | Decision journal | Append-only Cosmos DB container (`journal`) | Every agent run: inputs, spec version, tool calls, rationale, risk verdict, orders, fills, PnL |
 | Operational state | Cosmos DB container (`state`) | What is true now: kill switch, loss baselines, orders in flight, position plans (stop and target), the paper account, archived specs. Recovery after a restart starts here and reconciles with the exchange ([persistence.md](persistence.md)) |
-| Owner requests | Cosmos DB container (`requests`) and engine service | The owner's manual buy and sell requests from the dashboard. Direct sells are placed by the engine; agent-assisted requests go to the trader, which may execute (never beyond the request) or decline. Every order still passes the risk gate (ADR-0011). Strategy switches from the Strategy tab arrive here too and become the selection (ADR-0015) |
+| Owner requests | Cosmos DB container (`requests`) and engine service | The owner's manual buy and sell requests from the dashboard. Direct sells are placed by the engine; agent-assisted requests go to the trader, which may execute (never beyond the request) or decline. Every order still passes the risk gate (ADR-0011). Strategy switches from the Strategy tab arrive here too and become the selection (ADR-0015), as do pair additions and removals from the Coins tab (ADR-0016) |
 | Tool server | C# MCP server | Agent tools and operator tools; the only path from agents to the exchange. Who may call it is below |
 
 ### Who may call the tool server

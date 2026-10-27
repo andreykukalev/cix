@@ -113,6 +113,19 @@
         <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Note</th><th class="paper-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
         <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan.</p>
       </section>
+
+      <section class="panel" aria-labelledby="h-pairs">
+        <div class="panel-head"><h2 id="h-pairs">Trading pairs</h2><span id="pairs-meta" class="muted small"></span></div>
+        <p id="pairs-note" class="muted small"></p>
+        <ul id="pairs-tradable" class="chips"></ul>
+        <form id="pairs-add" class="inline-form" hidden>
+          <label class="field">Add a pair <select id="pairs-choice" name="symbol" required></select></label>
+          <button type="submit" class="primary" id="pairs-add-button">Add…</button>
+        </form>
+        <p class="muted small">Every order in an added pair still goes through all the safety limits. A pair can be removed only when nothing is held or working in it.</p>
+        <h3 class="small">Your pair changes <span class="muted">(last 7 days)</span></h3>
+        <table id="pair-requests"><thead><tr><th>Sent</th><th>Change</th><th>Status</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+      </section>
     </div>
 
     <div class="tab-panel" role="tabpanel" id="panel-strategy" aria-labelledby="tab-strategy" hidden>
@@ -190,7 +203,7 @@
                 <option value="">all</option>
                 <option>order</option><option>fill</option><option>order-closed</option><option>tool-call</option>
                 <option>tool-denied</option><option>kill-switch</option><option>scan-signal</option><option>market-view</option>
-                <option>manual-request</option><option>scanner-filters</option><option>scan-eligibility</option><option>strategy</option>
+                <option>manual-request</option><option>scanner-filters</option><option>scan-eligibility</option><option>strategy</option><option>pairs</option>
               </select>
             </label>
             <button type="submit" class="ghost">Show</button>
@@ -248,8 +261,21 @@
     </form>
   </dialog>
 
+  <dialog id="pair-dialog" aria-labelledby="pair-title">
+    <form id="pair-form" method="dialog">
+      <h2 id="pair-title">Add a pair</h2>
+      <p id="pair-summary" class="summary"></p>
+      <label class="field">Why <span class="muted small">(optional, kept in the journal)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
+      <p id="pair-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="pair-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="pair-send" class="primary">Send</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer class="muted small">
-    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests and strategy switches are paper only; the engine checks each one and every order goes through the risk gate.
+    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests, strategy switches and pair changes are paper only; the engine checks each one and every order goes through the risk gate.
     News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.
   </footer>
 </body>

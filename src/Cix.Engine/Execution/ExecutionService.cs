@@ -26,6 +26,12 @@ public enum ExecutionStatus
 /// <param name="Order">What was approved and sent; null when rejected before approval.</param>
 public sealed record ExecutionResult(ExecutionStatus Status, string Rule, string Reason, ApprovedOrder? Order = null, PlacedOrder? Placed = null);
 
+/// <summary>The account as <see cref="ExecutionService.RunExclusiveAsync"/> sees it: fresh reads, and orders sent but not settled.</summary>
+public sealed record ExclusiveView(
+    Func<CancellationToken, Task<IReadOnlyList<ExchangeOrder>>> OpenOrdersAsync,
+    Func<CancellationToken, Task<PortfolioSnapshot?>> PortfolioAsync,
+    IReadOnlyList<PendingPlacement> Pending);
+
 public enum CancelOutcome
 {
     Cancelled,
@@ -374,6 +380,27 @@ public sealed partial class ExecutionService
             return null;
         _portfolioCache = (now, snapshot);
         return (snapshot, now);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="work"/> while no order can be placed or cancelled, with an uncached view of the account: what holds
+    /// for it can't change before it ends. For changes that must not race an order, such as removing a tradable pair.
+    /// </summary>
+    public async Task<T> RunExclusiveAsync<T>(Func<ExclusiveView, Task<T>> work, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await work(new ExclusiveView(
+                ct => _exchange.GetOpenOrdersAsync(null, ct),
+                SampleAsync,
+                PendingSnapshot())).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lock.Release();
+        }
     }
 
     /// <summary>How long agents' views of open orders and the portfolio may be cached, so a looping agent can't use up the exchange's rate limit.</summary>

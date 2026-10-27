@@ -18,18 +18,20 @@ var builder = WebApplication.CreateBuilder(args);
 // Docker secrets (files under /run/secrets) for the few settings that are secrets; anything else there is ignored.
 builder.Configuration.AddCixSecretFiles(builder.Configuration["SecretsDirectory"] ?? SecretFiles.DefaultDirectory);
 
-// Human-only file, copied next to the binary (see CLAUDE.md rule 3).
-builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "risk-limits.json"), optional: false, reloadOnChange: false);
-
-var limits = builder.Configuration.GetSection("Risk").Get<RiskLimitsOptions>()?.ToRiskLimits()
-    ?? throw new InvalidOperationException("Missing 'Risk' configuration section.");
+// Human-only file, copied next to the binary (see CLAUDE.md rule 3). Read on its own: no environment variable, command line or
+// other settings file can add to the limits or loosen them.
+var limits = RiskLimitsOptions.Load(Path.Combine(AppContext.BaseDirectory, "risk-limits.json"), builder.Configuration);
 
 // Paper unless the owner configures Live, and Live only in Production (CLAUDE.md rule 6).
 var mode = TradingModeResolver.Resolve(builder.Configuration, builder.Environment.EnvironmentName);
 
+// The pairs tradable now: the allowlist at start, then the owner's list from the dashboard, always within the limits.
+var tradable = new TradableSymbols(limits);
+
 // Fails fast if configured limits exceed the hard ceilings.
 builder.Services.AddSingleton(limits);
-builder.Services.AddSingleton(new RiskGate(limits));
+builder.Services.AddSingleton(tradable);
+builder.Services.AddSingleton(new RiskGate(limits, tradable: tradable));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(new TradingContext(mode));
 
@@ -44,14 +46,15 @@ builder.Services.AddCixExchange(
     builder.Configuration.GetSection(RevolutXOptions.SectionName).Get<RevolutXOptions>() ?? new RevolutXOptions(),
     builder.Configuration.GetSection(PaperOptions.SectionName).Get<PaperOptions>() ?? new PaperOptions());
 
-// The curated universe (ADR-0006): the scan covers it plus the risk allowlist; only allowlisted symbols are polled and tradable.
+// The curated universe (ADR-0006): the scan covers it plus the tradable pairs; only tradable pairs are polled and traded.
 var scanner = builder.Configuration.GetSection(ScannerOptions.SectionName).Get<ScannerOptions>() ?? new ScannerOptions();
-var universe = new MarketUniverse(scanner.EffectiveUniverse, limits.AllowedSymbols);
+var universe = new MarketUniverse(scanner.EffectiveUniverse, tradable);
 
-// Polls quotes and candles for the allowlisted symbols; fails startup if the schedule exceeds the rate limit.
+// Polls quotes and candles for the tradable pairs; fails startup if the schedule for the most there may be exceeds the rate limit.
 builder.Services.AddCixMarketData(
     builder.Configuration.GetSection(MarketDataOptions.SectionName).Get<MarketDataOptions>() ?? new MarketDataOptions(),
-    universe.Tradable);
+    universe,
+    limits.TradableCap);
 
 // The only order path: every placement goes through the risk gate (ApprovedOrder makes skipping it a compile error).
 builder.Services.AddCixExecution(

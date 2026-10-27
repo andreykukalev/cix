@@ -1,6 +1,7 @@
 'use strict';
-// CIX dashboard: reads /api/dashboard, /api/activity, /api/journal, /api/owner/requests and /api/owner/strategies and renders
-// them, and sends paper buy and sell requests (ADR-0011, ADR-0012) and strategy switches (#108, ADR-0015): the only writes,
+// CIX dashboard: reads /api/dashboard, /api/activity, /api/journal, /api/owner/requests, /api/owner/strategies and /api/owner/pairs
+// and renders them, and sends paper buy and sell requests (ADR-0011, ADR-0012), strategy switches (#108, ADR-0015) and pair
+// additions and removals (ADR-0016): the only writes,
 // each one confirmed first. The whole site is the owner's
 // (ADR-0014): the platform sends anyone else to sign in, and the API answers only the confirmed owner.
 // Every value is written with textContent, never as HTML, so journal text can't inject markup. view.js holds the logic.
@@ -9,7 +10,7 @@ const REFRESH_MS = 30_000;
 const POLL_MS = 3_000;
 const POLL_FOR_MS = 15 * 60_000;
 const V = window.CixView;
-const state = { mode: 'paper', lang: 'ru', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null, tab: 'overview', strategies: null };
+const state = { mode: 'paper', lang: 'ru', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null, tab: 'overview', strategies: null, pairs: null };
 const SIGN_IN = '/.auth/login/aad?post_login_redirect_uri=/';
 
 function el(tag, props = {}, ...children) {
@@ -349,6 +350,7 @@ function signedOut() {
   state.pending.clear();
   document.getElementById('request-dialog').close();
   document.getElementById('strategy-dialog').close();
+  document.getElementById('pair-dialog').close();
   for (const node of document.querySelectorAll('main > :not(#banner), .tabs')) node.hidden = true;
   // Back to the same tab after signing in: the hash is one of TABS, set by setTab.
   banner('Your sign-in has ended.', true, { href: `${SIGN_IN}${encodeURIComponent(location.hash)}`, text: 'Sign in again' });
@@ -376,7 +378,7 @@ async function refresh() {
     banner(`Couldn't load the dashboard: ${error.message}`, true);
     document.getElementById('updated').textContent = 'Update failed';
   }
-  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests(), state.tab === 'strategy' ? refreshStrategies() : null]);
+  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests(), state.tab === 'strategy' ? refreshStrategies() : null, state.tab === 'coins' ? refreshPairs() : null]);
 }
 
 // --- Trading activity -------------------------------------------------------------------------------------------------------
@@ -764,6 +766,132 @@ function trackStrategy(item) {
   }, POLL_MS * 2);
 }
 
+// --- Trading pairs (ADR-0016) ------------------------------------------------------------------------------------------------
+
+async function refreshPairs() {
+  if (state.signedOut) return;
+  try {
+    const view = await getJson(`/api/owner/pairs?mode=${encodeURIComponent(state.mode)}`);
+    if (view.mode !== state.mode) return; // the mode changed while this was loading
+    state.pairs = view;
+    renderPairs(view);
+  } catch (error) {
+    if (error instanceof SignedOut) { signedOut(); return; }
+    document.getElementById('pairs-note').textContent = `Couldn't load the trading pairs: ${error.message}`;
+  }
+}
+
+function renderPairs(view) {
+  const busy = !view.editable || state.pairPending;
+  document.getElementById('pairs-meta').textContent = [
+    view.cap ? `${view.tradable.length} of at most ${view.cap}` : `${view.tradable.length} tradable`,
+    view.changedAt ? `changed ${ago(view.changedAt)}` : null,
+  ].filter(Boolean).join(' · ');
+  document.getElementById('pairs-note').textContent = view.readOnlyReason
+    ?? (view.full ? 'The most pairs the safety limits allow are tradable: remove one to add another.'
+      : view.openToAnyPair ? `You can add any ${view.quoteCurrency ?? ''} pair the exchange lists; the engine checks it has enough trading first.`.replace('  ', ' ')
+        : 'You can turn the pairs in config/risk-limits.json off and on again here. Adding other coins needs that list widened first.');
+  document.getElementById('pairs-tradable').replaceChildren(...(view.tradable.length ? view.tradable.map((p) => {
+    const remove = el('button', { type: 'button', class: 'ghost', title: `Stop trading ${p.symbol}`, text: p.pending === 'remove' ? 'removing…' : 'Remove' });
+    remove.disabled = busy || !!p.pending || view.tradable.length <= 1;
+    remove.addEventListener('click', () => openPair('remove', p.symbol));
+    return el('li', {}, el('span', { text: p.symbol }), remove);
+  }) : [el('li', { class: 'muted', text: 'No pairs listed yet.' })]));
+
+  const form = document.getElementById('pairs-add');
+  const choice = document.getElementById('pairs-choice');
+  const options = view.available.filter((p) => !p.pending);
+  form.hidden = !view.editable;
+  choice.replaceChildren(...(options.length
+    ? options.map((p) => el('option', { value: p.symbol, text: p.symbol }))
+    : [el('option', { value: '', text: 'none available' })]));
+  choice.disabled = busy || view.full || !options.length;
+  document.getElementById('pairs-add-button').disabled = choice.disabled;
+
+  rows('pair-requests', view.requests, (r) => [
+    when(r.createdAt), `${r.action === 'remove' ? 'Remove' : 'Add'} ${r.symbol ?? '?'}${r.note ? ` · ${r.note}` : ''}`,
+    el('span', { class: `badge ${{ accepted: 'ok', new: 'pending', invalid: 'bad', rejected: 'bad', expired: 'warn' }[r.status] ?? 'warn'}`, text: r.status }),
+    td(r.detail ?? (r.status === 'new' ? 'waiting for the engine' : ''), 'why'),
+  ], view.editable ? 'No pair changes in the last 7 days.' : 'Live has no pair changes.');
+}
+
+let pairChoice = null;
+
+function openPair(action, symbol) {
+  if (!state.pairs?.editable || !symbol) return;
+  pairChoice = { action, symbol, id: crypto.randomUUID() }; // one id per dialog: a retry is the same request
+  const form = document.getElementById('pair-form');
+  form.reset();
+  for (const input of form.querySelectorAll('input')) input.disabled = false;
+  document.getElementById('pair-title').textContent = `${action === 'remove' ? 'Remove' : 'Add'} ${symbol} (paper)`;
+  document.getElementById('pair-summary').textContent = action === 'remove'
+    ? `The engine stops trading ${symbol}: no new orders, prices no longer polled. It refuses if you still hold ${symbol.split('-')[0]} or have an open order in it.`
+    : `The engine checks that the exchange lists ${symbol} as active and that it traded enough over the last 24 hours, then starts loading its prices. The scanner can signal it once it has a day of hourly candles. Every order in it goes through the same safety limits.`;
+  document.getElementById('pair-send').textContent = action === 'remove' ? 'Remove pair' : 'Add pair';
+  document.getElementById('pair-error').hidden = true;
+  document.getElementById('pair-send').disabled = false;
+  document.getElementById('pair-dialog').showModal();
+}
+
+async function sendPair(event) {
+  event.preventDefault();
+  const form = document.getElementById('pair-form');
+  const body = { id: pairChoice.id, action: pairChoice.action, symbol: pairChoice.symbol, tradingMode: 'paper' };
+  const note = form.elements.note.value.trim();
+  if (note) body.note = note;
+  const error = document.getElementById('pair-error');
+  const send = document.getElementById('pair-send');
+  const label = send.textContent;
+  send.disabled = true;
+  for (const input of form.querySelectorAll('input')) input.disabled = true; // from the first send on, a retry sends the same request
+  send.textContent = 'Sending…';
+  try {
+    const response = await api('/api/owner/pair-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cix-request': '1' },
+      body: JSON.stringify(body),
+    });
+    const answer = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(answer.error ?? `The dashboard answered ${response.status}.`);
+    document.getElementById('pair-dialog').close();
+    trackPair(answer.request);
+  } catch (e) {
+    if (e instanceof SignedOut) { signedOut(); return; }
+    error.textContent = `Not confirmed: ${e.message} Send again to retry: it stays the same, single request.`;
+    error.hidden = false;
+    send.disabled = false;
+  } finally {
+    send.textContent = label;
+  }
+}
+
+/** Follows a pair change until the engine has decided it (it checks requests every 30 seconds). */
+function trackPair(item) {
+  state.pairPending = true;
+  const since = Date.now();
+  const label = `${item.action === 'remove' ? 'Removing' : 'Adding'} ${item.symbol}`;
+  requestStatus(`${label}: sent, waiting for the engine…`, 'pending');
+  refreshPairs();
+  const timer = setInterval(async () => {
+    const stop = (text, tone) => {
+      clearInterval(timer);
+      state.pairPending = false;
+      requestStatus(text, tone);
+      refreshPairs();
+    };
+    if (Date.now() - since > 5 * 60_000) { stop(`${label}: no answer after 5 minutes; see Your pair changes.`, 'warn'); return; }
+    try {
+      const response = await api(`/api/owner/pair-requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}`);
+      if (!response.ok) return; // not readable yet, or offline for a moment
+      const it = await response.json();
+      if (it.status === 'new') return;
+      stop(`${label}: ${it.status}. ${it.detail ?? ''}`.trim(), it.status === 'accepted' ? 'ok' : 'bad');
+    } catch (error) {
+      if (error instanceof SignedOut) { clearInterval(timer); signedOut(); }
+    }
+  }, POLL_MS * 2);
+}
+
 async function showJournalDay(day, kind) {
   try {
     const entries = await getJson(`/api/journal?day=${encodeURIComponent(day)}&kind=${encodeURIComponent(kind)}&limit=200`);
@@ -793,6 +921,7 @@ function setTab(tab, { focus = false } = {}) {
   const changed = state.tab !== name;
   state.tab = name;
   if (changed && name === 'strategy') refreshStrategies(); // read only while the tab is open
+  if (changed && name === 'coins') refreshPairs();
 }
 
 function setupTabs() {
@@ -827,6 +956,7 @@ function setLang(lang) {
 function setMode(mode) {
   state.mode = mode;
   state.strategies = null;
+  state.pairs = null;
   try { localStorage.setItem('cix-mode', mode); } catch { /* storage may be unavailable */ }
   for (const button of document.querySelectorAll('[data-mode]')) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
   const badge = document.getElementById('mode-badge');
@@ -869,6 +999,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('request-cancel').addEventListener('click', () => document.getElementById('request-dialog').close());
   document.getElementById('strategy-form').addEventListener('submit', sendStrategy);
   document.getElementById('strategy-cancel').addEventListener('click', () => document.getElementById('strategy-dialog').close());
+  document.getElementById('pairs-add').addEventListener('submit', (event) => {
+    event.preventDefault();
+    openPair('add', document.getElementById('pairs-choice').value);
+  });
+  document.getElementById('pair-form').addEventListener('submit', sendPair);
+  document.getElementById('pair-cancel').addEventListener('click', () => document.getElementById('pair-dialog').close());
   await loadViewer();
   setMode(saved);
   state.timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);

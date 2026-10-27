@@ -1,7 +1,13 @@
 namespace Cix.Domain.Risk;
 
 /// <summary>Configured risk limits. Validated against <see cref="HardCeilings"/> at startup.</summary>
-public sealed record RiskLimits(
+/// <param name="AllowedSymbols">Symbols that are always permitted, and tradable until the owner changes the list at run time.</param>
+/// <param name="AllowedQuoteCurrency">
+/// When set, the owner may also add any pair quoted in this currency at run time (see <see cref="TradableSymbols"/>), up to
+/// <paramref name="MaxTradableSymbols"/> pairs in all. When null, only <paramref name="AllowedSymbols"/> are permitted.
+/// </param>
+/// <param name="MaxTradableSymbols">The most pairs tradable at once when <paramref name="AllowedQuoteCurrency"/> is set; 0 otherwise.</param>
+public sealed partial record RiskLimits(
     decimal AllocationQuote,
     decimal MaxOrderQuote,
     decimal MaxPositionQuotePerSymbol,
@@ -9,8 +15,34 @@ public sealed record RiskLimits(
     decimal MaxDrawdownFraction,
     int MaxOrdersPerMinute,
     decimal MaxPriceDeviationFraction,
-    IReadOnlySet<string> AllowedSymbols)
+    IReadOnlySet<string> AllowedSymbols,
+    string? AllowedQuoteCurrency = null,
+    int MaxTradableSymbols = 0)
 {
+    /// <summary>The most pairs a run-time list may hold.</summary>
+    public const int MaxTradableSymbolsLimit = 20;
+
+    /// <summary>How many pairs may be tradable at once.</summary>
+    public int TradableCap => AllowedQuoteCurrency is null ? AllowedSymbols.Count : MaxTradableSymbols;
+
+    /// <summary>
+    /// Whether <paramref name="symbol"/> (upper-case <c>BASE-QUOTE</c>) may ever be traded under these limits: it is in
+    /// <see cref="AllowedSymbols"/>, or a pair in <see cref="AllowedQuoteCurrency"/> when that is set.
+    /// </summary>
+    public bool Permits(string symbol)
+    {
+        ArgumentNullException.ThrowIfNull(symbol);
+        if (AllowedSymbols.Contains(symbol))
+            return true;
+        if (AllowedQuoteCurrency is null)
+            return false;
+        var match = SymbolFormat().Match(symbol);
+        return match.Success && string.Equals(match.Groups[2].Value, AllowedQuoteCurrency, StringComparison.Ordinal);
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex("^([A-Z0-9]{1,20})-([A-Z]{3,5})$")]
+    private static partial System.Text.RegularExpressions.Regex SymbolFormat();
+
     /// <summary>Returns the problems with these limits; empty when valid.</summary>
     public IReadOnlyList<string> Validate()
     {
@@ -32,7 +64,24 @@ public sealed record RiskLimits(
             errors.Add($"MaxPriceDeviationFraction must be in (0, {HardCeilings.MaxPriceDeviationFraction}].");
         if (AllowedSymbols.Count == 0)
             errors.Add("AllowedSymbols must not be empty.");
+        if (AllowedQuoteCurrency is null)
+        {
+            if (MaxTradableSymbols != 0)
+                errors.Add("MaxTradableSymbols needs AllowedQuoteCurrency.");
+        }
+        else
+        {
+            if (!QuoteFormat().IsMatch(AllowedQuoteCurrency))
+                errors.Add("AllowedQuoteCurrency must be 3 to 5 upper-case letters, for example EUR.");
+            else if (AllowedSymbols.Any(s => !s.EndsWith("-" + AllowedQuoteCurrency, StringComparison.Ordinal)))
+                errors.Add("AllowedSymbols must all be quoted in AllowedQuoteCurrency.");
+            if (MaxTradableSymbols < AllowedSymbols.Count || MaxTradableSymbols > MaxTradableSymbolsLimit)
+                errors.Add($"MaxTradableSymbols must be in [the number of AllowedSymbols, {MaxTradableSymbolsLimit}].");
+        }
 
         return errors;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex("^[A-Z]{3,5}$")]
+    private static partial System.Text.RegularExpressions.Regex QuoteFormat();
 }

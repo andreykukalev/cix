@@ -26,5 +26,5 @@ v1 traded BTC-EUR and ETH-EUR from an hourly LLM run that mostly concluded "do n
 ## Consequences
 
 - Strategy specs gain scanner parameters (filters, weights, costs, sizing) next to the agent instructions.
-- Adding a symbol needs two steps: the universe list (configuration) and the risk allowlist (owner-only).
+- Adding a symbol needs two steps: the universe list (configuration) and the risk allowlist (owner-only). Amended 2026-10-27 (ADR-0016): with `AllowedQuoteCurrency` and `MaxTradableSymbols` in the owner-only limits, the owner adds tradable pairs from the dashboard; added pairs are scanned whether or not the universe lists them.
 - The scanner's signals are journaled, so a report can compare signals taken and not taken.

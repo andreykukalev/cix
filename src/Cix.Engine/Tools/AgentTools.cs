@@ -20,8 +20,12 @@ public sealed class AgentTools(
     ExecutionService execution,
     KillSwitch killSwitch,
     RiskLimits limits,
-    IJournal journal)
+    IJournal journal,
+    TradableSymbols? tradable = null)
 {
+    /// <summary>The pairs tradable now (the owner can change them from the dashboard).</summary>
+    private IReadOnlySet<string> Tradable => tradable?.Current ?? limits.AllowedSymbols;
+
     /// <summary>How far back get_position_plans looks for the buy behind a position.</summary>
     public const int PlanLookbackDays = PositionPlans.LookbackDays;
 
@@ -30,7 +34,7 @@ public sealed class AgentTools(
     public async Task<string> GetMarketView(CancellationToken cancellationToken)
     {
         await context.RequireAllowedAsync("get_market_view", cancellationToken).ConfigureAwait(false);
-        var view = limits.AllowedSymbols.Order(StringComparer.Ordinal).Select(features.GetFeatures).ToList();
+        var view = Tradable.Order(StringComparer.Ordinal).Select(features.GetFeatures).ToList();
         await context.JournalAsync("get_market_view", $"{view.Count} symbols", null, cancellationToken).ConfigureAwait(false);
         return ToolJson.Of(view);
     }
@@ -42,7 +46,7 @@ public sealed class AgentTools(
         CancellationToken cancellationToken)
     {
         await context.RequireAllowedAsync("get_features", cancellationToken).ConfigureAwait(false);
-        var normalised = ToolJson.Symbol(symbol, limits.AllowedSymbols);
+        var normalised = ToolJson.Symbol(symbol, Tradable);
         var result = features.GetFeatures(normalised);
         await context.JournalAsync("get_features", normalised, new Dictionary<string, string> { ["symbol"] = normalised }, cancellationToken).ConfigureAwait(false);
         return ToolJson.Of(result);
@@ -77,7 +81,7 @@ public sealed class AgentTools(
                 limits.MaxDrawdownFraction,
                 limits.MaxOrdersPerMinute,
                 limits.MaxPriceDeviationFraction,
-                allowedSymbols = limits.AllowedSymbols.Order(StringComparer.Ordinal),
+                allowedSymbols = Tradable.Order(StringComparer.Ordinal),
             },
         };
         await context.JournalAsync("get_portfolio", snapshot is null ? "unavailable" : $"equity {snapshot.Equity:0.##}", null, cancellationToken).ConfigureAwait(false);
