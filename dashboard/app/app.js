@@ -9,7 +9,7 @@ const REFRESH_MS = 30_000;
 const POLL_MS = 3_000;
 const POLL_FOR_MS = 15 * 60_000;
 const V = window.CixView;
-const state = { mode: 'paper', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null, tab: 'overview', strategies: null };
+const state = { mode: 'paper', lang: 'ru', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null, tab: 'overview', strategies: null };
 const SIGN_IN = '/.auth/login/aad?post_login_redirect_uri=/';
 
 function el(tag, props = {}, ...children) {
@@ -92,6 +92,15 @@ function td(content, cls) {
   return el('td', { class: cls }, content);
 }
 
+/**
+ * Text that comes in English and maybe Russian, in the content language (V.pick), as a span marked with its language.
+ * Text the dashboard has no Russian for is shown in English.
+ */
+function says(en, ru, cls) {
+  const p = V.pick(en, ru, state.lang);
+  return el('span', { class: cls, lang: p.lang, text: p.text ?? '' });
+}
+
 function tile(id, tone, value, sub) {
   const node = document.getElementById(id);
   node.className = `tile ${tone ?? ''}`;
@@ -130,7 +139,7 @@ function renderTiles(view) {
   const syncAge = ms(s.exchange) === null ? null : (Date.now() - ms(s.exchange)) / 1000;
   tile('tile-sync', s.reconcileProblem ? 'bad' : syncAge === null ? 'warn' : syncAge > 600 ? 'warn' : 'ok',
     s.exchange ? ago(s.exchange) : '–',
-    [s.reconcileProblem ?? 'portfolio with the exchange', s.database ? ` · database ${ago(s.database)}` : '']);
+    [s.reconcileProblem ? says(s.reconcileProblem, s.reconcileProblemRu) : 'portfolio with the exchange', s.database ? ` · database ${ago(s.database)}` : '']);
 }
 
 function renderPortfolio(view) {
@@ -180,7 +189,7 @@ function renderTables(view) {
     el('span', { class: `badge ${{ placed: 'ok', rejected: 'bad', failed: 'bad', uncertain: 'warn' }[d.status] ?? ''}`, text: d.status ?? '–' }),
     td(why(d), 'why'),
   ], 'No decisions in the last 48 hours.');
-  rows('problems', view.problems, (p) => [when(p.at), p.source, p.kind, td(p.message, 'why')], 'Nothing went wrong in the last 48 hours.');
+  rows('problems', view.problems, (p) => [when(p.at), p.source, p.kind, td(says(p.message, p.messageRu), 'why')], 'Nothing went wrong in the last 48 hours.');
   if (!state.journal) renderActivity(view.activity, 'No journal entries in the last 48 hours.');
   rows('state', view.stateDocuments, (s) => [el('span', { class: 'mono', text: s.id }), s.type ?? '–', when(s.updatedAt), td(s.about ?? '', 'why')],
     'No state documents.');
@@ -188,14 +197,15 @@ function renderTables(view) {
 
 /** The reason first, then the evidence, the risk plan and what happened; the technical text folded away under it. */
 function why(d) {
-  const x = d.explanation;
+  const ru = state.lang === 'ru' && d.explanationRu;
+  const x = ru ? d.explanationRu : d.explanation;
   if (!x) return d.rationale ?? d.summary ?? '';
-  const wrap = el('div', { class: 'explain' },
+  const wrap = el('div', { class: 'explain', lang: ru ? 'ru' : 'en' },
     el('p', { class: 'headline', text: x.headline }),
     x.points?.length ? el('ul', { class: 'points' }, x.points.map((p) => el('li', { text: p }))) : null,
     x.risk ? el('p', { class: 'risk', text: x.risk.text }) : null,
     x.outcome ? el('p', { class: 'outcome', text: x.outcome }) : null);
-  if (x.raw) wrap.append(el('details', { class: 'raw' }, el('summary', { text: 'Technical' }), el('p', { class: 'mono', text: x.raw })));
+  if (x.raw) wrap.append(el('details', { class: 'raw', lang: 'en' }, el('summary', { text: 'Technical' }), el('p', { class: 'mono', text: x.raw })));
   return wrap;
 }
 
@@ -229,7 +239,7 @@ function renderBriefing(view) {
   const summary = document.getElementById('analyst-summary');
   summary.replaceChildren(...(a ? [
     el('span', { class: `badge ${a.regime === 'risk-off' ? 'warn' : a.regime === 'risk-on' ? 'ok' : ''}`, text: a.regime ?? 'unknown' }), ' ',
-    a.summary ?? '',
+    says(a.summary ?? '', a.summaryRu),
     a.avoid?.length && a.active ? el('span', {}, ' Avoid: ', ...chips(a.avoid)) : null,
   ].filter((n) => n !== null) : ['The analyst has not recorded a view in the last 24 hours.']));
 
@@ -239,9 +249,9 @@ function renderBriefing(view) {
       el('div', { class: 'head' },
         el('span', { class: `badge ${DIRECTION_TONE[h.direction] ?? ''}`, text: DIRECTION_LABEL[h.direction] ?? h.direction }),
         el('span', { class: 'badge', text: `${h.impact} impact` }),
-        el('span', { class: 'title', text: h.title }),
+        says(h.title, h.titleRu, 'title'),
         ...chips(h.symbols)),
-      h.detail ? el('p', { class: 'detail', text: h.detail }) : null,
+      h.detail || h.detailRu ? el('p', { class: 'detail' }, says(h.detail, h.detailRu)) : null,
       el('p', { class: 'meta' }, sourceLink(h.source, h.sourceHost))))
     : [el('li', { class: 'muted', text: a ? 'No major news or events flagged.' : '' })]));
 
@@ -253,7 +263,7 @@ function renderBriefing(view) {
         el('span', { class: 'chip', text: item.symbol }),
         item.held ? el('span', { class: 'badge', text: 'held' }) : null,
         el('span', { class: 'muted small', text: `${SEVERITY_LABEL[item.severity] ?? ''} priority` })),
-      el('ul', { class: 'reasons' }, item.reasons.map((r) => el('li', { text: r })))))
+      el('ul', { class: 'reasons' }, item.reasons.map((r, i) => el('li', {}, says(r, item.reasonsRu?.[i]))))))
     : [el('li', { class: 'muted', text: b.market?.length ? 'Nothing unusual in the latest scan.' : 'No scan yet.' })]));
 
 }
@@ -801,6 +811,18 @@ function setupTabs() {
   setTab(location.hash.slice(1));
 }
 
+/** The language of the financial content (summaries, news, explanations); the page itself stays in English. */
+function setLang(lang) {
+  state.lang = V.contentLang(lang);
+  try { localStorage.setItem('cix-lang', state.lang); } catch { /* storage may be unavailable */ }
+  for (const button of document.querySelectorAll('[data-lang]')) button.setAttribute('aria-pressed', String(button.dataset.lang === state.lang));
+  if (state.view) {
+    renderTiles(state.view);
+    renderBriefing(state.view);
+    renderTables(state.view);
+  }
+}
+
 function setMode(mode) {
   state.mode = mode;
   state.strategies = null;
@@ -816,6 +838,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   let saved = 'paper';
   try { saved = localStorage.getItem('cix-mode') === 'live' ? 'live' : 'paper'; } catch { /* default */ }
   for (const button of document.querySelectorAll('[data-mode]')) button.addEventListener('click', () => setMode(button.dataset.mode));
+  let lang = null;
+  try { lang = localStorage.getItem('cix-lang'); } catch { /* default */ }
+  for (const button of document.querySelectorAll('[data-lang]')) button.addEventListener('click', () => setLang(button.dataset.lang));
+  setLang(lang);
   document.getElementById('refresh').addEventListener('click', refresh);
   const dayInput = document.getElementById('journal-day');
   dayInput.value = new Date().toISOString().slice(0, 10);

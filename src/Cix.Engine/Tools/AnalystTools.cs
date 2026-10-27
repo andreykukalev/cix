@@ -16,7 +16,9 @@ public sealed record MarketHighlight(
     [property: Description("risk (could hurt positions), opportunity (could favour entries) or watch (worth following).")] string Direction,
     [property: Description("The https link this comes from; it must also be in the view's sources.")] string Source,
     [property: Description("Affected symbols from the brief's `symbols`, if any.")] string[]? Symbols = null,
-    [property: Description("Why it matters, in one sentence of at most 300 characters.")] string? Detail = null);
+    [property: Description("Why it matters, in one sentence of at most 300 characters.")] string? Detail = null,
+    [property: Description("The title in Russian for the owner, 10 to 200 characters; keep names, tickers, abbreviations and trading terms in English.")] string? TitleRu = null,
+    [property: Description("The detail in Russian for the owner, at most 400 characters; keep names, tickers, abbreviations and trading terms in English.")] string? DetailRu = null);
 
 /// <summary>
 /// Tools for the market analyst (#25). They are gated by the analyst's spec, not the trading spec. The analyst can read the
@@ -37,6 +39,7 @@ public sealed class AnalystTools(
     public const int MaxValidHours = 12;
     public const int MaxSources = 10;
     public const int MaxHighlights = 5;
+    public const int MaxSummaryRu = 1500;
 
     private static readonly System.Text.Json.JsonSerializerOptions HighlightJson = new(System.Text.Json.JsonSerializerDefaults.Web);
 
@@ -65,27 +68,49 @@ public sealed class AnalystTools(
     /// Checks the highlights and returns the valid ones, cleaned, as stored in the journal (camelCase JSON), plus a fixed
     /// reason code for each one dropped (input is never echoed). A bad highlight is dropped rather than refusing the
     /// view, so dashboard decoration can never block a protective view. Each needs a source that is also among the
-    /// view's <paramref name="sources"/>, and its symbols must be tradable.
+    /// view's <paramref name="sources"/>, and its symbols must be tradable. A Russian title or detail that doesn't fit is
+    /// left out on its own (the dashboard then shows the English) and listed in TranslationsDropped.
     /// </summary>
-    public static (IReadOnlyList<MarketHighlight> Kept, IReadOnlyList<string> Dropped) CleanHighlights(
+    public static (IReadOnlyList<MarketHighlight> Kept, IReadOnlyList<string> Dropped, IReadOnlyList<string> TranslationsDropped) CleanHighlights(
         IReadOnlyList<MarketHighlight>? highlights, IReadOnlyCollection<string> sources, MarketUniverse universe)
     {
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(universe);
         var kept = new List<MarketHighlight>();
         var dropped = new List<string>();
+        var translationsDropped = new List<string>();
         foreach (var (h, i) in (highlights ?? []).Select((h, i) => (h, i)))
         {
             var reason = Check(h, sources, universe, out var clean);
             if (reason is null && kept.Count >= MaxHighlights)
                 reason = "too-many";
             if (reason is null)
-                kept.Add(clean!);
+                kept.Add(WithRussian(clean!, h!, i, translationsDropped));
             else
                 dropped.Add($"{i}:{reason}");
         }
 
-        return (kept, dropped);
+        return (kept, dropped, translationsDropped);
+    }
+
+    /// <summary>The highlight with its Russian title and detail, cleaned, each left out when it doesn't fit.</summary>
+    private static MarketHighlight WithRussian(MarketHighlight clean, MarketHighlight raw, int index, List<string> dropped)
+    {
+        var titleRu = Clean(raw.TitleRu);
+        var detailRu = Clean(raw.DetailRu);
+        if (titleRu.Length > 0 && titleRu.Length is < 10 or > 200)
+        {
+            dropped.Add($"{index}:title-ru-length");
+            titleRu = string.Empty;
+        }
+
+        if (detailRu.Length > 400)
+        {
+            dropped.Add($"{index}:detail-ru-length");
+            detailRu = string.Empty;
+        }
+
+        return clean with { TitleRu = titleRu.Length == 0 ? null : titleRu, DetailRu = detailRu.Length == 0 ? null : detailRu };
     }
 
     private static string? Check(MarketHighlight? h, IReadOnlyCollection<string> sources, MarketUniverse universe, out MarketHighlight? clean)
@@ -167,7 +192,9 @@ public sealed class AnalystTools(
         + "avoidSymbols get no new entries for the same time. summary: your reasoning for the owner (never shown to the trader). "
         + "sources: the https links you relied on. The view expires after validHours (1-12); an expired view means neutral. "
         + "highlights: up to 5 of the most important news items or market events for the owner's dashboard, each with a source that "
-        + "is also in sources (they don't change what the trader may do; invalid ones are dropped and listed in highlightsDropped).")]
+        + "is also in sources (they don't change what the trader may do; invalid ones are dropped and listed in highlightsDropped). "
+        + "summaryRu, and titleRu and detailRu in each highlight: the same in Russian for the owner, with names, tickers, abbreviations "
+        + "and trading terms kept in English (dashboard only; one that doesn't fit is left out and listed in translationsDropped).")]
     public async Task<string> RecordMarketView(
         [Description("risk-on, neutral or risk-off.")] string regime,
         [Description("Your reasoning in 20 to 1000 characters, for the owner's review.")] string summary,
@@ -175,6 +202,7 @@ public sealed class AnalystTools(
         [Description("Hours the view stays in force, 1 to 12.")] int validHours = 6,
         [Description("Symbols from the brief's `symbols` to keep out of new entries, for example after a hack or before a large unlock.")] string[]? avoidSymbols = null,
         [Description("Up to 5 of the most important items for the owner, most important first; leave out routine news.")] MarketHighlight[]? highlights = null,
+        [Description("The summary in Russian for the owner, 20 to 1500 characters; names, tickers, abbreviations and trading terms stay in English.")] string? summaryRu = null,
         CancellationToken cancellationToken = default)
     {
         await context.RequireAllowedAsync("record_market_view", cancellationToken).ConfigureAwait(false);
@@ -201,7 +229,15 @@ public sealed class AnalystTools(
         if (badSource || cleanSources.Count < minSources || cleanSources.Count > MaxSources)
             throw new McpException($"sources must be up to {MaxSources} https links of at most 300 characters, and at least one for risk-off or avoidSymbols.");
 
-        var (cleanHighlights, droppedHighlights) = CleanHighlights(highlights, cleanSources, universe);
+        var (cleanHighlights, droppedHighlights, droppedTranslations) = CleanHighlights(highlights, cleanSources, universe);
+        var translationsDropped = droppedTranslations.ToList();
+        var cleanSummaryRu = Clean(summaryRu);
+        if (cleanSummaryRu.Length > 0 && cleanSummaryRu.Length is < 20 or > MaxSummaryRu)
+        {
+            translationsDropped.Insert(0, "summary-ru-length"); // a translation never blocks the view
+            cleanSummaryRu = string.Empty;
+        }
+
         var avoid = new List<string>();
         foreach (var raw in avoidSymbols ?? [])
         {
@@ -220,6 +256,8 @@ public sealed class AnalystTools(
         data["analystSpec"] = spec.Label;
         if (cleanHighlights.Count > 0)
             data["highlights"] = System.Text.Json.JsonSerializer.Serialize(cleanHighlights, HighlightJson); // for the owner's dashboard only
+        if (cleanSummaryRu.Length > 0)
+            data["summaryRu"] = cleanSummaryRu; // for the owner's dashboard only
         var entry = new JournalEntry(
             JournalIds.New(now, MarketViewStore.Kind), now, MarketViewStore.Kind, context.Agent, context.RunId, spec.Label, cleanSummary, data);
         await views.RecordAsync(view, entry, cancellationToken).ConfigureAwait(false);
@@ -233,6 +271,7 @@ public sealed class AnalystTools(
             avoid,
             highlights = cleanHighlights.Count,
             highlightsDropped = droppedHighlights, // "index:reason"; fix and record again only if they matter
+            translationsDropped, // "summary-ru-length" or "index:title-ru-length"; the dashboard shows the English instead
             riskOffHours = riskOffFor is { } d ? Math.Round(d.TotalHours, 1) : (double?)null,
             effect = parsed == MarketRegime.RiskOff
                 ? "No new entries until validUntil; exits continue."

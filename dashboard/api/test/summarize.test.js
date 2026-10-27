@@ -88,6 +88,11 @@ test('works with nothing but read errors', () => {
 test('reconcile problems are shown as plain sentences', () => {
   const view = summarize({ mode: 'paper', status: { ...status, lastReconcileProblem: 'unknown-open-orders' }, journal: [], stateDocs: [] }, NOW);
   assert.match(view.sync.reconcileProblem, /open orders the engine didn't send/);
+  assert.equal(view.sync.reconcileProblemRu, 'На бирже есть открытые ордера, которые engine не отправлял.');
+  assert.equal(view.problems.find((p) => p.kind === 'reconcile').messageRu, view.sync.reconcileProblemRu);
+  const odd = summarize({ mode: 'paper', status: { ...status, lastReconcileProblem: 'toString' }, journal: [], stateDocs: [] }, NOW);
+  assert.equal(odd.sync.reconcileProblemRu, null, 'an unknown code has no Russian; the page shows the code');
+  assert.equal(odd.sync.reconcileProblem, 'toString');
 });
 
 test('the engine section says whether owner requests are taken; a direct sell shows the owner\'s note', () => {
