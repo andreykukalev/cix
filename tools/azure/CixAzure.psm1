@@ -119,8 +119,8 @@ function Assert-CixAgentSettings {
   if ($a.ContainsKey('claudeTokenExpires') -and $a.claudeTokenExpires -and "$($a.claudeTokenExpires)" -notmatch '^\d{4}-\d{2}-\d{2}$') {
     throw "${Path}: agents.claudeTokenExpires must be a date (YYYY-MM-DD) or empty."
   }
-  # The templates deploy a paper engine only. The live engine gets its own resource group, Key Vault and template.
-  if ($Settings.protected -and $a.deploy -ne 'none') { throw "${Path}: agents.deploy must stay none in a protected (live-money) environment; the live engine gets its own setup (docs/research/azure-hosting.md)." }
+  # A protected environment's engine is pinned to paper too, and stands by holding the exchange keys until the owner switches it
+  # (ADR-0017); CI never deploys there (setup-ci-deploy.ps1 refuses it).
 }
 
 function Read-CixSharedSettings {
@@ -552,10 +552,34 @@ function Remove-CixVaultSecretAndAccess {
 
 function Set-CixVaultSecretFromFile {
   <# Stores a file's content as a secret. The value goes from the file to az directly: never through a variable or argument. #>
-  param([Parameter(Mandatory)][string]$Vault, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Path)
+  param([Parameter(Mandatory)][string]$Vault, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Path,
+    [string]$ContentType = 'Claude setup token or API key')
   Invoke-CixAz -Quiet @('keyvault', 'secret', 'set', '--vault-name', $Vault, '--name', $Name, '--file', $Path, '--encoding', 'utf-8',
-    '--content-type', 'Claude setup token or API key', '--query', 'name', '-o', 'tsv') | Out-Null
+    '--content-type', $ContentType, '--query', 'name', '-o', 'tsv') | Out-Null
 }
+
+function Get-CixServicePrincipalAccess {
+  <#
+    Role assignments of service principals and managed identities on CIX's resource group, including those inherited from
+    the subscription: in a protected environment there should be none but its own identities' (ADR-0017), and above all no CI
+    identity's. Returns 'role: principal' lines; empty when the group doesn't exist yet. Names and IDs only.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings)
+  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return @() }
+  $all = @(Invoke-CixAz @('role', 'assignment', 'list', '--resource-group', $Settings.resourceGroup, '--include-inherited', '-o', 'json') | ConvertFrom-CixJson)
+  # On the group itself or above it: the environment's own identities hold roles on single resources inside it, which is fine.
+  $inside = "/resourceGroups/$($Settings.resourceGroup)/providers/"
+  return @($all | Where-Object {
+      $_ -and $_.PSObject.Properties['principalType'] -and "$($_.principalType)" -eq 'ServicePrincipal' -and
+      $_.PSObject.Properties['scope'] -and "$($_.scope)".IndexOf($inside, [StringComparison]::OrdinalIgnoreCase) -lt 0 } |
+    ForEach-Object { "$($_.roleDefinitionName): $($_.principalName)" } | Sort-Object -Unique)
+}
+
+# The exchange keys of a protected environment's engine: the Key Vault secret, and what provision.ps1 calls the file it reads.
+$script:ExchangeKeySecrets = @(
+  @{ Name = 'revolutx-api-key'; Parameter = 'ExchangeApiKeyFile' },
+  @{ Name = 'revolutx-private-key'; Parameter = 'ExchangePrivateKeyFile' })
+function Get-CixExchangeKeySecrets { $script:ExchangeKeySecrets }
 
 function Get-CixEngineAudience {
   <#

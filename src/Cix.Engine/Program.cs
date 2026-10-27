@@ -19,9 +19,18 @@ var builder = WebApplication.CreateBuilder(args);
 // read, which can't set it, because the mode decides which of them may be.
 var mode = TradingModeResolver.Resolve(builder.Configuration, builder.Environment.EnvironmentName);
 
+// A Paper engine holds no trading credentials. If the Revolut X keys are among its secret files, as in the live environment until
+// the owner switches its engine to Live (docs/live-trading.md), it stands by: it answers /healthz and runs nothing else.
+var secretsDirectory = builder.Configuration["SecretsDirectory"] ?? SecretFiles.DefaultDirectory;
+if (mode == TradingMode.Paper && SecretFiles.LiveOnlyPresent(secretsDirectory) is { Count: > 0 } held)
+{
+    await StandbyHost.RunAsync(builder, held);
+    return;
+}
+
 // Docker secrets (files under /run/secrets) for the few settings that are secrets; anything else there is ignored. The Revolut X
-// keys are read in Live mode only; a Paper engine with them there refuses to start.
-builder.Configuration.AddCixSecretFiles(builder.Configuration["SecretsDirectory"] ?? SecretFiles.DefaultDirectory, mode);
+// keys are read in Live mode only.
+builder.Configuration.AddCixSecretFiles(secretsDirectory, mode);
 
 // Human-only file for this mode, copied next to the binary (see CLAUDE.md rule 3): risk-limits.json for paper, risk-limits.live.json
 // for live. Read on its own: no environment variable, command line or other settings file can add to the limits or loosen them.

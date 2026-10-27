@@ -171,7 +171,7 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 - **Control of the account is shared.** Anyone with a role on the account or `rg-shared` can list its keys, change its firewall, or delete it, along with every project's database. Keep those roles to the owner alone. A `CanNotDelete` lock on the account (free) guards against a mistaken delete; it is not set yet.
 - **Throughput is shared within the free tier's 1000 RU/s.** Each database has its own throughput, so another project can't throttle live. But a live database at 400 RU/s next to paper's 400 leaves 200 for everything else, and going past 1000 is billed.
 - **Backup is the account's.** It uses the account's periodic backups, which only Azure support can restore (into a new account), on the account's schedule and retention. Live's own history is its journal.
-- **`provision.ps1` still refuses a protected environment in the shared account** unless it is given `-AllowProtectedInSharedAccount`. The live template work replaces that refusal with checks for the above: no CI or agent role on `rg-cix-live`, the live engine on its identity, and the key rotated.
+- **`provision.ps1` no longer refuses a protected environment in the shared account** (ADR-0017). It warns that the account's keys reach the live database, and lists any service principal with a role on `rg-cix-live` or above it before deploying. The live engine signs in with its own identity. Rotating the account's read-write key before live money is still the owner's step (Cutover, step 5).
 
 ## Still open
 

@@ -8,7 +8,7 @@ namespace Cix.Engine;
 /// <c>ToolServer__OperatorKey</c> sets <c>ToolServer:OperatorKey</c>. Only the names in <see cref="Allowed"/> are read, so a stray
 /// file can't switch the trading mode, a risk limit or an endpoint. The Revolut X keys (<see cref="LiveOnly"/>) are read in
 /// Live mode only, and a Paper engine refuses to start if they are there at all, so paper keeps holding no trading
-/// credentials (#68).
+/// credentials (#68). The engine itself checks first and stands by instead (<see cref="StandbyHost"/>).
 /// </summary>
 public static class SecretFiles
 {
@@ -27,6 +27,17 @@ public static class SecretFiles
         "RevolutX__PrivateKeyPem",
     };
 
+    /// <summary>
+    /// Which of the Revolut X key files (<see cref="LiveOnly"/>) are in <paramref name="directory"/>, by name. Their contents are
+    /// never read. Empty when the directory isn't there (or isn't a full path).
+    /// </summary>
+    public static IReadOnlyList<string> LiveOnlyPresent(string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Path.IsPathFullyQualified(directory) || !Directory.Exists(directory))
+            return [];
+        return LiveOnly.Where(name => File.Exists(Path.Combine(directory, name))).Order(StringComparer.Ordinal).ToList();
+    }
+
     public static IConfigurationBuilder AddCixSecretFiles(this IConfigurationBuilder configuration, string directory, TradingMode mode)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -36,7 +47,7 @@ public static class SecretFiles
         if (mode != TradingMode.Live)
         {
             // Names only: the message never carries a file's contents.
-            var present = LiveOnly.Where(name => File.Exists(Path.Combine(directory, name))).ToList();
+            var present = LiveOnlyPresent(directory);
             if (present.Count > 0)
             {
                 throw new InvalidOperationException(

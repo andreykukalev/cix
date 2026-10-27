@@ -80,7 +80,7 @@ Two settings files, both ready to use:
 | `deployDashboard` | Create the Static Web App |
 | `agents` | The engine and the agent jobs in Azure (ADR-0013). `deploy`: `none` (the default), `platform` or `apps`, see [Engine and agents in Azure](#engine-and-agents-in-azure). `location`: their region, where the database is (`polandcentral`). `startEngine` stays `false` until the cutover. `traderModel`, `analystModel`, `claudeTokenExpires` as in Compose. `monthlyBudget` (40) and `budgetStartDate` set the resource group's monthly budget; the start date can't be moved once the budget exists |
 
-No secrets go in these files. `prod.example.json` shows a protected environment, with its own database name.
+No secrets go in these files. `prod.json` is the protected (live-money) environment: `rg-cix-live`, its own database `cix-live`, no dashboard, and an engine that holds the exchange keys and stands by until the owner switches it ([live-trading.md](live-trading.md), ADR-0017).
 
 ## 2. Provision
 
@@ -177,7 +177,7 @@ If you suspect misuse:
 
 **To stop the engine in an emergency,** deactivate its revision (portal: the engine app, *Revisions*, *Deactivate*). CI then leaves it stopped. Remove `AGENTS_AZURE_CLIENT_ID` too if you don't want any image pushed meanwhile.
 
-The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode, `Production` or an exchange setting. A protected environment must keep `agents.deploy` at `none`; the template deploys no agents there whatever the parameters say.
+The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode or `Production`, or names the exchange outside the two key files. Those are mounted in a protected environment's engine only, which then stands by in paper until the owner switches it from their own sign-in ([live-trading.md](live-trading.md), ADR-0017). CI never deploys a protected environment.
 
 ## 3. Switch the engine to Azure
 
@@ -346,7 +346,7 @@ The local emulator is reset differently: `docker compose down -v` removes its vo
 ## Limits
 
 - **One free-tier account per subscription** (see costs), which is why it is shared.
-- **A live (protected) environment doesn't belong in the shared account while keys are account-wide**: `provision.ps1` refuses one there unless you pass `-AllowProtectedInSharedAccount`. Revisit ADR-0009 first.
+- **The live (protected) environment's database is in the shared account too** (owner decision 5, 2026-10-26), so the account's keys reach it. `provision.ps1` says so when it deploys `prod`, and checks that no service principal holds a role on its group. What risk remains is in [azure-hosting.md](research/azure-hosting.md).
 - **The shared account's keys reach every project's database in it.** CIX's key (and the dashboard's read-only key) could read, and CIX's key write, other projects' data, and theirs CIX's. Acceptable while every project is yours and on paper or test data. Per-project access would need Cosmos DB role-based access with an Entra identity per project ([ADR-0009](adr/0009-shared-cosmos-account.md)).
 - **Other projects** add their own database to the shared account from their own templates (as `infra/modules/cosmos-database.bicep` does), with `existing` references to the account, and must keep the total throughput within 1000 RU/s to stay free.
 - **No managed identity.** Static Web Apps managed functions can't use one, so the dashboard holds the read-only key in its settings. A separate Function App on the Consumption plan could use a managed identity if that ever matters.

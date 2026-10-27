@@ -1,0 +1,30 @@
+{
+  "$comment": "Settings for the 'prod' environment: real money on Revolut X (epic #72, ADR-0017), next to dev's paper. Read by tools/azure/*.ps1; no secrets here. protected: true keeps CI, the dashboard's requests and reset-database.ps1 out, mounts the exchange keys in the engine (which stands by in paper until the owner switches it), and makes provision.ps1 check that no service principal holds a role on the group. Its database is its own, in the shared account (owner decision 5). Runbook: docs/live-trading.md.",
+  "environmentName": "prod",
+  "protected": true,
+  "subscriptionId": "",
+  "resourceGroup": "rg-cix-live",
+  "location": "northeurope",
+  "dashboardLocation": "eastus2",
+  "namePrefix": "cix",
+  "sharedCosmos": "shared",
+  "cosmos": {
+    "databaseName": "cix-live",
+    "databaseThroughput": 400
+  },
+  "deployDashboard": false,
+  "agents": {
+    "$comment": "As in dev.json (ADR-0013): deploy platform first, then apps with -PromoteFrom dev -ImageTag <commit SHA> and the exchange key files. startEngine: true runs the engine, which stands by until the owner switches it (docs/live-trading.md); false stops it and its agent runs.",
+    "deploy": "platform",
+    "location": "polandcentral",
+    "startEngine": true,
+    "traderModel": "sonnet",
+    "analystModel": "opus",
+    "claudeTokenExpires": "",
+    "monthlyBudget": 20,
+    "budgetStartDate": "2026-11-01"
+  },
+  "tags": {
+    "purpose": "cix-live-trading"
+  }
+}
