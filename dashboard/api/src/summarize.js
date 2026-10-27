@@ -252,6 +252,9 @@ function summarize(input, now) {
       haltedBy: status?.haltedBy ?? (kill?.engaged ? kill.by ?? null : null),
       haltCategory: status?.haltCategory ?? (kill?.engaged ? 'Halted (the reason is in the journal).' : null),
       haltedSince: status?.haltedSince ?? (kill?.engaged ? kill.since : null) ?? null,
+      // A later cause found while already halted (ADR-0018): the Trading tile shows it, and Resume sends both times back.
+      haltAlsoCategory: status?.haltAlsoCategory ?? null,
+      haltAlsoAt: status?.haltAlsoAt ?? (kill?.engaged && !status ? kill.alsoAt ?? null : null) ?? null,
       oldestQuoteAt: status?.oldestQuoteAt ?? null,
       unquotedSymbols: status?.unquotedSymbols ?? [],
       marketView: status?.marketView ?? null,

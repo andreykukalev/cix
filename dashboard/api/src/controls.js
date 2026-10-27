@@ -1,9 +1,9 @@
 'use strict';
 // The owner's Pause and Resume buttons (ADR-0018), for paper or live: a trading-control request document the engine of
-// that mode takes (src/Cix.Engine/Manual/TradingControlService.cs). Pause engages its kill switch; Resume releases a halt
-// that was already in place when the owner pressed it. A live request is taken only with confirmLive, which the page sends
-// once the owner has ticked the box that names real money. The engine checks everything again. Pure functions: tested on
-// their own.
+// that mode takes (src/Cix.Engine/Manual/TradingControlService.cs). Pause engages its kill switch; Resume releases only
+// the halt the page showed: it sends that halt's since and the later cause found beside it (haltAlsoAt), and the engine
+// refuses any other. A live request is taken only with confirmLive, which the page sends once the owner has ticked the box
+// that names real money. The engine checks everything again. Pure functions: tested on their own.
 
 const { cleanNote, RequestError } = require('./requests');
 const { engineTextRu } = require('./engineText');
@@ -12,10 +12,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const REQUEST_TYPE = 'trading-control';
 const ACTIONS = new Set(['pause', 'resume']);
 const MODES = new Set(['paper', 'live']);
+// An ISO time as the engine's status writes it, passed back untouched.
+const TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+const isTime = (v) => typeof v === 'string' && TIME.test(v) && Number.isFinite(Date.parse(v));
 
 /**
  * The request document for Pause or Resume, or a RequestError saying what is wrong.
- * @param {object} body id (a fresh UUID per dialog), action, note, tradingMode, confirmLive.
+ * @param {object} body id (a fresh UUID per dialog), action, note, tradingMode, confirmLive; for Resume haltSince and haltAlsoAt.
  * @param {number} now Milliseconds since the epoch: the request's time is the server's.
  */
 function controlRequestDocument(body, now) {
@@ -37,6 +40,14 @@ function controlRequestDocument(body, now) {
     tradingMode,
     status: 'new',
   };
+  if (action === 'resume') {
+    if (!isTime(body.haltSince)) throw new RequestError('haltSince must be the time of the halt the page showed.');
+    doc.haltSince = body.haltSince;
+    if (body.haltAlsoAt !== undefined && body.haltAlsoAt !== null) {
+      if (!isTime(body.haltAlsoAt)) throw new RequestError('haltAlsoAt must be a time.');
+      doc.haltAlsoAt = body.haltAlsoAt;
+    }
+  }
   const note = cleanNote(body.note);
   if (note) doc.note = note;
   return doc;

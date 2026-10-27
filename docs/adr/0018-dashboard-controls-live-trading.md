@@ -28,11 +28,14 @@ On 2026-10-27 the owner chose, on a decision card, to let the dashboard control 
   - It takes a live request only when the page sends `confirmLive: true`, which the page sends only after the owner ticks a box that names real-money trading.
   - Manual buy and sell requests stay paper-only: the live engine still ignores them unless `ManualRequests:AllowLive` is set (ADR-0011).
 - **Pause and Resume** are `trading-control` requests (`action` `pause` or `resume`), taken by the engine in both modes.
-  - The newest valid request acts and the older ones are superseded. A request older than 5 minutes when first seen expires.
-  - Pause engages the kill switch as the owner (open orders cancelled), with the owner's note as the reason.
+  - The newest valid request acts; older ones are superseded, also when seen after a newer one acted. A request older than 5 minutes when first seen expires.
+  - At most 10 documents are handled a poll and 20 requests act a day, so a flood can't keep toggling the switch or load the live database.
+  - Pause engages the kill switch as the owner (open orders cancelled). Its reason is fixed ("Paused by the owner from the dashboard (request <id>)"): the halt reason reaches the agents, so the owner's note stays on the request document only.
   - Resume releases it, exactly like the operator tool `resume_trading`: the risk gate's limits and the automatic triggers still apply.
-  - **Resume releases only a halt that was already in place when the owner pressed it.** A halt that engaged after the request's `createdAt` (a loss limit, stale data) is refused with its reason, so the owner never releases a halt they haven't seen.
-  - Each request acts at most once per engine run. A restart re-reads only requests younger than 5 minutes, and acting twice changes nothing.
+  - **Resume releases only the halt the page showed.** The page sends that halt's `since` and the later cause it showed (`haltAlsoAt`), and the engine refuses any difference, with the halt's category. This compares the halt itself, not the clocks of the dashboard and the engine.
+  - **A cause found while trading is already halted is recorded beside the halt** (`alsoBy`, `alsoAt` on the kill switch, journaled as `also-triggered` once per cause), and the Trading tile shows it. Without this, a one-off finding such as the reconciler's "the account changed outside the engine" during a pause would leave no trace, and Resume would release it unseen. The halt's first reason is kept.
+  - A halt without a start time (an old or hand-edited state document) is refused: resume it with the operator tool.
+  - Each request acts at most once per engine run and keeps its outcome if its document can't be updated at once. A restart re-reads only requests younger than 5 minutes, and acting twice changes nothing.
 - **Strategies and pairs in live** follow in a second step (#71): the same request types, taken by the live engine.
   - A live engine runs only versions whose spec file in `strategies/` the owner marked `live`, exactly as reviewed.
   - Pairs stay within `config/risk-limits.live.json`.

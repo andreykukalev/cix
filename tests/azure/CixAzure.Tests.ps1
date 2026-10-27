@@ -939,10 +939,10 @@ foreach ($case in @(
 }
 
 Check 'setup-dashboard-requests.ps1 -LiveRequests adds a create-only role on the live requests container, and nothing else' {
-  $r = Invoke-SetupWriter $existingWriter @{} @{ LiveRequests = $true }
+  $r = Invoke-SetupWriter $existingWriter @{ 'cosmosdb sql role definition create' = '{"id":"/role/r2","name":"r2"}' } @{ LiveRequests = $true }
   if ($r.Error) { throw "failed: $($r.Error)" }
   if ($r.Calls -notmatch 'cosmosdb sql role definition create .*--body @') { throw "no live role created from a file: $($r.Calls)" }
-  if ($r.Calls -notmatch 'cosmosdb sql role assignment create .*--principal-id 55555555-5555-5555-5555-555555555555 --scope /dbs/cix-live/colls/requests ') { throw "the live assignment isn't on cix-live/requests: $($r.Calls)" }
+  if ($r.Calls -notmatch 'cosmosdb sql role assignment create .*--role-definition-id /role/r2 --principal-id 55555555-5555-5555-5555-555555555555 --scope /dbs/cix-live/colls/requests ') { throw "the new live role isn't assigned on cix-live/requests: $($r.Calls)" }
   if (@([regex]::Matches($r.Calls, 'role assignment create')).Count -ne 1) { throw "it assigned more than the live role: $($r.Calls)" }
   if ($r.Calls -match 'credential reset|--method put|users invite') { throw "it changed something else: $($r.Calls)" }
   if ($r.Output -notmatch 'real money') { throw "it didn't say what the role allows: $($r.Output)" }

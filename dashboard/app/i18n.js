@@ -416,8 +416,9 @@
     'Resume paper trading': 'Возобновить бумажную торговлю',
     'The engine cancels open orders and refuses every new one, sells at a stop or target included, until you press Resume. Coins you hold stay held. The pause and your note go in the journal.':
       'Движок отменит открытые ордера и будет отклонять все новые, включая продажи по стоп-лоссу и тейк-профиту, пока вы не нажмёте «Возобновить». Купленные монеты остаются у вас. Пауза и ваша заметка записываются в журнал.',
-    'The engine releases the halt in place now ({category}). The risk limits still apply, and the automatic checks can halt trading again. A halt that starts after you press Resume stays, and the engine says why.':
-      'Движок снимет текущую остановку ({category}). Лимиты риска продолжают действовать, и автоматические проверки могут снова остановить торговлю. Остановка, начавшаяся после нажатия «Возобновить», остаётся, и движок объяснит почему.',
+    'The engine releases the halt shown here ({category}). The risk limits still apply, and the automatic checks can halt trading again. If the halt has changed since this page showed it, the engine refuses and says why.':
+      'Движок снимет показанную здесь остановку ({category}). Лимиты риска продолжают действовать, и автоматические проверки могут снова остановить торговлю. Если остановка изменилась с тех пор, как страница её показала, движок откажет и объяснит почему.',
+    'Also, {ago}: {category}': 'Также, {ago}: {category}',
     'Tick the box first: this changes real-money trading.': 'Сначала поставьте галочку: это меняет торговлю реальными деньгами.',
     '{label}: no answer after 5 minutes; the request has expired. Check the Trading tile and press again if needed.':
       '{label}: нет ответа за 5 минут, запрос истёк. Проверьте плитку «Торговля» и нажмите снова, если нужно.',
@@ -647,6 +648,7 @@
     "The saved trading pairs couldn't all be restored; check holdings before resuming.": 'Не все сохранённые торговые пары удалось восстановить; проверьте позиции перед возобновлением.',
     'Halted.': 'Остановлена.',
     'Confirm that this changes real-money trading.': 'Подтвердите, что это меняет торговлю реальными деньгами.',
+    'haltSince must be the time of the halt the page showed.': 'Страница не знает времени начала остановки; обновите её и нажмите «Возобновить» ещё раз.',
     'Live requests are not set up on this dashboard yet: run tools/azure/setup-dashboard-requests.ps1 -LiveRequests.':
       'Запросы для реальной торговли на этой панели ещё не настроены: запустите tools/azure/setup-dashboard-requests.ps1 -LiveRequests.',
 

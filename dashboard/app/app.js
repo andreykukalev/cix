@@ -156,7 +156,10 @@ function renderTiles(view) {
     e.heartbeatAt ? t('heartbeat {ago}', { ago: ago(e.heartbeatAt) }) : t('no status record yet'));
 
   tile('tile-trading', e.halted ? 'bad' : e.halted === false ? 'ok' : 'warn', e.halted ? t('Halted') : e.halted === false ? t('Active') : '–',
-    e.halted ? `${e.haltCategory ? t(e.haltCategory) : ''} ${e.haltedSince ? t('since {ago}', { ago: ago(e.haltedSince) }) : ''}`.trim() : view.mode === 'live' ? t('real money') : t('paper money'));
+    e.halted
+      ? [`${e.haltCategory ? t(e.haltCategory) : ''} ${e.haltedSince ? t('since {ago}', { ago: ago(e.haltedSince) }) : ''}`.trim(),
+        e.haltAlsoCategory ? el('span', { class: 'line', text: t('Also, {ago}: {category}', { ago: ago(e.haltAlsoAt), category: t(e.haltAlsoCategory) }) }) : null]
+      : view.mode === 'live' ? t('real money') : t('paper money'));
   renderControl(view);
 
   renderStrategyTile(e);
@@ -1042,7 +1045,8 @@ function openControl() {
   const e = view.engine;
   const action = e.halted ? 'resume' : 'pause';
   const live = view.mode === 'live';
-  controlChoice = { action, mode: view.mode, id: crypto.randomUUID() }; // one id per dialog: a retry is the same request
+  // Resume names the halt on screen (its start and any later cause): the engine refuses it if the halt has changed since.
+  controlChoice = { action, mode: view.mode, id: crypto.randomUUID(), haltSince: e.haltedSince ?? null, haltAlsoAt: e.haltAlsoAt ?? null };
   const form = document.getElementById('control-form');
   form.reset();
   for (const input of form.querySelectorAll('input')) input.disabled = false;
@@ -1051,8 +1055,8 @@ function openControl() {
     : (live ? t('Resume live trading (real money)') : t('Resume paper trading'));
   document.getElementById('control-summary').textContent = action === 'pause'
     ? t('The engine cancels open orders and refuses every new one, sells at a stop or target included, until you press Resume. Coins you hold stay held. The pause and your note go in the journal.')
-    : t('The engine releases the halt in place now ({category}). The risk limits still apply, and the automatic checks can halt trading again. A halt that starts after you press Resume stays, and the engine says why.',
-      { category: e.haltCategory ? t(e.haltCategory) : '–' });
+    : t('The engine releases the halt shown here ({category}). The risk limits still apply, and the automatic checks can halt trading again. If the halt has changed since this page showed it, the engine refuses and says why.',
+      { category: [e.haltCategory, e.haltAlsoCategory].filter(Boolean).map((c) => t(c)).join(' ') || '–' });
   document.getElementById('control-live').hidden = !live;
   document.getElementById('control-send').textContent = action === 'pause' ? t('Pause trading') : t('Resume trading');
   document.getElementById('control-error').hidden = true;
@@ -1065,6 +1069,7 @@ async function sendControl(event) {
   const form = document.getElementById('control-form');
   const error = document.getElementById('control-error');
   const body = { id: controlChoice.id, action: controlChoice.action, tradingMode: controlChoice.mode };
+  if (controlChoice.action === 'resume') Object.assign(body, { haltSince: controlChoice.haltSince, haltAlsoAt: controlChoice.haltAlsoAt });
   if (controlChoice.mode === 'live') {
     if (!form.elements.confirmLive.checked) {
       error.textContent = t('Tick the box first: this changes real-money trading.');

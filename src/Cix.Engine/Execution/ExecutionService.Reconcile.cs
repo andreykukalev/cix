@@ -161,8 +161,14 @@ public sealed partial class ExecutionService
             _lock.Release();
         }
 
-        if (report.KillSwitchReason is not null && !_killSwitch.IsEngaged)
-            await EngageKillSwitchAsync(report.KillSwitchReason, ReconcilerBy, cancellationToken).ConfigureAwait(false);
+        if (report.KillSwitchReason is not null)
+        {
+            // Already halted: the finding is recorded beside the halt, since it may not show up again (ADR-0018).
+            if (!_killSwitch.IsEngaged)
+                await EngageKillSwitchAsync(report.KillSwitchReason, ReconcilerBy, cancellationToken).ConfigureAwait(false);
+            else
+                await NoteAlsoTriggeredAsync(report.KillSwitchReason, ReconcilerBy).ConfigureAwait(false);
+        }
 
         // Bookkeeping last, outside the lock, so it never delays the checks or the kill switch.
         if (openForFills is not null)

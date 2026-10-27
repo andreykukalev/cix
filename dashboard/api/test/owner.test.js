@@ -273,16 +273,23 @@ test("Pause and Resume: paper's go to paper's database; live's need the owner's 
   assert.equal(writes.at(-1).tradingMode, 'paper');
   assert.deepEqual(writeDatabases, ['cix']);
 
-  const unconfirmed = await post({ id: id(), action: 'resume', tradingMode: 'live' });
+  const since = '2026-10-27T16:45:00.1234567+00:00'; // as the engine's status writes it
+  const unconfirmed = await post({ id: id(), action: 'resume', tradingMode: 'live', haltSince: since });
   assert.equal(unconfirmed.status, 400);
   assert.match(unconfirmed.jsonBody.error, /real-money/);
   assert.deepEqual(writeDatabases, ['cix'], 'nothing written without the confirmation');
 
-  const live = await post({ id: id(), action: 'resume', tradingMode: 'live', confirmLive: true });
+  const live = await post({ id: id(), action: 'resume', tradingMode: 'live', confirmLive: true, haltSince: since, haltAlsoAt: null });
   assert.equal(live.status, 201);
   assert.deepEqual(writeDatabases, ['cix', 'cix-live']);
+  assert.equal(writes.at(-1).haltSince, since, 'the halt the page showed, passed back untouched');
+  assert.equal('haltAlsoAt' in writes.at(-1), false);
+  const seenAlso = await post({ id: id(), action: 'resume', haltSince: since, haltAlsoAt: '2026-10-27T17:00:00Z' });
+  assert.equal(seenAlso.status, 201);
+  assert.equal(writes.at(-1).haltAlsoAt, '2026-10-27T17:00:00Z');
 
-  for (const bad of [{ id: id(), action: 'sell-all' }, { id: 'nope', action: 'pause' }, { id: id(), action: 'pause', tradingMode: 'demo' }]) {
+  for (const bad of [{ id: id(), action: 'sell-all' }, { id: 'nope', action: 'pause' }, { id: id(), action: 'pause', tradingMode: 'demo' },
+    { id: id(), action: 'resume' }, { id: id(), action: 'resume', haltSince: 'yesterday' }, { id: id(), action: 'resume', haltSince: since, haltAlsoAt: 5 }]) {
     assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
   }
 
@@ -299,6 +306,10 @@ test("Pause and Resume: paper's go to paper's database; live's need the owner's 
     const off = await post({ id: id(), action: 'pause', tradingMode: 'live', confirmLive: true });
     assert.equal(off.status, 503, 'never written to paper\'s database instead');
     assert.match(off.jsonBody.error, /-LiveRequests/);
+    reads.length = 0;
+    const lookup = await routes['owner-control-request'].handler(request({ params: { day: '2026-10-27', id: id() }, query: 'mode=live' }), context);
+    assert.equal(lookup.status, 503, 'a live lookup never reads paper\'s database instead');
+    assert.equal(reads.length, 0);
   } finally { process.env.COSMOS_LIVE_DATABASE = saved; }
-  assert.deepEqual(writeDatabases, ['cix', 'cix-live']);
+  assert.deepEqual(writeDatabases, ['cix', 'cix-live', 'cix']);
 });

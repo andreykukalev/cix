@@ -33,8 +33,12 @@ const LIVE_NOT_SET_UP = 'Live requests are not set up on this dashboard yet: run
  * The writer for one mode's requests container: paper's database, or the live engine's own (ADR-0018), where the same
  * identity holds a separate create-only role. Live without its database setting is refused, never written to paper's.
  */
-function getWriter(mode = 'paper') {
+function requireLiveDatabase(mode) {
   if (mode === 'live' && !process.env.COSMOS_LIVE_DATABASE) throw new WriterNotConfigured(LIVE_NOT_SET_UP);
+}
+
+function getWriter(mode = 'paper') {
+  requireLiveDatabase(mode);
   const database = databaseFor(mode);
   if (!writers.has(database)) {
     writers.set(database, new RequestWriter({
@@ -132,6 +136,7 @@ async function createControlRequest(request, context) {
   return ownerOnly(request, context, 'pause or resume request', async () => {
     const doc = controlRequestDocument(await readBody(request), Date.now());
     const mode = doc.tradingMode;
+    requireLiveDatabase(mode); // before any read: live's reads would fall back to paper's database
     const earlier = await getReader(mode).readDocument('requests', doc.id, previousDay(doc.day));
     let result;
     try {
@@ -145,7 +150,7 @@ async function createControlRequest(request, context) {
     if (result === 'created') return respond(201, { result, request: controlRequestItem(doc) });
     const stored = earlier ?? await getReader(mode).readDocument('requests', doc.id, doc.day);
     if (!stored) return respond(200, { result, request: controlRequestItem(doc) });
-    return stored.type === doc.type && stored.action === doc.action && stored.tradingMode === doc.tradingMode
+    return stored.type === doc.type && stored.action === doc.action && stored.tradingMode === doc.tradingMode && stored.haltSince === doc.haltSince
       ? respond(200, { result, request: controlRequestItem(stored) })
       : respond(409, { error: 'This request was already sent with different details; it stands as first sent. Close the dialog to make a new one.' });
   });
@@ -243,8 +248,9 @@ app.http('owner-control-request', {
     const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
     const { day, id } = request.params;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day ?? '') || !/^[0-9a-f-]{36}$/.test(id ?? '')) throw new RangeError('day and id must be a request\'s');
+    requireLiveDatabase(mode);
     const doc = await getReader(mode).readDocument('requests', id, day);
-    return doc && doc.type === 'trading-control' ? respond(200, controlRequestItem(doc)) : respond(404, { error: 'Not there yet.' });
+    return doc && doc.type === 'trading-control' && (doc.tradingMode ?? 'paper') === mode ? respond(200, controlRequestItem(doc)) : respond(404, { error: 'Not there yet.' });
   }),
 });
 

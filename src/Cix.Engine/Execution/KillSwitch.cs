@@ -26,6 +26,25 @@ public sealed class KillSwitch(IEngineStateStore store, TimeProvider time)
         return engaged;
     }
 
+    /// <summary>
+    /// While engaged, records <paramref name="by"/> as a later cause beside the halt (the first reason is kept). Returns false
+    /// when it isn't engaged, or the cause is the halt's own or the one already recorded.
+    /// </summary>
+    internal bool NoteAlso(string by)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(by);
+        var noted = false;
+        store.Update(s =>
+        {
+            var k = s.KillSwitch;
+            if (!k.Engaged || string.Equals(by, k.By, StringComparison.Ordinal) || string.Equals(by, k.AlsoBy, StringComparison.Ordinal))
+                return s;
+            noted = true;
+            return s with { KillSwitch = k with { AlsoBy = by, AlsoAt = time.GetUtcNow() } };
+        });
+        return noted;
+    }
+
     /// <summary>Owner only, through <see cref="ExecutionService.ReleaseKillSwitchAsync"/>. The risk gate's other limits still apply.</summary>
     internal void Release(string by)
     {

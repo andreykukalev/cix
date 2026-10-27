@@ -10,8 +10,12 @@ namespace Cix.Engine.Execution;
 /// </summary>
 public sealed record HoldingsBaseline(IReadOnlyDictionary<string, decimal> Holdings, decimal EngineOrdersNotional);
 
-/// <summary>Whether trading is halted, why, by whom and since when.</summary>
-public sealed record KillSwitchState(bool Engaged, string? Reason, string? By, DateTimeOffset? Since)
+/// <summary>
+/// Whether trading is halted, why, by whom and since when. <paramref name="AlsoBy"/> and <paramref name="AlsoAt"/> record
+/// the latest other cause that would have halted trading while it already was (ADR-0018): the dashboard's Resume releases
+/// only the halt the owner saw, so a cause that appears later must change what the page shows.
+/// </summary>
+public sealed record KillSwitchState(bool Engaged, string? Reason, string? By, DateTimeOffset? Since, string? AlsoBy = null, DateTimeOffset? AlsoAt = null)
 {
     public static readonly KillSwitchState Released = new(false, null, null, null);
 }

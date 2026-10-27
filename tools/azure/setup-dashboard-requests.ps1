@@ -78,7 +78,7 @@ $identityName = "cix-dashboard-writer-$Environment"
 $roleName = "CIX dashboard request writer ($Environment)"
 $relativeScope = "/dbs/$database/colls/requests"
 # The live engine's database in the same account (Read-CixEnvironment), for the second role (ADR-0018).
-$liveDatabases = if ($settings.ContainsKey('liveDatabases')) { @($settings.liveDatabases) } else { @() }
+$liveDatabases = @(if ($settings.ContainsKey('liveDatabases')) { $settings.liveDatabases }) # @(): one stays an array, none is empty
 $liveDatabase = if ($liveDatabases.Count -eq 1) { [string]$liveDatabases[0] } else { $null }
 if ($LiveRequests -and -not $liveDatabase) { throw "-LiveRequests needs exactly one protected environment in this environment's Cosmos DB account; found $($liveDatabases.Count)." }
 if ($liveDatabase -and $liveDatabase -eq $database) { throw "The protected environment's database is $database too: refusing." }
@@ -236,6 +236,7 @@ if ($LiveRequests) {
       })
     try { $liveRole = Invoke-CixAz @('cosmosdb', 'sql', 'role', 'definition', 'create', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup, '--body', "@$file", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson }
     finally { Remove-Item $file -ErrorAction SilentlyContinue }
+    if (-not $liveRole -or -not $liveRole.PSObject.Properties['id'] -or -not $liveRole.id) { throw "The Azure CLI returned no id for the new role '$liveRoleName'; nothing was assigned. Run this again." }
     Write-CixInfo 'Created.'
   }
   else { Write-CixInfo 'Exists, with exactly those two actions on that container.' }
