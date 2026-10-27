@@ -268,6 +268,13 @@ Check 'the protected (live-money) environment: its own group and database, no da
   if (@('platform', 'apps') -notcontains $s.agents.deploy) { throw "agents.deploy is $($s.agents.deploy)" }
 }
 
+Check 'dev''s dashboard reads the live engine''s own database for its live view; the protected environment names none' {
+  $dev = Get-CixDeploymentValues -Settings (Read-CixEnvironment -Name dev) -SharedAccountName 'cosmos-shared-test'
+  Expect $dev.Values.liveDatabaseName 'cix-live' 'dev: liveDatabaseName'
+  $prod = Get-CixDeploymentValues -Settings (Read-CixEnvironment -Name prod) -SharedAccountName 'cosmos-shared-test'
+  Expect $prod.Values.Contains('liveDatabaseName') $false 'prod: liveDatabaseName'
+}
+
 Check 'ConvertFrom-CixJson sends array items one by one' {
   Expect (@('[{"a":1},{"a":2},{"a":3}]' | ConvertFrom-CixJson | Where-Object { $_.a -ge 2 }).Count) 2 'filtered items'
   Expect (@('[]' | ConvertFrom-CixJson).Count) 0 'empty array'

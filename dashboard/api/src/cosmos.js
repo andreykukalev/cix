@@ -94,4 +94,25 @@ class CosmosReader {
   }
 }
 
-module.exports = { authToken, CosmosReader, CosmosError };
+/**
+ * The database one mode's engine writes to. Paper's is COSMOS_DATABASE. The live engine has its own (ADR-0017), named by
+ * COSMOS_LIVE_DATABASE; without that setting, live reads paper's database, where it finds nothing of its own.
+ */
+function databaseFor(mode, env = process.env) {
+  const paper = env.COSMOS_DATABASE ?? 'cix';
+  return mode === 'live' && env.COSMOS_LIVE_DATABASE ? env.COSMOS_LIVE_DATABASE : paper;
+}
+
+/** One reader per database, made on first use, so each function instance signs in to each database once. */
+function readerCache(env = process.env) {
+  const readers = new Map();
+  return (mode = 'paper') => {
+    const database = databaseFor(mode, env);
+    if (!readers.has(database)) {
+      readers.set(database, new CosmosReader({ endpoint: env.COSMOS_ENDPOINT, key: env.COSMOS_READONLY_KEY, database }));
+    }
+    return readers.get(database);
+  };
+}
+
+module.exports = { authToken, CosmosReader, CosmosError, databaseFor, readerCache };

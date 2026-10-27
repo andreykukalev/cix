@@ -291,8 +291,6 @@
     'The engine hasn\'t reported for {time}: it may be stopped, or unable to reach the database.':
       'Движок не сообщал статус уже {time}: возможно, он остановлен или не может связаться с базой данных.',
     'Updated {time}': 'Обновлено в {time}',
-    'Activity is counted for paper trading only for now.': 'Активность пока считается только для бумажной торговли.',
-    'No data': 'Нет данных',
     'Couldn\'t load trading activity: {error}': 'Не удалось загрузить торговую активность: {error}',
     today: 'сегодня',
     'this week': 'эта неделя',

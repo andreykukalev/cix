@@ -475,16 +475,10 @@ function svg(tag, attrs, text) {
 async function refreshActivity() {
   if (state.signedOut) return;
   const meta = document.getElementById('volume-meta');
-  if (state.mode !== 'paper') {
-    state.activity = null;
-    meta.textContent = t('Activity is counted for paper trading only for now.');
-    document.getElementById('volume-cards').replaceChildren();
-    document.getElementById('volume-chart').replaceChildren(svg('title', { id: 'volume-chart-title' }, t('No data')));
-    return;
-  }
+  const { mode } = state;
   try {
-    const activity = await getJson(`/api/activity?period=${encodeURIComponent(state.period)}`);
-    if (state.mode !== 'paper') return; // switched to live while this was loading
+    const activity = await getJson(`/api/activity?period=${encodeURIComponent(state.period)}&mode=${encodeURIComponent(mode)}`);
+    if (state.mode !== mode) return; // the mode changed while this was loading
     state.activity = activity;
     renderVolume(activity);
   } catch (error) {
@@ -1028,8 +1022,10 @@ function trackPair(item) {
 }
 
 async function showJournalDay(day, kind) {
+  const { mode } = state;
   try {
-    const entries = await getJson(`/api/journal?day=${encodeURIComponent(day)}&kind=${encodeURIComponent(kind)}&limit=200`);
+    const entries = await getJson(`/api/journal?day=${encodeURIComponent(day)}&kind=${encodeURIComponent(kind)}&limit=200&mode=${encodeURIComponent(mode)}`);
+    if (state.mode !== mode) return; // the mode changed while this was loading
     state.journal = { day, kind, entries };
     renderJournal();
   } catch (error) {
@@ -1126,7 +1122,6 @@ function setLang(lang) {
   else if (!state.signedOut && !state.loadError) document.getElementById('updated').textContent = t('Loading…');
   if (state.journal) renderJournal();
   if (state.activity) renderVolume(state.activity);
-  else if (state.mode !== 'paper') refreshActivity();
   if (state.requests) renderRequests(state.requests);
   if (state.strategies) renderStrategies(state.strategies);
   if (state.strategiesError) renderStrategiesError();
@@ -1152,6 +1147,7 @@ function setMode(mode) {
   state.strategies = null;
   state.pairs = null;
   state.activity = null;
+  state.journal = null; // the other mode's journal day
   state.strategiesError = null;
   state.pairsError = null;
   try { localStorage.setItem('cix-mode', mode); } catch { /* storage may be unavailable */ }
