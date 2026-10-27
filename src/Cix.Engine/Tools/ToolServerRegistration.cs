@@ -9,13 +9,16 @@ public sealed class JournalOptions
 {
     public const string SectionName = "Journal";
 
-    /// <summary>Absolute folder for the daily journal files. Defaults to the local app data folder, separately per trading mode.</summary>
+    /// <summary>
+    /// Absolute folder for the daily journal files, with a subfolder per trading mode so two engines never share files
+    /// (#65). Defaults to the local app data folder.
+    /// </summary>
     public string? Directory { get; set; }
 
     public string Resolve(TradingMode mode)
     {
         if (!string.IsNullOrWhiteSpace(Directory))
-            return Directory;
+            return Path.Combine(Directory, mode.ToString().ToLowerInvariant());
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         if (string.IsNullOrEmpty(appData))
             throw new InvalidOperationException("No local app data folder for this user; set Journal:Directory to an absolute path.");

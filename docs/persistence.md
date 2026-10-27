@@ -14,7 +14,7 @@ The Cosmos DB database `cix` has three containers.
 
 The rule of thumb is that **state** answers "what must the engine know to carry on right now?" and the **journal** answers "what happened, and why?". The engine recovers from state and reconciles it with the exchange. It doesn't rebuild state by replaying the journal, except for one fallback described below.
 
-Without Cosmos DB (`Cosmos:Enabled` false, outside Compose), the same records live in files: the engine state in a JSON file and the journal in one `.jsonl` file per day.
+Without Cosmos DB (`Cosmos:Enabled` false, outside Compose), the same records live in files: the engine state in a JSON file and the journal in one `.jsonl` file per day, under a `paper` or `live` subfolder of `Journal:Directory`.
 
 ## The `state` container
 
@@ -75,7 +75,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 
 ## The `journal` container
 
-Each document is `{ id, day, mode, entry }`. `mode` is `paper` or `live`, the mode of the engine that wrote it (#65). A paper and a live engine can share the container, so every engine read filters on its own mode: the stops it recovers from fills and orders, reconciliation's check for a journaled fill, the market view it restores at startup, and the operator tools, `get_daily_summary` included. The analyst's `market-view` is per mode too, since each engine runs its own analyst. Documents from before the tag have no `mode` and count as paper; they are never rewritten. The dashboard reads one mode's entries the same way. The entry has `id`, `at`, `kind`, `actor` (an agent such as `trader` or `analyst`, `owner`, or an engine part such as `engine`, `scanner`, `reconciler`), `runId` (the agent run), `specVersion`, a one-line `summary`, and `data` (string fields that depend on the kind).
+Each document is `{ id, day, entry, mode }`. `mode` is `paper` or `live`, the mode of the engine that wrote it (#65). A paper and a live engine can share the container, so every engine read filters on its own mode: the stops it recovers from fills and orders, reconciliation's check for a journaled fill, the market view it restores at startup, and the operator tools, `get_daily_summary` included. The analyst's `market-view` is per mode too, since each engine runs its own analyst. Documents from before the tag have no `mode` and count as paper; they are never rewritten. The dashboard reads one mode's entries the same way. The entry has `id`, `at`, `kind`, `actor` (an agent such as `trader` or `analyst`, `owner`, or an engine part such as `engine`, `scanner`, `reconciler`), `runId` (the agent run), `specVersion`, a one-line `summary`, and `data` (string fields that depend on the kind).
 
 | `kind` | Written when | Key `data` fields |
 |---|---|---|

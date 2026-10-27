@@ -138,6 +138,16 @@ public sealed class JournalModeTests
         Assert.False(CosmosJournal.IsVisible(odd, TradingMode.Live));
         Assert.False(CosmosJournal.IsVisible(odd, TradingMode.Paper));
     }
+
+    [Fact]
+    public void FileJournals_OfTheTwoModesNeverShareAFolder()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cix-journal");
+        var options = new Tools.JournalOptions { Directory = root };
+
+        Assert.Equal(Path.Combine(root, "paper"), options.Resolve(TradingMode.Paper));
+        Assert.Equal(Path.Combine(root, "live"), options.Resolve(TradingMode.Live));
+    }
 }
 
 internal static class TestExtensions
