@@ -59,7 +59,7 @@ public sealed class RiskLimitsOptions
             throw new InvalidOperationException("Risk settings come only from the owner's limits file (config/risk-limits.json, or risk-limits.live.json for live); remove them from the environment, the command line and appsettings.");
         var file = new ConfigurationBuilder().AddJsonFile(path, optional: false, reloadOnChange: false).Build();
         return file.GetSection("Risk").Get<RiskLimitsOptions>()?.ToRiskLimits()
-            ?? throw new InvalidOperationException("Missing 'Risk' section in risk-limits.json.");
+            ?? throw new InvalidOperationException($"Missing 'Risk' section in {Path.GetFileName(path)}.");
     }
 
     public RiskLimits ToRiskLimits() => new(

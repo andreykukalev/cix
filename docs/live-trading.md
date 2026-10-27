@@ -6,7 +6,7 @@ Every step on this page is yours: agents can't set the live mode, add the keys, 
 
 ## The live limits (#66)
 
-The live engine reads its own limits file, `config/risk-limits.live.json`, never paper's `config/risk-limits.json`. Without it, a Live engine refuses to start. Like paper's file, only you write it (CLAUDE.md rule 3; the hook blocks agents from both), and the hard ceilings in `HardCeilings.cs` still cap whatever it says. It is built into the image, so a change reaches the live engine with the next image you promote.
+The live engine reads its own limits file, `config/risk-limits.live.json`, never paper's `config/risk-limits.json`. Without it, a Live engine refuses to start. Like paper's file, only you write it (CLAUDE.md rule 3; a hook stops agents from writing either file, whether by editing it or with a command), and the hard ceilings in `HardCeilings.cs` still cap whatever it says. It is built into the image, so a change reaches the live engine with the next image you promote.
 
 A proposal for the first run, 100 EUR on the fixed Safe strategy. Safe's own limits are tighter still: 5 EUR orders, at most 10 EUR per coin, 25% of the allocation in coins, and no buys after a 3 EUR loss in a day.
 
@@ -25,9 +25,13 @@ A proposal for the first run, 100 EUR on the fixed Safe strategy. Safe's own lim
 }
 ```
 
-- **Drawdown 10%**, not paper's 15%: trading halts after a 10 EUR fall from the peak.
+- **Drawdown 10%**, not paper's 15%: new buys stop after a 10% fall from peak equity (10 EUR from 100 EUR) until you resume. Sells, stops and targets carry on.
 - **Daily loss 5 EUR**, half the ceiling (10% of the allocation).
 - **Four of the most liquid pairs.** There is no `AllowedQuoteCurrency` for now, because adding pairs from the dashboard is paper-only until #71. Revolut X's smallest order on these pairs is 0.1 EUR (its public pairs list, 27 Oct), well under Safe's 5 EUR.
+
+## The strategy
+
+A Live engine runs only a spec whose `status` is `live`, and only you set that (the `protect-live-mode` hook stops agents). For the first run, `strategies/safe.v2.json` is Safe v1 with the same parameters, and instructions that no longer say "paper". It is a `draft`, which never runs: change its `"status"` to `"live"`. Leave `safe.v1.json` as it is. The paper database holds a copy of v1, and a spec file that no longer matches its copy can't be selected on paper. A `live` spec runs on paper too, so paper can switch to Safe v2 and keep the same baseline as live.
 
 ## The Revolut X keys (#68)
 

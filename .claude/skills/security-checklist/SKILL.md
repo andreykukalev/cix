@@ -19,7 +19,7 @@ Mark each item pass, fail or not applicable, with evidence.
 - [ ] Kill switch stops new orders and cancels open ones.
 
 ## Limits
-- [ ] `HardCeilings.cs` and `config/risk-limits.json` unchanged, or changed with owner approval noted in the PR.
+- [ ] `HardCeilings.cs`, `config/risk-limits.json` and `config/risk-limits.live.json` unchanged, or changed with owner approval noted in the PR.
 - [ ] Configured limits are validated against the hard ceilings at startup.
 
 ## Agents and tools
