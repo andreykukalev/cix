@@ -431,8 +431,12 @@
     all: 'всё',
     'The engine sells at the bid now, without asking the trader.': 'Движок продаёт сейчас по цене покупателя, не спрашивая трейдера.',
     'The trader analyses it first and may decline or sell less.': 'Трейдер сначала анализирует и может отказаться или продать меньше.',
-    'Sell {portion} of your {symbol} position (paper). {how} The risk gate checks the order either way.':
-      'Продать {portion} позиции {symbol} (бумажная торговля). {how} Риск-контроль проверяет ордер в любом случае.',
+    'Sell 25% of your {symbol} position (paper). {how} The risk gate checks the order either way.':
+      'Продать 25% позиции {symbol} (бумажная торговля). {how} Риск-контроль проверяет ордер в любом случае.',
+    'Sell half of your {symbol} position (paper). {how} The risk gate checks the order either way.':
+      'Продать половину позиции {symbol} (бумажная торговля). {how} Риск-контроль проверяет ордер в любом случае.',
+    'Sell all of your {symbol} position (paper). {how} The risk gate checks the order either way.':
+      'Продать всю позицию {symbol} (бумажная торговля). {how} Риск-контроль проверяет ордер в любом случае.',
     'Ask the trader to buy {symbol} for {amount} {quote} (paper). It decides, sets a stop-loss, and may decline; the risk gate checks the order.':
       'Попросить трейдера купить {symbol} на {amount} {quote} (бумажная торговля). Он решает, ставит стоп-лосс и может отказаться; риск-контроль проверяет ордер.',
     'Sent, waiting for the engine': 'Отправлен, ждёт движок',
@@ -454,6 +458,7 @@
     'Buy {symbol} for {amount} {quote}': 'Купить {symbol} на {amount} {quote}',
     Jan: 'янв', Feb: 'фев', Mar: 'мар', Apr: 'апр', May: 'мая', Jun: 'июн',
     Jul: 'июл', Aug: 'авг', Sep: 'сен', Oct: 'окт', Nov: 'ноя', Dec: 'дек',
+    'May (month)': 'май',
     '{label}: {trades} trade, bought {buy}, sold {sell}': '{label}: сделок: {trades}, куплено {buy}, продано {sell}',
     '{label}: {trades} trades, bought {buy}, sold {sell}': '{label}: сделок: {trades}, куплено {buy}, продано {sell}',
     'same as before': 'как и раньше',
@@ -656,6 +661,17 @@
     'Live trading uses the pairs in its configuration. Changing them here comes with live trading (#71).':
       'Реальная торговля использует пары из конфигурации. Менять их здесь можно будет с появлением реальной торговли (#71).',
     'The engine hasn\'t listed the exchange\'s pairs yet; it does when it starts.': 'Движок ещё не получил список пар биржи; он делает это при запуске.',
+
+    // What the engine says about a strategy switch (StrategySelection.cs)
+    'Waiting for the trader run in progress to end; the switch happens before the next run.':
+      'Ждём окончания текущего запуска трейдера; смена произойдёт перед следующим запуском.',
+    'The strategy selection couldn\'t be read from the database; the running strategy is unchanged.':
+      'Не удалось прочитать выбор стратегии из базы данных; текущая стратегия не изменилась.',
+    'The selected strategy version couldn\'t be read from the database; the running strategy is unchanged.':
+      'Не удалось прочитать выбранную версию стратегии из базы данных; текущая стратегия не изменилась.',
+    'A newer strategy request replaced this one.': 'Этот запрос заменён более новым запросом стратегии.',
+    'The request was more than 5 minutes old when the engine saw it; send it again.': 'Когда движок увидел запрос, ему было больше 5 минут; отправьте его ещё раз.',
+    'The journal couldn\'t be written; the switch is retried shortly.': 'Не удалось записать журнал; смена будет повторена в ближайшее время.',
   }));
 
   /** Engine text with figures in it: [pattern, Russian with $1… for the parts]. */
@@ -663,6 +679,9 @@
     [/^trend (up|down|flat|unknown)$/, (m) => `тренд: ${{ up: 'вверх', down: 'вниз', flat: 'боковой', unknown: 'неизвестен' }[m[1]]}`],
     [/^sell \((stop|target|trend-down)\)$/, (m) => `продажа (${{ stop: 'стоп', target: 'цель', 'trend-down': 'тренд вниз' }[m[1]]})`],
     [/^extended: ([\d.]+) ATR above EMA20$/, (m) => `перегрета: на ${m[1]} ATR выше EMA20`],
+    [/^Selected ([a-z0-9-]{1,40}@v\d{1,4})\. The engine validates it and switches before the next trader run; the journal \(kind strategy\) and the engine status say what happened\.$/,
+      (m) => `Выбрана ${m[1]}. Движок проверит её и переключится перед следующим запуском трейдера; что произошло, покажут журнал (тип strategy) и статус движка.`],
+    [/^Selected ([a-z0-9-]{1,40}@v\d{1,4})\.$/, (m) => `Выбрана ${m[1]}.`],
     [/^Flagged by the market analyst until (.+) UTC\.$/, (m) => `Отмечена аналитиком рынка до ${m[1]} UTC.`],
     [/^Any pair in ([A-Z]{3,5}) that the exchange lists, up to (\d+) at once; the owner adds and removes them from the Coins tab\.$/,
       (m) => `Любая пара в ${m[1]}, которая есть на бирже, не больше ${m[2]} одновременно; владелец добавляет и убирает их на вкладке «Монеты».`],

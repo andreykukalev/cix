@@ -32,8 +32,8 @@ function el(tag, props = {}, ...children) {
 }
 
 function ms(iso) {
-  const t = Date.parse(iso ?? '');
-  return Number.isFinite(t) ? t : null;
+  const at = Date.parse(iso ?? '');
+  return Number.isFinite(at) ? at : null;
 }
 
 /** How long since a time, without "ago": 5 min. */
@@ -166,7 +166,7 @@ function renderTiles(view) {
  */
 function renderStrategyTile(engine) {
   const a = V.activeStrategy(engine);
-  const stale = engine?.state !== 'running';
+  const stale = !!engine && engine.state !== 'running';
   const line = (text) => el('span', { class: 'line', text });
   const notes = a ? [
     line(t('Risk profile: {profile}', { profile: a.profile })),
@@ -405,6 +405,7 @@ async function refresh() {
     const view = await getJson(`/api/dashboard?mode=${encodeURIComponent(state.mode)}`);
     if (view.mode !== state.mode) return; // the mode changed while this was loading
     state.view = view;
+    state.loadError = null;
     renderDashboard(view);
   } catch (error) {
     if (error instanceof SignedOut) { signedOut(); return; }
@@ -417,7 +418,6 @@ async function refresh() {
 
 /** Everything /api/dashboard feeds, in the page's language: after each refresh, and again when the language changes. */
 function renderDashboard(view) {
-  state.loadError = null;
   renderTiles(view);
   renderBriefing(view);
   renderCoins(view);
@@ -453,8 +453,10 @@ async function refreshActivity() {
     return;
   }
   try {
-    state.activity = await getJson(`/api/activity?period=${encodeURIComponent(state.period)}`);
-    renderVolume(state.activity);
+    const activity = await getJson(`/api/activity?period=${encodeURIComponent(state.period)}`);
+    if (state.mode !== 'paper') return; // switched to live while this was loading
+    state.activity = activity;
+    renderVolume(activity);
   } catch (error) {
     if (error instanceof SignedOut) { signedOut(); return; }
     state.activity = null;
@@ -572,6 +574,7 @@ function openRequest(side, coin) {
   if (side === 'sell') { form.elements.portion.value = '1'; form.elements.mode.value = 'agent'; }
   document.getElementById('request-error').hidden = true;
   document.getElementById('request-send').disabled = false;
+  document.getElementById('request-send').textContent = t('Send request'); // in the page's language now
   for (const input of form.querySelectorAll('input')) input.disabled = false;
   updateSummary();
   dialog.showModal();
@@ -668,17 +671,23 @@ async function refreshStrategies() {
     const view = await getJson(`/api/owner/strategies?mode=${encodeURIComponent(state.mode)}`);
     if (view.mode !== state.mode) return; // the mode changed while this was loading
     state.strategies = view;
+    state.strategiesError = null;
     renderStrategies(view);
   } catch (error) {
     if (error instanceof SignedOut) { signedOut(); return; }
-    document.getElementById('strategy-note').textContent = t("Couldn't load the strategies: {error}", { error: error.message });
+    state.strategiesError = error.message;
+    renderStrategiesError();
   }
+}
+
+function renderStrategiesError() {
+  document.getElementById('strategy-note').textContent = t("Couldn't load the strategies: {error}", { error: state.strategiesError });
 }
 
 function renderStrategies(view) {
   const running = view.strategies.find((s) => s.active) ?? null;
   const sel = V.selectionState(view.selection);
-  const active = view.active ? V.activeStrategy({ strategy: view.active.label, strategySelection: { ...view.selection, activatedAt: view.selection?.state === 'active' ? view.active.since : null } }) : null;
+  const active = view.active ? V.activeStrategy({ strategy: view.active.label }) : null; // for its risk profile
   document.getElementById('strategy-meta').textContent = view.active?.since ? t('since {time}', { time: new Date(view.active.since).toLocaleString(I.locale()) }) : '';
   document.getElementById('strategy-running').replaceChildren(
     figure(t('Strategy'), running ? V.strategyName(running) : view.active ? view.active.label : '–'),
@@ -759,6 +768,7 @@ function openStrategy(target) {
     : [el('li', { text: t('No parameter differs from the running strategy.') })]));
   document.getElementById('strategy-error').hidden = true;
   document.getElementById('strategy-send').disabled = false;
+  document.getElementById('strategy-send').textContent = t('Switch strategy');
   document.getElementById('strategy-dialog').showModal();
 }
 
@@ -800,12 +810,15 @@ function trackStrategy(item) {
   requestStatus(t('Strategy switch to {label}: sent, waiting for the engine…', { label }), 'pending');
   if (state.strategies) renderStrategies(state.strategies);
   const timer = setInterval(async () => {
-    const stop = (text, tone) => {
+    const stop = (text, tone, reload = true) => {
       clearInterval(timer);
       state.strategyPending = false;
       requestStatus(text, tone);
-      refresh(); // the header and the Active strategy tile show the outcome at once, not at the next 30-second refresh
-      if (state.tab !== 'strategy') refreshStrategies();
+      if (state.strategies) renderStrategies(state.strategies); // the switch buttons again
+      // The header and the Active strategy tile show the outcome at once, not at the next 30-second refresh. refresh()
+      // reads the strategies too while their tab is open; reload is false when they were read just now.
+      refresh();
+      if (reload && state.tab !== 'strategy') refreshStrategies();
     };
     if (Date.now() - started > 5 * 60_000) { stop(t('Strategy switch to {label}: no answer after 5 minutes; see Your strategy switches.', { label }), 'warn'); return; }
     try {
@@ -821,7 +834,7 @@ function trackStrategy(item) {
       if (sel?.requested === label && Date.parse(sel.requestedAt ?? '') === Date.parse(item.createdAt) && ['active', 'refused'].includes(sel.state)) {
         stop(sel.state === 'active'
           ? t('Strategy switch to {label}: active. New trades follow it from the next scan.', { label })
-          : `${t('Strategy switch to {label}: refused.', { label })} ${sel.problems.map((p) => t(p)).join(' ')}`, sel.state === 'active' ? 'ok' : 'bad');
+          : `${t('Strategy switch to {label}: refused.', { label })} ${sel.problems.map((p) => t(p)).join(' ')}`, sel.state === 'active' ? 'ok' : 'bad', false);
       } else {
         requestStatus(t('Strategy switch to {label}: accepted; the engine applies it before the next trader run…', { label }), 'pending');
       }
@@ -839,28 +852,27 @@ async function refreshPairs() {
     const view = await getJson(`/api/owner/pairs?mode=${encodeURIComponent(state.mode)}`);
     if (view.mode !== state.mode) return; // the mode changed while this was loading
     state.pairs = view;
+    state.pairsError = null;
     renderPairs(view);
   } catch (error) {
     if (error instanceof SignedOut) { signedOut(); return; }
-    document.getElementById('pairs-note').textContent = t("Couldn't load the trading pairs: {error}", { error: error.message });
+    state.pairsError = error.message;
+    renderPairsError();
   }
+}
+
+function renderPairsError() {
+  document.getElementById('pairs-note').textContent = t("Couldn't load the trading pairs: {error}", { error: state.pairsError });
 }
 
 function renderPairs(view) {
   const busy = !view.editable || state.pairPending;
-  const onlyConfigured = !view.quoteCurrency; // config/risk-limits.json permits only its own list: nothing else to add
+  const { note, empty, options } = V.pairsNote(view);
   document.getElementById('pairs-meta').textContent = [
     view.cap ? t('{n} of at most {cap}', { n: view.tradable.length, cap: view.cap }) : t('{n} tradable', { n: view.tradable.length }),
     view.changedAt ? t('changed {ago}', { ago: ago(view.changedAt) }) : null,
   ].filter(Boolean).join(' · ');
-  const options = view.available.filter((p) => !p.pending);
-  document.getElementById('pairs-note').textContent = view.readOnlyReason
-    ? t(view.readOnlyReason)
-    : view.full ? t('The most pairs the safety limits allow are tradable: remove one to add another.')
-      : view.openToAnyPair ? t('You can add any {quote} pair the exchange lists; the engine checks it has enough trading first.', { quote: view.quoteCurrency ?? '' }).replace('  ', ' ')
-        : onlyConfigured && !options.length
-          ? t('No other pairs can be added yet: the safety limits permit only the pairs in config/risk-limits.json, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to config/risk-limits.json; once that is deployed, they can be added and removed here without another deploy.')
-          : t('You can turn the pairs in config/risk-limits.json off and on again here. Adding other coins needs that list widened first.');
+  document.getElementById('pairs-note').textContent = note;
   document.getElementById('pairs-tradable').replaceChildren(...(view.tradable.length ? view.tradable.map((p) => {
     const remove = el('button', { type: 'button', class: 'ghost', title: t('Stop trading {symbol}', { symbol: p.symbol }), text: p.pending === 'remove' ? t('removing…') : t('Remove') });
     remove.disabled = busy || !!p.pending || view.tradable.length <= 1;
@@ -873,7 +885,7 @@ function renderPairs(view) {
   form.hidden = !view.editable;
   choice.replaceChildren(...(options.length
     ? options.map((p) => el('option', { value: p.symbol, text: p.symbol }))
-    : [el('option', { value: '', text: view.full ? t('the limit is reached') : onlyConfigured ? t('no other pairs permitted') : t('none available') })]));
+    : [el('option', { value: '', text: empty })]));
   choice.disabled = busy || view.full || !options.length;
   document.getElementById('pairs-add-button').disabled = choice.disabled;
 
@@ -937,7 +949,7 @@ async function sendPair(event) {
 /** Follows a pair change until the engine has decided it (it checks requests every 30 seconds). */
 function trackPair(item) {
   state.pairPending = true;
-  const since = Date.now();
+  const started = Date.now();
   const label = t(item.action === 'remove' ? 'Removing {symbol}' : 'Adding {symbol}', { symbol: item.symbol });
   requestStatus(t('{label}: sent, waiting for the engine…', { label }), 'pending');
   refreshPairs();
@@ -948,7 +960,7 @@ function trackPair(item) {
       requestStatus(text, tone);
       refreshPairs();
     };
-    if (Date.now() - since > 5 * 60_000) { stop(t('{label}: no answer after 5 minutes; see Your pair changes.', { label }), 'warn'); return; }
+    if (Date.now() - started > 5 * 60_000) { stop(t('{label}: no answer after 5 minutes; see Your pair changes.', { label }), 'warn'); return; }
     try {
       const response = await api(`/api/owner/pair-requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}`);
       if (!response.ok) return; // not readable yet, or offline for a moment
@@ -1063,7 +1075,9 @@ function setLang(lang) {
   else if (state.mode !== 'paper') refreshActivity();
   if (state.requests) renderRequests(state.requests);
   if (state.strategies) renderStrategies(state.strategies);
+  if (state.strategiesError) renderStrategiesError();
   if (state.pairs) renderPairs(state.pairs);
+  if (state.pairsError) renderPairsError();
   if (state.signedOut) signedOut();
   else if (state.loadError) {
     banner(t("Couldn't load the dashboard: {error}", { error: state.loadError }), true);
@@ -1084,9 +1098,12 @@ function setMode(mode) {
   state.strategies = null;
   state.pairs = null;
   state.activity = null;
+  state.strategiesError = null;
+  state.pairsError = null;
   try { localStorage.setItem('cix-mode', mode); } catch { /* storage may be unavailable */ }
   for (const button of document.querySelectorAll('[data-mode]')) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
   renderModeBadge();
+  renderStrategyTile(null); // not the other mode's strategy while this one's loads
   refresh();
 }
 

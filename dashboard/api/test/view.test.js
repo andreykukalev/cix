@@ -185,7 +185,7 @@ test('the active strategy: name, risk profile and mode, and where it came from, 
 
   const refused = V.activeStrategy({ strategy: 'risky@v2#77', strategySelection: { state: 'refused', requested: 'good@v1' } });
   assert.equal(refused.refused, 'good@v1');
-  assert.equal(refused.tone, 'bad');
+  assert.equal(refused.tone, 'warn', 'the running strategy is fine');
   assert.equal(refused.profile, 'Risky');
   assert.equal(refused.source, 'configuration');
 
@@ -193,4 +193,6 @@ test('the active strategy: name, risk profile and mode, and where it came from, 
   assert.equal(custom.title, 'Good v1');
   assert.equal(custom.profile, 'Custom');
   assert.equal(custom.profileKey, 'custom');
+  assert.equal(V.activeStrategy({ strategy: 'safe@v1#1a', strategySelection: { state: 'unreadable', activatedAt: '2026-10-27T10:00:00Z' } }).source, 'dashboard',
+    'a switch that ran stays the source while the database is unreadable');
 });

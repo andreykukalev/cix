@@ -67,3 +67,36 @@ test('without a catalog, or in live, the panel is read-only', () => {
   assert.equal(live.editable, false);
   assert.match(live.readOnlyReason, /live/i);
 });
+
+// The catalog as the engine writes it when config/risk-limits.json has no AllowedQuoteCurrency: the list's own quote
+// currency, a cap of the list's length, and only the listed pairs permitted.
+const configuredOnly = {
+  tradable: ['BTC-EUR', 'ETH-EUR'], cap: '2', quoteCurrency: 'EUR', alwaysPermitted: ['BTC-EUR', 'ETH-EUR'],
+  pairs: [
+    { symbol: 'BTC-EUR', base: 'BTC', tradable: true, permitted: true },
+    { symbol: 'ETH-EUR', base: 'ETH', tradable: true, permitted: true },
+  ],
+};
+
+test('the pairs note: what the panel says in each case, and what the empty add list shows', () => {
+  const V = require('../../app/view.js');
+  const note = (catalogue, symbols) => V.pairsNote(pairsView({ mode: 'paper', catalog: catalogue, list: { symbols }, requests: [] }, NOW));
+
+  const widen = note(configuredOnly, ['BTC-EUR', 'ETH-EUR']);
+  assert.match(widen.note, /the owner adds "AllowedQuoteCurrency": "EUR".*"MaxTradableSymbols"/, 'only the configured pairs, all tradable: what to add');
+  assert.equal(widen.empty, 'no other pairs permitted');
+
+  const back = note(configuredOnly, ['BTC-EUR']);
+  assert.match(back.note, /turn the pairs in config\/risk-limits.json off and on again/, 'a removed one can be added back');
+  assert.deepEqual(back.options.map((p) => p.symbol), ['ETH-EUR']);
+
+  assert.match(note(catalog, ['BTC-EUR', 'ETH-EUR']).note, /add any EUR pair the exchange lists/);
+  const full = note(catalog, ['BTC-EUR', 'ETH-EUR', 'SOL-EUR', 'XRP-EUR']);
+  assert.match(full.note, /remove one to add another/);
+  assert.equal(full.empty, 'the limit is reached');
+
+  assert.match(V.pairsNote(pairsView({ mode: 'live', catalog, list: null, requests: [] }, NOW)).note, /live/i);
+  assert.equal(pairsView({ mode: 'paper', catalog: configuredOnly, list: null, requests: [] }, NOW).configuredOnly, true);
+  assert.equal(pairsView({ mode: 'paper', catalog, list: null, requests: [] }, NOW).configuredOnly, false);
+  assert.equal(pairsView({ mode: 'paper', catalog: null, list: null, requests: [] }, NOW).configuredOnly, false);
+});

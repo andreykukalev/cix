@@ -54,6 +54,11 @@
   }
 
   const PORTIONS = { '0.25': '25%', '0.5': 'half', '1': 'all' };
+  const SELL_DESCRIPTIONS = { // one per portion: in Russian the words around it change with it
+    '0.25': 'Sell 25% of your {symbol} position (paper). {how} The risk gate checks the order either way.',
+    '0.5': 'Sell half of your {symbol} position (paper). {how} The risk gate checks the order either way.',
+    '1': 'Sell all of your {symbol} position (paper). {how} The risk gate checks the order either way.',
+  };
 
   /**
    * The request the page sends for a choice in the dialog, or an error message. id is a fresh UUID per click: sending the
@@ -88,7 +93,7 @@
       const how = body.mode === 'direct'
         ? t('The engine sells at the bid now, without asking the trader.')
         : t('The trader analyses it first and may decline or sell less.');
-      return t('Sell {portion} of your {symbol} position (paper). {how} The risk gate checks the order either way.', { portion: t(PORTIONS[body.portion]), symbol: body.symbol, how });
+      return t(SELL_DESCRIPTIONS[body.portion], { symbol: body.symbol, how });
     }
     return t('Ask the trader to buy {symbol} for {amount} {quote} (paper). It decides, sets a stop-loss, and may decline; the risk gate checks the order.', { symbol: body.symbol, amount: body.quoteAmount, quote });
   }
@@ -131,7 +136,8 @@
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(from ?? '');
     if (!m) return '';
     const month = t(MONTHS[Number(m[2]) - 1]);
-    return period === 'month' ? (m[2] === '01' ? `${month} ${m[1]}` : month) : `${Number(m[3])} ${month}`;
+    const named = m[2] === '05' ? t('May (month)') : month; // a month on its own: in Russian May differs from "13 May"
+    return period === 'month' ? (m[2] === '01' ? `${named} ${m[1]}` : named) : `${Number(m[3])} ${month}`;
   }
 
   /** Bars for the activity chart: buy and sell volume stacked per period, scaled to the largest turnover. */
@@ -250,6 +256,22 @@
     unreadable: { label: 'Database unreadable', tone: 'warn' },
   };
 
+  /**
+   * What the pairs panel says above the list, and what the empty add list shows, from /api/owner/pairs. When only
+   * config/risk-limits.json's own pairs are permitted and all are tradable, it says what the owner adds to widen it.
+   */
+  function pairsNote(view) {
+    const options = (view?.available ?? []).filter((p) => !p.pending);
+    const ownerMustWiden = !!view?.configuredOnly && !options.length;
+    const note = view?.readOnlyReason ? t(view.readOnlyReason)
+      : ownerMustWiden ? t('No other pairs can be added yet: the safety limits permit only the pairs in config/risk-limits.json, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to config/risk-limits.json; once that is deployed, they can be added and removed here without another deploy.')
+        : view?.full ? t('The most pairs the safety limits allow are tradable: remove one to add another.')
+          : view?.openToAnyPair ? t('You can add any {quote} pair the exchange lists; the engine checks it has enough trading first.', { quote: view.quoteCurrency ?? '' }).replace('  ', ' ')
+            : t('You can turn the pairs in config/risk-limits.json off and on again here. Adding other coins needs that list widened first.');
+    const empty = view?.configuredOnly ? t('no other pairs permitted') : view?.full ? t('the limit is reached') : t('none available');
+    return { note, empty, options };
+  }
+
   /** Where the engine stands on the latest selection, for the badge. */
   function selectionState(selection) {
     const s = SELECTION[selection?.state] ?? { label: 'Unknown', tone: 'warn' };
@@ -269,7 +291,7 @@
     const version = Number(m[2]);
     const profile = PROFILES[name] ?? { profile: 'Custom', tone: '' };
     const sel = engine.strategySelection ?? null;
-    const fromDashboard = sel?.state === 'active' || ((sel?.state === 'pending' || sel?.state === 'refused') && !!sel?.activatedAt);
+    const fromDashboard = !!sel?.activatedAt; // set only when a switch has run, never for the configured strategy
     const switching = sel?.state === 'pending' && sel.requested && sel.requested !== `${name}@v${version}` ? sel.requested : null;
     const target = switching ? /^([a-z0-9-]{1,40})@v(\d{1,4})$/.exec(switching) : null;
     return {
@@ -278,7 +300,7 @@
       title: strategyName({ name, version }),
       profile: t(profile.profile),
       profileKey: PROFILES[name] ? name : 'custom',
-      tone: sel?.state === 'refused' ? 'bad' : profile.tone,
+      tone: sel?.state === 'refused' ? 'warn' : profile.tone, // the running strategy is fine; a later switch was refused
       mode: t('Manual'),
       source: fromDashboard ? 'dashboard' : 'configuration',
       sourceText: fromDashboard ? t('chosen on the dashboard') : t('from the configuration'),
@@ -309,7 +331,8 @@
 
   /** Month abbreviations in a label (13 Oct – 19 Oct) in the page's language. */
   function months(label) {
-    return String(label ?? '').replace(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/g, (m) => t(m));
+    return String(label ?? '').replace(/^May(?= \d{4}$)/, t('May (month)'))
+      .replace(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/g, (m) => t(m));
   }
 
   /** Who is signed in, from /.auth/me, for the header. Who may see what is decided by the platform and the API, not here. */
@@ -320,7 +343,7 @@
 
   return {
     change, coins, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
-    paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES,
+    paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES, pairsNote, SELECTION, SELL_DESCRIPTIONS,
     contentLang, pick, months,
   };
 }));

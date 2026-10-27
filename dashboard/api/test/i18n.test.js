@@ -20,8 +20,14 @@ function inRussian(fn) {
 function literalKeys() {
   const keys = new Set();
   for (const file of ['app.js', 'view.js']) {
-    for (const m of read(file).matchAll(/\bt\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/g)) {
+    const source = read(file);
+    for (const m of source.matchAll(/\bt\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/g)) {
       keys.add((m[1] ?? m[2]).replace(/\\(['"])/g, '$1'));
+    }
+    // t(condition ? 'one' : 'other')
+    for (const m of source.matchAll(/\bt\([^'"()]+\?\s*'((?:[^'\\]|\\.)*)'\s*:\s*'((?:[^'\\]|\\.)*)'/g)) {
+      keys.add(m[1].replace(/\\'/g, "'"));
+      keys.add(m[2].replace(/\\'/g, "'"));
     }
   }
   return [...keys];
@@ -47,6 +53,15 @@ test('every word app.js and view.js show has its Russian', () => {
   const keys = literalKeys();
   assert.ok(keys.length > 150, 'the scan found the texts');
   assert.deepEqual(keys.filter((k) => !I.has(k)), []);
+});
+
+test('every label the page looks up has its Russian: statuses, selections, profiles, sell descriptions', () => {
+  const labels = [
+    ...Object.values(V.STATUS).map((s) => s.label), ...Object.values(V.SELECTION).map((s) => s.label),
+    ...Object.values(V.PROFILES).flatMap((p) => [p.title, p.profile]), ...Object.values(V.SELL_DESCRIPTIONS), ...Object.values(V.PORTIONS),
+    'Custom', 'Manual', 'May (month)',
+  ];
+  assert.deepEqual(labels.filter((k) => !I.has(k)), []);
 });
 
 test('every word on the page itself has its Russian, or is a name or identifier that stays', () => {
@@ -79,6 +94,12 @@ test('the language switch reaches view.js: statuses, descriptions and the active
     assert.equal(V.requestState({ status: 'rejected', outcome: { rule: 'max-order' } }).label, 'Отклонён (max-order)');
     assert.equal(V.describe({ side: 'buy', symbol: 'SOL-EUR', quoteAmount: '25' }),
       'Попросить трейдера купить SOL-EUR на 25 EUR (бумажная торговля). Он решает, ставит стоп-лосс и может отказаться; риск-контроль проверяет ордер.');
+    assert.equal(V.describe({ side: 'sell', symbol: 'SOL-EUR', portion: '1', mode: 'direct' }),
+      'Продать всю позицию SOL-EUR (бумажная торговля). Движок продаёт сейчас по цене покупателя, не спрашивая трейдера. Риск-контроль проверяет ордер в любом случае.');
+    assert.equal(V.tick('2026-05-01', 'month'), 'май');
+    assert.equal(V.tick('2026-05-13', 'day'), '13 мая');
+    assert.equal(V.months('May 2026'), 'май 2026');
+    assert.equal(I.t('Selected safe@v1.'), 'Выбрана safe@v1.');
     assert.equal(V.change(0.0123, '24 hours').label, 'рост на 1.23% за 24 часа');
     assert.equal(V.paramValue(90, { unit: 'minutes' }), '90 мин');
     assert.equal(V.strategyName({ name: 'balanced', version: 1 }), 'Сбалансированная v1');
