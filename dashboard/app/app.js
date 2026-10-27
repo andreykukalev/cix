@@ -173,7 +173,12 @@ function renderTiles(view) {
   const syncAge = ms(s.exchange) === null ? null : (Date.now() - ms(s.exchange)) / 1000;
   tile('tile-sync', s.reconcileProblem ? 'bad' : syncAge === null ? 'warn' : syncAge > 600 ? 'warn' : 'ok',
     s.exchange ? ago(s.exchange) : '–',
-    [s.reconcileProblem ? says(s.reconcileProblem, s.reconcileProblemRu) : t('portfolio with the exchange'), s.database ? ` · ${t('database {ago}', { ago: ago(s.database) })}` : '']);
+    s.reconcileProblem ? says(s.reconcileProblem, s.reconcileProblemRu) : t('portfolio checked against the exchange'));
+
+  const m = V.monitors(view, Date.now(), ago);
+  for (const [key, id] of [['database', 'tile-database'], ['scanner', 'tile-scanner'], ['trader', 'tile-trader'], ['analyst', 'tile-analyst'], ['requests', 'tile-requests'], ['positions', 'tile-positions']]) {
+    tile(id, m[key].tone, m[key].value, m[key].sub.map((line) => el('span', { class: 'line', text: line })));
+  }
 }
 
 /**

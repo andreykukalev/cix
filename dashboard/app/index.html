@@ -48,13 +48,28 @@
     <div id="request-status" class="request-status" hidden><span class="request-status-text" role="status" aria-live="polite"></span><button type="button" id="request-status-close" class="request-status-close" aria-label="Close" title="Close">×</button></div>
 
     <div class="tab-panel" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview">
-      <section class="tiles" aria-label="Status">
-        <article class="tile" id="tile-engine"><h2>Engine</h2><p class="value">–</p><p class="sub">–</p></article>
-        <article class="tile" id="tile-trading"><h2>Trading</h2><p class="value">–</p><p class="sub">–</p></article>
-        <article class="tile" id="tile-strategy"><h2>Active strategy</h2><p class="value">–</p><p class="sub">–</p></article>
-        <article class="tile" id="tile-view"><h2>Market view</h2><p class="value">–</p><p class="sub">–</p></article>
-        <article class="tile" id="tile-data"><h2>Market data</h2><p class="value">–</p><p class="sub">–</p></article>
-        <article class="tile" id="tile-sync"><h2>Last sync</h2><p class="value">–</p><p class="sub">–</p></article>
+      <section class="health" aria-label="Status">
+        <h2 class="health-title">Platform</h2>
+        <div class="tiles">
+          <article class="tile" id="tile-engine"><h2>Engine</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-database"><h2>Database</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-sync"><h2>Exchange sync</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-data"><h2>Market data</h2><p class="value">–</p><p class="sub">–</p></article>
+        </div>
+        <h2 class="health-title">Trading</h2>
+        <div class="tiles">
+          <article class="tile" id="tile-trading"><h2>Trading</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-strategy"><h2>Active strategy</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-view"><h2>Market view</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-scanner"><h2>Scanner</h2><p class="value">–</p><p class="sub">–</p></article>
+        </div>
+        <h2 class="health-title">Agents and orders</h2>
+        <div class="tiles">
+          <article class="tile" id="tile-trader"><h2>Trader</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-analyst"><h2>Analyst</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-requests"><h2>Owner requests</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-positions"><h2>Positions and orders</h2><p class="value">–</p><p class="sub">–</p></article>
+        </div>
       </section>
 
       <section class="panel" aria-labelledby="h-portfolio">

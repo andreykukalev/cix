@@ -257,3 +257,44 @@ test('the signal key reads as one chip per coin, buys first, each with what the 
   assert.deepEqual(V.signalItems(''), []);
   assert.deepEqual(V.signalItems(undefined), []);
 });
+
+test('the health monitors flag a late scan, a failed or overdue agent, a signal run with no order, and a position without a stop', () => {
+  const now = Date.parse('2026-10-27T12:30:00Z');
+  const at = (min) => new Date(now - min * 60e3).toISOString();
+  const ago = (iso) => `${Math.round((now - Date.parse(iso)) / 60e3)} min ago`;
+  const healthy = {
+    engine: { manualRequests: { state: 'ok', awaitingAgent: 0, lastPollAt: at(0.1) } },
+    sync: { database: at(1) },
+    cycle: { lastScan: { at: at(2), ranked: 10, excluded: 1 }, ordersInFlight: [] },
+    jobs: {
+      trader: { last: { runId: 'run-1', purpose: 'heartbeat', state: 'done', at: at(10) }, failedToday: 0, notRunToday: 0, cappedAt: null },
+      analyst: { last: { runId: 'analyst-1', purpose: 'analyst', state: 'done', at: at(120) }, failedToday: 0, notRunToday: 0, cappedAt: null },
+    },
+    agents: { trader: { recentRuns: [{ runId: 'run-1', orders: 0 }] } },
+    portfolio: { holdings: [{ symbol: 'BTC-EUR', protected: true }] },
+  };
+  const ok = V.monitors(healthy, now, ago);
+  assert.deepEqual(Object.fromEntries(Object.entries(ok).map(([k, m]) => [k, m.tone])),
+    { database: 'ok', scanner: 'ok', trader: 'ok', analyst: 'ok', requests: 'ok', positions: 'ok' });
+  assert.deepEqual([ok.trader.value, ...ok.trader.sub], ['Done', 'last run 10 min ago · position review']);
+  assert.equal(ok.scanner.sub[1], '10 of 11 coins ranked');
+
+  const sick = structuredClone(healthy);
+  sick.sync.database = at(12);
+  sick.cycle.lastScan.at = at(9);
+  sick.jobs.trader.last = { runId: 'run-2', purpose: 'signals', state: 'done', at: at(5) };
+  sick.agents.trader.recentRuns.unshift({ runId: 'run-2', orders: 0 });
+  sick.jobs.analyst = { last: { runId: 'analyst-2', purpose: 'analyst', state: 'failed', at: at(60) }, failedToday: 1, notRunToday: 0, cappedAt: null };
+  sick.engine.manualRequests.lastPollAt = at(5);
+  sick.portfolio.holdings.push({ symbol: 'SOL-EUR', protected: false });
+  sick.cycle.ordersInFlight = [{ symbol: 'ETH-EUR', sentAt: at(55) }];
+  const m = V.monitors(sick, now, ago);
+  assert.deepEqual([m.database.tone, m.scanner.tone, m.trader.tone, m.analyst.tone, m.requests.tone, m.positions.tone], ['bad', 'warn', 'warn', 'bad', 'bad', 'bad']);
+  assert.ok(m.trader.sub.includes('it placed no order for the signals: see its report'));
+  assert.deepEqual(m.positions.sub, ['without a stop-loss: SOL-EUR', 'orders older than 50 min: ETH-EUR']);
+
+  const overdue = structuredClone(healthy);
+  overdue.jobs.analyst.last.at = at(14 * 60);
+  assert.deepEqual([V.monitors(overdue, now, ago).analyst.tone, V.monitors(overdue, now, ago).analyst.value], ['bad', 'Overdue']);
+  assert.equal(V.monitors({}, now, ago).trader.value, 'No runs yet');
+});

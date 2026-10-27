@@ -120,3 +120,21 @@ test('the engine section says which strategy runs and how it was chosen, for the
   assert.equal(summarize({ mode: 'paper', status: { ...status, strategySelection: undefined }, journal: [], stateDocs: [] }, NOW).engine.strategySelection, null);
   assert.equal(summarize({ mode: 'paper', status: null, journal: [], stateDocs: [] }, NOW).engine.strategySelection, null);
 });
+
+test('agent jobs: the latest run of each job and how it ended, with today\'s failures', () => {
+  const { agentJobs } = require('../src/summarize');
+  const now = Date.parse('2026-10-27T12:30:00Z');
+  const run = (at, id, job, step, purpose) => ({ at, kind: 'agent-run', actor: 'engine', runId: id, data: { step, job, purpose } });
+  const entries = [
+    run('2026-10-27T12:19:40Z', 'run-2', 'trader', 'done', 'signals'),
+    run('2026-10-27T12:18:40Z', 'run-2', 'trader', 'claimed', 'signals'),
+    run('2026-10-27T12:18:36Z', 'run-2', 'trader', 'queued', 'signals'),
+    run('2026-10-27T11:20:00Z', 'run-1', 'trader', 'failed', 'signals'),
+    run('2026-10-27T10:50:00Z', 'analyst-1', 'analyst', 'claimed', 'analyst'),
+    run('2026-10-26T23:00:00Z', 'run-0', 'trader', 'failed', 'heartbeat'),
+    { at: '2026-10-27T12:00:00Z', kind: 'tool-call', actor: 'trader', runId: 'run-2', data: { tool: 'scan_market' } },
+  ];
+  const jobs = agentJobs(entries, now);
+  assert.deepEqual(jobs.trader, { last: { runId: 'run-2', purpose: 'signals', at: '2026-10-27T12:19:40Z', state: 'done' }, failedToday: 1, notRunToday: 0, cappedAt: null });
+  assert.equal(jobs.analyst.last.state, 'running');
+});
