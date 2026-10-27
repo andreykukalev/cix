@@ -420,6 +420,32 @@
     'down {pct}%': 'падение на {pct}%',
     '{move} over {period}': '{move} за {period}',
     'not in the latest scan': 'нет в последнем сканировании',
+    'waiting for its first scan': 'ждёт первого сканирования',
+    'Tradable now: its prices are loading, and the engine scans a new pair within a minute of adding it.':
+      'Уже торгуется: её цены загружаются, а новую пару движок сканирует в течение минуты после добавления.',
+    'strategy exposure cap reached': 'достигнут общий лимит вложений стратегии',
+    'The strategy waits between buys.': 'Стратегия выдерживает паузу между покупками.',
+    'Trading is halted, so the scanner suggests no buys.': 'Торговля остановлена, поэтому сканер не предлагает покупок.',
+    "The market analyst's view is risk-off: no new buys until it ends.": 'Аналитик рынка считает рынок рискованным (risk-off): новых покупок не будет, пока это не закончится.',
+    'Already in the portfolio: the strategy opens no second position in a coin.': 'Уже в портфеле: стратегия не открывает вторую позицию в той же монете.',
+    'An order in this coin is still working.': 'По этой монете ещё работает ордер.',
+    "The strategy's total exposure cap is used up: no new buys until something is sold.": 'Общий лимит вложений стратегии исчерпан: новых покупок не будет, пока что-то не продано.',
+    'Filtered out': 'Отсеяна фильтром',
+    'Strategy rule': 'Правило стратегии',
+    'Held back': 'Придержана',
+    'New pair': 'Новая пара',
+    'Why no buy': 'Почему нет покупки',
+    'the market filters dropped it before ranking (trading volume, spread, volatility, costs), with the figure and the limit.':
+      'рыночные фильтры убрали её до ранжирования (объём торгов, спред, волатильность, издержки); указаны значение и предел.',
+    "ranked, but the strategy's entry rules turned it down (trend, pullback, last hour).":
+      'попала в рейтинг, но её отклонили правила входа стратегии (тренд, откат, последний час).',
+    "not the rules: a limit or a block stopped it, such as the strategy's buy signals per scan already taken by higher-ranked coins, a pause between buys, a holding or an open order.":
+      'дело не в правилах: её остановил лимит или блокировка, например сигналы на покупку за скан уже заняли монеты выше в рейтинге, пауза между покупками, позиция в портфеле или открытый ордер.',
+    'Remove is off while a pair still has a balance or a working order; the engine refuses it too:':
+      'Удаление недоступно, пока по паре есть остаток или работающий ордер; движок тоже его отклонит:',
+    'There is still a {coin} balance (about {value} {quote}). A pair can be removed only when its balance is zero: sell it first.':
+      'На счёте ещё есть {coin} (около {value} {quote}). Пару можно удалить только при нулевом остатке: сначала продайте.',
+    'An order in {symbol} is still working: cancel it or let it fill first.': 'По {symbol} ещё работает ордер: сначала отмените его или дождитесь исполнения.',
     'Pick a coin.': 'Выберите монету.',
     'Pick how much to sell.': 'Выберите, сколько продать.',
     'Pick how to sell.': 'Выберите, как продать.',
@@ -679,6 +705,7 @@
     [/^trend (up|down|flat|unknown)$/, (m) => `тренд: ${{ up: 'вверх', down: 'вниз', flat: 'боковой', unknown: 'неизвестен' }[m[1]]}`],
     [/^sell \((stop|target|trend-down)\)$/, (m) => `продажа (${{ stop: 'стоп', target: 'цель', 'trend-down': 'тренд вниз' }[m[1]]})`],
     [/^extended: ([\d.]+) ATR above EMA20$/, (m) => `перегрета: на ${m[1]} ATR выше EMA20`],
+    [/^cooldown until (\d{2}:\d{2}) UTC$/, (m) => `пауза между покупками до ${m[1]} UTC`],
     [/^Selected ([a-z0-9-]{1,40}@v\d{1,4})\. The engine validates it and switches before the next trader run; the journal \(kind strategy\) and the engine status say what happened\.$/,
       (m) => `Выбрана ${m[1]}. Движок проверит её и переключится перед следующим запуском трейдера; что произошло, покажут журнал (тип strategy) и статус движка.`],
     [/^Selected ([a-z0-9-]{1,40}@v\d{1,4})\.$/, (m) => `Выбрана ${m[1]}.`],

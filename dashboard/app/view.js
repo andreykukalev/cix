@@ -26,31 +26,82 @@
     return { text: `${arrow} ${sign}${rounded.toFixed(rounded === 0 ? 1 : Math.abs(rounded) < 10 ? 2 : 1)}%`, dir, label: t('{move} over {period}', { move, period: t(period) }) };
   }
 
+  // Why a coin got no buy signal, in three kinds the page keeps apart: filtered out by the market filters before ranking
+  // (the scanner's exclusions), turned down by the strategy's entry rules, or held back by a limit or a block although
+  // the rules were not what stopped it (the signal limit, the strategy's pause, a halt, a holding or an order).
+  const BLOCKS = new Set(['trading halted', 'risk-off (market view)', 'already held', 'open order', 'signal limit reached', 'strategy exposure cap reached']);
+  const BLOCK_DETAILS = {
+    'trading halted': 'Trading is halted, so the scanner suggests no buys.',
+    'risk-off (market view)': "The market analyst's view is risk-off: no new buys until it ends.",
+    'already held': 'Already in the portfolio: the strategy opens no second position in a coin.',
+    'open order': 'An order in this coin is still working.',
+    'strategy exposure cap reached': "The strategy's total exposure cap is used up: no new buys until something is sold.",
+  };
+  const WHY_LABELS = { filtered: 'Filtered out', rule: 'Strategy rule', blocked: 'Held back', pending: 'New pair' };
+
+  /** Why there is no buy signal for a scan row: its kind, a label for the kind, the short reason and the sentence behind it. */
+  function why(r, lang) {
+    const note = typeof r?.note === 'string' && r.note ? r.note : null;
+    if (!note || r.signal === 'buy') return null;
+    const said = pick(r.detail ?? null, r.detailRu ?? null, lang).text;
+    const kind = r.rank === null || r.rank === undefined ? 'filtered' : BLOCKS.has(note) || /^cooldown until /.test(note) ? 'blocked' : 'rule';
+    const detail = said ?? (Object.hasOwn(BLOCK_DETAILS, note) ? t(BLOCK_DETAILS[note])
+      : /^cooldown until /.test(note) ? t('The strategy waits between buys.') : null);
+    return { kind, label: t(WHY_LABELS[kind]), text: t(note), detail };
+  }
+
   /**
-   * One row per coin: every coin in the latest scan, plus anything held that the scan didn't list, held ones first.
-   * The moves come from the scan (the reference time is the scan's); holdings say what is held.
+   * One row per coin: every coin in the latest scan, then the tradable pairs the scan hasn't covered yet (just added: the
+   * engine scans them within a minute), then anything held that neither lists, held ones first. The moves come from the
+   * scan (the reference time is the scan's); holdings say what is held; pairs is the Coins tab's /api/owner/pairs answer.
    */
-  function coins(view) {
+  function coins(view, pairs, lang) {
     const market = Array.isArray(view?.briefing?.market) ? view.briefing.market : [];
     const holdings = new Map((view?.portfolio?.holdings ?? []).filter((h) => SYMBOL.test(h?.symbol ?? '')).map((h) => [h.symbol, h]));
-    const rows = market.filter((r) => SYMBOL.test(r?.symbol ?? '')).map((r) => ({
-      symbol: r.symbol,
-      quote: r.symbol.split('-')[1],
+    const row = (symbol, rest) => ({
+      symbol, quote: symbol.split('-')[1], rank: null, signal: null, note: null, why: null,
+      hour: change(null, '1 hour'), day: change(null, '24 hours'), held: holdings.has(symbol), value: holdings.get(symbol)?.valueQuote ?? null, inScan: false, ...rest,
+    });
+    const rows = market.filter((r) => SYMBOL.test(r?.symbol ?? '')).map((r) => row(r.symbol, {
       rank: r.rank ?? null,
       signal: r.signal ?? null,
       note: r.note ?? null,
+      why: why(r, lang),
       hour: change(r.return1h, '1 hour'),
       day: change(r.return24h, '24 hours'),
-      held: holdings.has(r.symbol),
-      value: holdings.get(r.symbol)?.valueQuote ?? null,
       inScan: true,
     }));
-    for (const [symbol, h] of holdings) {
-      if (!rows.some((r) => r.symbol === symbol)) {
-        rows.push({ symbol, quote: symbol.split('-')[1], rank: null, signal: null, note: t('not in the latest scan'), hour: change(null, '1 hour'), day: change(null, '24 hours'), held: true, value: h.valueQuote ?? null, inScan: false });
-      }
+    const listed = new Set(rows.map((r) => r.symbol));
+    for (const p of Array.isArray(pairs?.tradable) ? pairs.tradable : []) {
+      if (!SYMBOL.test(p?.symbol ?? '') || listed.has(p.symbol)) continue;
+      listed.add(p.symbol);
+      const note = t('waiting for its first scan');
+      rows.push(row(p.symbol, {
+        note,
+        why: { kind: 'pending', label: t(WHY_LABELS.pending), text: note, detail: t('Tradable now: its prices are loading, and the engine scans a new pair within a minute of adding it.') },
+      }));
+    }
+    for (const [symbol] of holdings) {
+      if (!listed.has(symbol)) rows.push(row(symbol, { note: t('not in the latest scan') }));
     }
     return rows.sort((a, b) => (Number(b.held) - Number(a.held)) || ((a.rank ?? 1e9) - (b.rank ?? 1e9)) || a.symbol.localeCompare(b.symbol));
+  }
+
+  /**
+   * Why a pair can't be removed now, or null. The engine checks again and has the final word; this says it before the
+   * owner asks: any balance in the coin (however small: a residual below the exchange minimum counts) or an order working.
+   */
+  function removeBlock(symbol, view) {
+    const coin = String(symbol ?? '').split('-')[0];
+    const held = (view?.portfolio?.holdings ?? []).find((h) => h?.symbol === symbol);
+    if (held) {
+      return t('There is still a {coin} balance (about {value} {quote}). A pair can be removed only when its balance is zero: sell it first.',
+        { coin, value: held.valueQuote ?? '?', quote: String(symbol).split('-')[1] ?? '' });
+    }
+    if ((view?.cycle?.ordersInFlight ?? []).some((o) => o?.symbol === symbol)) {
+      return t('An order in {symbol} is still working: cancel it or let it fill first.', { symbol });
+    }
+    return null;
   }
 
   const PORTIONS = { '0.25': '25%', '0.5': 'half', '1': 'all' };
@@ -114,14 +165,26 @@
     expired: { label: 'Expired', tone: 'warn' },
   };
 
-  /** Where a request stands, for the page: a label, a tone, whether it's over, and the engine's or trader's words. */
-  function requestState(item) {
+  /**
+   * Where a request stands, for the page: a label, a tone, whether it's over, and the trader's or the engine's words, in the
+   * page's language when they come in it, each said once (a decline's reason is its rationale: shown once, not twice).
+   */
+  function requestState(item, lang = i18n ? i18n.getLang() : 'en') {
     const known = STATUS[item?.status] ?? { label: item?.status ?? 'unknown', tone: 'warn' };
     const o = item?.outcome ?? {};
     const s = item?.status === 'rejected' && o.rule ? { ...known, label: t('Refused ({rule})', { rule: o.rule }) } : { ...known, label: t(known.label) };
-    const detail = [o.rationale, o.reason].filter((x) => typeof x === 'string' && x.trim()).join(' · ') || null;
+    const rationale = typeof o.rationale === 'string' && o.rationale.trim() ? o.rationale.trim() : null;
+    const reason = typeof o.reason === 'string' && o.reason.trim() && o.reason.trim() !== rationale ? o.reason.trim() : null;
+    const detail = [pick(rationale, o.rationaleRu, lang).text, pick(reason, o.reasonRu, lang).text].filter(Boolean).join(' · ') || null;
     const filled = item?.status === 'filled' && o.filledSize ? (o.averagePrice ? t('{size} at {price}', { size: o.filledSize, price: o.averagePrice }) : String(o.filledSize)) : null;
     return { label: s.label, tone: s.tone, final: Boolean(item?.final), detail, filled };
+  }
+
+  /** A request's step as the page lists it: the engine's words in the page's language, and none where they repeat the rationale. */
+  function stepDetail(event, item, lang = i18n ? i18n.getLang() : 'en') {
+    const detail = typeof event?.detail === 'string' && event.detail.trim() ? event.detail.trim() : null;
+    if (!detail || detail === String(item?.outcome?.rationale ?? '').trim()) return null;
+    return pick(detail, event.detailRu, lang).text;
   }
 
   function what(item) {
@@ -342,7 +405,7 @@
   }
 
   return {
-    change, coins, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
+    change, coins, why, removeBlock, BLOCK_DETAILS, WHY_LABELS, stepDetail, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
     paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES, pairsNote, SELECTION, SELL_DESCRIPTIONS,
     contentLang, pick, months,
   };

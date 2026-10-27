@@ -10,8 +10,10 @@
 //   Owner's direct sell[: note]                   (manual request, ADR-0011)
 //
 // The dashboard is the owner's only (ADR-0014), so explanations keep every level and price. Each explanation comes in
-// English and in Russian (the owner's language): the Russian keeps names, abbreviations and trading terms (stop-loss,
-// ATR, EMA20, take-profit, the agents' names) in English, and text the dashboard didn't write stays as written.
+// English and in Russian (the owner's language), in the dashboard's own Russian terms (движок, трейдер, стоп-лосс,
+// тейк-профит); only abbreviations (ATR, EMA20) and tickers stay in English. The engine's own sentences (the risk gate's
+// reasons, the scanner's setups and exit details) are translated from their known formats; an agent's own words are shown
+// in Russian when the agent wrote them in Russian too (rationaleRu), else as written.
 
 const ENTRY = /^signal entry (\S+) rank (\d+):\s*(.*?)(?:;\s*stop (\S+),\s*target (\S+),\s*risk (\S+))?\s*$/i;
 const EXIT = /^(signal|protective) exit (\S+) (stop|target|trend-down|[\w-]+):\s*(.*)$/i;
@@ -24,9 +26,9 @@ const EXIT_REASON = {
 };
 
 const EXIT_REASON_RU = {
-  stop: 'Цена опустилась до stop-loss позиции',
-  target: 'Цена поднялась до take-profit позиции',
-  'trend-down': 'Тренд развернулся вниз (20-часовая средняя пересекла 50-часовую сверху вниз)',
+  stop: 'Цена опустилась до стоп-лосса позиции',
+  target: 'Цена поднялась до тейк-профита позиции',
+  'trend-down': 'Тренд развернулся вниз (быстрая средняя пересекла медленную сверху вниз)',
 };
 
 // The rule codes the risk gate (src/Cix.Domain/Risk/RiskGate.cs) and the execution service write, in words.
@@ -57,36 +59,132 @@ const GATE_RULES = {
   'state-unavailable': "the engine's state couldn't be read",
   'post-only-would-cross': 'a post-only order would have crossed the book',
   'exchange-refused': 'the exchange refused it',
+  'placement-uncertain': "the exchange's answer was lost",
+  'engine-lease': "this engine doesn't hold the trading lease",
+  'strategy-daily-loss-stop': "the strategy's daily loss stop halts new buys",
+  'strategy-positions-per-run': "the strategy's buys per run are used up",
+  'strategy-cooldown': 'the strategy waits between buys',
+  'strategy-order-size': "capped at the strategy's order size",
+  'strategy-position-cap': "capped at the strategy's per-coin cap",
+  'strategy-exposure-cap': "capped at the strategy's total exposure cap",
 };
 
 const GATE_RULES_RU = {
-  'kill-switch': 'торговля остановлена (kill switch)',
-  'symbol-allowlist': 'монеты нет в allowlist',
+  'kill-switch': 'торговля остановлена (аварийный выключатель)',
+  'symbol-allowlist': 'монеты нет среди торгуемых пар',
   'invalid-order': 'ордер составлен неверно',
   'pair-inactive': 'пара не торгуется на бирже',
   step: 'размер или цена не кратны шагу биржи',
   'market-data': 'нет рыночных данных для оценки цены',
   'stale-market-data': 'рыночные данные слишком устарели для оценки цены',
-  'price-band': 'limit-цена слишком далеко от рынка',
+  'price-band': 'лимитная цена слишком далеко от рынка',
   'order-rate': 'слишком много ордеров за последнюю минуту',
   'exchange-max-size': 'уменьшен до максимума биржи',
   'exchange-min-size': 'меньше минимума биржи',
   'no-position': 'нет позиции для продажи',
   'position-size': 'уменьшен до размера позиции',
-  'drawdown-halt': 'лимит drawdown остановил новые покупки',
+  'drawdown-halt': 'лимит просадки остановил новые покупки',
   'daily-loss': 'дневной лимит убытка остановил новые покупки',
   'max-order': 'ограничен лимитом на один ордер',
   'position-cap': 'ограничен лимитом позиции на монету',
-  'allocation-cap': 'ограничен общим лимитом аллокации',
+  'allocation-cap': 'ограничен общим лимитом средств',
   'placement-unresolved': 'предыдущий ордер ещё сверяется',
   'duplicate-client-order-id': 'этот ордер уже был отправлен',
   'pairs-unavailable': 'не удалось прочитать список пар биржи',
   'unknown-symbol': 'на бирже нет этой монеты',
   'portfolio-unavailable': 'не удалось оценить портфель',
-  'state-unavailable': 'не удалось прочитать состояние engine',
-  'post-only-would-cross': 'post-only ордер исполнился бы сразу (пересёк бы spread)',
+  'state-unavailable': 'не удалось прочитать состояние движка',
+  'post-only-would-cross': 'post-only ордер исполнился бы сразу',
   'exchange-refused': 'биржа его отклонила',
+  'placement-uncertain': 'ответ биржи потерян',
+  'engine-lease': 'у этого движка нет права торговать',
+  'strategy-daily-loss-stop': 'дневной стоп стратегии по убытку остановил новые покупки',
+  'strategy-positions-per-run': 'покупки стратегии на этот запуск исчерпаны',
+  'strategy-cooldown': 'стратегия выдерживает паузу между покупками',
+  'strategy-order-size': 'ограничен размером ордера стратегии',
+  'strategy-position-cap': 'ограничен лимитом стратегии на монету',
+  'strategy-exposure-cap': 'ограничен общим лимитом вложений стратегии',
 };
+
+// The limits the gate's sentences name by code, and the strategy's by phrase, in Russian (genitive: "в пределах ...").
+const LIMIT_NAMES_RU = { 'max-order': 'лимита на один ордер', 'position-cap': 'лимита позиции на монету', 'allocation-cap': 'общего лимита средств' };
+function limitRu(what) {
+  if (Object.hasOwn(LIMIT_NAMES_RU, what)) return LIMIT_NAMES_RU[what];
+  let m = /^the strategy's order size of (\S+)$/.exec(what);
+  if (m) return `размера ордера стратегии ${m[1]}`;
+  m = /^the strategy's cap of (\S+) per coin$/.exec(what);
+  if (m) return `лимита стратегии ${m[1]} на монету`;
+  m = /^the strategy's total exposure cap of (\S+)$/.exec(what);
+  if (m) return `общего лимита вложений стратегии ${m[1]}`;
+  return null;
+}
+
+// The reasons the risk gate, the strategy's limits and the execution service write (src/Cix.Domain/Risk/RiskGate.cs,
+// StrategyGate.cs, src/Cix.Engine/Execution/ExecutionService.cs), in Russian. A reason not listed here is left out of the
+// Russian explanation, which then gives the rule alone: never English in the middle of Russian.
+const REASONS_RU = [
+  [/^The kill switch is engaged; no orders are allowed\.$/, () => 'Аварийный выключатель включён: ордера запрещены.'],
+  [/^(\S+) is not in the allowed symbols\.$/, (m) => `${m[1]} нет среди торгуемых пар.`],
+  [/^Size and limit price must be positive and the client order ID set\.$/, () => 'Размер и лимитная цена должны быть больше нуля, а ID ордера задан.'],
+  [/^(\S+) is not tradable on the exchange\.$/, (m) => `${m[1]} не торгуется на бирже.`],
+  [/^Size must be a multiple of (\S+) and price of (\S+)\.$/, (m) => `Размер должен быть кратен ${m[1]}, а цена — ${m[2]}.`],
+  [/^No valid market data for this symbol\.$/, () => 'Нет актуальных рыночных данных по этой монете.'],
+  [/^Market data is too old \(or from the future\) to price this order\.$/, () => 'Рыночные данные слишком старые, чтобы оценить ордер.'],
+  [/^Limit price is (\S+) from the reference price; the maximum is (\S+)\.$/, (m) => `Лимитная цена отличается от рыночной на ${m[1]}; допустимо не больше ${m[2]}.`],
+  [/^At most (\d+) orders per minute\.$/, (m) => `Не больше ${m[1]} ордеров в минуту.`],
+  [/^Order reduced to the exchange maximum of (\S+)\.$/, (m) => `Ордер уменьшен до максимума биржи: ${m[1]}.`],
+  [/^After (\S+), the order is below the exchange minimum \((\S+) base, (\S+) quote\)\.$/,
+    (m) => `После ограничения (${GATE_RULES_RU[m[1]] ?? m[1]}) ордер меньше минимума биржи (${m[2]} в монете, ${m[3]} в валюте).`],
+  [/^The order is below the exchange minimum \((\S+) base, (\S+) quote\)\.$/, (m) => `Ордер меньше минимума биржи (${m[1]} в монете, ${m[2]} в валюте).`],
+  [/^Spot only: there is no position to sell\.$/, () => 'Только спот: позиции для продажи нет.'],
+  [/^The position is too small to sell at this price\.$/, () => 'Позиция слишком мала, чтобы продать её по этой цене.'],
+  [/^Sell reduced to the current position size\.$/, () => 'Продажа уменьшена до текущего размера позиции.'],
+  [/^Drawdown is (\S+); new buys are halted until the owner resumes trading\.$/, (m) => `Просадка ${m[1]}: новые покупки остановлены, пока владелец не возобновит торговлю.`],
+  [/^The daily loss limit is reached; new buys are halted until tomorrow \(UTC\)\.$/, () => 'Достигнут дневной лимит убытка: новые покупки остановлены до завтра (UTC).'],
+  [/^No room left under (.+)\.$/, (m) => (limitRu(m[1]) ? `Не осталось места в пределах ${limitRu(m[1])}.` : null)],
+  [/^(?:Remaining room|The room left) under (.+) is too small for one unit\.$/, (m) => (limitRu(m[1]) ? `Оставшегося места в пределах ${limitRu(m[1])} не хватает даже на минимальный размер.` : null)],
+  [/^Order reduced to (\S+)(?: quote)? to stay within (.+)\.$/, (m) => (limitRu(m[2]) ? `Ордер уменьшен до ${m[1]}, чтобы остаться в пределах ${limitRu(m[2])}.` : null)],
+  [/^Within all limits\.$/, () => 'В пределах всех лимитов.'],
+  [/^Within the strategy's limits\.$/, () => 'В пределах лимитов стратегии.'],
+  [/^Sells aren't limited by the strategy\.$/, () => 'Стратегия не ограничивает продажи.'],
+  [/^Today's loss has reached the strategy's daily stop of (\S+); no new buys until tomorrow \(UTC\)\.$/,
+    (m) => `Сегодняшний убыток достиг дневного стопа стратегии (${m[1]}): новых покупок не будет до завтра (UTC).`],
+  [/^This run already placed (\d+) buy\(s\); the strategy allows (\d+) per run\.$/, (m) => `За этот запуск уже размещено покупок: ${m[1]}; стратегия разрешает ${m[2]} за запуск.`],
+  [/^The strategy waits (\d+) minutes between buys; the last was (\d+) minutes ago\.$/, (m) => `Стратегия выдерживает ${m[1]} мин. между покупками; последняя была ${m[2]} мин. назад.`],
+  [/^An earlier order with this client order ID has an unknown outcome; it must be reconciled first\.$/, () => 'Исход предыдущего ордера с этим ID неизвестен: сначала нужна сверка.'],
+  [/^This client order ID was already sent; use a new one for a new order\.$/, () => 'Ордер с этим ID уже отправлялся; для нового ордера нужен новый ID.'],
+  [/^The exchange's trading rules could not be loaded\.$/, () => 'Не удалось загрузить торговые правила биржи.'],
+  [/^The exchange doesn't list (\S+)\.$/, (m) => `На бирже нет ${m[1]}.`],
+  [/^The engine could not record the order before sending it; nothing was sent\.$/, () => 'Движок не смог записать ордер перед отправкой, поэтому ничего не отправлено.'],
+  [/^This engine doesn't hold the engine lease/, () => 'У этого движка нет права торговать в этом режиме (возможно, торгует другой движок); ничего не отправлено.'],
+  [/^The order would have filled at once, so the post-only order was rejected\.$/, () => 'Ордер исполнился бы сразу, поэтому post-only ордер отклонён.'],
+  [/^The exchange may or may not have the order; it counts as open until reconciliation finds out\.$/, () => 'Неизвестно, принят ли ордер биржей; до сверки он считается открытым.'],
+  [/^The exchange refused the order\.$/, () => 'Биржа отклонила ордер.'],
+];
+
+/** The engine's reason in Russian, or null when its format isn't known. */
+function reasonRu(reason) {
+  const text = String(reason ?? '').trim();
+  for (const [re, ru] of REASONS_RU) {
+    const m = re.exec(text);
+    if (m) return ru(m);
+  }
+  return null;
+}
+
+/** The scanner's entry setup ("uptrend pullback") in Russian. */
+const SETUPS_RU = { 'uptrend pullback': 'откат в восходящем тренде' };
+
+/** The scanner's exit detail (src/Cix.Domain/Scanning/MarketScanner.cs) in Russian, or null. */
+function exitDetailRu(detail) {
+  let m = /^bid (\S+) at or below stop (\S+)$/.exec(detail);
+  if (m) return `bid ${m[1]} на уровне стоп-лосса ${m[2]} или ниже`;
+  m = /^bid (\S+) at or above target (\S+)$/.exec(detail);
+  if (m) return `bid ${m[1]} на уровне тейк-профита ${m[2]} или выше`;
+  if (detail === 'the fast EMA crossed below the slow EMA') return 'быстрая EMA пересекла медленную сверху вниз';
+  return null;
+}
+
 
 // Everything else the explanations say, per language. Values in parentheses are the records' own (levels, codes, text).
 const WORDS = {
@@ -123,18 +221,19 @@ const WORDS = {
     directPoint: 'Requested from the dashboard; the engine sells at the bid, without an agent run',
     agreed: (verb, symbol) => `${verb} ${symbol}: the trader agreed to your request`,
     reasoning: (text) => `Trader's reasoning: ${text}`,
+    reason: (text) => text,
   },
   ru: {
     exitReason: EXIT_REASON_RU,
     rules: GATE_RULES_RU,
-    trend: { up: 'тренд вверх', down: 'тренд вниз', flat: 'тренд боковой' },
-    testEntry: (trend) => `Тестовый вход: стратегия покупает всё, что проходит фильтры, при любом тренде (сейчас ${trend})`,
-    setup: (setup) => `Сетап: ${setup}`,
+    trend: { up: 'вверх', down: 'вниз', flat: 'боковой' },
+    testEntry: (trend) => `Тестовый вход: стратегия покупает всё, что проходит фильтры, при любом тренде (сейчас тренд ${trend})`,
+    setup: (setup) => `Сетап: ${SETUPS_RU[setup] ?? setup}`,
     aboveEma: (x) => `Цена выше своей 20-часовой средней (EMA20) на ${x}× часового диапазона (ATR)`,
     moves: (hour, day) => `Движение: за последний час ${hour}, за 24 часа ${day}`,
-    stop: 'stop',
-    target: 'target',
-    riskLoss: (amount) => `около ${amount} убытка, если сработает stop`,
+    stop: 'стоп-лосс',
+    target: 'тейк-профит',
+    riskLoss: (amount) => `около ${amount} убытка, если сработает стоп-лосс`,
     riskPlan: (parts) => `План риска: ${parts}`,
     verb: { buy: 'Покупка', sell: 'Продажа', other: 'Ордер' },
     placed: 'Размещён',
@@ -144,19 +243,20 @@ const WORDS = {
     failed: 'Биржа его отклонила',
     cancelled: 'Запрошена отмена',
     notfound: 'Нечего отменять: ордер уже исполнен или отменён',
-    notown: 'Не отменён: этот ордер разместил не engine',
+    notown: 'Не отменён: этот ордер разместил не движок',
     status: (status) => `Статус: ${status}`,
     cancel: (symbol) => `Отмена открытого ордера${symbol ? ` по ${symbol}` : ''}`,
-    entry: (verb, sym, rank) => `${verb} ${sym}: у монеты №${rank} в рейтинге сканера появился сигнал входа`,
-    exitSignal: (reason) => `Сигнал выхода: ${reason}`,
-    protective: 'Engine сам отправляет эту продажу, без запуска агента, когда цена доходит до stop или target',
-    traderExit: 'Trader действовал по сигналу выхода от сканера',
-    detail: (detail) => `Подробности: ${detail}`,
+    entry: (verb, sym, rank) => `${verb} ${sym}: у монеты №${rank} в рейтинге сканера появился сигнал на вход`,
+    exitSignal: (reason) => `Сигнал на выход: ${reason}`,
+    protective: 'Движок сам отправляет эту продажу, без запуска агента, когда цена доходит до стоп-лосса или тейк-профита',
+    traderExit: 'Трейдер действовал по сигналу сканера на выход',
+    detail: (detail) => `Подробности: ${exitDetailRu(detail) ?? detail}`,
     direct: (verb, symbol) => `${verb} ${symbol}: ваш запрос на прямую продажу`,
     yourNote: (note) => `Ваша заметка: ${note}`,
-    directPoint: 'Запрошено из dashboard; engine продаёт по bid, без запуска агента',
-    agreed: (verb, symbol) => `${verb} ${symbol}: trader согласился с вашим запросом`,
-    reasoning: (text) => `Обоснование от trader: ${text}`,
+    directPoint: 'Запрошено из панели; движок продаёт по bid, без запуска агента',
+    agreed: (verb, symbol) => `${verb} ${symbol}: трейдер согласился с вашим запросом`,
+    reasoning: (text) => `Обоснование трейдера: ${text}`,
+    reason: reasonRu,
   },
 };
 
@@ -210,9 +310,10 @@ function rule(d, w) {
   return (typeof d.rule === 'string' && Object.hasOwn(w.rules, d.rule) ? w.rules[d.rule] : null) ?? d.rule ?? null;
 }
 
-/** What happened to the order, with the gate's own text as its reason. */
+/** What happened to the order, with the gate's own text as its reason (in Russian when its format is known, else left out). */
 function outcome(d, w) {
-  const why = d.reason ? ` (${d.reason})` : '';
+  const said = d.reason ? w.reason(d.reason) : null;
+  const why = said ? ` (${said})` : '';
   switch (d.status) {
     case 'placed': return d.rule && d.rule !== 'ok' ? `${w.placedWith(rule(d, w))}${why}` : w.placed;
     case 'uncertain': return w.uncertain;
@@ -240,11 +341,14 @@ function explain(entry, lang = 'en') {
   const tool = d.tool ?? null;
   const symbol = d.symbol ?? '';
   const rationale = typeof d.rationale === 'string' ? d.rationale.trim() : '';
+  // The agent's own words: in Russian when it wrote them in Russian too. Shown once, in the points: the "Technical" fold
+  // (raw) is only for the engine's formats the explanation has read for you.
+  const own = (lang === 'ru' && typeof d.rationaleRu === 'string' && d.rationaleRu.trim()) || rationale;
   const raw = rationale || null;
   const out = outcome(d, w);
 
   if (tool === 'cancel_order') {
-    return { headline: w.cancel(symbol), points: rationale ? [rationale] : [], risk: null, outcome: out, source: entry.actor ?? 'trader', raw };
+    return { headline: w.cancel(symbol), points: own ? [own] : [], risk: null, outcome: out, source: entry.actor ?? 'trader', raw: null };
   }
 
   const entryMatch = ENTRY.exec(rationale);
@@ -282,30 +386,30 @@ function explain(entry, lang = 'en') {
       risk: null,
       outcome: out,
       source: 'owner request',
-      raw,
+      raw: null, // the owner's own note, shown above
     };
   }
 
   if (tool === 'manual-agent') {
     return {
       headline: w.agreed(verb(d.side, w), symbol),
-      points: rationale ? [w.reasoning(rationale)] : [],
+      points: own ? [w.reasoning(own)] : [],
       risk: d.side === 'buy' ? riskPoint(d, null, w) : null,
       outcome: out,
       source: 'owner request',
-      raw,
+      raw: null,
     };
   }
 
   // Anything else: the agent's own words, as written.
   return {
     headline: `${verb(d.side, w)}${symbol ? ` ${symbol}` : ''}`,
-    points: rationale ? [rationale] : [],
+    points: own ? [own] : [],
     risk: d.side === 'buy' ? riskPoint(d, null, w) : null,
     outcome: out,
     source: tool ?? entry.actor ?? 'unknown',
-    raw,
+    raw: null,
   };
 }
 
-module.exports = { explain, entryEvidence, pctFrom, GATE_RULES, GATE_RULES_RU };
+module.exports = { explain, entryEvidence, pctFrom, reasonRu, exitDetailRu, GATE_RULES, GATE_RULES_RU, REASONS_RU };

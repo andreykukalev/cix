@@ -130,7 +130,7 @@ test('the analyst\'s Russian summary and highlights, and every attention reason 
   assert.equal(briefing(status, [view('2026-10-25T10:00:00+00:00', { regime: 'neutral', validUntil: '2026-10-25T16:00:00+00:00' })], NOW).analyst.summaryRu, null, 'analyst v2 views have none');
 
   assert.deepEqual(b.attention[0].reasonsRu, ['-12.0% за 24 часа', '-2.5% за последний час', 'Объём в 3.1 раза выше обычного', 'Волатильность: часовой диапазон 2.4%']);
-  assert.deepEqual(b.attention[1].reasonsRu, ['Сигнал sell: stop']);
-  assert.deepEqual(b.attention[2].reasonsRu, ['Сканер дал сигнал buy']);
+  assert.deepEqual(b.attention[1].reasonsRu, ['Сигнал на продажу: стоп-лосс']);
+  assert.deepEqual(b.attention[2].reasonsRu, ['Сканер дал сигнал на покупку']);
   for (const item of b.attention) assert.equal(item.reasonsRu.length, item.reasons.length);
 });

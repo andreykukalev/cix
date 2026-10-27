@@ -1,0 +1,124 @@
+'use strict';
+// The engine's own sentences in Russian, for the owner's dashboard: why a request or a pair change ended as it did, why the
+// scanner gave a coin no entry or filtered it out, and the risk gate's reasons (explain.js). The engine writes them in
+// English from fixed formats (src/Cix.Engine/Manual/ManualRequestService.cs, Pairs/TradablePairs.cs,
+// src/Cix.Domain/Scanning/MarketScanner.cs, Risk/TradableSymbols.cs); each format is read here and said again in Russian,
+// with figures, tickers and abbreviations (ATR, EMA, UTC) as they are. A sentence in no known format gets no Russian (null),
+// and the page shows the English: never a guess. Pure functions: tested on their own (test/engineText.test.js).
+
+const { reasonRu } = require('./explain');
+
+const TREND_RU = { up: 'вверх', down: 'вниз', flat: 'боковой', unknown: 'неизвестен' };
+const SIDE_RU = { buy: 'покупку', sell: 'продажу' };
+
+/** [pattern, Russian]: the Russian is a string, or a function of the match. Checked in order; the first match wins. */
+const FORMATS = [
+  // --- Owner requests (ManualRequestService.cs) ---------------------------------------------------------------------------
+  [/^The trader didn't answer within (\d+) minutes\.$/, (m) => `Трейдер не ответил за ${m[1]} мин.`],
+  [/^The request was (\d+) minutes old when the engine saw it \(at most (\d+)\); not acted on\. Send it again if it still applies\.$/,
+    (m) => `Когда движок увидел запрос, ему было ${m[1]} мин. (допустимо не больше ${m[2]}); он не выполнен. Отправьте его ещё раз, если он ещё нужен.`],
+  [/^At most (\d+) manual requests a day \(ManualRequests:MaxPerDay\)\.$/, (m) => `Не больше ${m[1]} ручных запросов в день (ManualRequests:MaxPerDay).`],
+  [/^Another (buy|sell) request for (\S+) is still in progress\.$/, (m) => `Другой запрос на ${SIDE_RU[m[1]]} ${m[2]} ещё выполняется.`],
+  [/^The active strategy doesn't let the trader place orders, so it can't act on requests\.$/,
+    'Текущая стратегия не разрешает трейдеру размещать ордера, поэтому он не может выполнять запросы.'],
+  [/^Received from (\S+)\.$/, (m) => `Получен от: ${m[1] === 'owner' ? 'владелец' : m[1]}.`],
+  [/^Sent to the trader to analyse\.$/, 'Передан трейдеру на анализ.'],
+  [/^Owner's direct sell\.$/, 'Прямая продажа по запросу владельца.'],
+  [/^Owner's direct sell: (.+)$/, (m) => `Прямая продажа по запросу владельца: ${m[1]}`],
+  [/^No current price for (\S+?)(?:; try again shortly or decline)?\.$/, (m) => `Нет текущей цены ${m[1]}.`],
+  [/^The portfolio can't be valued right now\.$/, 'Сейчас не удаётся оценить портфель.'],
+  [/^There is no sellable (\S+) position \(an open sell order may hold it\)\.$/,
+    (m) => `Нет позиции ${m[1]}, которую можно продать (её может удерживать открытый ордер на продажу).`],
+  [/^New buys are paused by the market view \(risk-off\) until (.+) UTC\.$/, (m) => `Новые покупки приостановлены взглядом на рынок (risk-off) до ${m[1]} UTC.`],
+  [/^The resulting order size is zero\.$/, 'Размер ордера получился нулевым.'],
+  [/^portion must be more than 0 and at most what the owner asked \((\S+)\)\.$/, (m) => `Доля должна быть больше 0 и не больше запрошенной владельцем (${m[1]}).`],
+  [/^stopLoss and takeProfit apply to buys only\.$/, 'Стоп-лосс и тейк-профит задаются только для покупок.'],
+  [/^A buy takes no portion: the owner set the amount\.$/, 'У покупки нет доли: сумму задал владелец.'],
+  [/^A buy needs a stopLoss at least (\S+) below the ask \((\S+)\)\.$/, (m) => `Покупке нужен стоп-лосс как минимум на ${m[1]} ниже ask (${m[2]}).`],
+  [/^takeProfit must be at least (\S+) above the ask \((\S+)\) and at most (\S+)\.$/, (m) => `Тейк-профит должен быть как минимум на ${m[1]} выше ask (${m[2]}) и не больше ${m[3]}.`],
+  [/^Filled (\S+) at (\S+)\.$/, (m) => `Исполнено ${m[1]} по ${m[2]}.`],
+  [/^The order ended without a fill\.$/, 'Ордер закрылся без исполнения.'],
+  [/^The engine restarted while handling this request; the order is being reconciled\.$/, 'Движок перезапустился во время обработки запроса; ордер сверяется.'],
+  [/^See the journal\.$/, 'Подробности в журнале.'],
+  [/^The order didn't fill at once; cancelled so it can't hold the position\.$/, 'Ордер не исполнился сразу; он отменён, чтобы не удерживать позицию.'],
+  [/^The engine has no record of how this order ended/,
+    'У движка нет записи о том, чем закончился этот ордер (он остановился во время отправки или потерял ордер из виду). Проверьте историю ордеров на бирже, прежде чем отправлять запрос снова.'],
+
+  // --- Pair changes (TradablePairs.cs, TradableSymbols.cs) ----------------------------------------------------------------
+  [/^(\S+) is already tradable\.$/, (m) => `${m[1]} уже торгуется.`],
+  [/^(\S+) is not tradable; nothing to remove\.$/, (m) => `${m[1]} не торгуется; удалять нечего.`],
+  [/^(\S+) added\. Its prices load now; the scanner can signal it once it has a day of hourly candles, and every order still goes through the risk gate\.$/,
+    (m) => `${m[1]} добавлена. Её цены загружаются; сканер сможет дать по ней сигнал, когда наберётся день часовых свечей, а каждый ордер по-прежнему проходит риск-контроль.`],
+  [/^(\S+) removed: no new orders in it\.$/, (m) => `${m[1]} удалена: новых ордеров по ней не будет.`],
+  [/^Only (\S+) pairs are permitted by config\/risk-limits\.json\.$/, (m) => `config/risk-limits.json разрешает только пары в ${m[1]}.`],
+  [/^config\/risk-limits\.json doesn't permit it; only the owner can widen that list\.$/, 'config/risk-limits.json её не разрешает; расширить этот список может только владелец.'],
+  [/^At most (\d+) pairs can be tradable at once; remove one first\.$/, (m) => `Одновременно могут торговаться не больше ${m[1]} пар; сначала удалите одну.`],
+  [/^At most (\d+) pairs can be tradable at once \(config\/risk-limits\.json\)\.$/, (m) => `Одновременно могут торговаться не больше ${m[1]} пар (config/risk-limits.json).`],
+  [/^Not permitted by config\/risk-limits\.json: (.+)\.$/, (m) => `Не разрешено в config/risk-limits.json: ${m[1]}.`],
+  [/^The exchange couldn't be asked about this pair right now; send the request again later\.$/, 'Сейчас не удалось запросить биржу об этой паре; отправьте запрос позже.'],
+  [/^Revolut X doesn't list it as an active pair\.$/, 'Revolut X не показывает её как активную пару.'],
+  [/^Every pair must be quoted in (\S+)\.$/, (m) => `Все пары должны котироваться в ${m[1]}.`],
+  [/^It traded (\S+) (\S+) in the last 24 hours; the running strategy needs at least (\S+)\.$/,
+    (m) => `За последние 24 часа по ней наторговали на ${m[1]} ${m[2]}; текущей стратегии нужно не меньше ${m[3]}.`],
+  [/^At least one pair must stay tradable\.$/, 'Хотя бы одна пара должна оставаться в торговле.'],
+  [/^An order in it was just sent and isn't settled yet; send the request again in a minute\.$/, 'По ней только что отправлен ордер, и он ещё не завершён; повторите запрос через минуту.'],
+  [/^The portfolio can't be valued right now, so the engine can't tell whether you hold it; send the request again later\.$/,
+    'Сейчас не удаётся оценить портфель, поэтому движок не может проверить, есть ли она у вас; отправьте запрос позже.'],
+  [/^It has an open order; cancel it or let it fill first\.$/, 'По ней есть открытый ордер; сначала отмените его или дождитесь исполнения.'],
+  [/^You still hold it \(about (\S+) (\S+)\); sell it first\.$/, (m) => `Она ещё есть в портфеле (около ${m[1]} ${m[2]}); сначала продайте её.`],
+  [/^You still hold it; sell it first\.$/, 'Она ещё есть в портфеле; сначала продайте её.'],
+  [/^A balance of it is still on the account \(about (\S+) (\S+)\), too small to sell or reserved by an order; a pair can be removed only when its balance is zero\.$/,
+    (m) => `На счёте ещё есть её остаток (около ${m[1]} ${m[2]}): слишком маленький для продажи или зарезервированный ордером. Пару можно удалить только при нулевом остатке.`],
+  [/^A buy in it is still being settled; send the request again in a minute\.$/, 'Покупка по ней ещё завершается; повторите запрос через минуту.'],
+  [/^The request has no valid createdAt\.$/, 'В запросе нет корректного времени создания.'],
+  [/^day must be the UTC date of createdAt\.$/, 'День запроса должен совпадать с датой его создания (UTC).'],
+  [/^The request's time is in the future\.$/, 'Время запроса в будущем.'],
+  [/^action must be add or remove\.$/, 'Действие должно быть «добавить» или «удалить».'],
+  [/^symbol must be a pair such as SOL-EUR\.$/, 'Монета должна быть парой вида SOL-EUR.'],
+  [/^The request was more than 5 minutes old when the engine saw it; send it again\.$/, 'Когда движок увидел запрос, ему было больше 5 минут; отправьте его ещё раз.'],
+
+  // --- Scanner: why no entry, and why a coin was filtered out (MarketScanner.cs) ------------------------------------------
+  [/^Passed every entry rule, but the strategy allows no buy signals\.$/, 'Прошла все правила входа, но стратегия сейчас не даёт сигналов на покупку.'],
+  [/^Passed every entry rule, but the strategy allows (\d+) buy signal\(s\) per scan and higher-ranked (.+) took them\.$/,
+    (m) => `Прошла все правила входа, но стратегия даёт не больше ${m[1]} сигн. на покупку за скан, и их заняли монеты выше в рейтинге: ${m[2]}.`],
+  [/^The strategy buys only in an uptrend \(EMA(\d+) above EMA(\d+)\); the trend is (\w+)\.$/,
+    (m) => `Стратегия покупает только в восходящем тренде (EMA${m[1]} выше EMA${m[2]}); сейчас тренд ${TREND_RU[m[3]] ?? m[3]}.`],
+  [/^The exchange shows no ask price right now\.$/, 'Биржа сейчас не показывает цену продавца (ask).'],
+  [/^Price is (\S+) ATR above EMA(\d+); the strategy buys a pullback, at most (\S+) ATR above it\.$/,
+    (m) => `Цена на ${m[1]} ATR выше EMA${m[2]}; стратегия покупает на откате, не выше ${m[3]} ATR над ней.`],
+  [/^Last hour (\S+); the strategy waits for an hour that isn't falling\.$/, (m) => `За последний час ${m[1] === 'n/a' ? 'нет данных' : m[1]}; стратегия ждёт час без падения.`],
+  [/^A stop (\S+) ATR below the ask would be at or below zero\.$/, (m) => `Стоп-лосс на ${m[1]} ATR ниже ask оказался бы на нуле или ниже.`],
+  [/^The stop \((\S+) ATR below the ask\) or the target is within (\S+) of the ask; an order needs at least (\S+)\.$/,
+    (m) => `Стоп-лосс (${m[1]} ATR ниже ask) или тейк-профит ближе ${m[2]} к ask; ордеру нужно не меньше ${m[3]}.`],
+  [/^The stop leaves no distance to size the order by\.$/, 'Стоп-лосс не оставляет расстояния, по которому можно рассчитать размер ордера.'],
+  [/^The sized order, (\S+) (\S+) \(at most (\S+) per order and (\S+) at risk\), is below the exchange minimum of (\S+) (\S+)\.$/,
+    (m) => `Рассчитанный ордер, ${m[1]} ${m[2]} (не больше ${m[3]} на ордер и ${m[4]} под риском), меньше минимума биржи ${m[5]} ${m[6]}.`],
+  [/^The sized order, (\S+) (\S+) \(at most (\S+) (\S+) per order and (\S+) at risk\), is below the exchange minimum of (\S+) (\S+)\.$/,
+    (m) => `Рассчитанный ордер, ${m[1]} ${m[2]} (не больше ${m[3]} ${m[4]} на ордер и ${m[5]} под риском), меньше минимума биржи ${m[6]} ${m[7]}.`],
+  [/^Flagged by the market analyst until (.+) UTC\.$/, (m) => `Аналитик рынка отметил монету до ${m[1]} UTC.`],
+  [/^Not among the tradable pairs \(the owner adds them from the dashboard, within config\/risk-limits\.json\)\.$/,
+    'Не входит в торгуемые пары (владелец добавляет их на панели в пределах config/risk-limits.json).'],
+  [/^The exchange doesn't list this pair\.$/, 'Биржа не торгует этой парой.'],
+  [/^The exchange has suspended trading in this pair\.$/, 'Биржа приостановила торги этой парой.'],
+  [/^Market data is stale\.$/, 'Рыночные данные устарели.'],
+  [/^Not enough candles yet for EMA, ATR or spread\.$/, 'Пока мало свечей, чтобы рассчитать EMA, ATR или спред.'],
+  [/^Only (\d+) hourly candles in the last 24h; (\d+) needed\.$/, (m) => `За последние 24 часа только ${m[1]} часовых свечей; нужно ${m[2]}.`],
+  [/^24h volume (\S+) is below the minimum (\S+)\.$/, (m) => `Объём торгов за 24 часа ${m[1]} ниже минимума ${m[2]}.`],
+  [/^Spread (\S+) is above the maximum (\S+)\.$/, (m) => `Спред ${m[1]} выше допустимого ${m[2]}.`],
+  [/^Hourly ATR (\S+) is above the maximum (\S+)\.$/, (m) => `Часовой ATR ${m[1]} выше допустимого ${m[2]}: монета слишком волатильна.`],
+  [/^Hourly ATR (\S+) is under (\S+)× the round-trip cost (\S+)\.$/,
+    (m) => `Часовой ATR ${m[1]} меньше ${m[2]}× издержек на покупку и продажу (${m[3]}): обычное движение не окупит сделку.`],
+];
+
+/** The engine's sentence in Russian, or null when it isn't in a known format. */
+function engineTextRu(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  const s = text.trim();
+  for (const [re, ru] of FORMATS) {
+    const m = re.exec(s);
+    if (m) return typeof ru === 'function' ? ru(m) : ru;
+  }
+  return reasonRu(s); // the risk gate's and the execution service's, which order explanations use too
+}
+
+module.exports = { engineTextRu, FORMATS };

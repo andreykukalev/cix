@@ -114,7 +114,8 @@
           <h2 id="h-coins">Coins</h2>
           <span id="coins-meta" class="muted small"></span>
         </div>
-        <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Note</th><th class="paper-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
+        <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Why no buy</th><th class="paper-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
+        <p class="muted small coins-legend"><span class="why-kind filtered">Filtered out</span> the market filters dropped it before ranking (trading volume, spread, volatility, costs), with the figure and the limit. <span class="why-kind rule">Strategy rule</span> ranked, but the strategy's entry rules turned it down (trend, pullback, last hour). <span class="why-kind blocked">Held back</span> not the rules: a limit or a block stopped it, such as the strategy's buy signals per scan already taken by higher-ranked coins, a pause between buys, a holding or an open order.</p>
         <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan.</p>
       </section>
 
@@ -122,6 +123,7 @@
         <div class="panel-head"><h2 id="h-pairs">Trading pairs</h2><span id="pairs-meta" class="muted small"></span></div>
         <p id="pairs-note" class="muted small"></p>
         <ul id="pairs-tradable" class="chips"></ul>
+        <ul id="pairs-blocked" class="pairs-blocked muted small" hidden></ul>
         <form id="pairs-add" class="inline-form" hidden>
           <label class="field">Add a pair <select id="pairs-choice" name="symbol" required></select></label>
           <button type="submit" class="primary" id="pairs-add-button">Add…</button>

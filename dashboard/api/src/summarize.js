@@ -20,9 +20,9 @@ const RECONCILE_PROBLEMS = {
 };
 const RECONCILE_PROBLEMS_RU = {
   'exchange-unreadable': 'При последней сверке не удалось прочитать данные биржи.',
-  'unknown-open-orders': 'На бирже есть открытые ордера, которые engine не отправлял.',
-  'unexplained-holdings-change': 'Holdings изменились больше, чем объясняют исполненные сделки (fills) engine.',
-  'holdings-not-compared': 'Holdings не удалось сравнить (нет свежих цен).',
+  'unknown-open-orders': 'На бирже есть открытые ордера, которые движок не отправлял.',
+  'unexplained-holdings-change': 'Монеты в портфеле изменились сильнее, чем объясняют сделки движка.',
+  'holdings-not-compared': 'Монеты в портфеле не удалось сравнить (нет свежих цен).',
 };
 /** A table's text for a code, or null: only the table's own keys, never inherited ones. */
 function ownText(table, code) {

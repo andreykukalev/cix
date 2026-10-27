@@ -70,7 +70,7 @@ test('history lists newest first with outcome and events, and marks final status
   assert.equal(items[0].final, false);
   assert.equal(items[1].final, true);
   assert.equal(items[1].outcome.averagePrice, '10.2');
-  assert.deepEqual(items[1].events, [{ at: 't', status: 'placed', by: 'engine', detail: 'd' }]);
+  assert.deepEqual(items[1].events, [{ at: 't', status: 'placed', by: 'engine', detail: 'd', detailRu: null }]);
 });
 
 function withPrincipal(value) {
