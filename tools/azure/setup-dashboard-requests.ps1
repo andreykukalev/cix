@@ -248,7 +248,7 @@ if ($LiveRequests) {
     Write-CixInfo 'Assigned.'
   }
   $shown = (Get-CixStaticSiteSettings -SiteId $site.id)['COSMOS_LIVE_DATABASE']
-  if ($shown -ne $liveDatabase) { Write-CixWarn "The dashboard's COSMOS_LIVE_DATABASE is '$shown', not $liveDatabase: deploy the dashboard (provision.ps1 or CI) so its live buttons write there." }
+  if ($shown -ne $liveDatabase) { Write-CixWarn "The dashboard's COSMOS_LIVE_DATABASE is '$shown', not ${liveDatabase}: deploy the dashboard (provision.ps1 or CI) so its live buttons write there." }
   Write-CixInfo "To revoke: delete this one role assignment (az cosmosdb sql role assignment list, then delete); paper requests keep working."
 }
 elseif ($liveAssigned) { Write-CixInfo "Live requests are allowed ('$liveRoleName' on $liveDatabase/requests); delete that role assignment to revoke them." }
