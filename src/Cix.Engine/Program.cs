@@ -18,11 +18,9 @@ var builder = WebApplication.CreateBuilder(args);
 // Docker secrets (files under /run/secrets) for the few settings that are secrets; anything else there is ignored.
 builder.Configuration.AddCixSecretFiles(builder.Configuration["SecretsDirectory"] ?? SecretFiles.DefaultDirectory);
 
-// Human-only file, copied next to the binary (see CLAUDE.md rule 3).
-builder.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "risk-limits.json"), optional: false, reloadOnChange: false);
-
-var limits = builder.Configuration.GetSection("Risk").Get<RiskLimitsOptions>()?.ToRiskLimits()
-    ?? throw new InvalidOperationException("Missing 'Risk' configuration section.");
+// Human-only file, copied next to the binary (see CLAUDE.md rule 3). Read on its own: no environment variable, command line or
+// other settings file can add to the limits or loosen them.
+var limits = RiskLimitsOptions.Load(Path.Combine(AppContext.BaseDirectory, "risk-limits.json"), builder.Configuration);
 
 // Paper unless the owner configures Live, and Live only in Production (CLAUDE.md rule 6).
 var mode = TradingModeResolver.Resolve(builder.Configuration, builder.Environment.EnvironmentName);

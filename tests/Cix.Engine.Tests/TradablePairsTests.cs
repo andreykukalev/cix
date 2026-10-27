@@ -2,9 +2,11 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using Cix.Domain.Exchange;
 using Cix.Domain.Risk;
+using Cix.Engine.Execution;
 using Cix.Engine.Journal;
 using Cix.Engine.Manual;
 using Cix.Engine.Pairs;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cix.Engine.Tests;
@@ -166,6 +168,48 @@ public sealed class TradablePairsTests
 
         Assert.Equal(new[] { Btc, Sol }, setup.Tradable.Current.Order(StringComparer.Ordinal));
         Assert.NotNull(setup.Repository.Catalog);
+
+        // ETH-USD may still be held: trading halts until the owner has looked.
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+        Assert.True(setup.Rig.KillSwitch.IsEngaged);
+        Assert.Equal(TradablePairsService.By, setup.Rig.KillSwitch.State.By);
+    }
+
+    [Fact]
+    public async Task Initialize_SavedListAsSaved_KeepsTrading()
+    {
+        var setup = new Setup();
+        setup.Repository.Saved[TradingMode.Paper] = new TradablePairsDocument([Btc, Sol], Rig.T0.AddDays(-1), "owner");
+
+        await setup.Service.InitializeAsync(CancellationToken.None);
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+
+        Assert.False(setup.Rig.KillSwitch.IsEngaged);
+    }
+
+    [Fact]
+    public void RiskLimits_ComeOnlyFromTheOwnersFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"risk-limits-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, """
+            { "Risk": { "AllocationQuote": 200, "MaxOrderQuote": 40, "MaxPositionQuotePerSymbol": 100, "MaxDailyLossQuote": 15,
+              "MaxDrawdownFraction": 0.15, "MaxOrdersPerMinute": 4, "MaxPriceDeviationFraction": 0.01, "AllowedSymbols": [ "BTC-EUR" ] } }
+            """);
+        try
+        {
+            var environment = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?> { ["Risk:AllowedQuoteCurrency"] = "EUR", ["Risk:MaxTradableSymbols"] = "20" })
+                .Build();
+
+            Assert.Throws<InvalidOperationException>(() => RiskLimitsOptions.Load(path, environment));
+            var limits = RiskLimitsOptions.Load(path, new ConfigurationBuilder().Build());
+            Assert.Null(limits.AllowedQuoteCurrency);
+            Assert.False(limits.Permits(Sol));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]

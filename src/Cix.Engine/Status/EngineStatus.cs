@@ -187,6 +187,7 @@ public sealed partial class EngineStatusService(
         SafetyMonitor.By => "A safety limit was reached (drawdown, daily loss or stale market data).",
         ExecutionService.RejectStreakBy => "Too many orders in a row were rejected by the risk gate.",
         "engine" => "Waiting for the owner to confirm before trading starts.",
+        Pairs.TradablePairsService.By => "The saved trading pairs couldn't all be restored; check holdings before resuming.",
         _ => "Halted.",
     };
 

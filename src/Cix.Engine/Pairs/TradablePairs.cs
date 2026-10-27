@@ -145,7 +145,16 @@ public sealed partial class TradablePairsService(
     /// <summary>How often the catalog for the dashboard is written again (the exchange's pairs rarely change).</summary>
     public static readonly TimeSpan CatalogInterval = TimeSpan.FromHours(1);
 
+    /// <summary>Who engages the kill switch when the saved pairs can't all be restored.</summary>
+    public const string By = "tradable-pairs";
+
     private DateTimeOffset _catalogAt = DateTimeOffset.MinValue;
+
+    /// <summary>Why the saved list couldn't be restored as saved; the kill switch is engaged for it at the first poll.</summary>
+    private string? _restoreProblem;
+
+    /// <summary>Outcomes of requests already acted on, by id: a request whose status write failed is closed, never applied twice.</summary>
+    private readonly Dictionary<string, (string Status, string Detail)> _decided = new(StringComparer.Ordinal);
 
     /// <summary>
     /// At startup, before the engine scans or serves tools: restores the saved list (dropping pairs the limits no longer
@@ -165,6 +174,12 @@ public sealed partial class TradablePairsService(
             var problems = tradable.TrySet(symbols, now);
             if (problems.Count > 0)
                 LogRestoreRefused(logger, string.Join(" ", problems));
+
+            // A pair left out may still be held: it would drop out of equity and its exits would be refused. Halt until the owner looks.
+            if (dropped.Count > 0 || problems.Count > 0)
+                _restoreProblem = problems.Count > 0
+                    ? $"The saved trading pairs couldn't be restored ({problems[0]}); only {string.Join(", ", tradable.Current.Order(StringComparer.Ordinal))} are tradable. Check for holdings in the others before resuming."
+                    : $"Saved trading pairs no longer permitted by config/risk-limits.json were dropped: {string.Join(", ", dropped)}. Check for holdings in them before resuming.";
         }
 
         await WriteCatalogAsync(now, cancellationToken).ConfigureAwait(false);
@@ -175,6 +190,12 @@ public sealed partial class TradablePairsService(
     {
         if (lease is { IsHeld: false })
             return; // only the engine that trades changes the list
+        if (_restoreProblem is { } restore)
+        {
+            await execution.EngageKillSwitchAsync(restore, By, cancellationToken).ConfigureAwait(false);
+            _restoreProblem = null;
+        }
+
         var now = time.GetUtcNow();
         var changed = await TakeRequestsAsync(now, cancellationToken).ConfigureAwait(false);
         if (changed || now - _catalogAt >= CatalogInterval)
@@ -226,7 +247,11 @@ public sealed partial class TradablePairsService(
             .OrderBy(p => p.Parsed.CreatedAt ?? DateTimeOffset.MinValue).ThenBy(p => p.Stored.Id, StringComparer.Ordinal))
         {
             string status, detail;
-            if (request.Change is not { } change)
+            if (_decided.TryGetValue(stored.Id, out var decided))
+            {
+                (status, detail) = decided; // acted on already; only its status is written again
+            }
+            else if (request.Change is not { } change)
             {
                 (status, detail) = (request.Expired ? ManualRequestStatus.Expired : ManualRequestStatus.Invalid, request.Problem!);
             }
@@ -237,6 +262,7 @@ public sealed partial class TradablePairsService(
                     continue; // not decided (the journal or the database failed): still new, taken at the next poll
                 (status, detail) = outcome.Value;
                 changed |= status == "accepted";
+                _decided[stored.Id] = outcome.Value;
             }
 
             try
@@ -287,8 +313,16 @@ public sealed partial class TradablePairsService(
     [System.Text.RegularExpressions.GeneratedRegex("^[A-Z0-9]{1,20}-[A-Z]{3,5}$")]
     private static partial System.Text.RegularExpressions.Regex SymbolFormat();
 
-    /// <summary>Checks and applies one change: (status, detail), or null when it should be tried again at the next poll.</summary>
-    private async Task<(string Status, string Detail)?> ApplyAsync(PairChange change, DateTimeOffset now, CancellationToken cancellationToken)
+    /// <summary>
+    /// Checks and applies one change: (status, detail), or null when it should be tried again at the next poll. A removal is
+    /// checked and applied while no order can be placed, so nothing can be bought or left working in the pair in between.
+    /// </summary>
+    private Task<(string Status, string Detail)?> ApplyAsync(PairChange change, DateTimeOffset now, CancellationToken cancellationToken) =>
+        change.Add
+            ? DecideAsync(change, null, now, cancellationToken)
+            : execution.RunExclusiveAsync(view => DecideAsync(change, view, now, cancellationToken), cancellationToken);
+
+    private async Task<(string Status, string Detail)?> DecideAsync(PairChange change, ExclusiveView? view, DateTimeOffset now, CancellationToken cancellationToken)
     {
         var current = tradable.Current;
         var symbol = change.Symbol;
@@ -297,7 +331,7 @@ public sealed partial class TradablePairsService(
 
         var problem = change.Add
             ? await AddProblemAsync(symbol, current, now, cancellationToken).ConfigureAwait(false)
-            : await RemoveProblemAsync(symbol, current, cancellationToken).ConfigureAwait(false);
+            : await RemoveProblemAsync(symbol, current, view!, cancellationToken).ConfigureAwait(false);
         var next = change.Add ? current.Append(symbol).ToHashSet(StringComparer.Ordinal) : current.Where(s => s != symbol).ToHashSet(StringComparer.Ordinal);
         if (problem is null && tradable.Problems(next) is { Count: > 0 } limits)
             problem = limits[0];
@@ -371,30 +405,32 @@ public sealed partial class TradablePairsService(
         return null;
     }
 
-    /// <summary>Why <paramref name="symbol"/> can't be removed; null when it can.</summary>
-    private async Task<string?> RemoveProblemAsync(string symbol, IReadOnlySet<string> current, CancellationToken cancellationToken)
+    /// <summary>Why <paramref name="symbol"/> can't be removed; null when it can. Reads the account fresh, under the order lock.</summary>
+    private static async Task<string?> RemoveProblemAsync(string symbol, IReadOnlySet<string> current, ExclusiveView view, CancellationToken cancellationToken)
     {
         if (current.Count <= 1)
             return "At least one pair must stay tradable.";
+        if (view.Pending.Any(p => MarketDataPoller.NormaliseSymbol(p.Order.Symbol) == symbol))
+            return "An order in it was just sent and isn't settled yet; send the request again in a minute.";
         IReadOnlyList<ExchangeOrder> open;
-        (PortfolioSnapshot Snapshot, DateTimeOffset At)? valued;
+        PortfolioSnapshot? portfolio;
         try
         {
-            open = await execution.GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
-            valued = await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false);
+            open = await view.OpenOrdersAsync(cancellationToken).ConfigureAwait(false);
+            portfolio = await view.PortfolioAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is ExchangeException or HttpRequestException or PortfolioUnavailableException)
         {
-            valued = null;
+            portfolio = null;
             open = [];
         }
 
-        if (valued is not { } portfolio)
+        if (portfolio is null)
             return "The portfolio can't be valued right now, so the engine can't tell whether you hold it; send the request again later.";
         if (open.Any(o => o.IsOpen && MarketDataPoller.NormaliseSymbol(o.Symbol) == symbol))
             return "It has an open order; cancel it or let it fill first.";
         // A holding the exchange lets you sell must be sold first: once removed, it would drop out of equity and of the exits.
-        if (portfolio.Snapshot.SellableBaseBySymbol?.ContainsKey(symbol) == true)
+        if (portfolio.SellableBaseBySymbol?.ContainsKey(symbol) == true)
             return "You still hold it; sell it first.";
         return null;
     }
