@@ -46,6 +46,40 @@ public sealed class StrategySchemaTests
         Assert.Empty(StrategySchema.Validate(Load(name, version), Limits, TradingMode.Paper));
 
     [Fact]
+    public void EverySpecFileMarkedLiveOrDrafted_FitsTheLiveLimitsFile()
+    {
+        // The live engine skips a live spec its limits refuse with only a log line; drafts are the owner's next candidates.
+        var limits = RiskLimitsOptions.LoadFor(TradingMode.Live, AppContext.BaseDirectory);
+        var folder = Path.Combine(Path.GetTempPath(), $"cix-live-fit-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var fitted = new List<string>();
+            foreach (var file in Directory.EnumerateFiles(Path.Combine(AppContext.BaseDirectory, "strategies"), "*.json"))
+            {
+                var node = JsonNode.Parse(File.ReadAllText(file))!.AsObject();
+                if ((string?)node["status"] is not ("live" or "draft"))
+                    continue;
+                node["status"] = "live"; // a copy in a temporary folder, so a draft can be loaded as the owner would mark it
+                var (name, version) = ((string)node["name"]!, (int)node["version"]!);
+                var path = Path.Combine(folder, Path.GetFileName(file));
+                File.WriteAllText(path, node.ToJsonString());
+                var problems = StrategySchema.Validate(FileStrategySpecStore.Load(path, name, version, TradingMode.Live), limits, TradingMode.Live);
+                Assert.True(problems.Count == 0, $"{name} v{version}: {string.Join(" ", problems)}");
+                fitted.Add($"{name}@v{version}");
+            }
+
+            Assert.Contains("safe@v2", fitted);
+            Assert.Contains("balanced@v2", fitted);
+            Assert.Contains("risky@v3", fitted);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
     public void SafeBalancedAndRisky_StepUpInSizeExposureAndFrequency_WithinTheMandatoryLimits()
     {
         var limits = new[] { Load("safe", 1), Load("balanced", 1), Load("risky", 2) }.Select(s => StrategySchema.LimitsOf(s, Limits)).ToList();
