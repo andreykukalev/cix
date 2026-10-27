@@ -94,11 +94,12 @@ function td(content, cls) {
 
 /**
  * Text that comes in English and maybe Russian, in the content language (V.pick), as a span marked with its language.
- * Text the dashboard has no Russian for is shown in English.
+ * Text the dashboard has no Russian for is shown in English. Shown in Russian, the English stays a hover away, so a
+ * translation can always be checked against the original (the analyst writes both).
  */
 function says(en, ru, cls) {
   const p = V.pick(en, ru, state.lang);
-  return el('span', { class: cls, lang: p.lang, text: p.text ?? '' });
+  return el('span', { class: cls, lang: p.lang, title: p.lang === 'ru' && en ? `EN: ${en}` : null, text: p.text ?? '' });
 }
 
 function tile(id, tone, value, sub) {
@@ -251,7 +252,7 @@ function renderBriefing(view) {
         el('span', { class: 'badge', text: `${h.impact} impact` }),
         says(h.title, h.titleRu, 'title'),
         ...chips(h.symbols)),
-      h.detail || h.detailRu ? el('p', { class: 'detail' }, says(h.detail, h.detailRu)) : null,
+      h.detail ? el('p', { class: 'detail' }, says(h.detail, h.detailRu)) : null,
       el('p', { class: 'meta' }, sourceLink(h.source, h.sourceHost))))
     : [el('li', { class: 'muted', text: a ? 'No major news or events flagged.' : '' })]));
 

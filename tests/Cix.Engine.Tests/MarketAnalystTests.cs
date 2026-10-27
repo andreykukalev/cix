@@ -315,7 +315,7 @@ public sealed class MarketAnalystTests
         [
             new("FOMC decision at 18:00 UTC today", "high", "risk", "https://example.com/fed", ["BTC-EUR"], "Rates surprise could move all coins.",
                 "Решение FOMC сегодня в 18:00\u200b UTC", "Неожиданное решение по ставке может сдвинуть все монеты."),
-            new("Exchange outage resolved overnight", "medium", "watch", "https://example.com/outage", null, null, "Коротко", new string('д', 401)),
+            new("Exchange outage resolved overnight", "medium", "watch", "https://example.com/outage", null, "Withdrawals are open again.", "Коротко", new string('д', 401)),
         ];
 
         using var reply = JsonDocument.Parse(await tools.Analyst.RecordMarketView(
@@ -333,6 +333,28 @@ public sealed class MarketAnalystTests
         Assert.Equal("Неожиданное решение по ставке может сдвинуть все монеты.", stored.RootElement[0].GetProperty("detailRu").GetString());
         Assert.Equal(JsonValueKind.Null, stored.RootElement[1].GetProperty("titleRu").ValueKind); // too short: the English shows instead
         Assert.Equal(JsonValueKind.Null, stored.RootElement[1].GetProperty("detailRu").ValueKind);
+    }
+
+    [Fact]
+    public async Task RussianHighlightText_IsKeptAtItsLimits_AndNeverWithoutTheEnglish()
+    {
+        var tools = Analyst();
+        MarketHighlight[] highlights =
+        [
+            new("FOMC decision at 18:00 UTC today", "high", "risk", "https://example.com/fed", null, "Rates could move.", new string('а', 10), new string('б', 400)),
+            new("Exchange outage resolved overnight", "medium", "watch", "https://example.com/outage", null, null, new string('в', 200), "Перевод без оригинала."),
+        ];
+
+        using var reply = JsonDocument.Parse(await tools.Analyst.RecordMarketView(
+            "neutral", "Quiet market ahead of the Fed decision.", NewsSources, highlights: highlights, cancellationToken: CancellationToken.None));
+
+        Assert.Equal(0, reply.RootElement.GetProperty("translationsDropped").GetArrayLength());
+        var entry = Assert.Single(tools.Journal.Entries, e => e.Kind == MarketViewStore.Kind);
+        using var stored = JsonDocument.Parse(entry.Data!["highlights"]);
+        Assert.Equal(10, stored.RootElement[0].GetProperty("titleRu").GetString()!.Length);
+        Assert.Equal(400, stored.RootElement[0].GetProperty("detailRu").GetString()!.Length);
+        Assert.Equal(200, stored.RootElement[1].GetProperty("titleRu").GetString()!.Length);
+        Assert.Equal(JsonValueKind.Null, stored.RootElement[1].GetProperty("detailRu").ValueKind); // no English detail: no Russian one
     }
 
     [Theory]

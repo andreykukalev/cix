@@ -104,7 +104,11 @@ public sealed class AnalystTools(
             titleRu = string.Empty;
         }
 
-        if (detailRu.Length > 400)
+        if (clean.Detail is null)
+        {
+            detailRu = string.Empty; // a translation of nothing: the Russian adds nothing the English doesn't say
+        }
+        else if (detailRu.Length > 400)
         {
             dropped.Add($"{index}:detail-ru-length");
             detailRu = string.Empty;

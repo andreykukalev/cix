@@ -9,7 +9,8 @@
 //
 // The owner reads Russian best: from analyst v3 the view carries a Russian summary and Russian highlight titles and
 // details next to the English ones, and each reason a coin needs attention comes in both languages. Russian text the
-// analyst didn't write is simply missing (null), and the page falls back to the English.
+// analyst didn't write is simply missing (null), and the page falls back to the English. The engine leaves out a
+// translation that doesn't fit; the caps here only guard the page, cutting anything longer as for the English.
 //
 // Nothing here is an order level. The analyst never sees the account's positions, stops or targets (its brief has no
 // holdings), and the scan rows carry moves as fractions, not prices. Text from the analyst comes from the web, so it is
@@ -32,7 +33,7 @@ const THRESHOLDS = Object.freeze({
 // Exclusion codes from the scanner worth a look: [severity, direction, reason, reason in Russian].
 const EXCLUSIONS = Object.freeze({
   'too-volatile': [2, 'risk', 'Excluded: too volatile to trade', 'Исключена: слишком волатильна для торговли'],
-  'wide-spread': [2, 'risk', 'Excluded: spread too wide (thin market)', 'Исключена: слишком широкий spread (тонкий рынок)'],
+  'wide-spread': [2, 'risk', 'Excluded: spread too wide (thin market)', 'Исключена: слишком широкий spread (низкая ликвидность)'],
   stale: [1, 'watch', 'Excluded: no fresh market data', 'Исключена: нет свежих рыночных данных'],
 });
 
@@ -54,7 +55,7 @@ function num(value) {
 /** Text for display: strings only, control and format characters removed, length capped. */
 function text(value, max) {
   if (typeof value !== 'string') return null;
-  const cleaned = value.replace(/[\p{Cc}\p{Cf}]/gu, '').trim();
+  const cleaned = value.replace(/[\p{Cc}\p{Cf}\p{Co}]/gu, '').trim();
   if (!cleaned) return null;
   return cleaned.length > max ? `${cleaned.slice(0, max - 1)}…` : cleaned;
 }
@@ -160,7 +161,7 @@ function attention(rows, avoid, held) {
       severity = Math.max(severity, s);
       dirs.add(dir);
     };
-    if (r.signal === 'buy') add(2, 'opportunity', 'Buy signal from the scanner', 'Сигнал buy от сканера');
+    if (r.signal === 'buy') add(2, 'opportunity', 'Buy signal from the scanner', 'Сканер дал сигнал buy');
     else if (r.signal?.startsWith('sell')) add(3, 'risk', `Sell signal: ${sellWhy(r.signal) || 'exit'}`, `Сигнал sell: ${sellWhy(r.signal) || 'exit'}`);
     if (r.return24h !== null && Math.abs(r.return24h) >= THRESHOLDS.move24h) {
       add(Math.abs(r.return24h) >= THRESHOLDS.bigMove24h ? 3 : 2, r.return24h < 0 ? 'risk' : 'opportunity', `${pct(r.return24h)} in 24h`, `${pct(r.return24h)} за 24 часа`);
@@ -169,7 +170,7 @@ function attention(rows, avoid, held) {
       add(2, r.return1h < 0 ? 'risk' : 'opportunity', `${pct(r.return1h)} in the last hour`, `${pct(r.return1h)} за последний час`);
     }
     if (r.volumeRatio !== null && r.volumeRatio >= THRESHOLDS.volumeRatio) {
-      add(1, 'watch', `Volume ${r.volumeRatio.toFixed(1)}× usual`, `Объём ${r.volumeRatio.toFixed(1)}× от обычного`);
+      add(1, 'watch', `Volume ${r.volumeRatio.toFixed(1)}× usual`, `Объём в ${r.volumeRatio.toFixed(1)} раза выше обычного`);
     }
     if (r.volatility !== null && r.volatility >= THRESHOLDS.volatility) {
       add(1, 'watch', `Volatile: ${(r.volatility * 100).toFixed(1)}% hourly range`, `Волатильность: часовой диапазон ${(r.volatility * 100).toFixed(1)}%`);
