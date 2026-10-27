@@ -15,7 +15,7 @@
   "deployDashboard": false,
   "agents": {
     "$comment": "As in dev.json (ADR-0013): deploy platform first, then apps with -PromoteFrom dev -ImageTag <commit SHA> and the exchange key files. startEngine: true runs the engine, which stands by until the owner switches it (docs/live-trading.md); false stops it and its agent runs.",
-    "deploy": "platform",
+    "deploy": "apps",
     "location": "polandcentral",
     "startEngine": true,
     "traderModel": "sonnet",

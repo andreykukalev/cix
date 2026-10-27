@@ -110,7 +110,8 @@ From the repository root, signed in to Azure as yourself:
 .\tools\azure\provision.ps1 -Environment prod -WhatIfOnly
 .\tools\azure\provision.ps1 -Environment prod
 
-# 2. Set "deploy": "apps" under agents in infra/environments/prod.json, then: copy the images, upload the keys, deploy.
+#    (Only for a new environment: set "deploy": "platform" under agents in infra/environments/prod.json for this step.)
+# 2. With "deploy": "apps" (the repository's setting): copy the images, upload the keys, deploy.
 .\tools\azure\provision.ps1 -Environment prod -PromoteFrom dev -ImageTag <commit SHA> -ExchangeApiKeyFile <api key file> -ExchangePrivateKeyFile revx_private.pem
 ```
 
@@ -125,7 +126,7 @@ az containerapp logs show --name ca-cix-prod-engine --resource-group rg-cix-live
 
 ### Switching the engine on
 
-This is the step that trades real money, and it is yours alone. No file in the repository holds it, CI has no role here, and the `protect-live-mode` hook refuses any command an agent writes on this environment. That hook is a tripwire, not the control: what stops anyone else is that only your Azure sign-in has a role here. A Claude session on your PC shares that sign-in, so keep it to sessions you watch, or keep your rights on `rg-cix-live` in a separate admin account (or a role you activate only for this step). One command, from your own sign-in, sets the engine's trading mode, the environment that allows it, and the strategy. In it, `<mode>` stands for the word `Live` (the `protect-live-mode` hook stops anyone writing the setting out in the repository, this page included):
+This is the step that trades real money, and it is yours alone. No file in the repository holds it, CI has no role here, and the `protect-live-mode` hook refuses any command an agent writes on this environment. That hook is a tripwire, not the control: what stops anyone else is that only your Azure sign-in has a role here. A Claude session on your PC shares that sign-in, so keep it to sessions you watch, or keep your rights on `rg-cix-live` in a separate admin account (or a role you activate only for this step). One command, from your own sign-in, sets the engine's trading mode, the environment that allows it, and the strategy. In it, `<mode>` stands for the word `Live` (the `protect-live-mode` hook stops anyone writing the setting out in the repository, this page included). Type it exactly so, with a capital L: the engine refuses any other spelling, and the new revision then fails to start while the standby one runs on.
 
 ```powershell
 az containerapp update --name ca-cix-prod-engine --resource-group rg-cix-live --set-env-vars Trading__Mode=<mode> ASPNETCORE_ENVIRONMENT=Production Strategy__Name=safe Strategy__Version=2
