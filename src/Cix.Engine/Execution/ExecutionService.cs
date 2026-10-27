@@ -580,7 +580,7 @@ public sealed partial class ExecutionService
 
     /// <summary>
     /// A check that would halt trading found a problem while trading already was: recorded beside the halt and journaled
-    /// (once per cause), so the dashboard's Resume can't release a halt the owner hasn't seen (ADR-0018). Cancels nothing.
+    /// (once per cause and reason), so the dashboard's Resume can't release a halt the owner hasn't seen (ADR-0018). Cancels nothing.
     /// </summary>
     internal async Task NoteAlsoTriggeredAsync(string reason, string by)
     {
@@ -589,11 +589,11 @@ public sealed partial class ExecutionService
         bool noted;
         try
         {
-            noted = _killSwitch.NoteAlso(by);
+            noted = _killSwitch.NoteAlso(reason, by);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            noted = true; // recorded in memory regardless; the journal still gets it
+            noted = true; // kept in memory until saved (KillSwitch.State); the journal still gets it
             LogStateWriteFailed(_logger, ex.Message);
         }
 

@@ -6,7 +6,13 @@ namespace Cix.Engine.Execution;
 /// </summary>
 public sealed class KillSwitch(IEngineStateStore store, TimeProvider time)
 {
-    public KillSwitchState State => store.Current.KillSwitch;
+    /// <summary>A later cause that couldn't be saved: kept in memory until it is, so Resume still has to name it.</summary>
+    private KillSwitchState? _unsavedAlso;
+
+    public KillSwitchState State => WithUnsaved(store.Current.KillSwitch);
+
+    private KillSwitchState WithUnsaved(KillSwitchState k) =>
+        _unsavedAlso is { } also && k.Engaged ? k with { AlsoBy = also.AlsoBy, AlsoAt = also.AlsoAt, AlsoReason = also.AlsoReason } : k;
 
     public bool IsEngaged => State.Engaged;
 
@@ -27,21 +33,36 @@ public sealed class KillSwitch(IEngineStateStore store, TimeProvider time)
     }
 
     /// <summary>
-    /// While engaged, records <paramref name="by"/> as a later cause beside the halt (the first reason is kept). Returns false
-    /// when it isn't engaged, or the cause is the halt's own or the one already recorded.
+    /// While engaged, records a later cause beside the halt (the first reason is kept). Returns false when it isn't engaged,
+    /// or the same cause with the same reason is the halt's own or the one already recorded: a finding repeated every pass
+    /// stays quiet, a new one changes what the page must name.
     /// </summary>
-    internal bool NoteAlso(string by)
+    internal bool NoteAlso(string reason, string by)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         ArgumentException.ThrowIfNullOrWhiteSpace(by);
         var noted = false;
-        store.Update(s =>
+        KillSwitchState? next = null;
+        try
         {
-            var k = s.KillSwitch;
-            if (!k.Engaged || string.Equals(by, k.By, StringComparison.Ordinal) || string.Equals(by, k.AlsoBy, StringComparison.Ordinal))
-                return s;
-            noted = true;
-            return s with { KillSwitch = k with { AlsoBy = by, AlsoAt = time.GetUtcNow() } };
-        });
+            store.Update(s =>
+            {
+                var k = WithUnsaved(s.KillSwitch);
+                if (!k.Engaged || (by == k.By && reason == k.Reason) || (by == k.AlsoBy && reason == k.AlsoReason))
+                    return s;
+                noted = true;
+                next = k with { AlsoBy = by, AlsoAt = time.GetUtcNow(), AlsoReason = reason };
+                return s with { KillSwitch = next };
+            });
+            _unsavedAlso = null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (next is not null)
+                _unsavedAlso = next;
+            throw;
+        }
+
         return noted;
     }
 
@@ -50,5 +71,6 @@ public sealed class KillSwitch(IEngineStateStore store, TimeProvider time)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(by);
         store.Update(s => s with { KillSwitch = KillSwitchState.Released });
+        _unsavedAlso = null;
     }
 }

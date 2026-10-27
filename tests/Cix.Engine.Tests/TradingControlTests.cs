@@ -14,9 +14,9 @@ public sealed class TradingControlTests
 
     private sealed class Setup
     {
-        public Setup(TradingMode mode = TradingMode.Paper, FixedLease? lease = null)
+        public Setup(TradingMode mode = TradingMode.Paper, FixedLease? lease = null, IEngineStateStore? store = null)
         {
-            Rig = new Rig();
+            Rig = new Rig(store: store);
             Service = new TradingControlService(
                 Requests, Rig.Execution, Rig.KillSwitch, new TradingContext(mode), Rig.Time, NullLogger<TradingControlService>.Instance, lease);
         }
@@ -131,7 +131,7 @@ public sealed class TradingControlTests
         var since = setup.Halt.Since;
         setup.At(1);
         await setup.Rig.Execution.NoteAlsoTriggeredAsync("Holdings changed outside the engine.", ExecutionService.ReconcilerBy);
-        await setup.Rig.Execution.NoteAlsoTriggeredAsync("Holdings changed again.", ExecutionService.ReconcilerBy); // the same cause: once
+        await setup.Rig.Execution.NoteAlsoTriggeredAsync("Holdings changed outside the engine.", ExecutionService.ReconcilerBy); // the same finding: once
 
         Assert.Equal("owner", setup.Halt.By);
         Assert.Equal(ExecutionService.ReconcilerBy, setup.Halt.AlsoBy);
@@ -145,12 +145,56 @@ public sealed class TradingControlTests
         Assert.Equal(ManualRequestStatus.Rejected, setup.Status("resume-01"));
         Assert.Contains("Reconciliation found the account changed", setup.Detail("resume-01"), StringComparison.Ordinal);
 
-        setup.Resume("resume-02", 3, haltSince: since, haltAlsoAt: setup.Halt.AlsoAt); // now it has
         setup.At(3);
+        await setup.Rig.Execution.NoteAlsoTriggeredAsync("Holdings changed again.", ExecutionService.ReconcilerBy); // a new finding
+        Assert.Equal(Rig.T0.AddMinutes(3), setup.Halt.AlsoAt);
+        Assert.Equal(2, setup.KillSwitchEntries.Count(e => e.Data?["action"] == "also-triggered"));
+
+        setup.Resume("resume-02", 3, haltSince: since, haltAlsoAt: setup.Halt.AlsoAt); // the page now shows it
         await setup.Poll();
         Assert.False(setup.Rig.KillSwitch.IsEngaged);
         Assert.Equal("accepted", setup.Status("resume-02"));
         Assert.Equal(KillSwitchState.Released, setup.Halt);
+    }
+
+    /// <summary>Only a real change writes, so only a real change can fail (as the file and Cosmos DB stores).</summary>
+    private sealed class FailingStore : IEngineStateStore
+    {
+        private readonly InMemoryEngineStateStore _inner = new();
+
+        public bool FailWrites { get; set; }
+
+        public EngineState Current => _inner.Current;
+
+        public EngineState Update(Func<EngineState, EngineState> change)
+        {
+            var next = change(Current);
+            if (next == Current)
+                return Current;
+            return FailWrites ? throw new IOException("Disk full.") : _inner.Update(_ => next);
+        }
+    }
+
+    [Fact]
+    public async Task ACauseThatCouldNotBeSaved_StillHasToBeNamedByResume()
+    {
+        var store = new FailingStore();
+        var setup = new Setup(store: store);
+        await setup.Rig.Execution.EngageKillSwitchAsync("Paused.", "owner", CancellationToken.None);
+        var since = setup.Halt.Since;
+        setup.At(1);
+        store.FailWrites = true;
+        await setup.Rig.Execution.NoteAlsoTriggeredAsync("Holdings changed outside the engine.", ExecutionService.ReconcilerBy);
+        store.FailWrites = false;
+
+        Assert.Equal(ExecutionService.ReconcilerBy, setup.Halt.AlsoBy); // kept in memory
+        Assert.Single(setup.KillSwitchEntries, e => e.Data?["action"] == "also-triggered");
+
+        setup.Resume("resume-01", 1, haltSince: since);
+        await setup.Poll();
+
+        Assert.True(setup.Rig.KillSwitch.IsEngaged);
+        Assert.Equal(ManualRequestStatus.Rejected, setup.Status("resume-01"));
     }
 
     [Fact]

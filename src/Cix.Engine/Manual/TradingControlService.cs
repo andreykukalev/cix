@@ -131,13 +131,13 @@ public sealed partial class TradingControlService(
         var today = DateOnly.FromDateTime(now.UtcDateTime);
         if (today != _actsDay)
             (_actsDay, _actsToday) = (today, 0);
-        if (_actsToday >= MaxActsPerDay)
+        var state = killSwitch.State;
+        if (_actsToday >= MaxActsPerDay && !(request.Action == Pause && !state.Engaged)) // a Pause that halts trading is never capped
         {
             return Remember(id, request, (ManualRequestStatus.Rejected, string.Create(CultureInfo.InvariantCulture,
                 $"At most {MaxActsPerDay} Pause or Resume requests a day reach the engine; this one didn't. To stop live trading now, see docs/live-trading.md.")), counts: false);
         }
 
-        var state = killSwitch.State;
         try
         {
             if (request.Action == Pause)

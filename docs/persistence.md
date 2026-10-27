@@ -40,7 +40,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 
 | Field | Meaning |
 |---|---|
-| `killSwitch` | Whether trading is halted (`engaged`), why (`reason`), by whom (`by`) and since when (`since`). A new Live state starts engaged until the owner confirms. `alsoBy` and `alsoAt`: the latest other cause found while it was already engaged (journaled as `also-triggered`), so the dashboard's Resume can't release it unseen (ADR-0018). |
+| `killSwitch` | Whether trading is halted (`engaged`), why (`reason`), by whom (`by`) and since when (`since`). A new Live state starts engaged until the owner confirms. `alsoBy`, `alsoReason` and `alsoAt`: the latest other cause found while it was already engaged (journaled as `also-triggered`), so the dashboard's Resume can't release it unseen (ADR-0018). |
 | `peakEquity` | Highest equity seen, for the drawdown limit. |
 | `day`, `dayStartEquity` | The UTC day and the equity at its start, for the daily loss limit. |
 | `holdings` | Balances per currency at the last reconciliation, and the value of the engine's open orders then. Used to spot deposits, withdrawals or outside trades, including while the engine was down. |
