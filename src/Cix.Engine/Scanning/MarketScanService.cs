@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Cix.Domain;
 using Cix.Domain.Exchange;
+using Cix.Domain.Risk;
 using Cix.Domain.Scanning;
 using Cix.Engine.Execution;
 using Cix.Engine.Journal;
@@ -354,6 +355,86 @@ public sealed partial class MarketScanService(
         return placed;
     }
 
+    /// <summary>The order source of the sells a strategy switch makes to bring holdings within the new strategy's caps.</summary>
+    public const string TrimSource = "strategy-trim";
+
+    /// <summary>
+    /// After a strategy switch: sells the part of each holding above the new strategy's per-coin and total exposure caps
+    /// (<see cref="StrategyTrim"/>), at the bid, through <see cref="ExecutionService"/> and so the risk gate. Once per switch:
+    /// a sell that is refused or doesn't fill isn't tried again. Skips coins with an open order or a protective sell in
+    /// <paramref name="scan"/>, so nothing is sold twice. Returns the orders placed.
+    /// </summary>
+    public async Task<int> TrimToStrategyAsync(ScanResult scan, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(scan);
+        if (Halted || riskLimits is null || specs.Active is not { } spec)
+            return 0;
+        var limits = Strategy.StrategySchema.LimitsOf(spec, riskLimits);
+        if (limits.MaxPositionQuotePerSymbol is null && limits.MaxExposureQuote is null)
+            return 0;
+        if (await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false) is not { } portfolio)
+        {
+            LogTrimSkipped(logger, spec.Label, "the portfolio can't be valued now");
+            return 0;
+        }
+
+        var open = await execution.GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
+        var busy = open.Where(o => o.IsOpen).Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol))
+            .Concat(scan.Exits.Where(x => ProtectiveReasons.Contains(x.Reason)).Select(x => x.Symbol))
+            .ToHashSet(StringComparer.Ordinal);
+        var sellable = portfolio.Snapshot.SellableBaseBySymbol ?? new Dictionary<string, decimal>();
+        var holdings = new List<TrimHolding>();
+        foreach (var (symbol, value) in portfolio.Snapshot.PositionQuoteBySymbol)
+        {
+            // A coin being sold still counts toward the exposure, but isn't sold again.
+            if (value <= 0 || busy.Contains(symbol) || !universe.IsTradable(symbol))
+                continue;
+            if (features.GetFeatures(symbol).Bid is not { } bid || await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false) is not { } pair)
+                continue;
+            holdings.Add(new TrimHolding(symbol, value, sellable.GetValueOrDefault(symbol), bid, pair));
+        }
+
+        // Coins left out (busy, unpriced) still count toward the total cap: only the rest is trimmed for it.
+        var leftOut = portfolio.Snapshot.PositionQuoteBySymbol.Where(p => p.Value > 0 && holdings.All(h => h.Symbol != p.Key)).Sum(p => p.Value);
+        var trimLimits = limits.MaxExposureQuote is { } cap ? limits with { MaxExposureQuote = Math.Max(0m, cap - leftOut) } : limits;
+        var placed = 0;
+        foreach (var sell in StrategyTrim.Plan(holdings, trimLimits))
+        {
+            var clientOrderId = Guid.NewGuid().ToString();
+            var result = await execution.PlaceAsync(
+                new OrderIntent(sell.Symbol, OrderSide.Sell, sell.BaseSize, sell.LimitPrice, clientOrderId), postOnly: false, cancellationToken,
+                countsTowardRejectStreak: false, context: new OrderContext(TrimSource, Strategy: spec.Label)).ConfigureAwait(false);
+            var data = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tool"] = TrimSource,
+                ["clientOrderId"] = clientOrderId,
+                ["symbol"] = sell.Symbol,
+                ["side"] = "sell",
+                ["requestedSize"] = sell.BaseSize.ToString(CultureInfo.InvariantCulture),
+                ["requestedPrice"] = sell.LimitPrice.ToString(CultureInfo.InvariantCulture),
+                ["status"] = result.Status.ToString().ToLowerInvariant(),
+                ["rule"] = result.Rule,
+                ["reason"] = result.Reason,
+                ["rationale"] = $"strategy trim {sell.Symbol} {sell.Rule}: {sell.Reason}",
+            };
+            await AppendSafelyAsync(new JournalEntry(
+                JournalIds.New(time.GetUtcNow(), "order"), time.GetUtcNow(), "order", "engine", null, spec.Label,
+                Inv($"trim to {spec.Label} sell {sell.BaseSize} {sell.Symbol} @ {sell.LimitPrice}: {result.Status} ({result.Rule})"), data))
+                .ConfigureAwait(false);
+            LogTrim(logger, sell.Symbol, sell.BaseSize, spec.Label, result.Status.ToString(), sell.Reason);
+            if (result.Status == ExecutionStatus.Placed)
+                placed++;
+        }
+
+        return placed;
+    }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Trim {Symbol} {Size} for {Strategy}: {Status}. {Reason}")]
+    private static partial void LogTrim(ILogger logger, string symbol, decimal size, string strategy, string status, string reason);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "No trim to {Strategy}: {Reason}")]
+    private static partial void LogTrimSkipped(ILogger logger, string strategy, string reason);
+
     /// <summary>Cancels this engine's protective sells that have rested unfilled too long; the next scan sells again at the bid.</summary>
     public async Task<int> CancelStaleProtectiveExitsAsync(CancellationToken cancellationToken)
     {
@@ -412,7 +493,7 @@ public sealed partial class MarketScanService(
         }
     }
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Journal write failed for a protective-exit {Kind} entry: {Detail}")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Journal write failed for an engine {Kind} entry: {Detail}")]
     private static partial void LogOrderJournalFailed(ILogger logger, string kind, string detail);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Protective {Reason} exit: sell {Size} {Symbol} at {Price}: {Status} ({Rule})")]
@@ -513,8 +594,11 @@ public sealed partial class MarketScanBackgroundService(
         return ScanTrigger.Switch;
     }
 
-    /// <summary>One scan; returns false if it failed. Tests call this instead of running the loop.</summary>
-    public async Task<bool> ScanOnceAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// One scan; returns false if it failed. Tests call this instead of running the loop. With <paramref name="trim"/> (the
+    /// scan after a strategy switch), holdings above the new strategy's caps are trimmed after the protective exits.
+    /// </summary>
+    public async Task<bool> ScanOnceAsync(CancellationToken cancellationToken, bool trim = false)
     {
         try
         {
@@ -530,6 +614,8 @@ public sealed partial class MarketScanBackgroundService(
             var result = await scanner.ScanAsync(cancellationToken).ConfigureAwait(false);
             LogScanned(logger, result.Ranked.Count, result.Excluded.Count, result.Entries.Count, result.Exits.Count, Describe(result));
             await scanner.ApplyProtectiveExitsAsync(result, cancellationToken).ConfigureAwait(false);
+            if (trim)
+                await scanner.TrimToStrategyAsync(result, cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -554,7 +640,7 @@ public sealed partial class MarketScanBackgroundService(
                 return;
             if (trigger == ScanTrigger.Tick)
                 tick = null; // a switch leaves the pending tick for the next round
-            await ScanOnceAsync(stoppingToken).ConfigureAwait(false);
+            await ScanOnceAsync(stoppingToken, trim: trigger == ScanTrigger.Switch).ConfigureAwait(false);
         }
     }
 

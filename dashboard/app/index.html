@@ -234,7 +234,7 @@
       <p id="strategy-purpose" class="muted"></p>
       <h3>What changes</h3>
       <ul id="strategy-changes" class="changes"></ul>
-      <p class="summary">Applies to new trades from the next scan and trader run, after any run in progress ends. Open positions keep their stop and target; changes marked <strong>open positions too</strong> reach the coins you already hold from the next scan. Nothing is sold or cancelled by the switch itself. The engine checks the strategy again and records the switch in the journal.</p>
+      <p class="summary">Applies to new trades from the next scan and trader run, after any run in progress ends. Open positions keep their stop and target; changes marked <strong>open positions too</strong> reach the coins you already hold from the next scan. The engine then scans at once and sells only the part of any coin held above the new strategy's per-coin or total cap, through the risk gate. Nothing is cancelled. The engine checks the strategy again and records the switch in the journal.</p>
       <label class="field">Why <span class="muted small">(optional, kept in the journal)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
       <p id="strategy-error" class="error" role="alert" hidden></p>
       <div class="actions">
