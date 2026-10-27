@@ -109,7 +109,8 @@ public sealed class CosmosTradablePairsRepository(CosmosDb db) : ITradablePairsR
 /// <c>config/risk-limits.json</c> still decide which pairs may ever be traded and how many at once, and every order still
 /// goes through the risk gate, which reads the same list. A pair is added only if the exchange lists it as active, in the
 /// account's quote currency, with the 24h traded value the running strategy's scanner asks for; it is removed only when
-/// nothing is held or working in it, so equity and exits never lose sight of a position. Each change is journaled (kind
+/// nothing is held, reserved or working in it, not even a residual below the exchange minimum, so equity and exits never lose
+/// sight of a position. Each change is journaled (kind
 /// <see cref="Kind"/>) before it applies and saved as <c>tradable-pairs-&lt;mode&gt;</c>, which a restart restores.
 /// Paper only, like strategy switching (ADR-0015): live changes come with #71.
 /// </summary>
@@ -433,9 +434,16 @@ public sealed partial class TradablePairsService(
             return "The portfolio can't be valued right now, so the engine can't tell whether you hold it; send the request again later.";
         if (open.Any(o => o.IsOpen && MarketDataPoller.NormaliseSymbol(o.Symbol) == symbol))
             return "It has an open order; cancel it or let it fill first.";
-        // A holding the exchange lets you sell must be sold first: once removed, it would drop out of equity and of the exits.
+        // Any balance in it, however small, keeps the pair: once removed, it would drop out of equity and of the exits. That
+        // covers what an order reserves and a residual below the exchange minimum, which can't be sold on its own.
         if (portfolio.SellableBaseBySymbol?.ContainsKey(symbol) == true)
-            return "You still hold it; sell it first.";
+            return string.Create(CultureInfo.InvariantCulture,
+                $"You still hold it (about {portfolio.PositionQuoteBySymbol.GetValueOrDefault(symbol):0.##} {symbol.Split('-')[^1]}); sell it first.");
+        if (portfolio.PositionQuoteBySymbol.GetValueOrDefault(symbol) > 0m)
+            return string.Create(CultureInfo.InvariantCulture,
+                $"A balance of it is still on the account (about {portfolio.PositionQuoteBySymbol[symbol]:0.##} {symbol.Split('-')[^1]}), too small to sell or reserved by an order; a pair can be removed only when its balance is zero.");
+        if (portfolio.OpenBuyQuoteBySymbol?.GetValueOrDefault(symbol) > 0m)
+            return "A buy in it is still being settled; send the request again in a minute.";
         return null;
     }
 

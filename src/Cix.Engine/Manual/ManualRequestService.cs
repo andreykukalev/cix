@@ -186,8 +186,8 @@ public sealed partial class ManualRequestService(
     /// that can't be carried out as given comes back as <c>invalid-answer</c> and leaves the request waiting.
     /// </summary>
     public async Task<ManualOutcome> AnswerAsync(
-        string requestId, string decision, decimal? portion, decimal? stopLoss, decimal? takeProfit, string rationale, string agent, string? runId,
-        CancellationToken cancellationToken)
+        string requestId, string decision, decimal? portion, decimal? stopLoss, decimal? takeProfit, string rationale, string? rationaleRu, string agent,
+        string? runId, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(requestId);
         if (State != "ok")
@@ -205,8 +205,8 @@ public sealed partial class ManualRequestService(
             if (decision == "decline")
             {
                 await FinishAsync(request, ManualRequestStatus.Declined, agent, "declined", rationale,
-                    new Dictionary<string, string?> { ["decidedBy"] = agent, ["runId"] = runId, ["rationale"] = rationale }, runId, cancellationToken)
-                    .ConfigureAwait(false);
+                    new Dictionary<string, string?> { ["decidedBy"] = agent, ["runId"] = runId, ["rationale"] = rationale, ["rationaleRu"] = rationaleRu },
+                    runId, cancellationToken).ConfigureAwait(false);
                 return new ManualOutcome(ManualRequestStatus.Declined, "declined", "Recorded: the request is declined.");
             }
 
@@ -216,7 +216,8 @@ public sealed partial class ManualRequestService(
             if (AnswerProblem(request, share, stopLoss, takeProfit, quote) is { } invalid)
                 return new ManualOutcome("invalid-answer", "invalid", invalid);
 
-            return await PlaceForRequestAsync(request, share, stopLoss, takeProfit, AgentSource, agent, runId, rationale, cancellationToken).ConfigureAwait(false);
+            return await PlaceForRequestAsync(request, share, stopLoss, takeProfit, AgentSource, agent, runId, rationale, cancellationToken, rationaleRu: rationaleRu)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -301,9 +302,12 @@ public sealed partial class ManualRequestService(
     /// <summary>Prices and sizes the order, claims the request in the ledger, sends the order through the execution service and records the outcome.</summary>
     private async Task<ManualOutcome> PlaceForRequestAsync(
         ManualRequest request, decimal? portion, decimal? stopLoss, decimal? takeProfit, string source, string decidedBy, string? runId, string rationale,
-        CancellationToken cancellationToken, bool firstSight = false)
+        CancellationToken cancellationToken, bool firstSight = false, string? rationaleRu = null)
     {
-        var extra = new Dictionary<string, string?> { ["decidedBy"] = decidedBy, ["runId"] = runId, ["rationale"] = rationale, ["source"] = source };
+        var extra = new Dictionary<string, string?>
+        {
+            ["decidedBy"] = decidedBy, ["runId"] = runId, ["rationale"] = rationale, ["rationaleRu"] = rationaleRu, ["source"] = source,
+        };
 
         // A direct sell is accepted (counted and remembered) in the same save as its claim, or with its refusal.
         ManualLedger Accepted(ManualLedger ledger) =>
@@ -396,6 +400,8 @@ public sealed partial class ManualRequestService(
             ["reason"] = result.Reason,
             ["rationale"] = rationale,
         };
+        if (rationaleRu is not null)
+            orderData["rationaleRu"] = rationaleRu; // for the owner's dashboard only
         if (stopLoss is { } s)
             orderData["stopLoss"] = s.ToString(Invariant);
         if (takeProfit is { } t)
@@ -585,7 +591,7 @@ public sealed partial class ManualRequestService(
     {
         var outcome = Outcome(extra, rule, reason);
         var data = Data(request, status, rule, outcome["reason"] ?? string.Empty);
-        foreach (var key in new[] { "clientOrderId", "rationale", "runId", "portion", "filledSize", "averagePrice" })
+        foreach (var key in new[] { "clientOrderId", "rationale", "rationaleRu", "runId", "portion", "filledSize", "averagePrice" })
         {
             if (outcome.GetValueOrDefault(key) is { Length: > 0 } value)
                 data[key] = value;

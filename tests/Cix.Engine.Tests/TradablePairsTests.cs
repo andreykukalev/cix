@@ -101,6 +101,20 @@ public sealed class TradablePairsTests
     }
 
     [Fact]
+    public async Task Remove_AResidualTooSmallToSell_IsRefusedUntilTheBalanceIsZero()
+    {
+        var setup = new Setup(btc: 0.000001m); // about 0.06 EUR: under the exchange's 0.1 EUR minimum, so not sellable
+        Assert.Empty(setup.Tradable.TrySet([Btc, Sol], Rig.T0));
+        setup.Request("r-1", "remove", Btc);
+
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal(ManualRequestStatus.Rejected, setup.RequestStatus("r-1"));
+        Assert.Contains("only when its balance is zero", setup.RequestDetail("r-1"), StringComparison.Ordinal);
+        Assert.True(setup.Tradable.Contains(Btc));
+    }
+
+    [Fact]
     public async Task Remove_CoinNotHeld_StopsItsOrdersAtTheGate()
     {
         var setup = new Setup();

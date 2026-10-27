@@ -41,6 +41,7 @@ public sealed class OrderTools(
         [Description("true to only add liquidity: if it would fill at once it is rejected instead.")] bool postOnly = false,
         [Description("Buys only: the stop-loss price, at least 0.5% below the limit price. Recorded and returned by get_position_plans; the engine sells the position itself when the bid reaches it.")] decimal? stopLoss = null,
         [Description("Buys only: the take-profit price, at least 0.5% above the limit price. The engine sells at it like at the stop.")] decimal? takeProfit = null,
+        [Description(RationaleRuHelp)] string? rationaleRu = null,
         CancellationToken cancellationToken = default)
     {
         await context.RequireAllowedAsync("place_order", cancellationToken).ConfigureAwait(false);
@@ -54,6 +55,7 @@ public sealed class OrderTools(
         if (baseSize is < MinValue or > MaxBaseSize || limitPrice is < MinValue or > MaxPrice)
             throw new McpException($"baseSize must be between {MinValue} and {MaxBaseSize}, and limitPrice between {MinValue} and {MaxPrice}.");
         var why = Rationale(rationale);
+        var whyRu = RationaleRu(rationaleRu);
         if (orderSide == OrderSide.Sell && (stopLoss is not null || takeProfit is not null))
             throw new McpException("stopLoss and takeProfit apply to buys only.");
         // The engine sells at these levels by itself (protective exits), so they must be a real distance from the entry.
@@ -97,6 +99,8 @@ public sealed class OrderTools(
             ["reason"] = result.Reason,
             ["rationale"] = why,
         };
+        if (whyRu is not null)
+            data["rationaleRu"] = whyRu; // for the owner's dashboard only
         if (stopLoss is { } stop)
             data["stopLoss"] = stop.ToString(inv);
         if (takeProfit is { } target)
@@ -128,25 +132,27 @@ public sealed class OrderTools(
     public async Task<string> CancelOrder(
         [Description("The orderId to cancel.")] string orderId,
         [Description("Why, in 10 to 1000 characters.")] string rationale,
+        [Description(RationaleRuHelp)] string? rationaleRu = null,
         CancellationToken cancellationToken = default)
     {
         await context.RequireAllowedAsync("cancel_order", cancellationToken).ConfigureAwait(false);
         if (!ToolCallContext.IsSafeLabel(orderId))
             throw new McpException("orderId is not valid.");
         var why = Rationale(rationale);
+        var whyRu = RationaleRu(rationaleRu);
 
         var (outcome, clientOrderId) = await execution.CancelOwnOrderAsync(orderId, cancellationToken).ConfigureAwait(false);
-        await context.RecordOutcomeAsync(
-            "order",
-            $"Cancel {orderId}: {outcome}",
-            new Dictionary<string, string>
-            {
-                ["tool"] = "cancel_order",
-                ["orderId"] = orderId,
-                ["clientOrderId"] = clientOrderId ?? string.Empty,
-                ["status"] = outcome.ToString().ToLowerInvariant(),
-                ["rationale"] = why,
-            }).ConfigureAwait(false);
+        var data = new Dictionary<string, string>
+        {
+            ["tool"] = "cancel_order",
+            ["orderId"] = orderId,
+            ["clientOrderId"] = clientOrderId ?? string.Empty,
+            ["status"] = outcome.ToString().ToLowerInvariant(),
+            ["rationale"] = why,
+        };
+        if (whyRu is not null)
+            data["rationaleRu"] = whyRu;
+        await context.RecordOutcomeAsync("order", $"Cancel {orderId}: {outcome}", data).ConfigureAwait(false);
 
         return ToolJson.Of(new
         {
@@ -161,14 +167,37 @@ public sealed class OrderTools(
         });
     }
 
+    /// <summary>What the owner's dashboard asks of the Russian rationale, shared by every tool that takes one.</summary>
+    internal const string RationaleRuHelp =
+        "rationale in Russian for the owner, whose native language it is: the same meaning in plain, natural Russian, 10 to 1000 "
+        + "characters, adding nothing the English doesn't say. Keep coin names and tickers (BTC-EUR), abbreviations (ATR, EMA20) and "
+        + "trading terms (stop-loss, take-profit) in English. Shown on the dashboard instead of the English; leave it out only if you can't write it.";
+
     /// <summary>Required, trimmed, single-line and bounded: it is written to the journal verbatim.</summary>
     internal static string Rationale(string? rationale)
     {
-        var text = string.Join(' ', (rationale ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        // Drop control and format characters (zero-width, bidi overrides) that could disguise what the owner reads.
-        text = new string(text.Where(c => !char.IsControl(c) && CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.Format).ToArray());
+        var text = Clean(rationale);
         if (text.Length < MinRationale)
             throw new McpException($"rationale is required ({MinRationale} to {MaxRationale} characters): say why.");
+        return Bounded(text);
+    }
+
+    /// <summary>The optional Russian rationale, cleaned like the English one; null when absent or too short to say anything.</summary>
+    internal static string? RationaleRu(string? rationaleRu)
+    {
+        var text = Clean(rationaleRu);
+        return text.Length < MinRationale ? null : Bounded(text); // optional: never fails the order or the answer
+    }
+
+    private static string Clean(string? text)
+    {
+        var single = string.Join(' ', (text ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        // Drop control and format characters (zero-width, bidi overrides) that could disguise what the owner reads.
+        return new string(single.Where(c => !char.IsControl(c) && CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.Format).ToArray());
+    }
+
+    private static string Bounded(string text)
+    {
         if (text.Length <= MaxRationale)
             return text;
         var cut = char.IsHighSurrogate(text[MaxRationale - 1]) ? MaxRationale - 1 : MaxRationale; // never split a character

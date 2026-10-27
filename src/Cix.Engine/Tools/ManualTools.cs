@@ -74,7 +74,7 @@ public sealed class ManualTools(ToolCallContext context, ManualRequestService re
     }
 
     [McpServerTool(Name = AnswerTool, Destructive = false, Idempotent = false)]
-    [Description("Answers one owner request from get_manual_requests. decision execute: the engine places the order (sells at the bid, buys at the ask) through the risk gate and returns the outcome; for a sell you may pass a smaller portion than asked; a buy needs stopLoss and may take takeProfit. decision decline: nothing is placed. Either way explain in rationale (10 to 1000 characters): it is shown to the owner with the request.")]
+    [Description("Answers one owner request from get_manual_requests. decision execute: the engine places the order (sells at the bid, buys at the ask) through the risk gate and returns the outcome; for a sell you may pass a smaller portion than asked; a buy needs stopLoss and may take takeProfit. decision decline: nothing is placed. Either way explain in rationale (10 to 1000 characters), and the same in Russian in rationaleRu: it is shown to the owner with the request.")]
     public async Task<string> AnswerManualRequest(
         [Description("requestId from get_manual_requests.")] string requestId,
         [Description("execute or decline.")] string decision,
@@ -82,6 +82,7 @@ public sealed class ManualTools(ToolCallContext context, ManualRequestService re
         [Description("Sells only: the share of the position to sell, more than 0 and at most what the owner asked. Defaults to the owner's portion.")] decimal? portion = null,
         [Description("Buys only, required: the stop-loss price, at least 0.5% below the ask. The engine sells the position itself if the bid reaches it.")] decimal? stopLoss = null,
         [Description("Buys only: the take-profit price, at least 0.5% above the ask.")] decimal? takeProfit = null,
+        [Description(OrderTools.RationaleRuHelp)] string? rationaleRu = null,
         CancellationToken cancellationToken = default)
     {
         await context.RequireAllowedAsync(AnswerTool, cancellationToken).ConfigureAwait(false);
@@ -96,8 +97,9 @@ public sealed class ManualTools(ToolCallContext context, ManualRequestService re
         if (choice == "decline" && (portion is not null || stopLoss is not null || takeProfit is not null))
             throw new McpException("A decline takes no portion, stopLoss or takeProfit; put any alternative in rationale.");
         var why = OrderTools.Rationale(rationale);
+        var whyRu = OrderTools.RationaleRu(rationaleRu);
 
-        var outcome = await requests.AnswerAsync(requestId, choice, portion, stopLoss, takeProfit, why, context.Agent, context.RunId, cancellationToken)
+        var outcome = await requests.AnswerAsync(requestId, choice, portion, stopLoss, takeProfit, why, whyRu, context.Agent, context.RunId, cancellationToken)
             .ConfigureAwait(false);
         if (outcome.Status is "not-pending" or "unavailable" or "invalid-answer")
             throw new McpException(outcome.Reason);

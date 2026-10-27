@@ -179,6 +179,32 @@ public sealed class ScannerServiceTests
     }
 
     [Fact]
+    public async Task APairChange_StartsAScanWithoutWaitingForTheTick_AndAStrategySwitchComesFirst()
+    {
+        var tools = Uptrend();
+        var tradable = new Cix.Domain.Risk.TradableSymbols(Rig.Limits with { AllowedQuoteCurrency = "EUR", MaxTradableSymbols = 3 });
+        var specs = new RuntimeStrategySpecs(ToolRig.Observer);
+        var service = new MarketScanBackgroundService(
+            tools.Scanner, new ScannerOptions(), tools.Rig.Time, NullLogger<MarketScanBackgroundService>.Instance, specs, tradable);
+        var tick = new TaskCompletionSource<bool>().Task;
+
+        var next = service.NextAsync(tick, CancellationToken.None);
+        Assert.False(next.IsCompleted);
+        Assert.Empty(tradable.TrySet([Rig.Btc, "SOL-EUR"], tools.Rig.Time.GetUtcNow()));
+
+        Assert.Equal(MarketScanBackgroundService.ScanTrigger.Pairs, await next.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(service.NextAsync(tick, CancellationToken.None).IsCompleted); // one scan per change
+
+        // Both while the scanner was busy: one scan, after the switch, covers the pairs too.
+        var fresh = new MarketScanBackgroundService(
+            tools.Scanner, new ScannerOptions(), tools.Rig.Time, NullLogger<MarketScanBackgroundService>.Instance, specs, tradable);
+        Assert.Empty(tradable.TrySet([Rig.Btc], tools.Rig.Time.GetUtcNow()));
+        specs.Activate(ToolRig.Observer with { Version = 2 }, tools.Rig.Time.GetUtcNow());
+        Assert.Equal(MarketScanBackgroundService.ScanTrigger.Switch, await fresh.NextAsync(tick, CancellationToken.None));
+        Assert.False(fresh.NextAsync(tick, CancellationToken.None).IsCompleted);
+    }
+
+    [Fact]
     public async Task WithoutRunTimeSwitching_OnlyTheTickScans()
     {
         var tools = Uptrend();

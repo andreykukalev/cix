@@ -357,14 +357,17 @@ public sealed class ManualRequestTests
         rig.Request("req-decline", "sell", "agent", portion: 1m);
         await rig.Poll();
 
-        var answer = Parse(await rig.Manual.AnswerManualRequest("req-decline", "decline", "Trend is still up; I'd hold and keep the stop."));
+        var answer = Parse(await rig.Manual.AnswerManualRequest(
+            "req-decline", "decline", "Trend is still up; I'd hold and keep the stop.", rationaleRu: "Тренд всё ещё вверх;\u200b я бы держал позицию и оставил stop-loss."));
 
         Assert.Equal("declined", answer.GetProperty("status").GetString());
         Assert.Equal(ManualRequestStatus.Declined, rig.Status("req-decline"));
         Assert.Equal("Trend is still up; I'd hold and keep the stop.", rig.Outcome("req-decline", "rationale"));
+        Assert.Equal("Тренд всё ещё вверх; я бы держал позицию и оставил stop-loss.", rig.Outcome("req-decline", "rationaleRu")); // cleaned
         Assert.DoesNotContain(rig.Tools.Journal.Entries, e => e.Kind == "order");
         var decided = Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == ManualRequestService.Kind && e.Data!["status"] == "declined");
         Assert.Equal(("trader-requests", "run-9"), (decided.Actor, decided.RunId));
+        Assert.Equal("Тренд всё ещё вверх; я бы держал позицию и оставил stop-loss.", decided.Data!["rationaleRu"]);
         Assert.Null(rig.InLedger("req-decline"));
     }
 

@@ -122,6 +122,19 @@ public sealed class OrderToolTests
     }
 
     [Fact]
+    public async Task RationaleRu_IsJournaledForTheOwner_AndLeftOutWhenTooShort()
+    {
+        var tools = Trader();
+
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, rationaleRu: "Откат в восходящем тренде,\nстоп ниже EMA20.", cancellationToken: CancellationToken.None);
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, rationaleRu: "  да ", cancellationToken: CancellationToken.None);
+
+        var orders = tools.Journal.Entries.Where(e => e.Kind == "order").ToList();
+        Assert.Equal("Откат в восходящем тренде, стоп ниже EMA20.", orders[0].Data!["rationaleRu"]);
+        Assert.False(orders[1].Data!.ContainsKey("rationaleRu")); // optional: a translation that says nothing is dropped, the order still goes
+    }
+
+    [Fact]
     public async Task CancelOrder_CancelsOwnOrders_Only()
     {
         var tools = Trader();
@@ -129,9 +142,9 @@ public sealed class OrderToolTests
         var foreign = await tools.Rig.Paper.PlaceLimitOrderAsync(
             new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 59_900m, "someone-else").Approved(), false, CancellationToken.None);
 
-        var own = Parse(await tools.Orders.CancelOrder(placed.GetProperty("orderId").GetString()!, "Trend turned; stepping aside.", CancellationToken.None));
-        var notOwn = Parse(await tools.Orders.CancelOrder(foreign.VenueOrderId, "Trying to cancel this one.", CancellationToken.None));
-        var missing = Parse(await tools.Orders.CancelOrder("no-such-order", "Trying to cancel this one.", CancellationToken.None));
+        var own = Parse(await tools.Orders.CancelOrder(placed.GetProperty("orderId").GetString()!, "Trend turned; stepping aside.", cancellationToken: CancellationToken.None));
+        var notOwn = Parse(await tools.Orders.CancelOrder(foreign.VenueOrderId, "Trying to cancel this one.", cancellationToken: CancellationToken.None));
+        var missing = Parse(await tools.Orders.CancelOrder("no-such-order", "Trying to cancel this one.", cancellationToken: CancellationToken.None));
 
         Assert.Equal(("cancelled", "not-own", "not-found"), (own.GetProperty("status").GetString(), notOwn.GetProperty("status").GetString(), missing.GetProperty("status").GetString()));
         Assert.Equal(foreign.VenueOrderId, Assert.Single(await tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None)).VenueOrderId);
@@ -186,7 +199,7 @@ public sealed class OrderToolTests
     {
         var tools = Trader();
         var placed = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
-        await tools.Orders.CancelOrder(placed.GetProperty("orderId").GetString()!, "Trend turned; stepping aside.", CancellationToken.None);
+        await tools.Orders.CancelOrder(placed.GetProperty("orderId").GetString()!, "Trend turned; stepping aside.", cancellationToken: CancellationToken.None);
 
         await tools.Rig.Execution.ReconcileAsync(CancellationToken.None);
 

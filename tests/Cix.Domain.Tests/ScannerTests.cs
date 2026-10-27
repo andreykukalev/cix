@@ -169,6 +169,28 @@ public sealed class ScannerTests
         Assert.Equal(new[] { "SOL-EUR", "AVAX-EUR", "LINK-EUR" }, result.Ranked.Select(r => r.Symbol).ToArray());
         Assert.Equal("SOL-EUR", Assert.Single(result.Entries).Symbol);
         Assert.Equal("signal limit reached", result.Ranked[1].NoEntryReason);
+        Assert.Equal("Passed every entry rule, but the strategy allows 1 buy signal(s) per scan and higher-ranked SOL-EUR took them.",
+            result.Ranked[1].NoEntryDetail);
+    }
+
+    [Fact]
+    public void TheEntryRules_AreCheckedBeforeTheSignalLimit()
+    {
+        var result = Scan(
+            [
+                Input(Features("SOL-EUR", return24h: 0.06m)),
+                Input(Features("LINK-EUR", return24h: 0.03m, trend: Trend.Down)),
+            ],
+            new ScannerParameters { MaxEntrySignals = 1 });
+
+        Assert.Equal("SOL-EUR", Assert.Single(result.Entries).Symbol);
+        var link = result.Ranked.Single(r => r.Symbol == "LINK-EUR");
+        Assert.Equal("trend down", link.NoEntryReason); // the real reason, not the limit it never reached
+        Assert.Equal("The strategy buys only in an uptrend (EMA20 above EMA50); the trend is down.", link.NoEntryDetail);
+
+        var none = Scan([Input()], new ScannerParameters { MaxEntrySignals = 0 });
+        Assert.Equal(("signal limit reached", "Passed every entry rule, but the strategy allows no buy signals."),
+            (none.Ranked[0].NoEntryReason, none.Ranked[0].NoEntryDetail));
     }
 
     [Fact]
@@ -191,6 +213,18 @@ public sealed class ScannerTests
 
         Assert.Empty(result.Entries);
         Assert.Equal(why, Assert.Single(result.Ranked).NoEntryReason);
+        Assert.NotNull(result.Ranked[0].NoEntryDetail);
+    }
+
+    [Fact]
+    public void NoEntryDetails_GiveTheFigureAndTheThreshold()
+    {
+        Assert.Equal("Price is 1 ATR above EMA20; the strategy buys a pullback, at most 0.5 ATR above it.",
+            Scan([Input(Features(ema20: 98.5m))]).Ranked[0].NoEntryDetail);
+        Assert.Equal("Last hour -0.1%; the strategy waits for an hour that isn't falling.",
+            Scan([Input(Features(return1h: -0.001m))]).Ranked[0].NoEntryDetail);
+        Assert.Equal("The sized order, 4.99 EUR (at most 5 per order and 1 at risk), is below the exchange minimum of 10 EUR.",
+            Scan([Input(pair: Pair("SOL-EUR", minQuote: 10m))]).Ranked[0].NoEntryDetail);
     }
 
     [Theory]

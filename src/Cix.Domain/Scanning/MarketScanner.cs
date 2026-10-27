@@ -111,7 +111,8 @@ public sealed record ScanRow(
     decimal? VolumeRatio,
     decimal SpreadFraction,
     decimal RoundTripCostFraction,
-    string? NoEntryReason);
+    string? NoEntryReason,
+    string? NoEntryDetail = null);
 
 /// <param name="Return1h">The symbol's move over the last hour, when its data allows (fractions: 0.05 = 5%).</param>
 /// <param name="Return24h">The move over the last 24 hours, when its data allows.</param>
@@ -195,7 +196,7 @@ public static class MarketScanner
         foreach (var (input, metrics, score) in eligible.OrderByDescending(e => e.Score).ThenBy(e => e.Input.Symbol, StringComparer.Ordinal))
         {
             rank++;
-            string? noEntry;
+            string? noEntry, detail = null;
             if (!allowEntries)
                 noEntry = "trading halted";
             else if (entriesPausedReason is not null)
@@ -206,13 +207,15 @@ public static class MarketScanner
                 noEntry = "already held";
             else if (input.HasOpenOrder)
                 noEntry = "open order";
-            else if (entries.Count >= parameters.MaxEntrySignals)
-                noEntry = "signal limit reached";
             else
             {
-                var (signal, reason) = Entry(input, metrics, rank, parameters);
-                noEntry = reason;
-                if (signal is not null)
+                // The entry rules first, then the limit: a coin the rules turn down says why, and only one that passes them
+                // can be held back by the limit.
+                var (signal, reason, why) = Entry(input, metrics, rank, parameters);
+                (noEntry, detail) = (reason, why);
+                if (signal is not null && entries.Count >= parameters.MaxEntrySignals)
+                    (noEntry, detail) = ("signal limit reached", SignalLimitDetail(entries, parameters.MaxEntrySignals));
+                else if (signal is not null)
                     entries.Add(signal);
             }
 
@@ -220,7 +223,7 @@ public static class MarketScanner
             ranked.Add(new ScanRow(
                 input.Symbol, rank, Math.Round(score, 3, MidpointRounding.AwayFromZero), f.Price!.Value, f.Trend, f.AtrFraction!.Value, f.Return1h, f.Return24h,
                 Math.Round(metrics.QuoteVolume24h, 0), Round(metrics.VolumeRatio, 2), f.SpreadFraction!.Value,
-                Math.Round(metrics.RoundTripCost, 6, MidpointRounding.AwayFromZero), noEntry));
+                Math.Round(metrics.RoundTripCost, 6, MidpointRounding.AwayFromZero), noEntry, detail));
         }
 
         var inputsBySymbol = inputs.ToDictionary(i => i.Symbol, StringComparer.Ordinal);
@@ -275,7 +278,7 @@ public static class MarketScanner
         var newest = input.Hourly.Count > 0 ? input.Hourly[^1] : null;
         var last24 = newest is null ? [] : input.Hourly.Where(c => c.Start > newest.Start - TimeSpan.FromHours(24)).ToList();
         if (last24.Count < p.MinHourlyCandles24h)
-            return (null, Out("insufficient-history", Inv($"Only {last24.Count} hourly candles in the last 24h.")));
+            return (null, Out("insufficient-history", Inv($"Only {last24.Count} hourly candles in the last 24h; {p.MinHourlyCandles24h} needed.")));
 
         // Assumes candle volume is in the base currency (BTC for BTC-EUR); to be confirmed by the API spike (ADR-0006).
         var quoteVolume = last24.Sum(c => c.Volume * c.Close);
@@ -308,47 +311,61 @@ public static class MarketScanner
         return (p.MomentumWeight * momentum) + (p.TrendWeight * trend) + (p.VolumeWeight * volume) - (p.CostWeight * m.RoundTripCost / atr);
     }
 
-    private static (EntrySignal? Signal, string? NoEntryReason) Entry(ScanInput input, Metrics m, int rank, ScannerParameters p)
+    /// <summary>Why a coin that passed every entry rule got no signal: the limit, and the coins ranked above it that took it.</summary>
+    private static string SignalLimitDetail(IReadOnlyList<EntrySignal> entries, int max) => max == 0
+        ? "Passed every entry rule, but the strategy allows no buy signals."
+        : Inv($"Passed every entry rule, but the strategy allows {max} buy signal(s) per scan and higher-ranked {string.Join(", ", entries.Select(e => e.Symbol))} took them.");
+
+    /// <summary>
+    /// The signal, or the short reason there is none and a sentence with the figure and the threshold behind it. The sentence
+    /// names no price: it goes into the engine status as it is.
+    /// </summary>
+    private static (EntrySignal? Signal, string? NoEntryReason, string? Detail) Entry(ScanInput input, Metrics m, int rank, ScannerParameters p)
     {
         var f = input.Features;
         var pair = input.Pair!;
+        var trend = f.Trend.ToString().ToLowerInvariant();
         if (p.RequireUptrendPullback && f.Trend != Trend.Up)
-            return (null, $"trend {f.Trend.ToString().ToLowerInvariant()}");
+            return (null, $"trend {trend}", Inv($"The strategy buys only in an uptrend (EMA{p.FastEmaPeriod} above EMA{p.SlowEmaPeriod}); the trend is {trend}."));
         if (f.Ask is not > 0)
-            return (null, "no ask");
+            return (null, "no ask", "The exchange shows no ask price right now.");
 
         var atr = f.Atr14!.Value;
         var aboveEma = atr == 0 ? 0m : (f.Price!.Value - f.Ema20!.Value) / atr;
         if (p.RequireUptrendPullback && aboveEma > p.EntryMaxAboveEma20Atr)
-            return (null, Inv($"extended: {aboveEma:0.##} ATR above EMA20"));
+            return (null, Inv($"extended: {aboveEma:0.##} ATR above EMA20"),
+                Inv($"Price is {aboveEma:0.##} ATR above EMA{p.FastEmaPeriod}; the strategy buys a pullback, at most {p.EntryMaxAboveEma20Atr:0.##} ATR above it."));
         var return1h = f.Return1h ?? 0m;
+        var hour = f.Return1h is null ? "n/a" : return1h.ToString("+0.##%;-0.##%;0%", CultureInfo.InvariantCulture);
         if (p.RequireUptrendPullback && (f.Return1h is null || return1h < 0))
-            return (null, "last hour falling");
+            return (null, "last hour falling", Inv($"Last hour {hour}; the strategy waits for an hour that isn't falling."));
 
         var entry = f.Ask.Value;
         var r = p.StopAtr * atr;
         var stop = FloorToStep(entry - r, pair.QuoteStep);
         if (stop <= 0)
-            return (null, "stop below zero");
+            return (null, "stop below zero", Inv($"A stop {p.StopAtr:0.##} ATR below the ask would be at or below zero."));
         var target = CeilToStep(entry + (p.RewardRisk * r), pair.QuoteStep);
         if (stop > entry * (1 - MinExitDistanceFraction) || target < entry * (1 + MinExitDistanceFraction))
-            return (null, "stop or target too close"); // place_order would refuse it, and the next scan would offer it again
+            return (null, "stop or target too close", // place_order would refuse it, and the next scan would offer it again
+                Inv($"The stop ({p.StopAtr:0.##} ATR below the ask) or the target is within {MinExitDistanceFraction:0.0%} of the ask; an order needs at least {MinExitDistanceFraction:0.0%}."));
 
         // Loss per unit if stopped: the stop distance plus round-trip costs on the entry value.
         var lossPerUnit = (entry - stop) + (m.RoundTripCost * entry);
         if (lossPerUnit <= 0)
-            return (null, "no stop distance");
+            return (null, "no stop distance", "The stop leaves no distance to size the order by.");
         var size = Math.Min(p.RiskPerTradeQuote / lossPerUnit, p.OrderQuote / entry);
         size = FloorToStep(size, pair.BaseStep > 0 ? pair.BaseStep : 0.00000001m);
         var quote = size * entry;
         if (size <= 0 || size < pair.MinOrderSize || quote < pair.MinOrderSizeQuote)
-            return (null, "below exchange minimum");
+            return (null, "below exchange minimum", quote < pair.MinOrderSizeQuote
+                ? Inv($"The sized order, {quote:0.##} {pair.Quote} (at most {p.OrderQuote:0.##} per order and {p.RiskPerTradeQuote:0.##} at risk), is below the exchange minimum of {pair.MinOrderSizeQuote:0.##} {pair.Quote}.")
+                : Inv($"The sized order, {size} {pair.Base} (at most {p.OrderQuote:0.##} {pair.Quote} per order and {p.RiskPerTradeQuote:0.##} at risk), is below the exchange minimum of {pair.MinOrderSize} {pair.Base}."));
 
-        var hour = f.Return1h is null ? "n/a" : return1h.ToString("+0.##%;-0.##%;0%", CultureInfo.InvariantCulture);
-        var setup = p.RequireUptrendPullback ? "uptrend pullback" : Inv($"test entry (trend {f.Trend.ToString().ToLowerInvariant()}),");
+        var setup = p.RequireUptrendPullback ? "uptrend pullback" : Inv($"test entry (trend {trend}),");
         var reason = Inv($"{setup} {aboveEma:0.##} ATR above EMA20, 1h {hour}, 24h {(f.Return24h ?? 0m):+0.##%;-0.##%;0%}");
         return (new EntrySignal(
-            input.Symbol, rank, entry, size, Math.Round(quote, 2), stop, target, Math.Round(size * lossPerUnit, 2), reason), null);
+            input.Symbol, rank, entry, size, Math.Round(quote, 2), stop, target, Math.Round(size * lossPerUnit, 2), reason), null, null);
     }
 
     /// <summary>Least distance of a stop or target from the entry; the same rule as place_order's.</summary>

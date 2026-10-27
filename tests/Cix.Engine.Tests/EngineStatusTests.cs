@@ -113,7 +113,8 @@ public sealed class EngineStatusTests
         var at = Rig.T0;
         var ranked = new[]
         {
-            new Domain.Scanning.ScanRow("SOL-EUR", 2, 1.2m, 150m, Domain.MarketData.Trend.Down, 0.0123456m, -0.004m, -0.061234m, 1_000_000m, 3.456m, 0.001m, 0.003m, "trend down"),
+            new Domain.Scanning.ScanRow("SOL-EUR", 2, 1.2m, 150m, Domain.MarketData.Trend.Down, 0.0123456m, -0.004m, -0.061234m, 1_000_000m, 3.456m, 0.001m, 0.003m, "trend down",
+                "The strategy buys only in an uptrend (EMA20 above EMA50); the trend is down."),
             new Domain.Scanning.ScanRow("ETH-EUR", 1, 2.5m, 3_000m, Domain.MarketData.Trend.Up, 0.008m, 0.002m, 0.03m, 5_000_000m, 1.1m, 0.0005m, 0.0028m, null),
         };
         var scan = new Domain.Scanning.ScanResult(at, ranked,
@@ -131,6 +132,8 @@ public sealed class EngineStatusTests
         Assert.Equal(0.0123m, rows[1].Volatility);
         Assert.Equal(3.46m, rows[1].VolumeRatio);
         Assert.Equal("trend down", rows[1].Note);
+        Assert.Equal("The strategy buys only in an uptrend (EMA20 above EMA50); the trend is down.", rows[1].Detail);
+        Assert.Equal("detail", rows[2].Detail); // an excluded symbol's: the filter's figure and threshold
         Assert.Null(rows[1].Signal);
         Assert.Equal("sell (stop)", rows[2].Signal);
         Assert.Equal("costs-exceed-volatility", rows[2].Note);
