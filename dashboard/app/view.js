@@ -403,6 +403,130 @@
       .replace(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/g, (m) => t(m));
   }
 
+  // Health monitors beside the engine's own tiles: each says ok, warn or bad, a short value and the lines behind it. `ago`
+  // formats a time as "5 min ago" in the page's language; `now` is milliseconds since the epoch.
+  const MIN = 60e3;
+  const HEALTH = {
+    databaseWarn: 3 * MIN, databaseBad: 10 * MIN, // the engine writes its status every minute
+    scanWarn: 7 * MIN, scanBad: 15 * MIN, // a scan every 5 minutes
+    analystWarn: 7 * 60 * MIN, analystBad: 13 * 60 * MIN, // a run every 6 hours; a market view lasts at most 12
+    requestsBad: 2 * MIN, // the engine checks the owner's requests every 5 seconds
+    staleOrder: 50 * MIN, // the specs' tidy rule: the trader cancels its orders older than this
+  };
+  const JOB_STATES = { done: 'Done', failed: 'Failed', 'not-run': "Didn't start", running: 'Running now' };
+  const PURPOSES = { signals: 'for new signals', heartbeat: 'position review', scheduled: 'scheduled', requests: 'for your requests', analyst: 'market check' };
+
+  function age(iso, now) {
+    const at = Date.parse(iso ?? '');
+    return Number.isFinite(at) ? now - at : null;
+  }
+
+  function jobMonitor(job, ago, extra) {
+    if (!job?.last) return { tone: 'warn', value: t('No runs yet'), sub: [t('none in the last 2 days')] };
+    const l = job.last;
+    const tone = l.state === 'failed' ? 'bad' : l.state === 'not-run' || job.failedToday > 0 ? 'warn' : 'ok';
+    return {
+      tone,
+      value: t(JOB_STATES[l.state] ?? 'Running now'),
+      sub: [
+        `${t('last run {ago}', { ago: ago(l.at) })}${PURPOSES[l.purpose] ? ` · ${t(PURPOSES[l.purpose])}` : ''}`,
+        job.failedToday > 0 ? t('{n} failed today', { n: job.failedToday }) : null,
+        job.notRunToday > 0 ? t("{n} didn't start today (usage limit or credentials)", { n: job.notRunToday }) : null,
+        ...extra,
+      ].filter(Boolean),
+    };
+  }
+
+  /** The monitors the engine's status doesn't cover by itself: database, scanner, the three agent jobs, and positions and orders. */
+  function monitors(view, now, ago) {
+    const e = view?.engine ?? {};
+    const jobs = view?.jobs ?? {};
+    const out = {};
+
+    const db = age(view?.sync?.database, now);
+    out.database = db === null
+      ? { tone: 'warn', value: '–', sub: [t('no status record yet')] }
+      : { tone: db > HEALTH.databaseBad ? 'bad' : db > HEALTH.databaseWarn ? 'warn' : 'ok', value: db > HEALTH.databaseWarn ? t('Not written') : t('Written'), sub: [t('last write {ago}', { ago: ago(view.sync.database) })] };
+
+    const scan = view?.cycle?.lastScan ?? null;
+    const scanAge = age(scan?.at, now);
+    out.scanner = scanAge === null
+      ? { tone: 'warn', value: t('No scan yet'), sub: [t('the first scan runs a minute after the engine starts')] }
+      : {
+        tone: scanAge > HEALTH.scanBad ? 'bad' : scanAge > HEALTH.scanWarn ? 'warn' : 'ok',
+        value: scanAge > HEALTH.scanWarn ? t('Late') : t('Scanning'),
+        sub: [ago(scan.at), t('{ranked} of {total} coins ranked', { ranked: scan.ranked, total: Number(scan.ranked) + Number(scan.excluded) })],
+      };
+
+    // A run for new signals that ended without an order: right when it skipped them on purpose, wrong when something
+    // stopped its orders before the engine saw them. Its report says which.
+    const trader = jobs.trader ?? null;
+    const last = trader?.last;
+    const run = last ? (view?.agents?.trader?.recentRuns ?? []).find((r) => r.runId === last.runId) : null;
+    const noOrder = last?.purpose === 'signals' && last.state === 'done' && run && run.orders === 0;
+    out.trader = jobMonitor(trader, ago, [
+      noOrder ? t('it placed no order for the signals: see its report') : null,
+      trader?.cappedAt ? t('daily cap of trader runs reached') : null,
+    ]);
+    if (out.trader.tone === 'ok' && (noOrder || trader?.cappedAt)) out.trader.tone = 'warn';
+
+    out.analyst = jobMonitor(jobs.analyst ?? null, ago, []);
+    const analystAge = age(jobs.analyst?.last?.at, now);
+    if (analystAge !== null && analystAge > HEALTH.analystWarn) {
+      out.analyst.tone = analystAge > HEALTH.analystBad ? 'bad' : out.analyst.tone === 'bad' ? 'bad' : 'warn';
+      out.analyst.value = t('Overdue');
+    }
+
+    const m = e.manualRequests ?? null;
+    const pollAge = age(m?.lastPollAt, now);
+    const reqJob = jobs['trader-requests'] ?? null;
+    if (!m) out.requests = { tone: 'warn', value: '–', sub: [t('not reported yet')] };
+    else if (m.state !== 'ok') out.requests = { tone: 'warn', value: t({ off: 'Off', unavailable: 'Unavailable', 'not-used': 'Not used' }[m.state] ?? m.state), sub: [t('the engine takes no requests now')] };
+    else {
+      out.requests = {
+        tone: pollAge === null || pollAge > HEALTH.requestsBad ? 'bad' : reqJob?.last?.state === 'failed' ? 'warn' : 'ok',
+        value: pollAge === null || pollAge > HEALTH.requestsBad ? t('Not checked') : t('Taking requests'),
+        sub: [
+          m.lastPollAt ? t('checked {ago}', { ago: ago(m.lastPollAt) }) : null,
+          m.awaitingAgent > 0 ? t('{n} waiting for the trader', { n: m.awaitingAgent }) : null,
+          reqJob?.last?.state === 'failed' ? t('the last request run failed') : null,
+        ].filter(Boolean),
+      };
+    }
+
+    const holdings = view?.portfolio?.holdings ?? [];
+    const unprotected = holdings.filter((h) => h.protected === false).map((h) => h.symbol);
+    const orders = view?.cycle?.ordersInFlight ?? [];
+    const old = orders.filter((o) => (age(o.sentAt, now) ?? 0) > HEALTH.staleOrder).map((o) => o.symbol);
+    out.positions = {
+      tone: unprotected.length ? 'bad' : old.length ? 'warn' : 'ok',
+      value: unprotected.length ? t('No stop') : t('{held} held · {orders} orders', { held: holdings.length, orders: orders.length }),
+      sub: [
+        unprotected.length ? t('without a stop-loss: {coins}', { coins: unprotected.join(', ') }) : holdings.length ? t('every position has a stop-loss') : t('nothing held'),
+        old.length ? t('orders older than 50 min: {coins}', { coins: old.join(', ') }) : null,
+      ].filter(Boolean),
+    };
+    return out;
+  }
+
+  // The scanner's signal key (buy:SOL-EUR|sell:BTC-EUR:stop|stale-order:ETH-EUR), the items the next trader run acts on.
+  const SELL_REASONS = { stop: 'at the stop-loss', target: 'at the take-profit', 'trend-down': 'the trend turned down' };
+
+  /** The signal key as one item per coin, buys first: its kind (buy, sell or stale), the coin and a sentence for its title. */
+  function signalItems(key) {
+    const order = { buy: 0, sell: 1, stale: 2 };
+    return String(key ?? '').split('|').filter(Boolean).map((item) => {
+      const [kind, symbol, reason] = item.split(':');
+      if (kind === 'buy' && symbol) return { kind: 'buy', symbol, title: t('Buy signal: the trader may buy it in its next run.') };
+      if (kind === 'sell' && symbol) {
+        const why = Object.hasOwn(SELL_REASONS, reason) ? t(SELL_REASONS[reason]) : reason ?? '';
+        return { kind: 'sell', symbol, title: t('Sell signal ({why}): the trader sells it in its next run.', { why }) };
+      }
+      if (kind === 'stale-order' && symbol) return { kind: 'stale', symbol, title: t('An order older than 50 minutes: the trader cancels it in its next run.') };
+      return null;
+    }).filter(Boolean).sort((a, b) => order[a.kind] - order[b.kind] || a.symbol.localeCompare(b.symbol));
+  }
+
   /** Who is signed in, from /.auth/me, for the header. Who may see what is decided by the platform and the API, not here. */
   function viewer(me) {
     const p = me?.clientPrincipal ?? null;
@@ -412,6 +536,6 @@
   return {
     change, coins, why, removeBlock, BLOCK_DETAILS, WHY_LABELS, stepDetail, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
     paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES, pairsNote, SELECTION, SELL_DESCRIPTIONS,
-    contentLang, pick, months,
+    contentLang, pick, months, signalItems, monitors, HEALTH,
   };
 }));

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# PreToolUse hook for mcp__cix__place_order: refuses a buy larger than the active strategy's orderQuote (+10% for
-# rounding). Needs Git Bash on Windows (Claude Code's default), not WSL bash. Defence in depth only: the engine's risk gate is still final. Exit code 2 blocks the call.
+# PreToolUse hook for mcp__cix__place_order: refuses a buy larger than the largest orderQuote of any strategy in
+# strategies/ (+10% for rounding). The owner switches strategies at run time in the engine, which this container can't
+# see, so the hook bounds every buy by what any strategy allows, and the engine's strategy gate holds it to the active
+# one (strategy-order-size). Needs Git Bash on Windows (Claude Code's default), not WSL bash. Defence in depth only: the
+# engine's risk gate is still final. Exit code 2 blocks the call.
 input="$(cat)"
 dir="${CLAUDE_PROJECT_DIR:-.}"
 
@@ -17,18 +20,15 @@ if [ -z "$size" ] || [ -z "$price" ]; then
   exit 2
 fi
 
-settings="$dir/src/Cix.Engine/appsettings.json"
-name="$(grep -A4 '"Strategy"' "$settings" | grep -oE '"Name"[[:space:]]*:[[:space:]]*"[a-z0-9-]+"' | grep -oE '"[a-z0-9-]+"$' | tr -d '"')"
-version="$(grep -A4 '"Strategy"' "$settings" | grep -oE '"Version"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$')"
-spec="$dir/strategies/$name.v$version.json"
-max="$(grep -oE '"orderQuote"[[:space:]]*:[[:space:]]*[0-9.eE+-]+' "$spec" 2>/dev/null | grep -oE '[0-9.eE+-]+$')"
+max="$(cat "$dir"/strategies/*.json 2>/dev/null | grep -oE '"orderQuote"[[:space:]]*:[[:space:]]*[0-9.]+' | grep -oE '[0-9.]+$' \
+  | awk 'NR == 1 || $1 + 0 > m { m = $1 + 0 } END { if (NR) print m }')"
 if [ -z "$max" ]; then
-  echo "Blocked: no orderQuote found in the active strategy ($spec)." >&2
+  echo "Blocked: no orderQuote found in any strategy under $dir/strategies." >&2
   exit 2
 fi
 
 if awk -v s="$size" -v p="$price" -v m="$max" 'BEGIN { exit !(s * p > m * 1.10) }'; then
-  echo "Blocked: order of $size at $price is above the strategy's orderQuote of $max. Size it as orderQuote / ask." >&2
+  echo "Blocked: order of $size at $price is above $max, the largest orderQuote of any strategy. Size it as the active strategy's orderQuote / ask." >&2
   exit 2
 fi
 exit 0

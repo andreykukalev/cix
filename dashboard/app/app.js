@@ -133,6 +133,17 @@ function figure(label, value, cls) {
   return el('div', { class: 'figure' }, el('span', { class: 'label', text: label }), el('span', { class: `amount ${cls ?? ''}`, text: value }));
 }
 
+// The scan's signal counts, and under them one chip per coin the next trader run acts on (green buy, red sell, amber stale order).
+function signalsFigure(scan) {
+  const box = figure(t('Signals'), scan ? t('{buy} buy · {sell} sell', { buy: scan.entrySignals, sell: scan.exitSignals }) : '–');
+  const items = V.signalItems(scan?.signalKey);
+  if (items.length > 0) {
+    const tone = { buy: 'ok', sell: 'bad', stale: 'warn' };
+    box.append(el('span', { class: 'signal-chips' }, ...items.map((i) => el('span', { class: `badge signal ${tone[i.kind]}`, text: i.symbol, title: i.title }))));
+  }
+  return box;
+}
+
 function signed(value) {
   const n = Number(value);
   return Number.isFinite(n) && n !== 0 ? (n > 0 ? 'pos' : 'neg') : '';
@@ -162,7 +173,12 @@ function renderTiles(view) {
   const syncAge = ms(s.exchange) === null ? null : (Date.now() - ms(s.exchange)) / 1000;
   tile('tile-sync', s.reconcileProblem ? 'bad' : syncAge === null ? 'warn' : syncAge > 600 ? 'warn' : 'ok',
     s.exchange ? ago(s.exchange) : '–',
-    [s.reconcileProblem ? says(s.reconcileProblem, s.reconcileProblemRu) : t('portfolio with the exchange'), s.database ? ` · ${t('database {ago}', { ago: ago(s.database) })}` : '']);
+    s.reconcileProblem ? says(s.reconcileProblem, s.reconcileProblemRu) : t('portfolio checked against the exchange'));
+
+  const m = V.monitors(view, Date.now(), ago);
+  for (const [key, id] of [['database', 'tile-database'], ['scanner', 'tile-scanner'], ['trader', 'tile-trader'], ['analyst', 'tile-analyst'], ['requests', 'tile-requests'], ['positions', 'tile-positions']]) {
+    tile(id, m[key].tone, m[key].value, m[key].sub.map((line) => el('span', { class: 'line', text: line })));
+  }
 }
 
 /**
@@ -216,8 +232,7 @@ function renderCycle(view) {
   document.getElementById('cycle').replaceChildren(
     figure(t('Last scan'), scan ? ago(scan.at) : '–'),
     figure(t('Coins ranked'), scan ? t('{ranked} of {total}', { ranked: scan.ranked, total: Number(scan.ranked) + Number(scan.excluded) }) : '–'),
-    figure(t('Signals'), scan ? t('{buy} buy · {sell} sell', { buy: scan.entrySignals, sell: scan.exitSignals }) : '–'),
-    figure(t('Watching'), scan?.signalKey || t('no signals')),
+    signalsFigure(scan),
     figure(t('Last trader run'), c.lastTraderRun ? ago(c.lastTraderRun.lastAt) : '–'),
   );
   rows('orders', c.ordersInFlight ?? [], (o) => [when(o.sentAt), o.symbol, t(o.side), td(amount(o.size, 0), 'num'), td(price(o.limitPrice), 'num'), o.source, shortId(o.clientOrderId)], t('No orders working.'));
@@ -570,13 +585,23 @@ function renderRequests(items) {
   }, t('No requests in the last 7 days.'));
 }
 
+// The line under the header that follows a request. Its close button hides it until the line says something new.
+let dismissedStatus = null;
+
 function requestStatus(text, tone, english) {
   const node = document.getElementById('request-status');
-  node.hidden = !text;
-  node.textContent = text ?? '';
+  node.hidden = !text || text === dismissedStatus;
+  if (text !== dismissedStatus) dismissedStatus = null;
+  node.querySelector('.request-status-text').textContent = text ?? '';
   if (english) node.title = `EN: ${english}`; else node.removeAttribute('title');
   node.className = `request-status ${tone ?? ''}`;
 }
+
+document.getElementById('request-status-close').addEventListener('click', () => {
+  const node = document.getElementById('request-status');
+  dismissedStatus = node.querySelector('.request-status-text').textContent;
+  node.hidden = true;
+});
 
 let dialogChoice = null;
 

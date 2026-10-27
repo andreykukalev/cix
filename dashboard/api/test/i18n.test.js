@@ -61,6 +61,9 @@ test('every label the page looks up has its Russian: statuses, selections, profi
     ...Object.values(V.PROFILES).flatMap((p) => [p.title, p.profile]), ...Object.values(V.SELL_DESCRIPTIONS), ...Object.values(V.PORTIONS),
     ...Object.values(V.BLOCK_DETAILS), ...Object.values(V.WHY_LABELS),
     'Custom', 'Manual', 'May (month)', 'strategy exposure cap reached', 'cooldown until 13:00 UTC',
+    'at the stop-loss', 'at the take-profit', 'the trend turned down',
+    'Done', 'Failed', "Didn't start", 'Running now', 'for new signals', 'position review', 'scheduled',
+    'for your requests', 'market check', 'Off', 'Unavailable', 'Not used',
   ];
   assert.deepEqual(labels.filter((k) => !I.has(k)), []);
 });
