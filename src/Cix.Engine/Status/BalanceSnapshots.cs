@@ -6,7 +6,7 @@ namespace Cix.Engine.Status;
 /// <summary>
 /// Balance and holding history (#70). <c>engine-status-&lt;mode&gt;</c> keeps only the latest portfolio, so once each UTC hour this
 /// appends it to the journal as a <c>balance-snapshot</c>: equity, cash, peak equity, today's result, exposure and each
-/// holding's value. Every day starts with one, since a new day is a new hour. The journal is append-only and tagged with the
+/// holding's value. Each day starts with one when the engine has a valuation in its first hour. The journal is append-only and tagged with the
 /// engine's mode (#65), so paper's and live's histories never mix. Built from the status the engine already holds: no exchange
 /// call, and a failed write is tried again at the next status write, without affecting trading.
 /// </summary>
@@ -18,14 +18,14 @@ public sealed partial class BalanceSnapshots(IJournal journal, TradingContext tr
     public static readonly TimeSpan MaxAge = TimeSpan.FromMinutes(5);
 
     private DateTimeOffset? _lastHour;
-    private bool _checkedJournal;
 
     /// <summary>Where the figures come from: the exchange's balances for live, the simulated account for paper.</summary>
     public string Source => trading.Mode == TradingMode.Live ? "exchange" : "simulated";
 
     /// <summary>
-    /// Appends a snapshot of <paramref name="portfolio"/> unless this hour has one already (after a restart too: the journal is
-    /// checked once). Returns whether one was written. Never throws, except for cancellation.
+    /// Appends a snapshot of <paramref name="portfolio"/> unless the journal has this hour's already. Returns whether one was
+    /// written. Never throws, except for cancellation. Call it only while the engine holds the lease: a standby's figures are
+    /// stale (paper's account is the leader's to move).
     /// </summary>
     public async Task<bool> WriteIfDueAsync(PortfolioStatus? portfolio, string? spec, CancellationToken cancellationToken)
     {
@@ -36,17 +36,19 @@ public sealed partial class BalanceSnapshots(IJournal journal, TradingContext tr
         var hour = HourOf(now);
         try
         {
-            if (!_checkedJournal)
-            {
-                var day = DateOnly.FromDateTime(hour.UtcDateTime);
-                var last = await journal.QueryAsync(new JournalQuery(day, day, Kind, Limit: 1), cancellationToken).ConfigureAwait(false);
-                if (last.Count > 0)
-                    _lastHour = HourOf(last[0].At);
-                _checkedJournal = true;
-            }
-
             if (_lastHour == hour)
                 return false;
+
+            // The journal first, once an hour: another engine (a revision overlap, a lease handover), this one before a
+            // restart, or an append that timed out after it landed may have written this hour's snapshot already.
+            var day = DateOnly.FromDateTime(hour.UtcDateTime);
+            var last = await journal.QueryAsync(new JournalQuery(day, day, Kind, Limit: 1), cancellationToken).ConfigureAwait(false);
+            if (last.Count > 0 && HourOf(last[0].At) == hour)
+            {
+                _lastHour = hour;
+                return false;
+            }
+
             await journal.AppendAsync(Entry(portfolio, spec, now), cancellationToken).ConfigureAwait(false);
             _lastHour = hour;
             return true;

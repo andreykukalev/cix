@@ -44,7 +44,8 @@ async function loadDashboard(reader, mode, now) {
   const yesterday = utcDay(now - 24 * 3600 * 1000);
 
   const inMode = modeFilter(mode);
-  const recentSql = `SELECT TOP ${JOURNAL_PER_DAY} * FROM c WHERE ${inMode} ORDER BY c.entry.at DESC`;
+  // Balance snapshots (#70) have their own read (loadBalanceHistory): they would only crowd the activity list.
+  const recentSql = `SELECT TOP ${JOURNAL_PER_DAY} * FROM c WHERE c.entry.kind != 'balance-snapshot' AND ${inMode} ORDER BY c.entry.at DESC`;
   const recent = (day) => reader.query('journal', recentSql, { partitionKey: day, parameters: [modeParameter(mode)], maxItems: JOURNAL_PER_DAY });
   const latestView = (day) => reader.query('journal', `SELECT TOP 1 * FROM c WHERE c.entry.kind = @kind AND ${inMode} ORDER BY c.entry.at DESC`, {
     partitionKey: day, parameters: [{ name: '@kind', value: 'market-view' }, modeParameter(mode)], maxItems: 1,

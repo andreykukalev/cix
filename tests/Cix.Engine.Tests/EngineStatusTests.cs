@@ -232,6 +232,81 @@ public sealed class EngineStatusTests
         Assert.Equal(("exchange", "0", "safe@v2"), (entry.Data!["source"], entry.Data["holdings"], entry.SpecVersion));
     }
 
+    [Fact]
+    public async Task BalanceSnapshots_AreLeftToTheEngineHoldingTheLease()
+    {
+        var lease = new FixedLease(held: false); // a standby: its copy of the paper account doesn't move
+        var rig = new Rig(eur: 200m, lease: lease);
+        await rig.Execution.SampleAsync(CancellationToken.None);
+        var engine = new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper),
+            new InMemoryEngineStatusStore(), new DependencyHealth(), rig.Time, NullLogger<EngineStatusService>.Instance, journal: rig.Journal);
+
+        Assert.True(await engine.WriteOnceAsync(CancellationToken.None)); // the status is still written
+        Assert.DoesNotContain(rig.Journal.Entries, e => e.Kind == BalanceSnapshots.Kind);
+
+        lease.IsHeld = true;
+        await engine.WriteOnceAsync(CancellationToken.None);
+        Assert.Single(rig.Journal.Entries, e => e.Kind == BalanceSnapshots.Kind);
+    }
+
+    [Fact]
+    public async Task AFailingJournal_LeavesTheStatusAndTheDatabaseHealthAlone_AndTheSnapshotFollowsOnceItRecovers()
+    {
+        var rig = new Rig(eur: 200m);
+        await rig.Execution.SampleAsync(CancellationToken.None);
+        var journal = new FlakyJournal(rig.Journal) { FailQueries = true };
+        var health = new DependencyHealth();
+        var status = new FailingStatusStore { Fail = false };
+        var engine = new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper),
+            status, health, rig.Time, NullLogger<EngineStatusService>.Instance, journal: journal);
+
+        Assert.True(await engine.WriteOnceAsync(CancellationToken.None));
+        journal.FailQueries = false;
+        journal.FailAppends = true;
+        Assert.True(await engine.WriteOnceAsync(CancellationToken.None));
+        Assert.Equal("ok", health.Database.State); // only the status write counts against the database
+        Assert.DoesNotContain(rig.Journal.Entries, e => e.Kind == BalanceSnapshots.Kind);
+
+        journal.FailAppends = false;
+        status.Fail = true; // and a failed status write doesn't hold the snapshot back
+        Assert.False(await engine.WriteOnceAsync(CancellationToken.None));
+        Assert.Single(rig.Journal.Entries, e => e.Kind == BalanceSnapshots.Kind);
+    }
+
+    [Fact]
+    public async Task BalanceSnapshots_StartANewDay_EvenWhenYesterdaysLastHourHasOne()
+    {
+        var time = new MutableTime(new DateTimeOffset(2026, 10, 22, 23, 50, 0, TimeSpan.Zero));
+        var rig = new Rig(eur: 200m, time: time);
+        await rig.Execution.SampleAsync(CancellationToken.None);
+        var portfolio = new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper),
+            new InMemoryEngineStatusStore(), new DependencyHealth(), time, NullLogger<EngineStatusService>.Instance).Build().Portfolio!;
+        var snapshots = new BalanceSnapshots(rig.Journal, new TradingContext(TradingMode.Paper), time, NullLogger.Instance);
+        Assert.True(await snapshots.WriteIfDueAsync(portfolio, null, CancellationToken.None)); // 23:50
+
+        time.Advance(TimeSpan.FromMinutes(20)); // 00:10 the next day, in a restarted engine
+        var restarted = new BalanceSnapshots(rig.Journal, new TradingContext(TradingMode.Paper), time, NullLogger.Instance);
+        Assert.True(await restarted.WriteIfDueAsync(portfolio with { At = time.GetUtcNow() }, null, CancellationToken.None));
+        Assert.False(await restarted.WriteIfDueAsync(portfolio with { At = time.GetUtcNow() }, null, CancellationToken.None));
+
+        Assert.Equal(
+            new[] { new DateOnly(2026, 10, 22), new DateOnly(2026, 10, 23) },
+            rig.Journal.Entries.Where(e => e.Kind == BalanceSnapshots.Kind).Select(e => DateOnly.FromDateTime(e.At.UtcDateTime)));
+    }
+
+    /// <summary>A journal whose reads or writes can be made to fail, as a database that doesn't answer.</summary>
+    private sealed class FlakyJournal(Journal.IJournal inner) : Journal.IJournal
+    {
+        public bool FailQueries { get; set; }
+        public bool FailAppends { get; set; }
+
+        public Task AppendAsync(Journal.JournalEntry entry, CancellationToken cancellationToken) =>
+            FailAppends ? throw new IOException("Journal unreachable.") : inner.AppendAsync(entry, cancellationToken);
+
+        public Task<IReadOnlyList<Journal.JournalEntry>> QueryAsync(Journal.JournalQuery query, CancellationToken cancellationToken) =>
+            FailQueries ? throw new HttpRequestException("Connection refused") : inner.QueryAsync(query, cancellationToken);
+    }
+
     private sealed class FailingStatusStore : IEngineStatusStore
     {
         public bool Fail { get; set; } = true;

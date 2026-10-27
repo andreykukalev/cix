@@ -777,7 +777,7 @@
   const UNTRANSLATED = new Set([
     'CIX', 'RU', 'EN', '1h', '24h', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '–', '×', '↻',
     'order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request',
-    'scanner-filters', 'scan-eligibility', 'strategy', 'pairs',
+    'scanner-filters', 'scan-eligibility', 'strategy', 'pairs', 'balance-snapshot',
   ]);
 
   let lang = 'en';

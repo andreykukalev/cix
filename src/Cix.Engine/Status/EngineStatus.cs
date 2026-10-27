@@ -163,7 +163,11 @@ public sealed class DependencyHealth
         Volatile.Write(ref _database, Database with { State = "unreachable", FailedAt = at, Problem = problem });
 }
 
-/// <summary>Writes <see cref="EngineStatus"/> every minute. A failed write is logged and marks the database unreachable; it never stops trading.</summary>
+/// <summary>
+/// Writes <see cref="EngineStatus"/> every minute, and while the engine holds the lease, the hourly balance snapshot to the
+/// journal (<see cref="BalanceSnapshots"/>). A failed write is logged, and a failed status write marks the database unreachable;
+/// neither stops trading.
+/// </summary>
 public sealed partial class EngineStatusService(
     ExecutionService execution,
     KillSwitch killSwitch,
@@ -324,7 +328,7 @@ public sealed partial class EngineStatusService(
             LogWriteFailed(logger, ex.GetType().Name);
         }
 
-        if (journal is not null)
+        if (journal is not null && execution.HoldsLease)
         {
             _snapshots ??= new BalanceSnapshots(journal, trading, time, logger);
             await _snapshots.WriteIfDueAsync(status.Portfolio, status.Strategy, cancellationToken).ConfigureAwait(false);

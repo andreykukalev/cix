@@ -37,6 +37,8 @@ test('reads today and yesterday as single-partition queries and the state list',
   assert.equal(views.length, 2);
   assert.ok(views.every((q) => q.sql.startsWith('SELECT TOP 1 * FROM c WHERE c.entry.kind = @kind') && q.parameters[0].value === 'market-view'));
   assert.ok(reader.queries.filter((q) => q.container === 'journal').every((q) => q.sql.includes('ORDER BY')));
+  const recentReads = reader.queries.filter((q) => q.container === 'journal' && q.maxItems !== 1);
+  assert.ok(recentReads.every((q) => q.sql.includes("c.entry.kind != 'balance-snapshot'")), 'snapshots have their own read');
   const stateList = reader.queries.find((q) => q.container === 'state');
   assert.equal(stateList.partitionKey, undefined);
   assert.ok(!stateList.sql.includes('ORDER BY'), 'a cross-partition query must stay simple for the REST gateway');
