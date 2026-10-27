@@ -45,6 +45,24 @@ test('reads today and yesterday as single-partition queries and the state list',
   assert.equal(view.briefing.analyst.summary, 'Quiet overnight.', "yesterday's view comes from its own query, not the recent entries");
 });
 
+test("each mode reads only its own journal entries, and untagged ones are paper's", async () => {
+  for (const mode of ['paper', 'live']) {
+    const reader = fakeReader();
+    await loadDashboard(reader, mode, NOW);
+    await loadJournalDay(reader, '2026-10-25', '', '50', NOW, mode);
+    await loadJournalDay(reader, '2026-10-25', 'fill', '50', NOW, mode);
+    await loadActivity(reader, 'day', NOW, mode);
+    const journal = reader.queries.filter((q) => q.container === 'journal');
+    assert.equal(journal.length, 7);
+    for (const q of journal) {
+      assert.deepEqual(q.parameters.find((p) => p.name === '@mode'), { name: '@mode', value: mode });
+      if (mode === 'paper') assert.ok(q.sql.includes('(NOT IS_DEFINED(c.mode) OR c.mode = @mode)'), q.sql);
+      else assert.ok(q.sql.includes('c.mode = @mode') && !q.sql.includes('IS_DEFINED'), q.sql);
+    }
+  }
+  await assert.rejects(() => loadJournalDay(fakeReader(), '2026-10-25', '', '50', NOW, 'both'), RangeError);
+});
+
 test('a failed read is reported, the rest still shows', async () => {
   const view = await loadDashboard(fakeReader({ failStatus: true }), 'paper', NOW);
   assert.equal(view.problems.find((p) => p.kind === 'read').message, "Couldn't read the engine status (503).");
@@ -64,8 +82,8 @@ test('a journal day is one partition, parameterised, capped, and lists entries w
   const entries = await loadJournalDay(reader, '2026-10-25', 'tool-call', '5000', NOW);
   const q = reader.queries[0];
   assert.equal(q.partitionKey, '2026-10-25');
-  assert.match(q.sql, /^SELECT TOP 200 \* FROM c WHERE c\.entry\.kind = @kind/);
-  assert.deepEqual(q.parameters, [{ name: '@kind', value: 'tool-call' }]);
+  assert.match(q.sql, /^SELECT TOP 200 \* FROM c WHERE c\.entry\.kind = @kind AND \(NOT IS_DEFINED\(c\.mode\) OR c\.mode = @mode\) ORDER BY/);
+  assert.deepEqual(q.parameters, [{ name: '@kind', value: 'tool-call' }, { name: '@mode', value: 'paper' }]);
   assert.deepEqual(Object.keys(entries[0]), ['id', 'at', 'kind', 'actor', 'runId', 'summary']);
 });
 
@@ -83,8 +101,8 @@ test('activity reads only fills, across the day partitions the periods cover', a
   const view = await loadActivity(reader, 'week', NOW);
   assert.equal(queries.length, 1);
   assert.equal(queries[0].partitionKey, undefined, 'cross-partition');
-  assert.match(queries[0].sql, /c\.day >= @from AND c\.entry\.kind = @kind/);
-  assert.deepEqual(queries[0].parameters, [{ name: '@from', value: '2026-08-03' }, { name: '@kind', value: 'fill' }]);
+  assert.match(queries[0].sql, /c\.day >= @from AND c\.entry\.kind = @kind AND \(NOT IS_DEFINED\(c\.mode\) OR c\.mode = @mode\)$/);
+  assert.deepEqual(queries[0].parameters, [{ name: '@from', value: '2026-08-03' }, { name: '@kind', value: 'fill' }, { name: '@mode', value: 'paper' }]);
   assert.equal(view.current.turnover, '12.50');
   assert.equal(view.current.trades, 1);
   assert.equal(view.truncated, false);

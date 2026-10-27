@@ -61,7 +61,7 @@ flowchart LR
 | Order execution | Deterministic | Idempotent client order IDs, pair filters (step sizes, min size), partial fills, retries |
 | Paper execution | Deterministic | Simulates fills from live Revolut X prices and fees; the default until go-live |
 | Portfolio | Deterministic | Built from polled orders and fills; reconciled with balances; halts on mismatch |
-| Decision journal | Append-only Cosmos DB container (`journal`) | Every agent run: inputs, spec version, tool calls, rationale, risk verdict, orders, fills, PnL |
+| Decision journal | Append-only Cosmos DB container (`journal`) | Every agent run: inputs, spec version, tool calls, rationale, risk verdict, orders, fills, PnL. Each entry is tagged with the mode that wrote it, and each engine reads its own mode only |
 | Operational state | Cosmos DB container (`state`) | What is true now: kill switch, loss baselines, orders in flight, position plans (stop and target), the paper account, archived specs. Recovery after a restart starts here and reconciles with the exchange ([persistence.md](persistence.md)) |
 | Owner requests | Cosmos DB container (`requests`) and engine service | The owner's manual buy and sell requests from the dashboard. Direct sells are placed by the engine; agent-assisted requests go to the trader, which may execute (never beyond the request) or decline. Every order still passes the risk gate (ADR-0011). Strategy switches from the Strategy tab arrive here too and become the selection (ADR-0015), as do pair additions and removals from the Coins tab (ADR-0016) |
 | Tool server | C# MCP server | Agent tools and operator tools; the only path from agents to the exchange. Who may call it is below |

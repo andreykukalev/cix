@@ -138,7 +138,7 @@ public static class PersistenceRegistration
 
         services.AddSingleton(options);
         services.AddSingleton(sp => new CosmosDb(options));
-        services.AddSingleton<IJournal>(sp => new CosmosJournal(sp.GetRequiredService<CosmosDb>()));
+        services.AddSingleton<IJournal>(sp => new CosmosJournal(sp.GetRequiredService<CosmosDb>(), mode));
         services.AddSingleton<IEngineStateStore>(sp => new CosmosEngineStateStore(sp.GetRequiredService<CosmosDb>(), mode, sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<CosmosSpecArchive>();
         services.AddSingleton<Status.IEngineStatusStore>(sp => new CosmosEngineStatusStore(sp.GetRequiredService<CosmosDb>(), mode));

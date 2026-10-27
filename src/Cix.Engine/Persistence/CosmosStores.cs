@@ -11,9 +11,22 @@ namespace Cix.Engine.Persistence;
 /// The journal in Cosmos DB: one document per entry, partitioned by UTC day. Append-only: this class creates documents
 /// and never replaces, patches or deletes one (CLAUDE.md rule 4).
 /// </summary>
-public sealed class CosmosJournal(CosmosDb db) : IJournal
+/// <remarks>
+/// A paper and a live engine can share the container (#65), so each document carries the writer's <c>mode</c> and every
+/// read sees its own mode only: the engine's recovery reads (fills, plans, orders, the market view) and the tools alike.
+/// Documents without <c>mode</c> were written before the tag and count as paper; nothing is rewritten.
+/// </remarks>
+public sealed class CosmosJournal(CosmosDb db, TradingMode mode) : IJournal
 {
-    internal sealed record JournalDocument(string Id, string Day, JournalEntry Entry);
+    internal sealed record JournalDocument(string Id, string Day, JournalEntry Entry, string? Mode = null);
+
+    /// <summary>The value of a document's <c>mode</c>: <c>paper</c> or <c>live</c>.</summary>
+    public static string ModeTag(TradingMode mode) => mode switch
+    {
+        TradingMode.Paper => "paper",
+        TradingMode.Live => "live",
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown trading mode."),
+    };
 
     public async Task AppendAsync(JournalEntry entry, CancellationToken cancellationToken)
     {
@@ -21,7 +34,7 @@ public sealed class CosmosJournal(CosmosDb db) : IJournal
         var day = Day(DateOnly.FromDateTime(entry.At.UtcDateTime));
         try
         {
-            await db.Journal.CreateItemAsync(new JournalDocument(entry.Id, day, entry), new PartitionKey(day), cancellationToken: cancellationToken).ConfigureAwait(false);
+            await db.Journal.CreateItemAsync(new JournalDocument(entry.Id, day, entry, ModeTag(mode)), new PartitionKey(day), cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested && ex is not IOException)
         {
@@ -35,9 +48,30 @@ public sealed class CosmosJournal(CosmosDb db) : IJournal
         ArgumentNullException.ThrowIfNull(query);
         var limit = Math.Clamp(query.Limit, 1, FileJournal.MaxQueryLimit);
 
-        // Day, kind, run and client order ID filter in the database; the spec prefix after reading.
-        var sql = "SELECT * FROM c WHERE 1 = 1";
-        var parameters = new List<(string, object)>();
+        var definition = Sql(query, mode);
+        var entries = new List<JournalEntry>();
+        using var iterator = db.Journal.GetItemQueryIterator<JournalDocument>(definition);
+        while (iterator.HasMoreResults)
+        {
+            foreach (var document in await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (IsVisible(document, mode) && FileJournal.Matches(document.Entry, query))
+                    entries.Add(document.Entry);
+            }
+        }
+
+        // Sorted here rather than with ORDER BY, which the emulator doesn't run across partitions in parallel.
+        return entries.OrderByDescending(e => e.At).ThenByDescending(e => e.Id, StringComparer.Ordinal).Take(limit).ToList();
+    }
+
+    /// <summary>The database query for <paramref name="query"/> as an engine in <paramref name="mode"/> reads it: its own mode only.</summary>
+    internal static QueryDefinition Sql(JournalQuery query, TradingMode mode)
+    {
+        // Mode, day, kind, run and client order ID filter in the database; the spec prefix (and the mode again) after reading.
+        var sql = mode == TradingMode.Paper
+            ? "SELECT * FROM c WHERE (NOT IS_DEFINED(c.mode) OR c.mode = @mode)"
+            : "SELECT * FROM c WHERE c.mode = @mode";
+        var parameters = new List<(string, object)> { ("@mode", ModeTag(mode)) };
         if (query.From is { } from)
         {
             sql += " AND c.day >= @from";
@@ -71,21 +105,12 @@ public sealed class CosmosJournal(CosmosDb db) : IJournal
         var definition = new QueryDefinition(sql);
         foreach (var (name, value) in parameters)
             definition = definition.WithParameter(name, value);
-
-        var entries = new List<JournalEntry>();
-        using var iterator = db.Journal.GetItemQueryIterator<JournalDocument>(definition);
-        while (iterator.HasMoreResults)
-        {
-            foreach (var document in await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false))
-            {
-                if (FileJournal.Matches(document.Entry, query))
-                    entries.Add(document.Entry);
-            }
-        }
-
-        // Sorted here rather than with ORDER BY, which the emulator doesn't run across partitions in parallel.
-        return entries.OrderByDescending(e => e.At).ThenByDescending(e => e.Id, StringComparer.Ordinal).Take(limit).ToList();
+        return definition;
     }
+
+    /// <summary>Checked again after reading, so a query mistake can't show one mode's entries to the other.</summary>
+    internal static bool IsVisible(JournalDocument document, TradingMode mode) =>
+        string.Equals(document.Mode ?? ModeTag(TradingMode.Paper), ModeTag(mode), StringComparison.Ordinal);
 
     private static string Day(DateOnly day) => day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 }
