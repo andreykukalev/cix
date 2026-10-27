@@ -93,6 +93,9 @@ function pairsView({ mode, catalog, list, requests }, now) {
     full: cap !== null && tradable.length >= cap,
     // Without a quote currency only the configured list is permitted: removed ones can be added back, nothing else.
     openToAnyPair: always.size > 0 && available.some((p) => !always.has(p.symbol)),
+    // Nothing outside config/risk-limits.json's own list is permitted (the engine still names the list's quote currency,
+    // and caps it at the list's length): the owner widens the limits to trade other coins.
+    configuredOnly: !!catalog && !(Array.isArray(catalog.pairs) ? catalog.pairs : []).some((p) => p?.permitted && !always.has(p.symbol)),
     catalogAt: catalog?.updatedAt ?? null,
     changedAt: list?.updatedAt ?? null,
     tradable: tradable.map((symbol) => ({ symbol, configured: always.has(symbol), pending: pendingFor(symbol)?.action ?? null })),

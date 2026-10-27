@@ -159,3 +159,40 @@ test('content language: Russian by default, the English when there is no Russian
   assert.deepEqual(V.pick('Calm market.', '  ', 'ru'), { text: 'Calm market.', lang: 'en' });
   assert.deepEqual(V.pick(undefined, undefined, 'ru'), { text: null, lang: 'en' });
 });
+
+test('the active strategy: name, risk profile and mode, and where it came from, from the engine section', () => {
+  assert.equal(V.activeStrategy(null), null);
+  assert.equal(V.activeStrategy({ strategy: null }), null);
+  assert.equal(V.activeStrategy({ strategy: 'not a label' }), null);
+
+  const configured = V.activeStrategy({ strategy: 'balanced@v1#9f3c', strategySelection: { state: 'config' } });
+  assert.deepEqual(
+    { title: configured.title, profile: configured.profile, mode: configured.mode, source: configured.source, tone: configured.tone, switchingTo: configured.switchingTo },
+    { title: 'Balanced v1', profile: 'Balanced', mode: 'Manual', source: 'configuration', tone: '', switchingTo: null });
+  assert.equal(configured.sourceText, 'from the configuration');
+  assert.equal(V.activeStrategy({ strategy: 'balanced@v1#9f3c' }).source, 'configuration', 'an engine with switching off reports no selection');
+
+  const chosen = V.activeStrategy({ strategy: 'safe@v1#1a', strategySelection: { state: 'active', requested: 'safe@v1', activatedAt: '2026-10-27T10:00:00Z' } });
+  assert.equal(chosen.profile, 'Safe');
+  assert.equal(chosen.tone, 'ok');
+  assert.equal(chosen.source, 'dashboard');
+  assert.equal(chosen.since, '2026-10-27T10:00:00Z');
+
+  const switching = V.activeStrategy({ strategy: 'safe@v1#1a', strategySelection: { state: 'pending', requested: 'risky@v2', activatedAt: '2026-10-27T10:00:00Z' } });
+  assert.equal(switching.title, 'Safe v1', 'the running one until the engine switches');
+  assert.equal(switching.switchingTo, 'Risky v2');
+  assert.equal(switching.source, 'dashboard');
+
+  const refused = V.activeStrategy({ strategy: 'risky@v2#77', strategySelection: { state: 'refused', requested: 'good@v1' } });
+  assert.equal(refused.refused, 'good@v1');
+  assert.equal(refused.tone, 'warn', 'the running strategy is fine');
+  assert.equal(refused.profile, 'Risky');
+  assert.equal(refused.source, 'configuration');
+
+  const custom = V.activeStrategy({ strategy: 'good@v1#aa', strategySelection: { state: 'active' } });
+  assert.equal(custom.title, 'Good v1');
+  assert.equal(custom.profile, 'Custom');
+  assert.equal(custom.profileKey, 'custom');
+  assert.equal(V.activeStrategy({ strategy: 'safe@v1#1a', strategySelection: { state: 'unreadable', activatedAt: '2026-10-27T10:00:00Z' } }).source, 'dashboard',
+    'a switch that ran stays the source while the database is unreadable');
+});

@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <title>CIX Dashboard</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
+  <script src="i18n.js" defer></script>
   <script src="view.js" defer></script>
   <script src="app.js" defer></script>
 </head>
@@ -15,13 +17,14 @@
       <span class="logo" aria-hidden="true">◆</span>
       <h1>CIX</h1>
       <span id="mode-badge" class="badge">paper</span>
+      <a id="strategy-badge" class="badge strategy" href="#strategy" title="The strategy the engine runs now: open the Strategy tab">–</a>
     </div>
     <div class="controls">
       <div class="segmented" role="group" aria-label="Trading mode">
         <button type="button" data-mode="paper" aria-pressed="true">Paper</button>
         <button type="button" data-mode="live" aria-pressed="false">Live</button>
       </div>
-      <div class="segmented" role="group" aria-label="Language of summaries, news and explanations" title="Language of summaries, news and explanations; labels and buttons stay in English">
+      <div class="segmented" role="group" aria-label="Language" title="Language of the whole dashboard; coin tickers and figures stay as they are">
         <button type="button" data-lang="ru" lang="ru" aria-pressed="true">RU</button>
         <button type="button" data-lang="en" aria-pressed="false">EN</button>
       </div>
@@ -48,24 +51,10 @@
       <section class="tiles" aria-label="Status">
         <article class="tile" id="tile-engine"><h2>Engine</h2><p class="value">–</p><p class="sub">–</p></article>
         <article class="tile" id="tile-trading"><h2>Trading</h2><p class="value">–</p><p class="sub">–</p></article>
+        <article class="tile" id="tile-strategy"><h2>Active strategy</h2><p class="value">–</p><p class="sub">–</p></article>
         <article class="tile" id="tile-view"><h2>Market view</h2><p class="value">–</p><p class="sub">–</p></article>
         <article class="tile" id="tile-data"><h2>Market data</h2><p class="value">–</p><p class="sub">–</p></article>
         <article class="tile" id="tile-sync"><h2>Last sync</h2><p class="value">–</p><p class="sub">–</p></article>
-      </section>
-
-      <section class="panel briefing" aria-labelledby="h-briefing">
-        <div class="panel-head"><h2 id="h-briefing">Market briefing</h2><span id="briefing-meta" class="muted small"></span></div>
-        <div class="split">
-          <div>
-            <h3>From the analyst</h3>
-            <p id="analyst-summary" class="summary muted">–</p>
-            <ul id="highlights" class="cards"></ul>
-          </div>
-          <div>
-            <h3>Needs attention</h3>
-            <ul id="attention" class="cards"></ul>
-          </div>
-        </div>
       </section>
 
       <section class="panel" aria-labelledby="h-portfolio">
@@ -94,6 +83,21 @@
           <div>
             <h3>Agents</h3>
             <table id="agents"><thead><tr><th>Agent</th><th>Last run</th><th>Last activity</th><th class="num">Runs today</th><th class="num">Calls</th><th class="num">Orders</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel briefing" aria-labelledby="h-briefing">
+        <div class="panel-head"><h2 id="h-briefing">Market briefing</h2><span id="briefing-meta" class="muted small"></span></div>
+        <div class="split">
+          <div>
+            <h3>From the analyst</h3>
+            <p id="analyst-summary" class="summary muted">–</p>
+            <ul id="highlights" class="cards"></ul>
+          </div>
+          <div>
+            <h3>Needs attention</h3>
+            <ul id="attention" class="cards"></ul>
           </div>
         </div>
       </section>
@@ -200,7 +204,7 @@
             <label>Day <input type="date" id="journal-day"></label>
             <label>Kind
               <select id="journal-kind">
-                <option value="">all</option>
+                <option value="">all kinds</option>
                 <option>order</option><option>fill</option><option>order-closed</option><option>tool-call</option>
                 <option>tool-denied</option><option>kill-switch</option><option>scan-signal</option><option>market-view</option>
                 <option>manual-request</option><option>scanner-filters</option><option>scan-eligibility</option><option>strategy</option><option>pairs</option>
