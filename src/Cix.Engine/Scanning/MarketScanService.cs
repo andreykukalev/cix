@@ -477,13 +477,42 @@ public sealed partial class MarketScanService(
     private static partial void LogJournalFailed(ILogger logger, string signal, string detail);
 }
 
-/// <summary>Scans every <see cref="ScannerOptions.Interval"/>. A failed scan is logged and retried at the next tick.</summary>
+/// <summary>
+/// Scans every <see cref="ScannerOptions.Interval"/>, and at once when the strategy switches, so sizes, signals and the coin
+/// filters follow the new strategy without waiting for the next tick. A failed scan is logged and retried at the next tick.
+/// </summary>
 public sealed partial class MarketScanBackgroundService(
     MarketScanService scanner,
     ScannerOptions options,
     TimeProvider time,
-    ILogger<MarketScanBackgroundService> logger) : BackgroundService
+    ILogger<MarketScanBackgroundService> logger,
+    RuntimeStrategySpecs? specs = null) : BackgroundService
 {
+    /// <summary>What starts the next scan.</summary>
+    internal enum ScanTrigger { Tick, Switch, Stopped }
+
+    /// <summary>The spec version the last scan started after; a newer one means a switch to scan for.</summary>
+    private long _seen = specs?.Version ?? 0;
+
+    /// <summary>Waits for <paramref name="tick"/> (false once the timer stops) or a strategy switch, whichever comes first.</summary>
+    internal async Task<ScanTrigger> NextAsync(Task<bool> tick, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(tick);
+        if (specs is null)
+            return await tick.ConfigureAwait(false) ? ScanTrigger.Tick : ScanTrigger.Stopped;
+        var changed = specs.WaitForChangeAsync(_seen, cancellationToken);
+        if (await Task.WhenAny(tick, changed).ConfigureAwait(false) == tick)
+        {
+            _seen = specs.Version; // the scan that follows reads the spec as it is now
+            return await tick.ConfigureAwait(false) ? ScanTrigger.Tick : ScanTrigger.Stopped;
+        }
+
+        await changed.ConfigureAwait(false); // throws if cancelled
+        _seen = specs.Version;
+        LogSwitchScan(logger, specs.Active?.Label ?? "none");
+        return ScanTrigger.Switch;
+    }
+
     /// <summary>One scan; returns false if it failed. Tests call this instead of running the loop.</summary>
     public async Task<bool> ScanOnceAsync(CancellationToken cancellationToken)
     {
@@ -516,8 +545,17 @@ public sealed partial class MarketScanBackgroundService(
         await Task.Delay(TimeSpan.FromMinutes(1), time, stoppingToken).ConfigureAwait(false);
         await ScanOnceAsync(stoppingToken).ConfigureAwait(false);
         using var timer = new PeriodicTimer(options.Interval, time);
-        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
+        Task<bool>? tick = null;
+        while (true)
+        {
+            tick ??= timer.WaitForNextTickAsync(stoppingToken).AsTask();
+            var trigger = await NextAsync(tick, stoppingToken).ConfigureAwait(false);
+            if (trigger == ScanTrigger.Stopped)
+                return;
+            if (trigger == ScanTrigger.Tick)
+                tick = null; // a switch leaves the pending tick for the next round
             await ScanOnceAsync(stoppingToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>One line an owner can read in the logs: why each symbol did or didn't produce a signal.</summary>
@@ -536,6 +574,9 @@ public sealed partial class MarketScanBackgroundService(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Scan failed ({Error}): {Detail}")]
     private static partial void LogScanFailed(ILogger logger, string error, string detail);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Strategy switched to {Strategy}: scanning now")]
+    private static partial void LogSwitchScan(ILogger logger, string strategy);
 }
 
 public static class ScannerRegistration

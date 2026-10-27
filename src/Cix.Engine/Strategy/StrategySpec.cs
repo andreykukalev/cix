@@ -101,11 +101,29 @@ public sealed class RuntimeStrategySpecs(StrategySpec? initial) : IStrategySpecS
     /// <summary>When the active spec last changed at run time, or null if it is still the one the engine started with.</summary>
     public DateTimeOffset? ActivatedAt { get; private set; }
 
+    private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private long _version;
+
+    /// <summary>How many times the spec has changed at run time.</summary>
+    public long Version => Interlocked.Read(ref _version);
+
     public void Activate(StrategySpec spec, DateTimeOffset at)
     {
         ArgumentNullException.ThrowIfNull(spec);
         Volatile.Write(ref _active, spec);
         ActivatedAt = at;
+        Interlocked.Increment(ref _version);
+        Interlocked.Exchange(ref _changed, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+    }
+
+    /// <summary>
+    /// Completes once the spec has changed since <paramref name="seen"/> (a <see cref="Version"/>): at once if it already has,
+    /// so a switch made while the caller was busy isn't missed. The scanner rescans on it.
+    /// </summary>
+    public Task WaitForChangeAsync(long seen, CancellationToken cancellationToken)
+    {
+        var changed = Volatile.Read(ref _changed); // before the version: an Activate in between shows in the version
+        return Version != seen ? Task.CompletedTask : changed.Task.WaitAsync(cancellationToken);
     }
 }
 
