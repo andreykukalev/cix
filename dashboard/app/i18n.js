@@ -436,6 +436,7 @@
     'New pair': 'Новая пара',
     'Why no buy': 'Почему нет покупки',
     Close: 'Закрыть',
+    'The trader wrote this answer in English only.': 'Трейдер написал этот ответ только на английском.',
     'portfolio checked against the exchange': 'портфель сверен с биржей',
     'No runs yet': 'Запусков ещё не было',
     'none in the last 2 days': 'ни одного за последние 2 дня',
@@ -774,7 +775,7 @@
 
   /** Words that stay as they are in Russian: names, tickers, technical identifiers the journal filter sends as values. */
   const UNTRANSLATED = new Set([
-    'CIX', 'RU', 'EN', '1h', '24h', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '–', '×',
+    'CIX', 'RU', 'EN', '1h', '24h', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '–', '×', '↻',
     'order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request',
     'scanner-filters', 'scan-eligibility', 'strategy', 'pairs',
   ]);

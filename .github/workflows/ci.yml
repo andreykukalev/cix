@@ -413,7 +413,8 @@ jobs:
           # Hygiene, not a boundary: code in this step could still reach the runner's secrets. The real limit is the
           # identity's role, which grants no more than the deployment token the CLI is given anyway (ADR-0010).
           az logout
-          # The CLI downloads Azure's StaticSitesClient on each run; a failed download is retried, nothing else is.
+          # The CLI downloads Azure's StaticSitesClient on each run; a failed download is retried, and so is starting the
+          # binary while the download still holds it open (spawn ETXTBSY), nothing else is.
           set -o pipefail # the deploy's status, not tee's
           for attempt in 1 2 3; do
             if SWA_CLI_DEPLOYMENT_TOKEN="$token" env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
@@ -423,9 +424,9 @@ jobs:
               grep -q "Project deployed to" swa-deploy.log && exit 0
               echo "::error::The SWA CLI exited without deploying the dashboard."; exit 1
             fi
-            grep -Eq 'StaticSitesClient failed|Failed to download StaticSitesClient|Could not load StaticSitesClient metadata|Checksum mismatch for StaticSitesClient' \
+            grep -Eq 'StaticSitesClient failed|Failed to download StaticSitesClient|Could not load StaticSitesClient metadata|Checksum mismatch for StaticSitesClient|spawn ETXTBSY' \
               swa-deploy.log && [ "$attempt" -lt 3 ] || exit 1
-            echo "::warning::Downloading StaticSitesClient failed (attempt $attempt); retrying."
+            echo "::warning::Downloading or starting StaticSitesClient failed (attempt $attempt); retrying."
             sleep $((attempt * 20))
           done
 
