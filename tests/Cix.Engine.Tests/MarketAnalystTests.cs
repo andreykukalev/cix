@@ -308,6 +308,89 @@ public sealed class MarketAnalystTests
     }
 
     [Fact]
+    public async Task RussianSummaryAndHighlights_AreCleanedAndJournaledForTheOwner()
+    {
+        var tools = Analyst();
+        MarketHighlight[] highlights =
+        [
+            new("FOMC decision at 18:00 UTC today", "high", "risk", "https://example.com/fed", ["BTC-EUR"], "Rates surprise could move all coins.",
+                "Решение FOMC сегодня в 18:00\u200b UTC", "Неожиданное решение по ставке может сдвинуть все монеты."),
+            new("Exchange outage resolved overnight", "medium", "watch", "https://example.com/outage", null, "Withdrawals are open again.", "Коротко", new string('д', 401)),
+        ];
+
+        using var reply = JsonDocument.Parse(await tools.Analyst.RecordMarketView(
+            "neutral", "Quiet market ahead of the Fed decision.", NewsSources, highlights: highlights,
+            summaryRu: "Спокойный рынок перед решением Fed.\u202e", cancellationToken: CancellationToken.None));
+
+        Assert.Equal(2, reply.RootElement.GetProperty("highlights").GetInt32());
+        Assert.Equal(new[] { "1:title-ru-length", "1:detail-ru-length" },
+            reply.RootElement.GetProperty("translationsDropped").EnumerateArray().Select(e => e.GetString()).ToArray());
+        var entry = Assert.Single(tools.Journal.Entries, e => e.Kind == MarketViewStore.Kind);
+        Assert.Equal("Quiet market ahead of the Fed decision.", entry.Summary);
+        Assert.Equal("Спокойный рынок перед решением Fed.", entry.Data!["summaryRu"]); // the override character removed
+        using var stored = JsonDocument.Parse(entry.Data["highlights"]);
+        Assert.Equal("Решение FOMC сегодня в 18:00 UTC", stored.RootElement[0].GetProperty("titleRu").GetString());
+        Assert.Equal("Неожиданное решение по ставке может сдвинуть все монеты.", stored.RootElement[0].GetProperty("detailRu").GetString());
+        Assert.Equal(JsonValueKind.Null, stored.RootElement[1].GetProperty("titleRu").ValueKind); // too short: the English shows instead
+        Assert.Equal(JsonValueKind.Null, stored.RootElement[1].GetProperty("detailRu").ValueKind);
+    }
+
+    [Fact]
+    public async Task RussianHighlightText_IsKeptAtItsLimits_AndNeverWithoutTheEnglish()
+    {
+        var tools = Analyst();
+        MarketHighlight[] highlights =
+        [
+            new("FOMC decision at 18:00 UTC today", "high", "risk", "https://example.com/fed", null, "Rates could move.", new string('а', 10), new string('б', 400)),
+            new("Exchange outage resolved overnight", "medium", "watch", "https://example.com/outage", null, null, new string('в', 200), "Перевод без оригинала."),
+        ];
+
+        using var reply = JsonDocument.Parse(await tools.Analyst.RecordMarketView(
+            "neutral", "Quiet market ahead of the Fed decision.", NewsSources, highlights: highlights, cancellationToken: CancellationToken.None));
+
+        Assert.Equal(0, reply.RootElement.GetProperty("translationsDropped").GetArrayLength());
+        var entry = Assert.Single(tools.Journal.Entries, e => e.Kind == MarketViewStore.Kind);
+        using var stored = JsonDocument.Parse(entry.Data!["highlights"]);
+        Assert.Equal(10, stored.RootElement[0].GetProperty("titleRu").GetString()!.Length);
+        Assert.Equal(400, stored.RootElement[0].GetProperty("detailRu").GetString()!.Length);
+        Assert.Equal(200, stored.RootElement[1].GetProperty("titleRu").GetString()!.Length);
+        Assert.Equal(JsonValueKind.Null, stored.RootElement[1].GetProperty("detailRu").ValueKind); // no English detail: no Russian one
+    }
+
+    [Theory]
+    [InlineData("Коротко")]
+    [InlineData(null)]
+    public async Task ARussianSummaryThatDoesNotFit_IsLeftOut_AndNeverBlocksTheView(string? summaryRu)
+    {
+        var tools = Analyst();
+        var tooLong = summaryRu is null ? new string('я', AnalystTools.MaxSummaryRu + 1) : summaryRu;
+
+        using var reply = JsonDocument.Parse(await tools.Analyst.RecordMarketView(
+            "risk-off", "Fed decision due within the hour.", NewsSources, summaryRu: tooLong, cancellationToken: CancellationToken.None));
+
+        Assert.Equal(MarketRegime.RiskOff, tools.Views.Current!.Regime);
+        Assert.Equal("summary-ru-length", reply.RootElement.GetProperty("translationsDropped")[0].GetString());
+        var entry = Assert.Single(tools.Journal.Entries, e => e.Kind == MarketViewStore.Kind);
+        Assert.False(entry.Data!.ContainsKey("summaryRu"));
+    }
+
+    [Fact]
+    public void AnalystSpecV3_AddsRussian_WithTheSameTwoTools_AndIsTheConfiguredOne()
+    {
+        var spec = FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", "analyst.v3.json"), "analyst", 3, TradingMode.Paper);
+
+        Assert.Equal(new[] { "get_analyst_brief", "record_market_view" }, spec.AllowedTools.Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(5, spec.Parameters["maxHighlights"].GetInt32());
+        Assert.Contains("summaryRu", spec.Instructions, StringComparison.Ordinal);
+        Assert.Contains("titleRu", spec.Instructions, StringComparison.Ordinal);
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (!File.Exists(Path.Combine(root.FullName, "Cix.slnx")))
+            root = root.Parent ?? throw new InvalidOperationException("Repository root not found.");
+        using var settings = JsonDocument.Parse(File.ReadAllText(Path.Combine(root.FullName, "src", "Cix.Engine", "appsettings.json")));
+        Assert.Equal(3, settings.RootElement.GetProperty("Analyst").GetProperty("Version").GetInt32());
+    }
+
+    [Fact]
     public void AnalystSpecV2_AddsHighlights_WithTheSameTwoTools()
     {
         var spec = FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", "analyst.v2.json"), "analyst", 2, TradingMode.Paper);

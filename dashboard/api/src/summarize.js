@@ -18,6 +18,17 @@ const RECONCILE_PROBLEMS = {
   'unexplained-holdings-change': 'Holdings changed more than the engine\'s fills explain.',
   'holdings-not-compared': 'Holdings couldn\'t be compared (no fresh prices).',
 };
+const RECONCILE_PROBLEMS_RU = {
+  'exchange-unreadable': 'При последней сверке не удалось прочитать данные биржи.',
+  'unknown-open-orders': 'На бирже есть открытые ордера, которые engine не отправлял.',
+  'unexplained-holdings-change': 'Holdings изменились больше, чем объясняют исполненные сделки (fills) engine.',
+  'holdings-not-compared': 'Holdings не удалось сравнить (нет свежих цен).',
+};
+/** A table's text for a code, or null: only the table's own keys, never inherited ones. */
+function ownText(table, code) {
+  return typeof code === 'string' && Object.hasOwn(table, code) ? table[code] : null;
+}
+
 const ERROR_ORDER_STATUSES = new Set(['rejected', 'failed', 'uncertain']);
 
 function num(value) {
@@ -98,6 +109,7 @@ function decisions(entries) {
       clientOrderId: d.clientOrderId ?? null,
       summary: e.summary ?? null,
       explanation: explain(e),
+      explanationRu: explain(e, 'ru'),
     };
   }).sort(byTimeDesc);
 }
@@ -131,7 +143,11 @@ function problems(entries, status, readErrors) {
     }
   }
   if (status?.lastReconcileProblem) {
-    list.push({ at: status.lastReconcileAttemptAt ?? status.updatedAt, source: 'reconciler', kind: 'reconcile', message: RECONCILE_PROBLEMS[status.lastReconcileProblem] ?? status.lastReconcileProblem });
+    list.push({
+      at: status.lastReconcileAttemptAt ?? status.updatedAt, source: 'reconciler', kind: 'reconcile',
+      message: ownText(RECONCILE_PROBLEMS, status.lastReconcileProblem) ?? status.lastReconcileProblem,
+      messageRu: ownText(RECONCILE_PROBLEMS_RU, status.lastReconcileProblem),
+    });
   }
   for (const message of readErrors) list.push({ at: null, source: 'dashboard', kind: 'read', message });
   return list.sort(byTimeDesc);
@@ -202,7 +218,8 @@ function summarize(input, now) {
       exchange: status?.lastReconciledAt ?? null,
       exchangeAttempt: status?.lastReconcileAttemptAt ?? null,
       database: status?.updatedAt ?? null,
-      reconcileProblem: status?.lastReconcileProblem ? RECONCILE_PROBLEMS[status.lastReconcileProblem] ?? status.lastReconcileProblem : null,
+      reconcileProblem: status?.lastReconcileProblem ? ownText(RECONCILE_PROBLEMS, status.lastReconcileProblem) ?? status.lastReconcileProblem : null,
+      reconcileProblemRu: ownText(RECONCILE_PROBLEMS_RU, status?.lastReconcileProblem),
     },
     cycle: {
       lastScan: status?.lastScan ? withoutMarket(status.lastScan) : null, // the coins are in the briefing
@@ -232,4 +249,4 @@ function journalItem(e) {
   return { id: e.id, at: e.at, kind: e.kind, actor: e.actor, runId: e.runId ?? null, summary: e.summary ?? null };
 }
 
-module.exports = { summarize, decisions, journalItem, engineHealth, agentRuns, STALE_AFTER_MS };
+module.exports = { summarize, decisions, journalItem, engineHealth, agentRuns, STALE_AFTER_MS, RECONCILE_PROBLEMS, RECONCILE_PROBLEMS_RU };

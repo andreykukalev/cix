@@ -7,6 +7,11 @@
 // From the scan it picks out what needs attention: active buy or sell signals, big moves, volume spikes, unusual
 // volatility and coins the analyst said to avoid. Pure: no I/O.
 //
+// The owner reads Russian best: from analyst v3 the view carries a Russian summary and Russian highlight titles and
+// details next to the English ones, and each reason a coin needs attention comes in both languages. Russian text the
+// analyst didn't write is simply missing (null), and the page falls back to the English. The engine leaves out a
+// translation that doesn't fit; the caps here only guard the page, cutting anything longer as for the English.
+//
 // Nothing here is an order level. The analyst never sees the account's positions, stops or targets (its brief has no
 // holdings), and the scan rows carry moves as fractions, not prices. Text from the analyst comes from the web, so it is
 // length-capped here and the page renders it as text only; links must be https.
@@ -25,11 +30,11 @@ const THRESHOLDS = Object.freeze({
   volatility: 0.02, // hourly range (ATR) of 2% of the price or more
 });
 
-// Exclusion codes from the scanner worth a look: [severity, direction, reason].
+// Exclusion codes from the scanner worth a look: [severity, direction, reason, reason in Russian].
 const EXCLUSIONS = Object.freeze({
-  'too-volatile': [2, 'risk', 'Excluded: too volatile to trade'],
-  'wide-spread': [2, 'risk', 'Excluded: spread too wide (thin market)'],
-  stale: [1, 'watch', 'Excluded: no fresh market data'],
+  'too-volatile': [2, 'risk', 'Excluded: too volatile to trade', 'Исключена: слишком волатильна для торговли'],
+  'wide-spread': [2, 'risk', 'Excluded: spread too wide (thin market)', 'Исключена: слишком широкий spread (низкая ликвидность)'],
+  stale: [1, 'watch', 'Excluded: no fresh market data', 'Исключена: нет свежих рыночных данных'],
 });
 
 const IMPACTS = new Set(['high', 'medium']);
@@ -50,7 +55,7 @@ function num(value) {
 /** Text for display: strings only, control and format characters removed, length capped. */
 function text(value, max) {
   if (typeof value !== 'string') return null;
-  const cleaned = value.replace(/[\p{Cc}\p{Cf}]/gu, '').trim();
+  const cleaned = value.replace(/[\p{Cc}\p{Cf}\p{Co}]/gu, '').trim();
   if (!cleaned) return null;
   return cleaned.length > max ? `${cleaned.slice(0, max - 1)}…` : cleaned;
 }
@@ -88,7 +93,10 @@ function highlights(raw) {
     const impact = typeof h?.impact === 'string' ? h.impact.toLowerCase() : '';
     const direction = typeof h?.direction === 'string' ? h.direction.toLowerCase() : '';
     if (!title || !source || !IMPACTS.has(impact) || !DIRECTIONS.has(direction)) continue;
-    out.push({ title, impact, direction, symbols: symbols(h.symbols), detail: text(h.detail, 300), source: source.url, sourceHost: source.host });
+    out.push({
+      title, impact, direction, symbols: symbols(h.symbols), detail: text(h.detail, 300), source: source.url, sourceHost: source.host,
+      titleRu: text(h.titleRu, 200), detailRu: text(h.detailRu, 400),
+    });
   }
   return out;
 }
@@ -107,6 +115,7 @@ function analystView(entries, now) {
     active: validUntil !== null && time(validUntil) > now,
     regime: ['risk-on', 'neutral', 'risk-off'].includes(d.regime) ? d.regime : null,
     summary: text(latest.summary, 1000),
+    summaryRu: text(d.summaryRu, 1500),
     avoid: symbols(String(d.avoid ?? '').split(',')),
     sources: String(d.sources ?? '').split(' ').map(link).filter(Boolean).slice(0, 10),
     highlights: highlights(d.highlights),
@@ -132,39 +141,48 @@ function marketRows(lastScan) {
 }
 
 const pct = (x) => `${x > 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
+const sellWhy = (signal) => signal.replace(/^sell\s*/, '').replace(/[()]/g, '');
 
 /**
- * Coins that need a look, most pressing first: one item per coin with every reason, a severity (3 high, 2 medium,
- * 1 low) and a direction (risk, opportunity or watch).
+ * Coins that need a look, most pressing first: one item per coin with every reason (in English, and in Russian in
+ * reasonsRu), a severity (3 high, 2 medium, 1 low) and a direction (risk, opportunity or watch).
  */
 function attention(rows, avoid, held) {
   const items = [];
   const avoided = new Set(avoid);
   for (const r of rows) {
     const reasons = [];
+    const reasonsRu = [];
     let severity = 0;
     const dirs = new Set();
-    const add = (s, dir, why) => {
+    const add = (s, dir, why, whyRu) => {
       reasons.push(why);
+      reasonsRu.push(whyRu);
       severity = Math.max(severity, s);
       dirs.add(dir);
     };
-    if (r.signal === 'buy') add(2, 'opportunity', 'Buy signal from the scanner');
-    else if (r.signal?.startsWith('sell')) add(3, 'risk', `Sell signal: ${r.signal.replace(/^sell\s*/, '').replace(/[()]/g, '') || 'exit'}`);
+    if (r.signal === 'buy') add(2, 'opportunity', 'Buy signal from the scanner', 'Сканер дал сигнал buy');
+    else if (r.signal?.startsWith('sell')) add(3, 'risk', `Sell signal: ${sellWhy(r.signal) || 'exit'}`, `Сигнал sell: ${sellWhy(r.signal) || 'exit'}`);
     if (r.return24h !== null && Math.abs(r.return24h) >= THRESHOLDS.move24h) {
-      add(Math.abs(r.return24h) >= THRESHOLDS.bigMove24h ? 3 : 2, r.return24h < 0 ? 'risk' : 'opportunity', `${pct(r.return24h)} in 24h`);
+      add(Math.abs(r.return24h) >= THRESHOLDS.bigMove24h ? 3 : 2, r.return24h < 0 ? 'risk' : 'opportunity', `${pct(r.return24h)} in 24h`, `${pct(r.return24h)} за 24 часа`);
     }
-    if (r.return1h !== null && Math.abs(r.return1h) >= THRESHOLDS.move1h) add(2, r.return1h < 0 ? 'risk' : 'opportunity', `${pct(r.return1h)} in the last hour`);
-    if (r.volumeRatio !== null && r.volumeRatio >= THRESHOLDS.volumeRatio) add(1, 'watch', `Volume ${r.volumeRatio.toFixed(1)}× usual`);
-    if (r.volatility !== null && r.volatility >= THRESHOLDS.volatility) add(1, 'watch', `Volatile: ${(r.volatility * 100).toFixed(1)}% hourly range`);
-    if (avoided.has(r.symbol)) add(2, 'risk', 'Analyst: avoid new entries');
+    if (r.return1h !== null && Math.abs(r.return1h) >= THRESHOLDS.move1h) {
+      add(2, r.return1h < 0 ? 'risk' : 'opportunity', `${pct(r.return1h)} in the last hour`, `${pct(r.return1h)} за последний час`);
+    }
+    if (r.volumeRatio !== null && r.volumeRatio >= THRESHOLDS.volumeRatio) {
+      add(1, 'watch', `Volume ${r.volumeRatio.toFixed(1)}× usual`, `Объём в ${r.volumeRatio.toFixed(1)} раза выше обычного`);
+    }
+    if (r.volatility !== null && r.volatility >= THRESHOLDS.volatility) {
+      add(1, 'watch', `Volatile: ${(r.volatility * 100).toFixed(1)}% hourly range`, `Волатильность: часовой диапазон ${(r.volatility * 100).toFixed(1)}%`);
+    }
+    if (avoided.has(r.symbol)) add(2, 'risk', 'Analyst: avoid new entries', 'Analyst: не открывать новые позиции');
     // Excluded coins carry no numbers, only why: the abnormal ones are often the ones to look at.
     if (r.rank === null && Object.hasOwn(EXCLUSIONS, r.note ?? '')) add(...EXCLUSIONS[r.note]);
     if (severity === 0) continue;
     // A held coin falling matters more than one we don't own.
     if (held.has(r.symbol) && dirs.has('risk')) severity = Math.min(3, severity + 1);
     const direction = dirs.has('risk') ? 'risk' : dirs.has('opportunity') ? 'opportunity' : 'watch';
-    items.push({ symbol: r.symbol, severity, direction, held: held.has(r.symbol), reasons });
+    items.push({ symbol: r.symbol, severity, direction, held: held.has(r.symbol), reasons, reasonsRu });
   }
   return items
     .sort((a, b) => b.severity - a.severity || b.reasons.length - a.reasons.length || a.symbol.localeCompare(b.symbol))
