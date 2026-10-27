@@ -243,6 +243,33 @@ public sealed class TradablePairsTests
     }
 
     [Fact]
+    public void RiskLimits_EachModeHasItsOwnFile_AndLiveNeverFallsBackToPapers()
+    {
+        static string Limits(int allocation) => $$"""
+            { "Risk": { "AllocationQuote": {{allocation}}, "MaxOrderQuote": 20, "MaxPositionQuotePerSymbol": 50, "MaxDailyLossQuote": 5,
+              "MaxDrawdownFraction": 0.15, "MaxOrdersPerMinute": 4, "MaxPriceDeviationFraction": 0.01, "AllowedSymbols": [ "BTC-EUR" ] } }
+            """;
+        var dir = Directory.CreateTempSubdirectory("cix-limits-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "risk-limits.json"), Limits(200));
+
+            Assert.Equal(200m, RiskLimitsOptions.LoadFor(TradingMode.Paper, dir).AllocationQuote);
+            var missing = Assert.Throws<InvalidOperationException>(() => RiskLimitsOptions.LoadFor(TradingMode.Live, dir));
+            Assert.Contains("risk-limits.live.json", missing.Message, StringComparison.Ordinal);
+
+            File.WriteAllText(Path.Combine(dir, "risk-limits.live.json"), Limits(100));
+
+            Assert.Equal(100m, RiskLimitsOptions.LoadFor(TradingMode.Live, dir).AllocationQuote);
+            Assert.Equal(200m, RiskLimitsOptions.LoadFor(TradingMode.Paper, dir).AllocationQuote);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SafetyMonitor_NewPair_GetsTimeForItsFirstQuotes()
     {
         var setup = new Setup();

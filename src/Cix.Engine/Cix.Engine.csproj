@@ -17,6 +17,8 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\config\risk-limits.json" Link="risk-limits.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- The live engine's own, smaller limits (#66). Owner-only like the paper file; until it exists, Live can't start. -->
+    <None Include="..\..\config\risk-limits.live.json" Link="risk-limits.live.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\..\config\risk-limits.live.json')" />
     <None Include="..\..\strategies\*.json" LinkBase="strategies" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>

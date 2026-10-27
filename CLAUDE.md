@@ -6,7 +6,7 @@ CIX runs Claude agents that trade an allocated budget on Revolut X, on a determi
 
 1. **The risk gate is final.** Every order path goes through `RiskGate.Evaluate`. Never add a code path that places an order without it.
 2. **Agents reach the exchange only through tool server tools.** No MCP tool may call the exchange directly; tools call engine services.
-3. **Hard ceilings are human-only.** Do not edit `src/Cix.Domain/Risk/HardCeilings.cs` or `config/risk-limits.json`; a hook blocks it. If a change seems needed, explain why and ask the owner.
+3. **Hard ceilings are human-only.** Do not edit `src/Cix.Domain/Risk/HardCeilings.cs`, `config/risk-limits.json` or the live engine's `config/risk-limits.live.json`; a hook blocks it. If a change seems needed, explain why and ask the owner.
 4. **The journal is append-only.** No update or delete operations on journal entries.
 5. **No secrets in the repo, prompts, logs or tool output.** Keys come from user secrets locally and Key Vault in Azure. Never print a key, even partially.
 6. **Paper trading is the default.** Live trading needs an explicit configuration switch that only the owner sets; a hook blocks agents from setting it in files or commands. Test against `PaperExchange`, never the real account.
