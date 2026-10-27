@@ -188,7 +188,7 @@ public sealed partial class TradablePairsService(
             if (dropped.Count > 0 || problems.Count > 0)
                 _restoreProblem = problems.Count > 0
                     ? $"The saved trading pairs couldn't be restored ({problems[0]}); only {string.Join(", ", tradable.Current.Order(StringComparer.Ordinal))} are tradable. Check for holdings in the others before resuming."
-                    : $"Saved trading pairs no longer permitted by {LimitsFile} were dropped:{string.Join(", ", dropped)}. Check for holdings in them before resuming.";
+                    : $"Saved trading pairs no longer permitted by {LimitsFile} were dropped: {string.Join(", ", dropped)}. Check for holdings in them before resuming.";
         }
 
         await WriteCatalogAsync(now, cancellationToken).ConfigureAwait(false);

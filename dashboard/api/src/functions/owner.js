@@ -206,6 +206,7 @@ app.http('owner-strategies', {
   route: 'owner/strategies',
   handler: (request, context) => ownerOnly(request, context, 'strategy view', async () => {
     const mode = modeOf(request);
+    requireLiveDatabase(mode); // never paper's database shown as live's
     return respond(200, await loadStrategies(getReader(mode), mode, Date.now(), getReader('paper')));
   }),
 });
@@ -235,6 +236,7 @@ app.http('owner-pairs', {
   route: 'owner/pairs',
   handler: (request, context) => ownerOnly(request, context, 'pairs view', async () => {
     const mode = modeOf(request);
+    requireLiveDatabase(mode); // never paper's database shown as live's
     return respond(200, await loadPairs(getReader(mode), mode, Date.now()));
   }),
 });

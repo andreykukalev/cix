@@ -48,9 +48,13 @@ const SENTENCES = [
   ['VVV-EUR removed: no new orders in it.', 'VVV-EUR'],
   ['Only EUR pairs are permitted by config/risk-limits.json.', 'EUR'],
   ["config/risk-limits.json doesn't permit it; only the owner can widen that list.", null],
+  ['Only EUR pairs are permitted by config/risk-limits.live.json.', 'config/risk-limits.live.json'],
+  ["config/risk-limits.live.json doesn't permit it; only the owner can widen that list.", 'config/risk-limits.live.json'],
   ['At most 15 pairs can be tradable at once; remove one first.', '15'],
   ['At most 15 pairs can be tradable at once (config/risk-limits.json).', '15'],
   ['Not permitted by config/risk-limits.json: ETH-USD.', 'ETH-USD'],
+  ["At most 15 pairs can be tradable at once (the owner's limits file).", '15'],
+  ["Not permitted by the owner's limits file: ETH-USD.", 'ETH-USD'],
   ["The exchange couldn't be asked about this pair right now; send the request again later.", null],
   ["Revolut X doesn't list it as an active pair.", null],
   ['Every pair must be quoted in EUR.', 'EUR'],
@@ -80,6 +84,7 @@ const SENTENCES = [
   ['The sized order, 0.00001 BTC (at most 5 EUR per order and 1 at risk), is below the exchange minimum of 0.0001 BTC.', '0.00001'],
   ['Flagged by the market analyst until 2026-10-27 18:00 UTC.', '2026-10-27 18:00'],
   ['Not among the tradable pairs (the owner adds them from the dashboard, within config/risk-limits.json).', null],
+  ["Not among the tradable pairs (the owner adds them from the dashboard, within the owner's limits file).", null],
   ["The exchange doesn't list this pair.", null],
   ['The exchange has suspended trading in this pair.', null],
   ['Market data is stale.', null],
@@ -99,7 +104,7 @@ test('every sentence the engine writes for the owner has its Russian, figures ke
     assert.ok(ru, `no Russian for: ${en}`);
     assert.ok(/[а-яё]/i.test(ru), `not Russian: ${ru}`);
     // No English words left, apart from the names, codes and abbreviations kept on purpose.
-    const rest = ru.replace(/config\/risk-limits\.json|docs\/live-trading\.md|resume_trading|haltSince|ManualRequests:MaxPerDay|Revolut X|risk-off|taking profit|ask|UTC|ATR|EMA\d*|[A-Z]{2,}-[A-Z]{3}/g, '');
+    const rest = ru.replace(/config\/risk-limits(?:\.live)?\.json|docs\/live-trading\.md|resume_trading|haltSince|ManualRequests:MaxPerDay|Revolut X|risk-off|taking profit|ask|UTC|ATR|EMA\d*|[A-Z]{2,}-[A-Z]{3}/g, '');
     assert.ok(!/[a-z]{3,}/.test(rest), `English left in: ${ru}`);
     if (kept) assert.ok(ru.includes(kept), `${kept} lost in: ${ru}`);
   }

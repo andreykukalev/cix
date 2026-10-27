@@ -347,6 +347,10 @@ test("Pause and Resume: paper's go to paper's database; live's need the owner's 
     const lookup = await routes['owner-control-request'].handler(request({ params: { day: '2026-10-27', id: id() }, query: 'mode=live' }), context);
     assert.equal(lookup.status, 503, 'a live lookup never reads paper\'s database instead');
     assert.equal(reads.length, 0);
+    for (const view of ['owner-strategies', 'owner-pairs']) {
+      assert.equal((await routes[view].handler(request({ query: 'mode=live' }), context)).status, 503, `${view} never shows paper's database as live's`);
+    }
+    assert.equal(reads.length, 0);
   } finally { process.env.COSMOS_LIVE_DATABASE = saved; }
   assert.deepEqual(writeDatabases, ['cix', 'cix-live', 'cix']);
 });

@@ -15,9 +15,10 @@ if printf '%s' "$input" | grep -qiE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*(
   fi
 fi
 
-# 1b. A strategy spec marked for live trading: only the owner promotes a spec to live.
+# 1b. A strategy spec marked for live trading: only the owner promotes a spec to live. A status written as a number or
+#     with a \u escape is refused too (the engine also refuses a number, since it would load as live).
 if printf '%s' "$input" | grep -qiE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*strategies/[^"]*\.json"'; then
-  if printf '%s' "$input" | grep -qiE 'status[\\"]*[[:space:]]*:[[:space:]]*[\\"]*live'; then
+  if printf '%s' "$input" | grep -qiE 'status[\\"]*[[:space:]]*:[[:space:]]*[\\"]*(live|[0-9]|u[0-9a-f]{4})'; then
     block
   fi
 fi

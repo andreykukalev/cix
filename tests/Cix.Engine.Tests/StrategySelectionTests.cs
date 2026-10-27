@@ -570,8 +570,8 @@ public sealed class StrategySelectionTests
     }
 
     /// <summary>
-    /// A strategies folder for the live tests: the repository's files, and safe v3, a copy of safe v2 (the spec the owner
-    /// marked live) with smaller orders, written at run time.
+    /// A strategies folder for the live tests: the repository's files, safe v3, a copy of safe v2 (the spec the owner
+    /// marked live) with smaller orders, and safe v4, the same as a draft, written at run time.
     /// </summary>
     private static string LiveFolder()
     {
@@ -584,6 +584,10 @@ public sealed class StrategySelectionTests
         v3["version"] = 3;
         v3["parameters"]!["orderQuote"] = 4;
         File.WriteAllText(Path.Combine(folder, "safe.v3.json"), v3.ToJsonString());
+        var draft = v3.DeepClone().AsObject(); // a draft of the same spec never runs
+        draft["version"] = 4;
+        draft["status"] = "draft";
+        File.WriteAllText(Path.Combine(folder, "safe.v4.json"), draft.ToJsonString());
         return folder;
     }
 
@@ -664,6 +668,42 @@ public sealed class StrategySelectionTests
 
             Assert.Equal(2, setup.Specs.Active!.Version);
             Assert.Contains("differs from the reviewed file strategies/safe.v3.json", setup.Service.Status.Problems[0], StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Live_WithoutItsSpecFiles_RefusesEverySelection()
+    {
+        var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live);
+        Assert.Equal(0, await setup.Service.SeedAsync(Path.Combine(Path.GetTempPath(), $"cix-missing-{Guid.NewGuid():N}"), CancellationToken.None));
+        setup.Repository.Put(StrategySchemaTests.Load("safe", 2));
+        setup.Select("safe", 2);
+
+        Assert.False(await setup.Poll());
+
+        Assert.Equal("refused", setup.Service.Status.State);
+        Assert.Contains("isn't a spec file the owner marked live", setup.Service.Status.Problems[0], StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("2")]
+    [InlineData("1")]
+    public void ASpecFile_WithItsStatusAsANumber_IsRefused(string status)
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"cix-strategies-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var spec = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", "safe.v1.json")))!.AsObject();
+            spec["status"] = JsonNode.Parse(status);
+            var path = Path.Combine(folder, "safe.v1.json");
+            File.WriteAllText(path, spec.ToJsonString());
+
+            Assert.Throws<InvalidOperationException>(() => FileStrategySpecStore.Load(path, "safe", 1, TradingMode.Paper));
         }
         finally
         {

@@ -85,6 +85,9 @@ const FORMATS = [
   [/^At most (\d+) pairs can be tradable at once; remove one first\.$/, (m) => `Одновременно могут торговаться не больше ${m[1]} пар; сначала удалите одну.`],
   [/^At most (\d+) pairs can be tradable at once \(config\/risk-limits\.json\)\.$/, (m) => `Одновременно могут торговаться не больше ${m[1]} пар (config/risk-limits.json).`],
   [/^Not permitted by config\/risk-limits\.json: (.+)\.$/, (m) => `Не разрешено в config/risk-limits.json: ${m[1]}.`],
+  // The same two, as the engine words them since live has its own limits file (older records keep the wording above).
+  [/^At most (\d+) pairs can be tradable at once \(the owner's limits file\)\.$/, (m) => `Одновременно могут торговаться не больше ${m[1]} пар (по файлу ограничений владельца).`],
+  [/^Not permitted by the owner's limits file: (.+)\.$/, (m) => `Не разрешено файлом ограничений владельца: ${m[1]}.`],
   [/^The exchange couldn't be asked about this pair right now; send the request again later\.$/, 'Сейчас не удалось запросить биржу об этой паре; отправьте запрос позже.'],
   [/^Revolut X doesn't list it as an active pair\.$/, 'Revolut X не показывает её как активную пару.'],
   [/^Every pair must be quoted in (\S+)\.$/, (m) => `Все пары должны котироваться в ${m[1]}.`],
@@ -129,6 +132,8 @@ const FORMATS = [
   [/^Flagged by the market analyst until (.+) UTC\.$/, (m) => `Аналитик рынка отметил монету до ${m[1]} UTC.`],
   [/^Not among the tradable pairs \(the owner adds them from the dashboard, within config\/risk-limits\.json\)\.$/,
     'Не входит в торгуемые пары (владелец добавляет их на панели в пределах config/risk-limits.json).'],
+  [/^Not among the tradable pairs \(the owner adds them from the dashboard, within the owner's limits file\)\.$/,
+    'Не входит в торгуемые пары (владелец добавляет их на панели в пределах своего файла ограничений).'],
   [/^The exchange doesn't list this pair\.$/, 'Биржа не торгует этой парой.'],
   [/^The exchange has suspended trading in this pair\.$/, 'Биржа приостановила торги этой парой.'],
   [/^Market data is stale\.$/, 'Рыночные данные устарели.'],

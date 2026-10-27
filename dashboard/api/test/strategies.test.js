@@ -79,6 +79,9 @@ test('live switches too, saying only specs marked live are listed, and the view 
   assert.equal(view.readOnlyReason, null);
   assert.match(view.note, /marked live/);
   assert.equal(strategiesView({ mode: 'paper', schema: null, versions: [], status: null, requests: [] }, NOW).note, null);
+  const liveVersions = [...VERSIONS, { name: 'safe', version: '2', status: 'Live', parameters: {}, allowedTools: ['place_order'] }];
+  assert.deepEqual(strategiesView({ mode: 'live', schema: SCHEMA, versions: liveVersions, status: null, requests: [] }, NOW).strategies.map((x) => x.key), ['safe@v2'],
+    'only specs marked live are offered in live');
   assert.equal(view.active, null);
   assert.deepEqual([view.groups, view.strategies, view.mandatory], [[], [], []]);
 });

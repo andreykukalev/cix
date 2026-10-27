@@ -378,8 +378,9 @@ public sealed class RiskGateTests
         Assert.Equal(DateTimeOffset.MinValue, tradable.AddedAt(Btc));
 
         Assert.NotEmpty(tradable.TrySet([], Now)); // never empty
-        Assert.NotEmpty(tradable.TrySet([Btc, Sol, "XRP-EUR", "ADA-EUR"], Now)); // over the cap of 3
-        Assert.NotEmpty(tradable.TrySet([Btc, "ETH-USD"], Now)); // not permitted
+        Assert.Contains("At most 3 pairs can be tradable at once (the owner's limits file).", tradable.TrySet([Btc, Sol, "XRP-EUR", "ADA-EUR"], Now));
+        // Paper's and live's limits files differ, so the reason names neither.
+        Assert.Contains("Not permitted by the owner's limits file: ETH-USD.", tradable.TrySet([Btc, "ETH-USD"], Now));
         Assert.Equal(new[] { Btc }, tradable.Current.Order(StringComparer.Ordinal)); // a refused list changes nothing
 
         Assert.Empty(tradable.TrySet([Btc, Sol], Now));

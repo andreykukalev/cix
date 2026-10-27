@@ -149,6 +149,8 @@ function strategiesView({ mode, schema, versions, status, requests }, now) {
   }
   const strategies = (Array.isArray(versions) ? versions : [])
     .filter((v) => v && typeof v === 'object' && NAME.test(String(v.name ?? '')) && Number.isInteger(Number(v.version)))
+    // Live offers only specs marked live; the engine refuses any other, and a document added by hand isn't offered.
+    .filter((v) => mode !== 'live' || String(v.status ?? '').toLowerCase() === 'live')
     .map((v) => strategyItem(v, keys, active))
     .sort(order);
   const selection = status?.strategySelection ?? null;

@@ -68,6 +68,23 @@ public sealed class PaperAccountPersistenceTests
         Assert.Throws<InvalidOperationException>(() => new Microsoft.Extensions.DependencyInjection.ServiceCollection().AddCixCosmos(
             new CosmosOptions { Enabled = true, Emulator = true }, TradingMode.Live));
 
+    [Theory]
+    [InlineData(TradingMode.Paper)]
+    [InlineData(TradingMode.Live)]
+    public void BothModes_SwitchStrategyAndPairs_OnlyPaperKeepsAPaperAccount(TradingMode mode)
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection().AddCixCosmos(new CosmosOptions
+        {
+            Enabled = true, Endpoint = "https://acct.documents.azure.com", Database = "cix", ManagedIdentityClientId = Guid.NewGuid().ToString(),
+        }, mode);
+
+        Assert.Contains(services, d => d.ServiceType == typeof(StrategySelectionService));
+        Assert.Contains(services, d => d.ServiceType == typeof(IStrategyRepository));
+        Assert.Contains(services, d => d.ServiceType == typeof(Pairs.TradablePairsService));
+        Assert.Contains(services, d => d.ServiceType == typeof(Pairs.ITradablePairsRepository));
+        Assert.Equal(mode == TradingMode.Paper, services.Any(d => d.ServiceType == typeof(PaperAccountSaver)));
+    }
+
     [Fact]
     public void Restore_IsRefusedOnceTheAccountIsInUse()
     {
