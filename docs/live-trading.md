@@ -33,6 +33,8 @@ A proposal for the first run, 100 EUR on the fixed Safe strategy. Safe's own lim
 
 A Live engine runs only a spec whose `status` is `live`, and only you set that (the `protect-live-mode` hook stops agents). For the first run, `strategies/safe.v2.json` is Safe v1 with the same parameters, and instructions that no longer say "paper". It is a `draft`, which never runs: change its `"status"` to `"live"`. Leave `safe.v1.json` as it is. The paper database holds a copy of v1, and a spec file that no longer matches its copy can't be selected on paper. A `live` spec runs on paper too, so paper can switch to Safe v2 and keep the same baseline as live.
 
+Balanced and Risky have live versions the same way: `strategies/balanced.v2.json` is Balanced v1 with a daily loss stop of 5 EUR instead of 6, and `strategies/risky.v3.json` is Risky v2 with 25 EUR per coin instead of 50 and a daily loss stop of 5 EUR instead of 12, so both fit the limits above. Both are drafts: change each `"status"` to `"live"` you want to offer, merge, and promote that image. The live Strategy tab then lists them. Their orders are up to 10 and 20 EUR, so the sub-account needs that much cash before they can buy.
+
 ## The Revolut X keys (#68)
 
 ### The sub-account

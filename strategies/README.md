@@ -48,6 +48,18 @@ What a switch affects:
 
 Live trading switches the same way from the dashboard's Live view, with a real-money confirmation, but only between the files here whose `status` the owner set to `live`, exactly as merged (ADR-0018). The live engine adds only those to its database; marking a spec `live` is the owner's edit.
 
+### Live versions
+
+A live spec must fit `config/risk-limits.live.json`, which is tighter than paper's (a 5 EUR daily loss and 25 EUR per coin), and its instructions don't say "paper". Each is a copy of a paper version, so the paper one stays as it ran:
+
+| Live version | Copy of | What changed |
+|---|---|---|
+| `safe.v2.json` | Safe v1 | Instructions only |
+| `balanced.v2.json` | Balanced v1 | Daily loss stop 6 → 5 EUR |
+| `risky.v3.json` | Risky v2 | Per coin 50 → 25 EUR, daily loss stop 12 → 5 EUR |
+
+Balanced v2 and Risky v3 start as drafts, which never run: the owner sets their `status` to `live`. Orders of 10 and 20 EUR need that much cash in the sub-account.
+
 ## Trading strategies
 
 Both are signal-driven (ADR-0006), trade the same coins (`AllowedSymbols`) and have the same instructions, order size (`orderQuote` 5), risk per trade (1) and daily loss stop (5). The engine's scanner does the arithmetic: filters, ranking, risk-based size, stop and target, from `parameters.scanner`. The trader acts only on `scan_market` signals, and runs only when the signals change, plus a review every 4 hours.

@@ -598,11 +598,21 @@ public sealed class StrategySelectionTests
         try
         {
             var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live);
+            // The repository's files the owner marked live (safe v2, and any added since), plus safe v3; never a draft or paper spec.
+            var expected = Directory.EnumerateFiles(folder, "*.json")
+                .Select(f => JsonNode.Parse(File.ReadAllText(f))!)
+                .Where(s => (string?)s["status"] == "live")
+                .Select(s => $"{(string)s["name"]!}@v{(int)s["version"]!}")
+                .Order(StringComparer.Ordinal).ToList();
+            Assert.Contains("safe@v2", expected);
+            Assert.Contains("safe@v3", expected);
+            Assert.DoesNotContain("safe@v4", expected);
+            Assert.DoesNotContain("balanced@v1", expected);
 
-            Assert.Equal(2, await setup.Service.SeedAsync(folder, CancellationToken.None));
+            Assert.Equal(expected.Count, await setup.Service.SeedAsync(folder, CancellationToken.None));
 
             var names = setup.Repository.Versions.Select(v => $"{v.Name}@v{v.Version}").Order(StringComparer.Ordinal).ToList();
-            Assert.Equal(["safe@v2", "safe@v3"], names);
+            Assert.Equal(expected, names);
         }
         finally
         {
