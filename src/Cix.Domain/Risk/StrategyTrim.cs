@@ -11,8 +11,10 @@ public sealed record TrimSell(string Symbol, decimal BaseSize, decimal LimitPric
 /// <summary>
 /// After a switch to a strategy with smaller caps: the sells that bring holdings within its per-coin
 /// cap and then its total exposure cap, largest holdings first. Only what is above a cap is sold, rounded up to the
-/// exchange's step; a remainder too small to sell later goes too. Holdings within the caps are never touched. The sells still
-/// go through the risk gate. Deterministic and side-effect free.
+/// exchange's step; a remainder too small to sell later goes too. Holdings within the caps are never touched. A holding that
+/// can't be sold (no bid, nothing free to sell) still counts toward the total but isn't sold, and an excess too small for the
+/// exchange is left: so the total may stay up to about one minimum order above its cap. The sells still go through the risk
+/// gate. Deterministic and side-effect free.
 /// </summary>
 public static class StrategyTrim
 {
@@ -23,9 +25,11 @@ public static class StrategyTrim
         if (limits.MaxPositionQuotePerSymbol is null && limits.MaxExposureQuote is null)
             return [];
 
-        var usable = holdings.Where(h => h.Bid > 0 && h.ValueQuote > 0 && h.SellableBaseSize > 0).ToList();
+        var held = holdings.Where(h => h.ValueQuote > 0).ToList();
+        var usable = held.Where(h => h.Bid > 0 && h.SellableBaseSize > 0).ToList();
         var excess = usable.ToDictionary(h => h.Symbol, _ => 0m, StringComparer.Ordinal);
         var rule = usable.ToDictionary(h => h.Symbol, _ => "", StringComparer.Ordinal);
+        var byExposure = new HashSet<string>(StringComparer.Ordinal);
 
         if (limits.MaxPositionQuotePerSymbol is { } perCoin)
         {
@@ -38,7 +42,7 @@ public static class StrategyTrim
 
         if (limits.MaxExposureQuote is { } cap)
         {
-            var over = usable.Sum(h => h.ValueQuote - excess[h.Symbol]) - cap;
+            var over = held.Sum(h => h.ValueQuote - excess.GetValueOrDefault(h.Symbol)) - cap;
             foreach (var h in usable.OrderByDescending(h => h.ValueQuote - excess[h.Symbol]).ThenBy(h => h.Symbol, StringComparer.Ordinal))
             {
                 if (over <= 0)
@@ -46,6 +50,7 @@ public static class StrategyTrim
                 var take = Math.Min(over, h.ValueQuote - excess[h.Symbol]);
                 excess[h.Symbol] += take;
                 over -= take;
+                byExposure.Add(h.Symbol);
                 if (rule[h.Symbol].Length == 0)
                     rule[h.Symbol] = "strategy-exposure-cap";
             }
@@ -60,9 +65,11 @@ public static class StrategyTrim
                 size = h.SellableBaseSize; // what would be left couldn't be sold on its own
             if (size < h.Pair.MinOrderSize || size * h.Bid < h.Pair.MinOrderSizeQuote)
                 continue; // too small for the exchange: within a step of the cap, leave it
-            var what = rule[h.Symbol] == "strategy-position-cap"
-                ? $"the strategy's cap of {limits.MaxPositionQuotePerSymbol:0.##} per coin"
-                : $"the strategy's total exposure cap of {limits.MaxExposureQuote:0.##}";
+            var what = rule[h.Symbol] != "strategy-position-cap"
+                ? $"the strategy's total exposure cap of {limits.MaxExposureQuote:0.##}"
+                : byExposure.Contains(h.Symbol)
+                    ? $"the strategy's cap of {limits.MaxPositionQuotePerSymbol:0.##} per coin and its total exposure cap of {limits.MaxExposureQuote:0.##}"
+                    : $"the strategy's cap of {limits.MaxPositionQuotePerSymbol:0.##} per coin";
             sells.Add(new TrimSell(h.Symbol, size, h.Bid, rule[h.Symbol],
                 $"Holding worth {h.ValueQuote:0.##} trimmed by about {size * h.Bid:0.##} to stay within {what}."));
         }

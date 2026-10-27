@@ -53,6 +53,7 @@ public sealed class StrategyTrimTests
         var sell = Assert.Single(StrategyTrim.Plan([Btc40, Eth20], new StrategyLimits(MaxPositionQuotePerSymbol: 25m, MaxExposureQuote: 30m)));
 
         Assert.Equal(("BTC-EUR", 0.0006m, "strategy-position-cap"), (sell.Symbol, sell.BaseSize, sell.Rule));
+        Assert.Contains("per coin and its total exposure cap", sell.Reason, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -71,5 +72,14 @@ public sealed class StrategyTrimTests
 
         var sell = Assert.Single(StrategyTrim.Plan([partlySellable, Held("ETH-EUR", 20m, 2_000m) with { Bid = 0m }], new StrategyLimits(MaxPositionQuotePerSymbol: 10m)));
         Assert.Equal(("BTC-EUR", 0.0002m), (sell.Symbol, sell.BaseSize));
+    }
+
+    [Fact]
+    public void AHoldingThatCantBeSold_StillCountsTowardTheExposureCap()
+    {
+        var locked = new TrimHolding("ETH-EUR", 20m, 0m, 2_000m, Pair("ETH-EUR")); // all of it reserved by an open sell
+
+        var sell = Assert.Single(StrategyTrim.Plan([Btc40, locked], new StrategyLimits(MaxExposureQuote: 50m)));
+        Assert.Equal(("BTC-EUR", 0.0002m), (sell.Symbol, sell.BaseSize)); // 60 - 50 = 10, all from BTC
     }
 }

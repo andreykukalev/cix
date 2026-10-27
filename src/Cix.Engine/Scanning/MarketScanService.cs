@@ -361,13 +361,17 @@ public sealed partial class MarketScanService(
     /// <summary>
     /// After a strategy switch: sells the part of each holding above the new strategy's per-coin and total exposure caps
     /// (<see cref="StrategyTrim"/>), at the bid, through <see cref="ExecutionService"/> and so the risk gate. Once per switch:
-    /// a sell that is refused or doesn't fill isn't tried again. Skips coins with an open order or a protective sell in
-    /// <paramref name="scan"/>, so nothing is sold twice. Returns the orders placed.
+    /// a sell that is refused isn't tried again, and one still resting after <see cref="ProtectiveRepriceAfter"/> is cancelled
+    /// like a protective sell, so it never keeps a stop from selling. Skips coins with an open order or a protective sell in
+    /// <paramref name="scan"/>, so nothing is sold twice. Returns the orders placed, or null when the trim couldn't be judged
+    /// (halted, or the portfolio can't be valued): the caller tries again at the next scan.
     /// </summary>
-    public async Task<int> TrimToStrategyAsync(ScanResult scan, CancellationToken cancellationToken)
+    public async Task<int?> TrimToStrategyAsync(ScanResult scan, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(scan);
-        if (Halted || riskLimits is null || specs.Active is not { } spec)
+        if (Halted)
+            return null;
+        if (riskLimits is null || specs.Active is not { } spec)
             return 0;
         var limits = Strategy.StrategySchema.LimitsOf(spec, riskLimits);
         if (limits.MaxPositionQuotePerSymbol is null && limits.MaxExposureQuote is null)
@@ -375,14 +379,20 @@ public sealed partial class MarketScanService(
         if (await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false) is not { } portfolio)
         {
             LogTrimSkipped(logger, spec.Label, "the portfolio can't be valued now");
-            return 0;
+            return null;
+        }
+
+        if (portfolio.Snapshot.SellableBaseBySymbol is not { } sellable)
+        {
+            LogTrimSkipped(logger, spec.Label, "the amounts free to sell are unknown");
+            return null;
         }
 
         var open = await execution.GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
-        var busy = open.Where(o => o.IsOpen).Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol))
-            .Concat(scan.Exits.Where(x => ProtectiveReasons.Contains(x.Reason)).Select(x => x.Symbol))
+        var protective = scan.Exits.Where(x => ProtectiveReasons.Contains(x.Reason))
+            .GroupBy(x => x.Symbol, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Sum(x => x.BaseSize * x.LimitPrice), StringComparer.Ordinal);
+        var busy = open.Where(o => o.IsOpen).Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol)).Concat(protective.Keys)
             .ToHashSet(StringComparer.Ordinal);
-        var sellable = portfolio.Snapshot.SellableBaseBySymbol ?? new Dictionary<string, decimal>();
         var holdings = new List<TrimHolding>();
         foreach (var (symbol, value) in portfolio.Snapshot.PositionQuoteBySymbol)
         {
@@ -394,9 +404,13 @@ public sealed partial class MarketScanService(
             holdings.Add(new TrimHolding(symbol, value, sellable.GetValueOrDefault(symbol), bid, pair));
         }
 
-        // Coins left out (busy, unpriced) still count toward the total cap: only the rest is trimmed for it.
-        var leftOut = portfolio.Snapshot.PositionQuoteBySymbol.Where(p => p.Value > 0 && holdings.All(h => h.Symbol != p.Key)).Sum(p => p.Value);
-        var trimLimits = limits.MaxExposureQuote is { } cap ? limits with { MaxExposureQuote = Math.Max(0m, cap - leftOut) } : limits;
+        // Coins left out (busy, unpriced) still count toward the total cap, less what their protective sells take, and so do
+        // working buys, as the strategy gate counts them: only the rest is trimmed for it.
+        var positions = portfolio.Snapshot.PositionQuoteBySymbol.Where(p => p.Value > 0).ToList();
+        var leftOut = positions.Where(p => holdings.All(h => h.Symbol != p.Key))
+            .Sum(p => Math.Max(0m, p.Value - protective.GetValueOrDefault(p.Key)));
+        var workingBuys = Math.Max(0m, portfolio.Snapshot.TotalExposureQuote - positions.Sum(p => p.Value));
+        var trimLimits = limits.MaxExposureQuote is { } cap ? limits with { MaxExposureQuote = Math.Max(0m, cap - leftOut - workingBuys) } : limits;
         var placed = 0;
         foreach (var sell in StrategyTrim.Plan(holdings, trimLimits))
         {
@@ -404,6 +418,12 @@ public sealed partial class MarketScanService(
             var result = await execution.PlaceAsync(
                 new OrderIntent(sell.Symbol, OrderSide.Sell, sell.BaseSize, sell.LimitPrice, clientOrderId), postOnly: false, cancellationToken,
                 countsTowardRejectStreak: false, context: new OrderContext(TrimSource, Strategy: spec.Label)).ConfigureAwait(false);
+            if (result.Status != ExecutionStatus.Rejected)
+            {
+                lock (_protectiveOrderIds)
+                    _protectiveOrderIds.Add(clientOrderId); // cancelled if it rests, so it can't keep a stop from selling
+            }
+
             var data = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 ["tool"] = TrimSource,
@@ -471,7 +491,7 @@ public sealed partial class MarketScanService(
             .ConfigureAwait(false);
         lock (_protectiveOrderIds)
         {
-            foreach (var entry in orders.Where(e => e.Data?.GetValueOrDefault("tool") == "protective-exit" && e.Data.GetValueOrDefault("status") != "rejected"))
+            foreach (var entry in orders.Where(e => e.Data?.GetValueOrDefault("tool") is "protective-exit" or TrimSource && e.Data.GetValueOrDefault("status") != "rejected"))
             {
                 if (entry.Data!.GetValueOrDefault("clientOrderId") is { Length: > 0 } id)
                     _protectiveOrderIds.Add(id);
@@ -575,30 +595,46 @@ public sealed partial class MarketScanBackgroundService(
     /// <summary>The spec version the last scan started after; a newer one means a switch to scan for.</summary>
     private long _seen = specs?.Version ?? 0;
 
-    /// <summary>Waits for <paramref name="tick"/> (false once the timer stops) or a strategy switch, whichever comes first.</summary>
+    /// <summary>The wait for a switch after <see cref="_seen"/>, kept across ticks so waits don't pile up.</summary>
+    private Task? _changed;
+
+    /// <summary>A switch whose trim hasn't been judged yet (the scan failed, or trading was halted): the next scans try it.</summary>
+    private bool _trimPending;
+
+    /// <summary>
+    /// Waits for <paramref name="tick"/> (false once the timer stops) or a strategy switch, whichever comes first. A switch is
+    /// known by the spec's version, not by which wait ended first, so one made while the tick was also due isn't missed.
+    /// </summary>
     internal async Task<ScanTrigger> NextAsync(Task<bool> tick, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tick);
         if (specs is null)
             return await tick.ConfigureAwait(false) ? ScanTrigger.Tick : ScanTrigger.Stopped;
-        var changed = specs.WaitForChangeAsync(_seen, cancellationToken);
-        if (await Task.WhenAny(tick, changed).ConfigureAwait(false) == tick)
+        while (true)
         {
-            _seen = specs.Version; // the scan that follows reads the spec as it is now
-            return await tick.ConfigureAwait(false) ? ScanTrigger.Tick : ScanTrigger.Stopped;
-        }
+            _changed ??= specs.WaitForChangeAsync(_seen, cancellationToken);
+            await Task.WhenAny(tick, _changed).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (specs.Version != _seen)
+            {
+                _seen = specs.Version;
+                _changed = null;
+                _trimPending = true;
+                LogSwitchScan(logger, specs.Active?.Label ?? "none");
+                return ScanTrigger.Switch;
+            }
 
-        await changed.ConfigureAwait(false); // throws if cancelled
-        _seen = specs.Version;
-        LogSwitchScan(logger, specs.Active?.Label ?? "none");
-        return ScanTrigger.Switch;
+            if (tick.IsCompleted)
+                return await tick.ConfigureAwait(false) ? ScanTrigger.Tick : ScanTrigger.Stopped;
+            _changed = null; // ended without a newer version: wait again
+        }
     }
 
     /// <summary>
-    /// One scan; returns false if it failed. Tests call this instead of running the loop. With <paramref name="trim"/> (the
-    /// scan after a strategy switch), holdings above the new strategy's caps are trimmed after the protective exits.
+    /// One scan; returns false if it failed. Tests call this instead of running the loop. After a strategy switch, holdings
+    /// above the new strategy's caps are trimmed after the protective exits, once the trim can be judged.
     /// </summary>
-    public async Task<bool> ScanOnceAsync(CancellationToken cancellationToken, bool trim = false)
+    public async Task<bool> ScanOnceAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -614,8 +650,8 @@ public sealed partial class MarketScanBackgroundService(
             var result = await scanner.ScanAsync(cancellationToken).ConfigureAwait(false);
             LogScanned(logger, result.Ranked.Count, result.Excluded.Count, result.Entries.Count, result.Exits.Count, Describe(result));
             await scanner.ApplyProtectiveExitsAsync(result, cancellationToken).ConfigureAwait(false);
-            if (trim)
-                await scanner.TrimToStrategyAsync(result, cancellationToken).ConfigureAwait(false);
+            if (_trimPending && await scanner.TrimToStrategyAsync(result, cancellationToken).ConfigureAwait(false) is not null)
+                _trimPending = false;
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -640,7 +676,7 @@ public sealed partial class MarketScanBackgroundService(
                 return;
             if (trigger == ScanTrigger.Tick)
                 tick = null; // a switch leaves the pending tick for the next round
-            await ScanOnceAsync(stoppingToken, trim: trigger == ScanTrigger.Switch).ConfigureAwait(false);
+            await ScanOnceAsync(stoppingToken).ConfigureAwait(false);
         }
     }
 
