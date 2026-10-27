@@ -179,11 +179,15 @@ public sealed partial class EngineStatusService(
     IStrategySpecStore? specs = null,
     Manual.ManualRequestService? manual = null,
     StrategySelectionService? selection = null,
-    TradableSymbols? tradable = null) : BackgroundService
+    TradableSymbols? tradable = null,
+    Journal.IJournal? journal = null) : BackgroundService
 {
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
     private readonly DateTimeOffset _startedAt = time.GetUtcNow();
+
+    // The hourly history of the portfolio this status shows (#70), when there is a journal to keep it in.
+    private BalanceSnapshots? _snapshots;
 
     /// <summary>Fixed text for each component that can engage the kill switch; the exact reason stays in the journal.</summary>
     public static string HaltCategoryFor(string? by) => by switch
@@ -288,7 +292,10 @@ public sealed partial class EngineStatusService(
             Math.Round(snapshot.PnlToday, 2), Math.Round(snapshot.TotalExposureQuote, 2), holdings);
     }
 
-    /// <summary>Builds and saves the status once. Returns whether it was saved. Only a failed save counts against the database.</summary>
+    /// <summary>
+    /// Builds and saves the status once, and the hour's balance snapshot when it is due. Returns whether the status was saved.
+    /// Only a failed status save counts against the database.
+    /// </summary>
     public async Task<bool> WriteOnceAsync(CancellationToken cancellationToken)
     {
         EngineStatus status;
@@ -302,20 +309,27 @@ public sealed partial class EngineStatusService(
             return false;
         }
 
+        var saved = false;
         try
         {
             await store.SaveAsync(status, cancellationToken).ConfigureAwait(false);
             if (store.UsesDatabase)
                 health.DatabaseOk(status.UpdatedAt);
-            return true;
+            saved = true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             if (store.UsesDatabase)
                 health.DatabaseFailed(time.GetUtcNow(), ex.GetType().Name);
             LogWriteFailed(logger, ex.GetType().Name);
-            return false;
         }
+
+        if (journal is not null)
+        {
+            _snapshots ??= new BalanceSnapshots(journal, trading, time, logger);
+            await _snapshots.WriteIfDueAsync(status.Portfolio, status.Strategy, cancellationToken).ConfigureAwait(false);
+        }
+        return saved;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

@@ -35,7 +35,7 @@ const OTHER_OWNER = b64({ identityProvider: 'aad', userId: 'redeemed-the-link', 
 const GITHUB_OWNER = b64({ identityProvider: 'github', userId: 'owner-user-id', userRoles: ['authenticated', 'owner'] });
 const context = { log() {}, error() {} };
 const today = new Date().toISOString().slice(0, 10);
-const QUERIES = { dashboard: 'mode=paper', journal: `day=${today}`, activity: 'period=week' };
+const QUERIES = { dashboard: 'mode=paper', journal: `day=${today}`, activity: 'period=week', 'balance-history': 'mode=live&days=30' };
 
 function request(name, principal = OWNER) {
   const headers = { 'x-ms-client-principal': principal };
@@ -43,7 +43,7 @@ function request(name, principal = OWNER) {
 }
 
 test('the reads are registered under /api', () => {
-  assert.deepEqual(Object.values(routes).map((r) => r.route).sort(), ['activity', 'dashboard', 'journal']);
+  assert.deepEqual(Object.values(routes).map((r) => r.route).sort(), ['activity', 'balance-history', 'dashboard', 'journal']);
 });
 
 test('only the confirmed owner gets an answer; nobody else reaches the database or the cache', async () => {

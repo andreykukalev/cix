@@ -173,6 +173,65 @@ public sealed class EngineStatusTests
         Assert.Null(store.Last.Filters); // no scanner in this rig
     }
 
+    [Fact]
+    public async Task BalanceSnapshots_AreJournalledOncePerUtcHour_AndNotAgainAfterARestartInTheSameHour()
+    {
+        var rig = new Rig(eur: 200m);
+        await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 60_010m, "c-1"), postOnly: false, CancellationToken.None,
+            context: new OrderContext("place_order", 59_000m, 62_000m));
+        await rig.Execution.ReconcileAsync(CancellationToken.None);
+        var store = new InMemoryEngineStatusStore();
+        EngineStatusService Engine() => new(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper), store,
+            new DependencyHealth(), rig.Time, NullLogger<EngineStatusService>.Instance, journal: rig.Journal);
+        async Task Minute(EngineStatusService engine, TimeSpan later)
+        {
+            rig.Time.Advance(later);
+            rig.Quote(60_000.00m, 60_010.00m);
+            await rig.Execution.SampleAsync(CancellationToken.None); // what the safety monitor does every minute
+            await engine.WriteOnceAsync(CancellationToken.None);
+        }
+        IReadOnlyList<Journal.JournalEntry> Snapshots() => rig.Journal.Entries.Where(e => e.Kind == BalanceSnapshots.Kind).ToList();
+
+        var engine = Engine();
+        await Minute(engine, TimeSpan.Zero);                // 12:00
+        await Minute(engine, TimeSpan.FromMinutes(59));     // 12:59: the same hour
+        Assert.Single(Snapshots());
+        await Minute(engine, TimeSpan.FromMinutes(2));      // 13:01
+        Assert.Equal(2, Snapshots().Count);
+        await Minute(Engine(), TimeSpan.FromMinutes(5));    // 13:06, a restarted engine: the journal already has this hour's
+        Assert.Equal(2, Snapshots().Count);
+
+        var first = Snapshots().OrderBy(e => e.At).First();
+        var portfolio = store.Last!.Portfolio!;
+        Assert.Equal(("engine", Rig.T0), (first.Actor, first.At));
+        Assert.Equal("simulated", first.Data!["source"]);
+        Assert.Equal("EUR", first.Data["currency"]);
+        Assert.Equal("1", first.Data["holdings"]);
+        Assert.Equal("30.00", first.Data["value:BTC-EUR"]);
+        Assert.Equal(portfolio.Equity, decimal.Parse(first.Data["equity"], System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal(portfolio.Equity - 30.00m, decimal.Parse(first.Data["cash"], System.Globalization.CultureInfo.InvariantCulture));
+        Assert.StartsWith("Equity ", first.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BalanceSnapshots_SkipAStaleValuation_AndALiveEngineLabelsItsFiguresAsTheExchanges()
+    {
+        var rig = new Rig(eur: 200m);
+        await rig.Execution.SampleAsync(CancellationToken.None);
+        rig.Time.Advance(BalanceSnapshots.MaxAge + TimeSpan.FromMinutes(1)); // no valuation since: prices may be gone
+        var snapshots = new BalanceSnapshots(rig.Journal, new TradingContext(TradingMode.Live), rig.Time, NullLogger.Instance);
+        var portfolio = new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper),
+            new InMemoryEngineStatusStore(), new DependencyHealth(), rig.Time, NullLogger<EngineStatusService>.Instance).Build().Portfolio!;
+
+        Assert.False(await snapshots.WriteIfDueAsync(portfolio, null, CancellationToken.None));
+        Assert.False(await snapshots.WriteIfDueAsync(null, null, CancellationToken.None));
+        Assert.Empty(rig.Journal.Entries.Where(e => e.Kind == BalanceSnapshots.Kind));
+
+        Assert.True(await snapshots.WriteIfDueAsync(portfolio with { At = rig.Time.GetUtcNow() }, "safe@v2", CancellationToken.None));
+        var entry = Assert.Single(rig.Journal.Entries, e => e.Kind == BalanceSnapshots.Kind);
+        Assert.Equal(("exchange", "0", "safe@v2"), (entry.Data!["source"], entry.Data["holdings"], entry.SpecVersion));
+    }
+
     private sealed class FailingStatusStore : IEngineStatusStore
     {
         public bool Fail { get; set; } = true;

@@ -6,7 +6,7 @@
 
 const { app } = require('@azure/functions');
 const { CosmosReader } = require('../cosmos');
-const { loadDashboard, loadJournalDay, journalRequest, loadActivity } = require('../data');
+const { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadBalanceHistory } = require('../data');
 const { isOwner, forbidden } = require('../auth');
 
 const CACHE_MS = 20_000;
@@ -83,6 +83,18 @@ app.http('activity', {
     const period = request.query.get('period') ?? 'day';
     if (!['day', 'week', 'month'].includes(period)) throw new RangeError('period must be day, week or month');
     return cached(`activity:${period}`, () => loadActivity(getReader(), period, Date.now()), ACTIVITY_CACHE_MS);
+  }),
+});
+
+app.http('balance-history', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'balance-history',
+  handler: (request, context) => handle(request, context, () => {
+    const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
+    const days = request.query.get('days') ?? '7';
+    if (!['7', '30', '90'].includes(days)) throw new RangeError('days must be 7, 30 or 90');
+    return cached(`balance-history:${mode}:${days}`, () => loadBalanceHistory(getReader(), days, Date.now(), mode), ACTIVITY_CACHE_MS);
   }),
 });
 

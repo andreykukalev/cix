@@ -75,7 +75,7 @@ async function loadDashboard(reader, mode, now) {
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const KINDS = new Set(['order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request', 'scanner-filters', 'scan-eligibility', 'strategy', 'pairs']);
+const KINDS = new Set(['order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request', 'scanner-filters', 'scan-eligibility', 'strategy', 'pairs', 'balance-snapshot']);
 const LIMITS = [50, 100, 200];
 const JOURNAL_DAYS = 14;
 
@@ -119,6 +119,49 @@ async function loadActivity(reader, period, now, mode = 'paper') {
     maxItems: FILLS_MAX,
   });
   return { ...activity(fills, period, now), truncated: fills.length >= FILLS_MAX };
+}
+
+const HISTORY_DAYS = [7, 30, 90];
+const SNAPSHOTS_MAX = 24 * 92; // one an hour (#70), with room to spare
+
+function amount(value) {
+  const n = Number.parseFloat(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** One balance-snapshot entry as a chart point: the figures, and each holding's value by symbol. */
+function snapshotPoint(row) {
+  const d = row.data ?? {};
+  const holdings = {};
+  for (const [key, value] of Object.entries(d)) {
+    if (key.startsWith('value:')) holdings[key.slice('value:'.length)] = amount(value);
+  }
+  return {
+    at: row.at,
+    source: d.source === 'exchange' ? 'exchange' : 'simulated',
+    currency: d.currency ?? null,
+    equity: amount(d.equity),
+    cash: amount(d.cash),
+    exposure: amount(d.exposure),
+    pnlToday: amount(d.pnlToday),
+    holdings,
+  };
+}
+
+/**
+ * One mode's balance and holding history (#70): the engine's hourly balance-snapshot entries over the last 7, 30 or 90 days,
+ * oldest first. Live's figures come from the exchange (source "exchange"), paper's from the simulated account.
+ */
+async function loadBalanceHistory(reader, days, now, mode = 'paper') {
+  const span = Number.parseInt(days ?? '7', 10);
+  if (!HISTORY_DAYS.includes(span)) throw new RangeError(`days must be one of ${HISTORY_DAYS.join(', ')}`);
+  const from = utcDay(now - (span - 1) * 24 * 3600 * 1000);
+  const rows = await reader.query('journal', `SELECT c.entry.at AS at, c.entry.data AS data FROM c WHERE c.day >= @from AND c.entry.kind = @kind AND ${modeFilter(mode)}`, {
+    parameters: [{ name: '@from', value: from }, { name: '@kind', value: 'balance-snapshot' }, modeParameter(mode)],
+    maxItems: SNAPSHOTS_MAX,
+  });
+  const points = rows.map(snapshotPoint).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  return { generatedAt: new Date(now).toISOString(), mode, from, points, truncated: rows.length >= SNAPSHOTS_MAX };
 }
 
 const REQUEST_DAYS = 7;
@@ -201,4 +244,4 @@ async function loadPairRequest(reader, day, id) {
   return doc && doc.type === PAIR_REQUEST_TYPE ? pairRequestItem(doc) : null;
 }
 
-module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadRequests, loadRequest, loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest, utcDay, KINDS };
+module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadBalanceHistory, loadRequests, loadRequest, loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest, utcDay, KINDS };
