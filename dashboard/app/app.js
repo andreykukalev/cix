@@ -1,6 +1,7 @@
 'use strict';
-// CIX dashboard: reads /api/dashboard, /api/activity, /api/journal and /api/owner/requests and renders them, and sends paper
-// buy and sell requests (ADR-0011, ADR-0012): the only writes, each one confirmed first. The whole site is the owner's
+// CIX dashboard: reads /api/dashboard, /api/activity, /api/journal, /api/owner/requests and /api/owner/strategies and renders
+// them, and sends paper buy and sell requests (ADR-0011, ADR-0012) and strategy switches (#108, ADR-0015): the only writes,
+// each one confirmed first. The whole site is the owner's
 // (ADR-0014): the platform sends anyone else to sign in, and the API answers only the confirmed owner.
 // Every value is written with textContent, never as HTML, so journal text can't inject markup. view.js holds the logic.
 
@@ -8,7 +9,7 @@ const REFRESH_MS = 30_000;
 const POLL_MS = 3_000;
 const POLL_FOR_MS = 15 * 60_000;
 const V = window.CixView;
-const state = { mode: 'paper', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null };
+const state = { mode: 'paper', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null, tab: 'overview', strategies: null };
 const SIGN_IN = '/.auth/login/aad?post_login_redirect_uri=/';
 
 function el(tag, props = {}, ...children) {
@@ -336,6 +337,7 @@ function signedOut() {
   for (const p of state.pending.values()) clearInterval(p.timer);
   state.pending.clear();
   document.getElementById('request-dialog').close();
+  document.getElementById('strategy-dialog').close();
   for (const node of document.querySelectorAll('main > :not(#banner), .tabs')) node.hidden = true;
   // Back to the same tab after signing in: the hash is one of TABS, set by setTab.
   banner('Your sign-in has ended.', true, { href: `${SIGN_IN}${encodeURIComponent(location.hash)}`, text: 'Sign in again' });
@@ -363,7 +365,7 @@ async function refresh() {
     banner(`Couldn't load the dashboard: ${error.message}`, true);
     document.getElementById('updated').textContent = 'Update failed';
   }
-  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests()]);
+  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests(), state.tab === 'strategy' ? refreshStrategies() : null]);
 }
 
 // --- Trading activity -------------------------------------------------------------------------------------------------------
@@ -584,6 +586,173 @@ function track(item) {
   }, POLL_MS);
 }
 
+// --- Strategy (#108) ---------------------------------------------------------------------------------------------------------
+
+async function refreshStrategies() {
+  if (state.signedOut) return;
+  try {
+    const view = await getJson(`/api/owner/strategies?mode=${encodeURIComponent(state.mode)}`);
+    if (view.mode !== state.mode) return; // the mode changed while this was loading
+    state.strategies = view;
+    renderStrategies(view);
+  } catch (error) {
+    if (error instanceof SignedOut) { signedOut(); return; }
+    document.getElementById('strategy-note').textContent = `Couldn't load the strategies: ${error.message}`;
+  }
+}
+
+function renderStrategies(view) {
+  const running = view.strategies.find((s) => s.active) ?? null;
+  const sel = V.selectionState(view.selection);
+  document.getElementById('strategy-meta').textContent = view.active?.since ? `since ${new Date(view.active.since).toLocaleString()}` : '';
+  document.getElementById('strategy-running').replaceChildren(
+    figure('Strategy', running ? V.strategyName(running) : view.active ? view.active.label : '–'),
+    figure('Selection', view.selection ? `${sel.label}${view.selection.requested ? ` · ${view.selection.requested}` : ''}` : 'not reported', sel.tone === 'bad' ? 'neg' : ''),
+    figure('Checked', view.selection?.checkedAt ? ago(view.selection.checkedAt) : '–'),
+  );
+  const problems = view.selection?.problems ?? [];
+  document.getElementById('strategy-note').textContent = [
+    view.readOnlyReason,
+    problems.length ? problems.join(' ') : null,
+    running?.riskProfile ?? null,
+  ].filter(Boolean).join(' ');
+
+  // One card per strategy that trades, Safe, Balanced and Risky first.
+  const tradable = view.strategies.filter((s) => s.canTrade);
+  const byKey = Object.fromEntries(view.groups.flatMap((g) => g.parameters).map((p) => [p.key, p]));
+  const facts = [['orderQuote', 'Largest order'], ['maxPositionQuotePerSymbol', 'Most in one coin'], ['maxExposureFraction', 'Most in coins'],
+    ['dailyLossStopQuote', 'Daily loss stop'], ['entryCooldownMinutes', 'Cooldown']];
+  document.getElementById('strategy-cards').replaceChildren(...(tradable.length ? tradable.map((s) => {
+    const button = el('button', { type: 'button', class: s.active ? 'ghost' : 'primary', text: s.active ? 'Running' : `Switch to ${V.strategyName(s)}` });
+    button.disabled = s.active || !view.editable || state.strategyPending;
+    if (!view.editable) button.title = view.readOnlyReason;
+    button.addEventListener('click', () => openStrategy(s));
+    return el('li', { class: `card ${s.active ? 'running' : ''}` },
+      el('div', { class: 'head' }, el('span', { class: 'title', text: V.strategyName(s) }), s.active ? el('span', { class: 'badge ok', text: 'running' }) : null,
+        s.featured ? null : el('span', { class: 'badge', text: 'other' })),
+      s.purpose ? el('p', { class: 'detail', text: s.purpose }) : null,
+      s.riskProfile ? el('p', { class: 'meta muted small', text: s.riskProfile }) : null,
+      el('dl', {}, facts.flatMap(([key, label]) => [el('dt', { text: label }), el('dd', { text: V.paramValue(s.values[key], byKey[key]) })])),
+      el('div', { class: 'actions' }, button));
+  }) : [el('li', { class: 'muted', text: 'No strategies in the database yet: the engine adds them when it starts.' })]));
+
+  // Every parameter: one column per strategy that trades, then the range, what a change reaches, and whose limit it is.
+  const head = document.querySelector('#params thead tr');
+  head.replaceChildren(el('th', { text: 'Parameter' }), ...tradable.map((s) => el('th', { class: 'num', text: V.strategyName(s) })),
+    el('th', { text: 'Valid range' }), el('th', { text: 'A change reaches' }), el('th', { text: 'Limit' }));
+  const body = document.querySelector('#params tbody');
+  const columns = tradable.length + 4;
+  body.replaceChildren(...(view.groups.length ? view.groups.flatMap((g) => [
+    el('tr', { class: 'group' }, el('td', { colspan: String(columns), text: g.title })),
+    ...g.parameters.map((p) => el('tr', {},
+      el('td', { class: 'param', 'data-label': 'Parameter' }, el('strong', { text: p.label }), el('p', { text: p.explanation })),
+      ...tradable.map((s) => el('td', { class: `num ${s.active ? 'running' : ''}`, 'data-label': V.strategyName(s), text: V.paramValue(s.values[p.key], p) })),
+      el('td', { 'data-label': 'Valid range', text: V.paramRange(p) }),
+      el('td', { 'data-label': 'A change reaches', text: p.applies }),
+      el('td', { 'data-label': 'Limit', text: V.paramLimit(p, view.mandatory) }))),
+  ]) : [el('tr', { class: 'empty' }, el('td', { colspan: String(columns), text: 'The engine hasn\'t written the parameter schema yet.' }))]));
+
+  rows('mandatory', view.mandatory, (m) => [
+    el('strong', { text: m.label }), td(m.value, 'num'), td(m.explanation, 'why'),
+    m.source === 'risk-limits' ? 'config/risk-limits.json (owner only)' : 'the engine (fixed)',
+  ], 'Not reported yet.');
+
+  rows('switches', view.requests, (r) => [
+    when(r.createdAt), `${r.name}@v${r.version}${r.note ? ` · ${r.note}` : ''}`,
+    el('span', { class: `badge ${{ accepted: 'ok', new: 'pending', superseded: '', invalid: 'bad', expired: 'warn' }[r.status] ?? 'warn'}`, text: r.status }),
+    td(r.detail ?? (r.status === 'new' ? 'waiting for the engine' : ''), 'why'),
+  ], view.editable ? 'No switches in the last 7 days.' : 'Live has no switches yet.');
+}
+
+let strategyChoice = null;
+
+function openStrategy(target) {
+  const view = state.strategies;
+  if (!view?.editable) return;
+  const running = view.strategies.find((s) => s.active) ?? null;
+  strategyChoice = { name: target.name, version: target.version, id: crypto.randomUUID() }; // one id per dialog: a retry is the same request
+  const form = document.getElementById('strategy-form');
+  form.reset();
+  for (const input of form.querySelectorAll('input')) input.disabled = false;
+  document.getElementById('strategy-title').textContent = `Switch to ${V.strategyName(target)} (paper)`;
+  document.getElementById('strategy-purpose').textContent = [target.purpose, target.riskProfile].filter(Boolean).join(' ');
+  const changes = V.strategyChanges(running, target, view.groups);
+  document.getElementById('strategy-changes').replaceChildren(...(changes.length
+    ? changes.map((c) => el('li', { class: c.openPositions ? 'open' : '' }, `${c.label}: ${c.from} → ${c.to}`, c.openPositions ? el('strong', { text: ' (open positions too)' }) : null))
+    : [el('li', { text: 'No parameter differs from the running strategy.' })]));
+  document.getElementById('strategy-error').hidden = true;
+  document.getElementById('strategy-send').disabled = false;
+  document.getElementById('strategy-dialog').showModal();
+}
+
+async function sendStrategy(event) {
+  event.preventDefault();
+  const form = document.getElementById('strategy-form');
+  const r = V.strategyRequestBody({ ...strategyChoice, note: form.elements.note.value }, strategyChoice.id);
+  const error = document.getElementById('strategy-error');
+  if (r.error) { error.textContent = r.error; error.hidden = false; return; }
+  const send = document.getElementById('strategy-send');
+  send.disabled = true;
+  for (const input of form.querySelectorAll('input')) input.disabled = true; // from the first send on, a retry sends the same request
+  send.textContent = 'Sending…';
+  try {
+    const response = await api('/api/owner/strategy-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cix-request': '1' },
+      body: JSON.stringify(r.body),
+    });
+    const answer = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(answer.error ?? `The dashboard answered ${response.status}.`);
+    document.getElementById('strategy-dialog').close();
+    trackStrategy(answer.request);
+  } catch (e) {
+    if (e instanceof SignedOut) { signedOut(); return; }
+    error.textContent = `Not confirmed: ${e.message} Send again to retry: it stays the same, single request.`;
+    error.hidden = false;
+    send.disabled = false;
+  } finally {
+    send.textContent = 'Switch strategy';
+  }
+}
+
+/** Follows a switch until the engine has taken it, then until the engine status reports the outcome. */
+function trackStrategy(item) {
+  state.strategyPending = true;
+  const since = Date.now();
+  const label = `${item.name}@v${item.version}`;
+  requestStatus(`Strategy switch to ${label}: sent, waiting for the engine…`, 'pending');
+  if (state.strategies) renderStrategies(state.strategies);
+  const timer = setInterval(async () => {
+    const stop = (text, tone) => {
+      clearInterval(timer);
+      state.strategyPending = false;
+      requestStatus(text, tone);
+      refreshStrategies();
+    };
+    if (Date.now() - since > 5 * 60_000) { stop(`Strategy switch to ${label}: no answer after 5 minutes; see Your strategy switches.`, 'warn'); return; }
+    try {
+      const response = await api(`/api/owner/strategy-requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}`);
+      if (!response.ok) return; // not readable yet, or offline for a moment
+      const it = await response.json();
+      if (it.status === 'new') return;
+      if (it.status !== 'accepted') { stop(`Strategy switch to ${label}: ${it.status}. ${it.detail ?? ''}`.trim(), 'bad'); return; }
+      // Accepted: the engine validates and switches; its status reports within a minute.
+      await refreshStrategies();
+      const sel = state.strategies?.selection;
+      // The status names this request when its time matches (an earlier switch to the same version has another).
+      if (sel?.requested === label && Date.parse(sel.requestedAt ?? '') === Date.parse(item.createdAt) && ['active', 'refused'].includes(sel.state)) {
+        stop(sel.state === 'active'
+          ? `Strategy switch to ${label}: active. New trades follow it from the next scan.`
+          : `Strategy switch to ${label}: refused. ${sel.problems.join(' ')}`, sel.state === 'active' ? 'ok' : 'bad');
+      } else {
+        requestStatus(`Strategy switch to ${label}: accepted; the engine applies it before the next trader run…`, 'pending');
+      }
+    } catch (error) {
+      if (error instanceof SignedOut) { clearInterval(timer); signedOut(); }
+    }
+  }, POLL_MS * 2);
+}
+
 async function showJournalDay(day, kind) {
   try {
     const entries = await getJson(`/api/journal?day=${encodeURIComponent(day)}&kind=${encodeURIComponent(kind)}&limit=200`);
@@ -597,7 +766,7 @@ async function showJournalDay(day, kind) {
 
 // --- Tabs ---------------------------------------------------------------------------------------------------------------------
 
-const TABS = ['overview', 'coins', 'activity', 'requests', 'journal'];
+const TABS = ['overview', 'coins', 'strategy', 'activity', 'requests', 'journal'];
 
 /** Shows one tab's panel. The tab is kept in the address (#coins), so a reload or a bookmark opens the same one. */
 function setTab(tab, { focus = false } = {}) {
@@ -610,6 +779,9 @@ function setTab(tab, { focus = false } = {}) {
   }
   if (!state.signedOut) for (const panel of document.querySelectorAll('.tab-panel')) panel.hidden = panel.id !== `panel-${name}`;
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
+  const changed = state.tab !== name;
+  state.tab = name;
+  if (changed && name === 'strategy') refreshStrategies(); // read only while the tab is open
 }
 
 function setupTabs() {
@@ -631,6 +803,7 @@ function setupTabs() {
 
 function setMode(mode) {
   state.mode = mode;
+  state.strategies = null;
   try { localStorage.setItem('cix-mode', mode); } catch { /* storage may be unavailable */ }
   for (const button of document.querySelectorAll('[data-mode]')) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
   const badge = document.getElementById('mode-badge');
@@ -667,6 +840,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   form.addEventListener('input', updateSummary);
   form.addEventListener('change', updateSummary);
   document.getElementById('request-cancel').addEventListener('click', () => document.getElementById('request-dialog').close());
+  document.getElementById('strategy-form').addEventListener('submit', sendStrategy);
+  document.getElementById('strategy-cancel').addEventListener('click', () => document.getElementById('strategy-dialog').close());
   await loadViewer();
   setMode(saved);
   state.timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);

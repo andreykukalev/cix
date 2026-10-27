@@ -173,11 +173,83 @@
     return null;
   }
 
+  // --- Strategy tab (#108) ---------------------------------------------------------------------------------------------
+
+  /** A parameter's value in words: on/off, a share as a percentage, minutes as hours, amounts with their unit. */
+  function paramValue(value, param) {
+    if (value === null || value === undefined || value === '') return '–';
+    if (param?.kind === 'boolean') return value === true || value === 'true' ? 'on' : 'off';
+    const n = Number(value);
+    if (!Number.isFinite(n)) return String(value);
+    const unit = param?.unit;
+    if (unit === 'fraction') return `${+(n * 100).toFixed(3)}%`;
+    if (unit === 'minutes') return n === 0 ? 'none' : n % 60 === 0 ? `${n / 60} h` : `${n} min`;
+    if (unit === 'EUR') return `${n} EUR`;
+    if (unit === 'ATR') return `${n} ATR`;
+    if (unit === 'candles') return `${n} h`;
+    return String(n);
+  }
+
+  /** A parameter's valid range, as the engine enforces it. */
+  function paramRange(param) {
+    if (param.kind === 'boolean') return 'on or off';
+    if (param.min === null && param.max === null) return '–';
+    return `${paramValue(param.min, param)} to ${paramValue(param.max, param)}`;
+  }
+
+  /** Whose limit a parameter is: the strategy's own, capped by a mandatory safety limit where one applies. */
+  function paramLimit(param, mandatory) {
+    if (!param.boundBy) return 'Strategy-specific';
+    const m = (mandatory ?? []).find((x) => x.key === param.boundBy);
+    return `Strategy-specific, within the mandatory ${m ? `${m.label.toLowerCase()} (${m.value})` : param.boundBy}`;
+  }
+
+  /** What switching from one strategy to another changes, parameter by parameter, and whether open positions feel it. */
+  function strategyChanges(from, to, groups) {
+    const changes = [];
+    for (const group of groups ?? []) {
+      for (const p of group.parameters) {
+        const a = from?.values?.[p.key] ?? null;
+        const b = to?.values?.[p.key] ?? null;
+        if (String(a) !== String(b)) changes.push({ key: p.key, label: p.label, from: paramValue(a, p), to: paramValue(b, p), openPositions: p.appliesToOpenPositions });
+      }
+    }
+    return changes;
+  }
+
+  /** The switch request the dialog sends, or what is missing. */
+  function strategyRequestBody(choice, id) {
+    if (!/^[a-z0-9-]{1,40}$/.test(choice?.name ?? '') || !Number.isInteger(choice?.version)) return { error: 'Pick a strategy.' };
+    return { body: { id, name: choice.name, version: choice.version, note: cleanNote(choice.note), tradingMode: 'paper' } };
+  }
+
+  /** A strategy's name for people: Safe v1. */
+  function strategyName(s) {
+    const name = String(s?.name ?? '');
+    return `${name.charAt(0).toUpperCase()}${name.slice(1)} v${s?.version ?? '?'}`;
+  }
+
+  const SELECTION = {
+    config: { label: 'From configuration', tone: '' },
+    active: { label: 'Active', tone: 'ok' },
+    pending: { label: 'Switch pending', tone: 'pending' },
+    refused: { label: 'Switch refused', tone: 'bad' },
+    unreadable: { label: 'Database unreadable', tone: 'warn' },
+  };
+
+  /** Where the engine stands on the latest selection, for the badge. */
+  function selectionState(selection) {
+    return SELECTION[selection?.state] ?? { label: 'Unknown', tone: 'warn' };
+  }
+
   /** Who is signed in, from /.auth/me, for the header. Who may see what is decided by the platform and the API, not here. */
   function viewer(me) {
     const p = me?.clientPrincipal ?? null;
     return p ? { signedIn: true, name: p.userDetails ?? null } : { signedIn: false, name: null };
   }
 
-  return { change, coins, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS };
+  return {
+    change, coins, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
+    paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState,
+  };
 }));

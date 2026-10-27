@@ -112,10 +112,12 @@ if ($For -eq 'dashboard') {
 }
 else {
   # Reading and updating the engine and the jobs: tools/ci/deploy-agents.sh patches only their containers through the
-  # management API, so the update carries no environment or identity, and needs no right on those. Each right applies
-  # only where the role is assigned: on those resources and the registry, never on the group.
+  # management API, so the update carries no environment or identity, and needs no right on those. It also stops the
+  # engine's old revision, so that the new one can take the engine lease. Each right applies only where the role is
+  # assigned: on those resources and the registry, never on the group.
   $roleActions = @(
     'Microsoft.App/containerApps/read', 'Microsoft.App/containerApps/revisions/read', 'Microsoft.App/containerApps/write',
+    'Microsoft.App/containerApps/revisions/deactivate/action',
     'Microsoft.App/jobs/read', 'Microsoft.App/jobs/write', 'Microsoft.ContainerRegistry/registries/read') | Sort-Object
   $roleDescription = 'Reads and updates the CIX paper engine and agent jobs it is assigned on, to deploy new images from CI.'
   $limit = 'push images and update the paper engine and the jobs'
@@ -210,16 +212,19 @@ if ($app) {
   }
 }
 
-# An existing role with this name must grant exactly the expected actions, on this resource group only.
+# An existing role with this name must grant only expected actions, on this resource group only. One from an earlier
+# version of this script may lack some; they are added below.
+$missingActions = @()
 $role = @(Invoke-CixAz @('role', 'definition', 'list', '--name', $roleName, '--custom-role-only', 'true', '--scope', $groupId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
 if ($role.Count -gt 0) {
   $p = @(& $field $role[0] 'permissions')
   $actions = @($p | ForEach-Object { & $field $_ 'actions' } | Where-Object { $_ }) | Sort-Object
   $extra = @($p | ForEach-Object { @(& $field $_ 'notActions') + @(& $field $_ 'dataActions') + @(& $field $_ 'notDataActions') } | Where-Object { $_ })
-  if (($actions -join ',') -ne (($roleActions | Sort-Object) -join ',') -or $extra.Count -gt 0 -or
-      ((& $field $role[0] 'assignableScopes') -join ',') -ne $groupId) {
+  $unexpected = @($actions | Where-Object { $roleActions -cnotcontains $_ })
+  if ($unexpected.Count -gt 0 -or $extra.Count -gt 0 -or ((& $field $role[0] 'assignableScopes') -join ',') -ne $groupId) {
     throw "The existing role '$roleName' grants other rights than it should (it may only $limit). Delete it first (az role definition delete --name `"$roleName`")."
   }
+  $missingActions = @($roleActions | Where-Object { $actions -cnotcontains $_ })
 }
 Write-CixInfo 'All checks passed.'
 
@@ -249,6 +254,19 @@ if ($role.Count -eq 0) {
   try { Invoke-CixAz @('role', 'definition', 'create', '--role-definition', "@$file", '--only-show-errors', '-o', 'none') | Out-Null }
   finally { Remove-Item $file -ErrorAction SilentlyContinue }
   Write-CixInfo 'Created.'
+}
+elseif ($missingActions.Count -gt 0) {
+  Confirm-Step "Add $($missingActions -join ', ') to the role '$roleName'?"
+  $file = Write-CixTempJson ([ordered]@{
+      Name             = $roleName
+      Description      = $roleDescription
+      Actions          = @($roleActions)
+      NotActions       = @()
+      AssignableScopes = @($groupId)
+    })
+  try { Invoke-CixAz @('role', 'definition', 'update', '--role-definition', "@$file", '--only-show-errors', '-o', 'none') | Out-Null }
+  finally { Remove-Item $file -ErrorAction SilentlyContinue }
+  Write-CixInfo "Added $($missingActions -join ', ')."
 }
 else { Write-CixInfo 'Exists, with exactly the expected actions.' }
 

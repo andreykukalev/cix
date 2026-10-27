@@ -686,7 +686,9 @@ $agentsTargets = @('Microsoft.App/containerApps/ca-cix-citest-engine', 'Microsof
 $agentsOthers = @('Microsoft.App/managedEnvironments/cae-cix-citest', 'Microsoft.ManagedIdentity/userAssignedIdentities/id-cix-citest-engine',
   'Microsoft.KeyVault/vaults/kvcixcitest1') | ForEach-Object { "$agentsGroupId/providers/$_" }
 $agentsResources = '[' + ((@($agentsTargets) + @($agentsOthers) | ForEach-Object { "{`"id`":`"$_`"}" }) -join ',') + ']'
-$agentsActions = '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/revisions/read","Microsoft.App/containerApps/write","Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.ContainerRegistry/registries/read"]'
+$agentsActions = '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/revisions/deactivate/action","Microsoft.App/containerApps/revisions/read","Microsoft.App/containerApps/write","Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.ContainerRegistry/registries/read"]'
+# The role as the script made it before deployments stopped the engine's old revision (#80).
+$agentsActionsBefore = '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/revisions/read","Microsoft.App/containerApps/write","Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.ContainerRegistry/registries/read"]'
 function Invoke-SetupAgentsCi([hashtable]$Overrides, [string]$Deploy = 'platform', [bool]$Protected = $false) {
   $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
   $json = (Get-CitestJson $Deploy)
@@ -753,6 +755,20 @@ Check 'setup-ci-deploy.ps1 -For agents accepts its own earlier setup, changing n
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   if ($r.Calls -match '(?m)\bcreate\b') { throw "it changed something: $($r.Calls)" }
+}
+
+Check 'setup-ci-deploy.ps1 -For agents adds what its earlier role lacks (stopping revisions), in place' {
+  $r = Invoke-SetupAgentsCi @{
+    'ad app list'                 = '[{"appId":"66666666-6666-6666-6666-666666666666","displayName":"cix-agents-deploy-citest"}]'
+    'ad sp list'                  = '[{"id":"77777777-7777-7777-7777-777777777777"}]'
+    'ad app federated-credential' = $mainCredential
+    'role definition'             = "[{`"permissions`":[{`"actions`":$agentsActionsBefore,`"notActions`":[],`"dataActions`":[],`"notDataActions`":[]}],`"assignableScopes`":[`"$agentsGroupId`"]}]"
+    'role assignment'             = "[{`"roleDefinitionName`":`"AcrPush`",`"scope`":`"$agentsRegistryId`"},{`"roleDefinitionName`":`"CIX agents deployer (citest)`",`"scope`":`"$agentsRegistryId`"}]"
+  }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if (-not $r.Calls.Contains('role definition update')) { throw "the role wasn't updated: $($r.Calls)" }
+  if (-not $r.Output.Contains('Added Microsoft.App/containerApps/revisions/deactivate/action.')) { throw "missing what was added in: $($r.Output)" }
+  if ($r.Calls -match '(?m)\bcreate\b') { throw "it created something: $($r.Calls)" }
 }
 
 foreach ($case in @(

@@ -3,7 +3,10 @@
 // Apps lets only the owner role through (staticwebapp.config.json); each handler checks again (ADR-0014). Nothing here is
 // cached, by the platform or by a browser.
 //
-// The one write is POST /api/owner/requests, with the writer identity whose Cosmos DB role can only create items in the
+// The owner's strategy switches (#108) are requests too: POST /api/owner/strategy-requests creates one in the same container,
+// and the engine checks it and switches (ADR-0015). GET /api/owner/strategies shows every strategy, explained.
+//
+// The writes are POST /api/owner/requests and /api/owner/strategy-requests, with the writer identity whose Cosmos DB role can only create items in the
 // requests container. A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
 // cross-origin only after a preflight this API never answers.
 
@@ -12,7 +15,8 @@ const { CosmosReader } = require('../cosmos');
 const { RequestWriter, WriterNotConfigured } = require('../writer');
 const { isOwner, forbidden } = require('../auth');
 const { requestDocument, historyItem, RequestError } = require('../requests');
-const { loadRequests, loadRequest } = require('../data');
+const { loadRequests, loadRequest, loadStrategies, loadStrategyRequest } = require('../data');
+const { strategyRequestDocument, requestItem } = require('../strategies');
 
 const MAX_BODY = 4096;
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
@@ -89,6 +93,21 @@ async function createRequest(request, context) {
   });
 }
 
+async function createStrategyRequest(request, context) {
+  return ownerOnly(request, context, 'strategy request', async () => {
+    const doc = strategyRequestDocument(await readBody(request), Date.now());
+    const earlier = await getReader().readDocument('requests', doc.id, previousDay(doc.day));
+    const result = earlier ? 'exists' : await getWriter().create(doc);
+    context.log(`Owner strategy request ${result}: ${doc.name}@v${doc.version} (${doc.id})`);
+    if (result === 'created') return respond(201, { result, request: requestItem(doc) });
+    const stored = earlier ?? await getReader().readDocument('requests', doc.id, doc.day);
+    if (!stored) return respond(200, { result, request: requestItem(doc) });
+    return stored.type === doc.type && stored.name === doc.name && stored.version === doc.version
+      ? respond(200, { result, request: requestItem(stored) })
+      : respond(409, { error: 'This request was already sent with different details; it stands as first sent. Close the dialog to make a new one.' });
+  });
+}
+
 function previousDay(day) {
   return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 }
@@ -112,4 +131,31 @@ app.http('owner-request', {
   }),
 });
 
-module.exports = { createRequest, readBody, ownerOnly };
+app.http('owner-strategies', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'owner/strategies',
+  handler: (request, context) => ownerOnly(request, context, 'strategy view', async () => {
+    const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
+    return respond(200, await loadStrategies(getReader(), mode, Date.now()));
+  }),
+});
+
+app.http('owner-strategy-requests', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'owner/strategy-requests',
+  handler: createStrategyRequest,
+});
+
+app.http('owner-strategy-request', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'owner/strategy-requests/{day}/{id}',
+  handler: (request, context) => ownerOnly(request, context, 'strategy request lookup', async () => {
+    const item = await loadStrategyRequest(getReader(), request.params.day, request.params.id);
+    return item ? respond(200, item) : respond(404, { error: 'Not there yet.' });
+  }),
+});
+
+module.exports = { createRequest, createStrategyRequest, readBody, ownerOnly };

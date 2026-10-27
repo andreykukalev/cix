@@ -29,6 +29,7 @@
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button type="button" role="tab" id="tab-overview" data-tab="overview" aria-controls="panel-overview" aria-selected="true"><span class="icon" aria-hidden="true">◧</span>Overview</button>
       <button type="button" role="tab" id="tab-coins" data-tab="coins" aria-controls="panel-coins" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">◎</span>Coins</button>
+      <button type="button" role="tab" id="tab-strategy" data-tab="strategy" aria-controls="panel-strategy" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">◇</span>Strategy</button>
       <button type="button" role="tab" id="tab-activity" data-tab="activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">▤</span>Activity</button>
       <button type="button" role="tab" id="tab-requests" data-tab="requests" aria-controls="panel-requests" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">⇄</span>Requests</button>
       <button type="button" role="tab" id="tab-journal" data-tab="journal" aria-controls="panel-journal" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">☰</span>Journal</button>
@@ -110,6 +111,34 @@
       </section>
     </div>
 
+    <div class="tab-panel" role="tabpanel" id="panel-strategy" aria-labelledby="tab-strategy" hidden>
+      <section class="panel" aria-labelledby="h-running">
+        <div class="panel-head"><h2 id="h-running">Running strategy</h2><span id="strategy-meta" class="muted small"></span></div>
+        <div class="figures" id="strategy-running"></div>
+        <p id="strategy-note" class="muted small"></p>
+      </section>
+
+      <section class="panel" aria-labelledby="h-choose">
+        <div class="panel-head"><h2 id="h-choose">Strategies</h2><span class="muted small">none promises a return; more risk means larger and more frequent positions, so larger losses as well as gains</span></div>
+        <ul id="strategy-cards" class="cards strategy-cards"></ul>
+      </section>
+
+      <section class="panel" aria-labelledby="h-params">
+        <div class="panel-head"><h2 id="h-params">Every parameter, explained</h2><span id="params-meta" class="muted small">values per strategy, the range the engine accepts, and what a change reaches</span></div>
+        <div class="table-scroll"><table id="params"><thead><tr><th>Parameter</th></tr></thead><tbody></tbody></table></div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-mandatory">
+        <div class="panel-head"><h2 id="h-mandatory">Mandatory safety limits</h2><span class="muted small">enforced by the engine whatever the strategy; only you change them, in config/risk-limits.json</span></div>
+        <table id="mandatory"><thead><tr><th>Limit</th><th class="num">Value</th><th>What it does</th><th>Set in</th></tr></thead><tbody></tbody></table>
+      </section>
+
+      <section class="panel" aria-labelledby="h-switches">
+        <div class="panel-head"><h2 id="h-switches">Your strategy switches</h2><span class="muted small">last 7 days, paper</span></div>
+        <table id="switches"><thead><tr><th>Sent</th><th>Strategy</th><th>Status</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+      </section>
+    </div>
+
     <div class="tab-panel" role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" hidden>
       <section class="panel" aria-labelledby="h-volume">
         <div class="panel-head">
@@ -157,7 +186,7 @@
                 <option value="">all</option>
                 <option>order</option><option>fill</option><option>order-closed</option><option>tool-call</option>
                 <option>tool-denied</option><option>kill-switch</option><option>scan-signal</option><option>market-view</option>
-                <option>manual-request</option><option>scanner-filters</option><option>scan-eligibility</option>
+                <option>manual-request</option><option>scanner-filters</option><option>scan-eligibility</option><option>strategy</option>
               </select>
             </label>
             <button type="submit" class="ghost">Show</button>
@@ -199,8 +228,24 @@
     </form>
   </dialog>
 
+  <dialog id="strategy-dialog" aria-labelledby="strategy-title">
+    <form id="strategy-form" method="dialog">
+      <h2 id="strategy-title">Switch strategy</h2>
+      <p id="strategy-purpose" class="muted"></p>
+      <h3>What changes</h3>
+      <ul id="strategy-changes" class="changes"></ul>
+      <p class="summary">Applies to new trades from the next scan and trader run, after any run in progress ends. Open positions keep their stop and target; changes marked <strong>open positions too</strong> reach the coins you already hold from the next scan. Nothing is sold or cancelled by the switch itself. The engine checks the strategy again and records the switch in the journal.</p>
+      <label class="field">Why <span class="muted small">(optional, kept in the journal)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
+      <p id="strategy-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="strategy-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="strategy-send" class="primary">Switch strategy</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer class="muted small">
-    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; the engine checks each one and every order goes through the risk gate.
+    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests and strategy switches are paper only; the engine checks each one and every order goes through the risk gate.
     News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.
   </footer>
 </body>

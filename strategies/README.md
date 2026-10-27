@@ -30,7 +30,7 @@ The engine enforces each strategy's own limits before the risk gate: a buy large
 
 ### Switching (paper)
 
-At startup the engine adds every paper spec in this folder to the database as `strategy-<name>-v<N>` (never overwriting one), and writes the parameter schema with every parameter's explanation and range as `strategy-schema-paper`. To switch, write the selection document in the `state` container (Data Explorer for now, the dashboard with #108):
+At startup the engine adds every paper spec in this folder to the database as `strategy-<name>-v<N>` (never overwriting one), and writes the parameter schema with every parameter's explanation and range as `strategy-schema-paper`. To switch, use the dashboard's Strategy tab (paper): it lists every strategy with each parameter explained, shows what a switch changes and asks you to confirm, then sends a request the engine acts on. Or write the selection document in the `state` container by hand:
 
 ```json
 { "id": "strategy-selection-paper", "type": "strategy-selection",

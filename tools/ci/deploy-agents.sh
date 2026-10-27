@@ -3,7 +3,8 @@
 #   1. pushes the two images CI built to the environment's registry, tagged with the commit (agents.deploy platform stops
 #      here: the apps don't exist yet, and provision.ps1 -ImageTag creates them from these images);
 #   2. points the engine at its new image and, when it runs a replica (minimum replicas 1, set by agents.startEngine),
-#      waits for that revision to be healthy (its startup and readiness probes passed);
+#      stops the old revision, so that the new one can take the engine lease, then waits for the new one to be healthy
+#      (its startup and readiness probes passed);
 #   3. points the three jobs at the new agent image.
 # The apps get the images by digest, as the registry gave them on the push: what runs can't change if a tag is pushed again.
 # If anything fails once the engine has changed, the engine and the jobs go back to the images they ran before, and the
@@ -109,6 +110,53 @@ set_image() {
   done
 }
 
+# Stops every active engine revision but the one running this image, once Azure lists it as the latest. Container Apps
+# keeps the old revision running until the new one is ready, but the new engine only gets ready once it holds the engine
+# lease, which the old one gives up only when it stops (ADR-0013, docs/persistence.md): without this, the new revision
+# waits out its startup probe and fails. Only while the engine runs a replica: with none, nothing holds the lease.
+retire_old_revisions() {
+  local image="$1" deadline app replicas revision names name ok=true
+  app="$(get "$engine_id")" || return 1
+  replicas="$(jq -r '.properties.template.scale.minReplicas // 0' <<<"$app")"
+  (( replicas >= 1 )) || return 0
+  # In multiple revision mode (set by hand: the templates set single) other revisions may run on purpose.
+  if [[ "$(jq -r '.properties.configuration.activeRevisionsMode // "Single"' <<<"$app")" != Single ]]; then
+    echo "::error::$engine runs several revisions at once, set by hand: CI stops none of them. Deploy with provision.ps1."
+    return 1
+  fi
+  deadline=$(( $(date +%s) + update_timeout ))
+  while :; do
+    revision="$(get "$engine_id" | jq -r .properties.latestRevisionName)" || return 1
+    [[ "$(get "$engine_id/revisions/$revision" | jq -r '.properties.template.containers[0].image')" == "$image" ]] && break
+    if (( $(date +%s) >= deadline )); then echo "::error::Azure listed no revision of $engine running $image after $update_timeout seconds."; return 1; fi
+    sleep "$poll"
+  done
+  # Every page of the list: Azure keeps up to 100 inactive revisions.
+  local page url="https://management.azure.com$engine_id/revisions?api-version=$api" found="" attempt
+  while [[ -n "$url" ]]; do
+    [[ "$url" == "https://management.azure.com$engine_id/revisions?"* ]] || { echo "::error::Unexpected next page from Azure."; return 1; }
+    for attempt in 1 2 3; do
+      if page="$(az rest --method get --url "$url" -o json)"; then break; fi
+      if (( attempt == 3 )); then return 1; fi
+      sleep "$poll"
+    done
+    found+="$(jq -r --arg keep "$revision" 'if (.value | type) == "array" then .value[] | select(.properties.active == true and .name != $keep) | .name
+      else error("no revisions") end' <<<"$page")"$'\n' || return 1
+    url="$(jq -r '.nextLink // ""' <<<"$page")"
+  done
+  mapfile -t names < <(grep -v '^$' <<<"$found" || true)
+  # Azure names an app's revisions <app>--<suffix>: anything else isn't put in a URL.
+  for name in "${names[@]}"; do
+    [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,99}$ && "$name" == "$engine--"* ]] || { echo "::error::Unexpected revision name from Azure."; return 1; }
+  done
+  for name in "${names[@]}"; do
+    say "Stopping the engine's revision $name, so that $revision can take the engine lease."
+    az rest --method post --url "https://management.azure.com$engine_id/revisions/$name/deactivate?api-version=$api" -o none \
+      || { echo "::error::Azure refused to stop the engine's revision $name. The deploy identity needs the right to (run tools/azure/setup-ci-deploy.ps1 -For agents again)."; ok=false; }
+  done
+  [[ "$ok" == true ]]
+}
+
 # Puts back the images in a rollback file: the engine first, then every job, trying them all even if one fails. Only
 # images from the registry they came from.
 roll_back_from() {
@@ -116,7 +164,16 @@ roll_back_from() {
   server_of_file="$(jq -er .server "$1")" || server_of_file=""
   valid() { [[ -n "$server_of_file" && "$1" == "$server_of_file/cix-"* ]] || { echo "::error::The rollback file holds no usable image for $2."; return 1; }; }
   previous="$(jq -r '.engine // ""' "$1")"
-  if valid "$previous" "$engine"; then set_image "$engine_id" "$previous" || ok=false; else ok=false; fi
+  if valid "$previous" "$engine"; then
+    if set_image "$engine_id" "$previous"; then
+      # The images are back either way; a revision left running only keeps the lease from the rolled-back one.
+      retire_old_revisions "$previous" || echo "::warning::A revision of $engine other than the latest may still be running: check its revisions in the Azure portal."
+    else
+      ok=false
+    fi
+  else
+    ok=false
+  fi
   for job in "${jobs[@]}"; do
     previous="$(jq -r --arg j "$job" '.jobs[$j] // ""' "$1")"
     if valid "$previous" "$job"; then set_image "$(job_id "$job")" "$previous" || ok=false; else ok=false; fi
@@ -222,6 +279,8 @@ set_image "$engine_id" "$engine_image"
 if (( min_replicas < 1 )); then
   echo "::notice::The engine runs no replica (minimum replicas 0, agents.startEngine false): its new image starts with it, so there is no health to wait for."
 else
+  # set_image returns once the app is provisioned, before the new revision is ready (the #109 deploy got that far).
+  retire_old_revisions "$engine_image"
   deadline=$(( $(date +%s) + health_timeout ))
   while :; do
     revision="$(get "$engine_id" | jq -r .properties.latestRevisionName)"
