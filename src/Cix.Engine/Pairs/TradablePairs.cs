@@ -16,7 +16,7 @@ namespace Cix.Engine.Pairs;
 public sealed record TradablePairsDocument(IReadOnlyList<string> Symbols, DateTimeOffset UpdatedAt, string? UpdatedBy = null);
 
 /// <summary>One pair the exchange lists in the permitted quote currency, for the dashboard's picker.</summary>
-/// <param name="Permitted">Whether <c>config/risk-limits.json</c> lets the owner add it.</param>
+/// <param name="Permitted">Whether the mode's limits file (<c>config/risk-limits.json</c> or <c>config/risk-limits.live.json</c>) lets the owner add it.</param>
 public sealed record CatalogPair(string Symbol, string Base, bool Tradable, bool Permitted);
 
 /// <summary>
@@ -85,7 +85,7 @@ public sealed class CosmosTradablePairsRepository(CosmosDb db) : ITradablePairsR
     public const string CatalogType = "pair-catalog";
 
     public const string ListAbout =
-        "The pairs the engine trades now: the owner adds and removes them from the dashboard (through requests), within config/risk-limits.json. Written by the engine only.";
+        "The pairs the engine trades now: the owner adds and removes them from the dashboard (through requests), within the mode's limits file (config/risk-limits.json, or config/risk-limits.live.json for live). Written by the engine only.";
     public const string CatalogAbout =
         "The exchange's active pairs in the permitted quote currency and which are tradable, written by the engine for the dashboard's pair picker.";
 
@@ -106,13 +106,14 @@ public sealed class CosmosTradablePairsRepository(CosmosDb db) : ITradablePairsR
 /// <summary>
 /// Adds and removes tradable pairs at run time from the owner's dashboard requests (<see cref="RequestType"/> documents in the
 /// <c>requests</c> container), so a new coin needs no configuration change or redeploy. The limits in
-/// <c>config/risk-limits.json</c> still decide which pairs may ever be traded and how many at once, and every order still
+/// the mode's limits file (<c>config/risk-limits.json</c>, or <c>config/risk-limits.live.json</c> for live) still decide which
+/// pairs may ever be traded and how many at once, and every order still
 /// goes through the risk gate, which reads the same list. A pair is added only if the exchange lists it as active, in the
 /// account's quote currency, with the 24h traded value the running strategy's scanner asks for; it is removed only when
 /// nothing is held, reserved or working in it, not even a residual below the exchange minimum, so equity and exits never lose
 /// sight of a position. Each change is journaled (kind
 /// <see cref="Kind"/>) before it applies and saved as <c>tradable-pairs-&lt;mode&gt;</c>, which a restart restores.
-/// Paper only, like strategy switching (ADR-0015): live changes come with #71.
+/// Paper and live alike (ADR-0015, ADR-0018): each mode keeps its own list, within its own limits.
 /// </summary>
 public sealed partial class TradablePairsService(
     TradableSymbols tradable,
@@ -129,6 +130,9 @@ public sealed partial class TradablePairsService(
     IEngineLease? lease = null,
     Func<decimal>? liquidityFloor = null) : BackgroundService
 {
+    /// <summary>The owner's limits file for this mode, as the dashboard and the owner know it.</summary>
+    private string LimitsFile => trading.Mode == TradingMode.Live ? "config/risk-limits.live.json" : "config/risk-limits.json";
+
     /// <summary>The least 24h traded value a pair needs to be added: the running strategy's scanner filter.</summary>
     private decimal LiquidityFloor => liquidityFloor?.Invoke() ?? scanner?.Parameters.MinQuoteVolume24h ?? new Domain.Scanning.ScannerParameters().MinQuoteVolume24h;
 
@@ -184,7 +188,7 @@ public sealed partial class TradablePairsService(
             if (dropped.Count > 0 || problems.Count > 0)
                 _restoreProblem = problems.Count > 0
                     ? $"The saved trading pairs couldn't be restored ({problems[0]}); only {string.Join(", ", tradable.Current.Order(StringComparer.Ordinal))} are tradable. Check for holdings in the others before resuming."
-                    : $"Saved trading pairs no longer permitted by config/risk-limits.json were dropped: {string.Join(", ", dropped)}. Check for holdings in them before resuming.";
+                    : $"Saved trading pairs no longer permitted by {LimitsFile} were dropped: {string.Join(", ", dropped)}. Check for holdings in them before resuming.";
         }
 
         await WriteCatalogAsync(now, cancellationToken).ConfigureAwait(false);
@@ -376,8 +380,8 @@ public sealed partial class TradablePairsService(
     {
         if (!tradable.Limits.Permits(symbol))
             return tradable.Limits.AllowedQuoteCurrency is { } quote
-                ? $"Only {quote} pairs are permitted by config/risk-limits.json."
-                : "config/risk-limits.json doesn't permit it; only the owner can widen that list.";
+                ? $"Only {quote} pairs are permitted by {LimitsFile}."
+                : $"{LimitsFile} doesn't permit it; only the owner can widen that list.";
         if (current.Count >= tradable.Limits.TradableCap)
             return $"At most {tradable.Limits.TradableCap} pairs can be tradable at once; remove one first.";
 

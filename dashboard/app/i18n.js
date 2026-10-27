@@ -355,12 +355,14 @@
     'A change reaches': 'На что влияет изменение',
     'The engine hasn\'t written the parameter schema yet.': 'Движок ещё не записал схему параметров.',
     'config/risk-limits.json (owner only)': 'config/risk-limits.json (только владелец)',
+    'config/risk-limits.live.json (owner only)': 'config/risk-limits.live.json (только владелец)',
     'the engine (fixed)': 'движок (фиксировано)',
     'Not reported yet.': 'Пока нет данных.',
     'waiting for the engine': 'ждёт движок',
     'No switches in the last 7 days.': 'За последние 7 дней смен не было.',
     'Live has no switches yet.': 'Для реальной торговли смен пока нет.',
     'Switch to {name} (paper)': 'Перейти на {name} (бумажная торговля)',
+    'Switch live trading to {name} (real money)': 'Перевести реальную торговлю на {name} (реальные деньги)',
     'No parameter differs from the running strategy.': 'Ни один параметр не отличается от текущей стратегии.',
     'Not confirmed: {error} Send again to retry: it stays the same, single request.':
       'Не подтверждено: {error} Отправьте ещё раз, чтобы повторить: это останется тем же единственным запросом.',
@@ -381,10 +383,10 @@
       'Торгуется максимум пар, который допускают ограничения безопасности: уберите одну, чтобы добавить другую.',
     'You can add any {quote} pair the exchange lists; the engine checks it has enough trading first.':
       'Можно добавить любую пару в {quote}, которая есть на бирже; движок сначала проверит, что по ней достаточно торгов.',
-    'No other pairs can be added yet: the safety limits permit only the pairs in config/risk-limits.json, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to config/risk-limits.json; once that is deployed, they can be added and removed here without another deploy.':
-      'Другие пары пока добавить нельзя: ограничения безопасности разрешают только пары из config/risk-limits.json, и все они уже торгуются. Чтобы торговать другими монетами, владелец добавляет в config/risk-limits.json "AllowedQuoteCurrency": "EUR" (любая пара в EUR, которая есть на бирже) и "MaxTradableSymbols" (сколько пар одновременно, например 15); после развёртывания этого изменения пары можно добавлять и убирать здесь без нового развёртывания.',
-    'You can turn the pairs in config/risk-limits.json off and on again here. Adding other coins needs that list widened first.':
-      'Здесь можно отключать и снова включать пары из config/risk-limits.json. Чтобы добавить другие монеты, сначала нужно расширить этот список.',
+    'No other pairs can be added yet: the safety limits permit only the pairs in {file}, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to {file}; once that is deployed, they can be added and removed here without another deploy.':
+      'Другие пары пока добавить нельзя: ограничения безопасности разрешают только пары из {file}, и все они уже торгуются. Чтобы торговать другими монетами, владелец добавляет в {file} "AllowedQuoteCurrency": "EUR" (любая пара в EUR, которая есть на бирже) и "MaxTradableSymbols" (сколько пар одновременно, например 15); после развёртывания этого изменения пары можно добавлять и убирать здесь без нового развёртывания.',
+    'You can turn the pairs in {file} off and on again here. Adding other coins needs that list widened first.':
+      'Здесь можно отключать и снова включать пары из {file}. Чтобы добавить другие монеты, сначала нужно расширить этот список.',
     'Stop trading {symbol}': 'Прекратить торговлю {symbol}',
     'removing…': 'убираем…',
     Remove: 'Убрать',
@@ -398,6 +400,8 @@
     'Live has no pair changes.': 'Для реальной торговли изменений пар нет.',
     'Remove {symbol} (paper)': 'Убрать {symbol} (бумажная торговля)',
     'Add {symbol} (paper)': 'Добавить {symbol} (бумажная торговля)',
+    'Remove {symbol} from live trading (real money)': 'Убрать {symbol} из реальной торговли (реальные деньги)',
+    'Add {symbol} to live trading (real money)': 'Добавить {symbol} в реальную торговлю (реальные деньги)',
     'The engine stops trading {symbol}: no new orders, prices no longer polled. It refuses if you still hold {coin} or have an open order in it.':
       'Движок прекратит торговлю {symbol}: никаких новых ордеров, цены больше не запрашиваются. Он откажет, если у вас ещё есть {coin} или открытый ордер по этой паре.',
     'The engine checks that the exchange lists {symbol} as active and that it traded enough over the last 24 hours, then starts loading its prices. The scanner can signal it once it has a day of hourly candles. Every order in it goes through the same safety limits.':
@@ -766,10 +770,8 @@
     'Stops and targets watched': 'Слежение за стопами и целями',
     'The engine sells by itself when a position reaches its stop or target, between agent runs too.':
       'Движок сам продаёт, когда позиция доходит до стопа или цели, в том числе между запусками агентов.',
-    'Live trading runs the strategy set in its configuration. Switching it here comes with live trading (#71), with an explicit confirmation.':
-      'Реальная торговля работает по стратегии из конфигурации. Переключать её здесь можно будет с появлением реальной торговли (#71), с явным подтверждением.',
-    'Live trading uses the pairs in its configuration. Changing them here comes with live trading (#71).':
-      'Реальная торговля использует пары из конфигурации. Менять их здесь можно будет с появлением реальной торговли (#71).',
+    'Live trading switches only between the strategies you marked live in strategies/; every switch asks you to confirm it.':
+      'Реальная торговля переключается только между стратегиями, которые вы отметили как live в strategies/; каждое переключение нужно подтвердить.',
     'The engine hasn\'t listed the exchange\'s pairs yet; it does when it starts.': 'Движок ещё не получил список пар биржи; он делает это при запуске.',
 
     // What the engine says about a strategy switch (StrategySelection.cs)

@@ -9,6 +9,9 @@
 // Adding and removing trading pairs (ADR-0016) works the same way: POST /api/owner/pair-requests creates a request, the engine
 // checks it against config/risk-limits.json, the exchange and the portfolio, and GET /api/owner/pairs shows where things stand.
 //
+// Strategy switches, pair changes, Pause and Resume work for live too (ADR-0018): each goes to the live engine's own requests
+// container, only with confirmLive, and each lookup and view takes ?mode=live.
+//
 // The writes are POST /api/owner/requests and /api/owner/strategy-requests, with the writer identity whose Cosmos DB role can only create items in the
 // requests container. A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
 // cross-origin only after a preflight this API never answers.
@@ -102,58 +105,76 @@ async function createRequest(request, context) {
   });
 }
 
+/**
+ * Creates doc in its mode's requests container (paper's, or the live engine's own: ADR-0018), or finds it there from an
+ * earlier send of the same dialog. Returns 'created' or 'exists', with the stored document for 'exists' (null when it can't
+ * be read back yet). Live is refused before any read, since live's reads would otherwise fall back to paper's database.
+ */
+async function createInMode(doc) {
+  const mode = doc.tradingMode;
+  requireLiveDatabase(mode);
+  const earlier = await getReader(mode).readDocument('requests', doc.id, previousDay(doc.day));
+  let result;
+  try {
+    result = earlier ? 'exists' : await getWriter(mode).create(doc);
+  } catch (error) {
+    // The live role is the owner's to grant (setup-dashboard-requests.ps1 -LiveRequests): without it, say so.
+    if (mode === 'live' && error instanceof WriterError && error.status === 403) throw new WriterNotConfigured(LIVE_NOT_SET_UP);
+    throw error;
+  }
+  const stored = result === 'created' ? null : earlier ?? await getReader(mode).readDocument('requests', doc.id, doc.day);
+  return { result, stored };
+}
+
+/** Whether a stored request is the one doc describes, in the same mode: the same dialog sent again. */
+function sameRequest(stored, doc, fields) {
+  return stored.type === doc.type && (stored.tradingMode ?? 'paper') === doc.tradingMode && fields.every((f) => stored[f] === doc[f]);
+}
+
+const DIFFERENT = 'This request was already sent with different details; it stands as first sent. Close the dialog to make a new one.';
+
 async function createStrategyRequest(request, context) {
   return ownerOnly(request, context, 'strategy request', async () => {
     const doc = strategyRequestDocument(await readBody(request), Date.now());
-    const earlier = await getReader().readDocument('requests', doc.id, previousDay(doc.day));
-    const result = earlier ? 'exists' : await getWriter().create(doc);
-    context.log(`Owner strategy request ${result}: ${doc.name}@v${doc.version} (${doc.id})`);
+    const { result, stored } = await createInMode(doc);
+    context.log(`Owner ${doc.tradingMode} strategy request ${result}: ${doc.name}@v${doc.version} (${doc.id})`);
     if (result === 'created') return respond(201, { result, request: requestItem(doc) });
-    const stored = earlier ?? await getReader().readDocument('requests', doc.id, doc.day);
     if (!stored) return respond(200, { result, request: requestItem(doc) });
-    return stored.type === doc.type && stored.name === doc.name && stored.version === doc.version
+    return sameRequest(stored, doc, ['name', 'version'])
       ? respond(200, { result, request: requestItem(stored) })
-      : respond(409, { error: 'This request was already sent with different details; it stands as first sent. Close the dialog to make a new one.' });
+      : respond(409, { error: DIFFERENT });
   });
 }
 
 async function createPairRequest(request, context) {
   return ownerOnly(request, context, 'pair request', async () => {
     const doc = pairRequestDocument(await readBody(request), Date.now());
-    const earlier = await getReader().readDocument('requests', doc.id, previousDay(doc.day));
-    const result = earlier ? 'exists' : await getWriter().create(doc);
-    context.log(`Owner pair request ${result}: ${doc.action} ${doc.symbol} (${doc.id})`);
+    const { result, stored } = await createInMode(doc);
+    context.log(`Owner ${doc.tradingMode} pair request ${result}: ${doc.action} ${doc.symbol} (${doc.id})`);
     if (result === 'created') return respond(201, { result, request: pairRequestItem(doc) });
-    const stored = earlier ?? await getReader().readDocument('requests', doc.id, doc.day);
     if (!stored) return respond(200, { result, request: pairRequestItem(doc) });
-    return stored.type === doc.type && stored.action === doc.action && stored.symbol === doc.symbol
+    return sameRequest(stored, doc, ['action', 'symbol'])
       ? respond(200, { result, request: pairRequestItem(stored) })
-      : respond(409, { error: 'This request was already sent with different details; it stands as first sent. Close the dialog to make a new one.' });
+      : respond(409, { error: DIFFERENT });
   });
 }
 
 async function createControlRequest(request, context) {
   return ownerOnly(request, context, 'pause or resume request', async () => {
     const doc = controlRequestDocument(await readBody(request), Date.now());
-    const mode = doc.tradingMode;
-    requireLiveDatabase(mode); // before any read: live's reads would fall back to paper's database
-    const earlier = await getReader(mode).readDocument('requests', doc.id, previousDay(doc.day));
-    let result;
-    try {
-      result = earlier ? 'exists' : await getWriter(mode).create(doc);
-    } catch (error) {
-      // The live role is the owner's to grant (setup-dashboard-requests.ps1 -LiveRequests): without it, say so.
-      if (mode === 'live' && error instanceof WriterError && error.status === 403) throw new WriterNotConfigured(LIVE_NOT_SET_UP);
-      throw error;
-    }
-    context.log(`Owner ${mode} ${doc.action} request ${result} (${doc.id})`);
+    const { result, stored } = await createInMode(doc);
+    context.log(`Owner ${doc.tradingMode} ${doc.action} request ${result} (${doc.id})`);
     if (result === 'created') return respond(201, { result, request: controlRequestItem(doc) });
-    const stored = earlier ?? await getReader(mode).readDocument('requests', doc.id, doc.day);
     if (!stored) return respond(200, { result, request: controlRequestItem(doc) });
-    return stored.type === doc.type && stored.action === doc.action && stored.tradingMode === doc.tradingMode && stored.haltSince === doc.haltSince
+    return sameRequest(stored, doc, ['action', 'haltSince'])
       ? respond(200, { result, request: controlRequestItem(stored) })
-      : respond(409, { error: 'This request was already sent with different details; it stands as first sent. Close the dialog to make a new one.' });
+      : respond(409, { error: DIFFERENT });
   });
+}
+
+/** The mode a lookup or view asks for: live only when it says so. */
+function modeOf(request) {
+  return request.query.get('mode') === 'live' ? 'live' : 'paper';
 }
 
 function previousDay(day) {
@@ -184,7 +205,8 @@ app.http('owner-strategies', {
   authLevel: 'anonymous',
   route: 'owner/strategies',
   handler: (request, context) => ownerOnly(request, context, 'strategy view', async () => {
-    const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
+    const mode = modeOf(request);
+    requireLiveDatabase(mode); // never paper's database shown as live's
     return respond(200, await loadStrategies(getReader(mode), mode, Date.now(), getReader('paper')));
   }),
 });
@@ -201,7 +223,9 @@ app.http('owner-strategy-request', {
   authLevel: 'anonymous',
   route: 'owner/strategy-requests/{day}/{id}',
   handler: (request, context) => ownerOnly(request, context, 'strategy request lookup', async () => {
-    const item = await loadStrategyRequest(getReader(), request.params.day, request.params.id);
+    const mode = modeOf(request);
+    requireLiveDatabase(mode);
+    const item = await loadStrategyRequest(getReader(mode), request.params.day, request.params.id, mode);
     return item ? respond(200, item) : respond(404, { error: 'Not there yet.' });
   }),
 });
@@ -211,7 +235,8 @@ app.http('owner-pairs', {
   authLevel: 'anonymous',
   route: 'owner/pairs',
   handler: (request, context) => ownerOnly(request, context, 'pairs view', async () => {
-    const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
+    const mode = modeOf(request);
+    requireLiveDatabase(mode); // never paper's database shown as live's
     return respond(200, await loadPairs(getReader(mode), mode, Date.now()));
   }),
 });
@@ -228,7 +253,9 @@ app.http('owner-pair-request', {
   authLevel: 'anonymous',
   route: 'owner/pair-requests/{day}/{id}',
   handler: (request, context) => ownerOnly(request, context, 'pair request lookup', async () => {
-    const item = await loadPairRequest(getReader(), request.params.day, request.params.id);
+    const mode = modeOf(request);
+    requireLiveDatabase(mode);
+    const item = await loadPairRequest(getReader(mode), request.params.day, request.params.id, mode);
     return item ? respond(200, item) : respond(404, { error: 'Not there yet.' });
   }),
 });
@@ -245,7 +272,7 @@ app.http('owner-control-request', {
   authLevel: 'anonymous',
   route: 'owner/control-requests/{day}/{id}',
   handler: (request, context) => ownerOnly(request, context, 'pause or resume lookup', async () => {
-    const mode = request.query.get('mode') === 'live' ? 'live' : 'paper';
+    const mode = modeOf(request);
     const { day, id } = request.params;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day ?? '') || !/^[0-9a-f-]{36}$/.test(id ?? '')) throw new RangeError('day and id must be a request\'s');
     requireLiveDatabase(mode);

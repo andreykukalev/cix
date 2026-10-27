@@ -149,20 +149,21 @@ public static class PersistenceRegistration
         services.AddSingleton(sp => new EngineLease(
             new CosmosLeaseStore(sp.GetRequiredService<CosmosDb>(), mode), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<EngineLease>>()));
         services.AddSingleton<IEngineLease>(sp => sp.GetRequiredService<EngineLease>());
+        // Strategies switched from the database (#105): in live trading only to the spec files the owner marked live (ADR-0018).
+        services.AddSingleton<Strategy.IStrategyRepository>(sp => new Strategy.CosmosStrategyRepository(
+            sp.GetRequiredService<CosmosDb>(), sp.GetRequiredService<CosmosSpecArchive>()));
+        services.AddSingleton(sp => ActivatorUtilities.CreateInstance<Strategy.StrategySelectionService>(
+            sp, sp.GetRequiredService<IStrategySpecStore>() as Strategy.RuntimeStrategySpecs
+                ?? throw new InvalidOperationException("Strategy switching needs the run-time spec store (AddCixToolServer).")));
+        services.AddHostedService(sp => sp.GetRequiredService<Strategy.StrategySelectionService>());
+
+        // Tradable pairs added and removed from the dashboard, within the mode's limits file (config/risk-limits.json, or
+        // config/risk-limits.live.json for live).
+        services.AddSingleton<Pairs.ITradablePairsRepository>(sp => new Pairs.CosmosTradablePairsRepository(sp.GetRequiredService<CosmosDb>()));
+        services.AddSingleton<Pairs.TradablePairsService>();
+        services.AddHostedService(sp => sp.GetRequiredService<Pairs.TradablePairsService>());
         if (mode == TradingMode.Paper)
         {
-            // Strategies switched from the database (#105): paper only until live switching comes with #71.
-            services.AddSingleton<Strategy.IStrategyRepository>(sp => new Strategy.CosmosStrategyRepository(
-                sp.GetRequiredService<CosmosDb>(), sp.GetRequiredService<CosmosSpecArchive>()));
-            services.AddSingleton(sp => ActivatorUtilities.CreateInstance<Strategy.StrategySelectionService>(
-                sp, sp.GetRequiredService<IStrategySpecStore>() as Strategy.RuntimeStrategySpecs
-                    ?? throw new InvalidOperationException("Strategy switching needs the run-time spec store (AddCixToolServer).")));
-            services.AddHostedService(sp => sp.GetRequiredService<Strategy.StrategySelectionService>());
-
-            // Tradable pairs added and removed from the dashboard, within config/risk-limits.json: paper only, like strategies.
-            services.AddSingleton<Pairs.ITradablePairsRepository>(sp => new Pairs.CosmosTradablePairsRepository(sp.GetRequiredService<CosmosDb>()));
-            services.AddSingleton<Pairs.TradablePairsService>();
-            services.AddHostedService(sp => sp.GetRequiredService<Pairs.TradablePairsService>());
             services.AddSingleton<IPaperAccountStore, CosmosPaperAccountStore>();
             services.AddSingleton<PaperAccountSaver>();
             services.AddHostedService(sp => sp.GetRequiredService<PaperAccountSaver>());

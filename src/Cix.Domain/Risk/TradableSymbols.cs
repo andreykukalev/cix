@@ -53,10 +53,10 @@ public sealed class TradableSymbols
         if (symbols.Count == 0)
             problems.Add("At least one pair must stay tradable.");
         if (symbols.Count > Limits.TradableCap)
-            problems.Add($"At most {Limits.TradableCap} pairs can be tradable at once (config/risk-limits.json).");
+            problems.Add($"At most {Limits.TradableCap} pairs can be tradable at once (the owner's limits file).");
         var refused = symbols.Where(s => !Limits.Permits(s)).Order(StringComparer.Ordinal).ToList();
         if (refused.Count > 0)
-            problems.Add($"Not permitted by config/risk-limits.json: {string.Join(", ", refused.Take(5))}.");
+            problems.Add($"Not permitted by the owner's limits file: {string.Join(", ", refused.Take(5))}."); // paper's or live's
         return problems;
     }
 

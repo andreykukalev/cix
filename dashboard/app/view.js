@@ -301,7 +301,7 @@
   /** The switch request the dialog sends, or what is missing. */
   function strategyRequestBody(choice, id) {
     if (!/^[a-z0-9-]{1,40}$/.test(choice?.name ?? '') || !Number.isInteger(choice?.version)) return { error: t('Pick a strategy.') };
-    return { body: { id, name: choice.name, version: choice.version, note: cleanNote(choice.note), tradingMode: 'paper' } };
+    return { body: { id, name: choice.name, version: choice.version, note: cleanNote(choice.note), tradingMode: choice.mode === 'live' ? 'live' : 'paper' } };
   }
 
   /** A strategy's name for people: Safe v1 (Безопасная v1 in Russian, for the three featured ones). */
@@ -333,11 +333,12 @@
   function pairsNote(view) {
     const options = (view?.available ?? []).filter((p) => !p.pending);
     const ownerMustWiden = !!view?.configuredOnly && !options.length;
+    const file = view?.mode === 'live' ? 'config/risk-limits.live.json' : 'config/risk-limits.json'; // each mode has its own limits
     const note = view?.readOnlyReason ? t(view.readOnlyReason)
-      : ownerMustWiden ? t('No other pairs can be added yet: the safety limits permit only the pairs in config/risk-limits.json, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to config/risk-limits.json; once that is deployed, they can be added and removed here without another deploy.')
+      : ownerMustWiden ? t('No other pairs can be added yet: the safety limits permit only the pairs in {file}, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to {file}; once that is deployed, they can be added and removed here without another deploy.', { file })
         : view?.full ? t('The most pairs the safety limits allow are tradable: remove one to add another.')
           : view?.openToAnyPair ? t('You can add any {quote} pair the exchange lists; the engine checks it has enough trading first.', { quote: view.quoteCurrency ?? '' }).replace('  ', ' ')
-            : t('You can turn the pairs in config/risk-limits.json off and on again here. Adding other coins needs that list widened first.');
+            : t('You can turn the pairs in {file} off and on again here. Adding other coins needs that list widened first.', { file });
     const empty = view?.configuredOnly ? t('no other pairs permitted') : view?.full ? t('the limit is reached') : t('none available');
     return { note, empty, options };
   }

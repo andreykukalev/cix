@@ -136,7 +136,8 @@ public sealed class FileStrategySpecStore : IStrategySpecStore
     private static readonly JsonSerializerOptions Json = new()
     {
         PropertyNameCaseInsensitive = true,
-        Converters = { new JsonStringEnumConverter() },
+        // The status only as a word: a number (2 for live) would slip past the check that only the owner marks a spec live.
+        Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) },
     };
 
     public FileStrategySpecStore(StrategyOptions options, TradingMode mode)

@@ -265,7 +265,7 @@ public static class MarketScanner
         var f = input.Features;
 
         if (!input.Allowed)
-            return (null, Out("not-allowed", "Not among the tradable pairs (the owner adds them from the dashboard, within config/risk-limits.json)."));
+            return (null, Out("not-allowed", "Not among the tradable pairs (the owner adds them from the dashboard, within the owner's limits file)."));
         if (input.Pair is null)
             return (null, Out("not-listed", "The exchange doesn't list this pair."));
         if (!input.Pair.Active)

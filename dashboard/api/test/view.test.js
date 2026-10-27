@@ -151,6 +151,7 @@ test('a switch lists what changes, and which changes reach open positions', () =
   assert.equal(V.strategyName({ name: 'safe', version: 1 }), 'Safe v1');
   assert.deepEqual(V.strategyRequestBody({ name: 'safe', version: 1, note: ' a\nb ' }, ID), { body: { id: ID, name: 'safe', version: 1, note: 'a b', tradingMode: 'paper' } });
   assert.ok(V.strategyRequestBody({ name: 'safe', version: '1' }, ID).error);
+  assert.equal(V.strategyRequestBody({ name: 'safe', version: 2, mode: 'live' }, ID).body.tradingMode, 'live');
   assert.equal(V.selectionState({ state: 'refused' }).tone, 'bad');
 });
 

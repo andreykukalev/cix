@@ -16,7 +16,7 @@ The coins the engine may trade were the `AllowedSymbols` list in `config/risk-li
 - **An add** needs a permitted pair, room under the cap, an active exchange pair in the account's quote currency, and at least the running strategy's `minQuoteVolume24h` traded over the last 24 hours (from the exchange's hourly candles), so thin markets stay out. **A remove** needs another pair left, no open order in the coin, no order just sent in it and no sellable holding, so equity, exits and the reconciler never lose sight of a position. It is checked (with fresh exchange reads), journaled, saved and applied while no order can be placed.
 - **Journal first** (kind `pairs`), then save, then apply; refusals are journaled too. A restart restores the saved list. If a pair had to be dropped (the owner narrowed the limits), the kill switch is engaged so the owner checks for holdings in it before resuming. A request already acted on is never applied twice.
 - Market data, the scanner, the safety monitor, the agents' tools, owner requests and the status all read the same list. The poller's rate check at startup covers `MaxTradableSymbols` pairs, so an engine that starts can poll the most there may be. A new pair gets the same 15 minutes as the engine's start before stale data halts trading.
-- Paper only, like strategy switching: live changes come with #71.
+- Paper only, like strategy switching: live changes come with #71. (ADR-0018 later added them, within the live limits file.)
 
 ## Alternatives considered
 

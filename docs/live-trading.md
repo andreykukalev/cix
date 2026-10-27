@@ -27,7 +27,7 @@ A proposal for the first run, 100 EUR on the fixed Safe strategy. Safe's own lim
 
 - **Drawdown 10%**, not paper's 15%: new buys stop after a 10% fall from peak equity (10 EUR from 100 EUR) until you resume. Sells, stops and targets carry on.
 - **Daily loss 5 EUR**, half the ceiling (10% of the allocation).
-- **Four of the most liquid pairs.** There is no `AllowedQuoteCurrency` for now, because adding pairs from the dashboard is paper-only until #71. Revolut X's smallest order on these pairs is 0.1 EUR (its public pairs list, 27 Oct), well under Safe's 5 EUR.
+- **Four of the most liquid pairs.** There is no `AllowedQuoteCurrency`, so the Live view's Coins tab can turn these four off and on again but add no others; widening the list is your edit to `config/risk-limits.live.json`. Revolut X's smallest order on these pairs is 0.1 EUR (its public pairs list, 27 Oct), well under Safe's 5 EUR.
 
 ## The strategy
 
@@ -147,6 +147,12 @@ On its first start the live engine has no state yet, so it starts halted until y
 - **Resume** releases only the halt the page showed you. If trading halted again, or a check (the reconciler, a safety limit) found something while it was halted, the Trading tile shows it ("Also, …") and a Resume sent from an older view is refused with the reason: look at it, then press Resume again if you still want to.
 - A request more than 5 minutes old when the engine sees it expires, and at most 20 act a day. Each change is journaled as the owner's (kind `kill-switch`).
 - To take the dashboard's live access away, delete the `CIX dashboard live request writer (dev)` role assignment in the shared Cosmos DB account (`az cosmosdb sql role assignment list`, then `delete`). Paper requests keep working.
+
+The Live view switches strategy and coins the same way, each with the real-money box ticked:
+
+- **Strategy tab**: lists only the spec files in `strategies/` you marked `live` (today Safe v2), and switches between them before the next trader run. A version no live-marked file holds, exactly as merged, is refused, so a new live strategy is a spec file you mark `live` in a pull request, then a promoted image.
+- **Coins tab**: turns pairs off and on again within `config/risk-limits.live.json`. A pair can be removed only when nothing is held or working in it; the risk gate checks every order as before.
+- Both are journaled (kinds `strategy` and `pairs`) and survive a restart.
 
 Pause is not the emergency stop: it needs the engine running and the dashboard reachable. For that, use the steps below and [Stopping live trading at once](#stopping-live-trading-at-once).
 

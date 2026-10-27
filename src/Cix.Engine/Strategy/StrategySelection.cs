@@ -135,11 +135,12 @@ public sealed record StrategySelectionStatus(
     DateTimeOffset? ActivatedAt);
 
 /// <summary>
-/// Switches the paper engine's strategy at run time (#105): every <see cref="Interval"/> it reads the selection, and when it
+/// Switches the engine's strategy at run time (#105; live too, ADR-0018): every <see cref="Interval"/> it reads the selection, and when it
 /// names another version, validates it (<see cref="StrategySchema.Validate"/>), journals the switch, and activates it for the
 /// next scan and the next agent run. Never during a trader run: it waits for the run to end, so a run works under one spec.
 /// A refused selection is journaled once and leaves the running spec as it was. Changes apply to new trades: open positions
 /// keep the stop and target they were bought with; the trend and exit rules apply to every held coin from the next scan.
+/// Live switches only to the spec files the owner marked live, exactly as they are in the repository.
 /// </summary>
 public sealed partial class StrategySelectionService(
     RuntimeStrategySpecs specs,
@@ -194,8 +195,9 @@ public sealed partial class StrategySelectionService(
     }
 
     /// <summary>
-    /// Adds every runnable trading spec file in <paramref name="directory"/> (<c>name.vN.json</c>, paper status, valid against
-    /// the schema) that the database doesn't have yet. Analyst specs and invalid files are skipped and logged.
+    /// Adds every runnable trading spec file in <paramref name="directory"/> (<c>name.vN.json</c> with the mode's status, paper
+    /// or live, valid against the schema) that the database doesn't have yet. Analyst specs and invalid files are skipped and
+    /// logged; in live trading, files not marked live are skipped quietly.
     /// </summary>
     public async Task<int> SeedAsync(string directory, CancellationToken cancellationToken)
     {
@@ -221,7 +223,9 @@ public sealed partial class StrategySelectionService(
 
             if (spec.AllowedTools.Any(AnalystTools.Names.Contains))
                 continue; // the market analyst's spec isn't a trading strategy
-            if (StrategySchema.Validate(spec, limits, TradingMode.Paper) is { Count: > 0 } problems)
+            if (trading.Mode == TradingMode.Live && spec.Status != SpecStatus.Live)
+                continue; // only the specs the owner marked live can run live
+            if (StrategySchema.Validate(spec, limits, trading.Mode) is { Count: > 0 } problems)
             {
                 LogSeedSkipped(logger, Path.GetFileName(path), string.Join(" ", problems));
                 continue;
@@ -555,6 +559,8 @@ public sealed partial class StrategySelectionService(
         {
             if (_fileHashes.TryGetValue(key, out var file) && file != spec.Hash)
                 return $"The database copy of {StrategySchema.Clip(key)} differs from the reviewed file strategies/{StrategySchema.Clip(spec.Name)}.v{spec.Version}.json; give a changed strategy a new version.";
+            if (trading.Mode == TradingMode.Live && file is null)
+                return $"{StrategySchema.Clip(key)} isn't a spec file the owner marked live in strategies/; live trading runs only those, exactly as reviewed.";
             if (!_reviewedInstructions.Contains(InstructionsHash(spec)))
                 return $"The instructions of {StrategySchema.Clip(key)} match no reviewed spec file in strategies/; instructions change only through a pull request.";
         }

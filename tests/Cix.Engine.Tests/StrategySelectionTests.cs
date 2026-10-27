@@ -113,9 +113,17 @@ public sealed class StrategySchemaTests
         Assert.Contains(problems, p => p.StartsWith("status must be paper", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public void LiveTrading_SwitchesNothingFromTheDatabase_Yet() =>
-        Assert.Contains(StrategySchema.Validate(Load("balanced", 1), Limits, TradingMode.Live), p => p.Contains("#71", StringComparison.Ordinal));
+    [Theory]
+    [InlineData(SpecStatus.Paper)]
+    [InlineData(SpecStatus.Draft)]
+    public void LiveTrading_ActivatesOnlySpecsMarkedLive(SpecStatus status)
+    {
+        Assert.Empty(StrategySchema.Validate(Load("safe", 2), Limits, TradingMode.Live));
+
+        var problems = StrategySchema.Validate(Load("safe", 2) with { Status = status }, Limits, TradingMode.Live);
+
+        Assert.Contains(problems, p => p.StartsWith("status must be live", StringComparison.Ordinal));
+    }
 
     [Theory]
     [InlineData("record_market_view")]
@@ -177,18 +185,21 @@ public sealed class StrategySelectionTests
 
     private sealed class Setup
     {
-        public Setup(StrategySpec? initial = null, AgentRunScheduler? runs = null, FixedLease? lease = null)
+        public Setup(StrategySpec? initial = null, AgentRunScheduler? runs = null, FixedLease? lease = null, TradingMode mode = TradingMode.Paper)
         {
+            Mode = mode;
             Journal = new FailingJournal(Entries);
             Specs = new RuntimeStrategySpecs(initial ?? StrategySchemaTests.Load("good", 1));
             Service = new StrategySelectionService(
-                Specs, Repository, StrategySchemaTests.Limits, new TradingContext(TradingMode.Paper), Journal, Time, NullLogger<StrategySelectionService>.Instance, lease, runs, Requests);
+                Specs, Repository, StrategySchemaTests.Limits, new TradingContext(mode), Journal, Time, NullLogger<StrategySelectionService>.Instance, lease, runs, Requests);
         }
+
+        public TradingMode Mode { get; }
 
         public InMemoryManualRequestStore Requests { get; } = new("ok");
 
         /// <summary>A strategy request as the dashboard creates it, <paramref name="minute"/> minutes after T0.</summary>
-        public void Request(string id, string name, JsonNode? version, int minute = 0, string? note = null)
+        public void Request(string id, string name, JsonNode? version, int minute = 0, string? note = null, TradingMode? mode = null)
         {
             var at = Rig.T0.AddMinutes(minute);
             Requests.Add(new JsonObject
@@ -196,7 +207,7 @@ public sealed class StrategySelectionTests
                 ["id"] = id, ["day"] = at.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
                 ["createdAt"] = at.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
                 ["type"] = StrategySelectionService.RequestType, ["name"] = name, ["version"] = version, ["note"] = note,
-                ["requestedBy"] = "owner", ["tradingMode"] = "paper", ["status"] = "new",
+                ["requestedBy"] = "owner", ["tradingMode"] = (mode ?? Mode).ToString().ToLowerInvariant(), ["status"] = "new",
             });
         }
 
@@ -212,7 +223,7 @@ public sealed class StrategySelectionTests
         public IReadOnlyList<JournalEntry> Switches => Entries.Entries.Where(e => e.Kind == StrategySelectionService.Kind).ToList();
 
         public void Select(string name, int version, int minute = 0, string? by = "owner") =>
-            Repository.Selections[TradingMode.Paper] = new StrategySelection(name, version, by, Rig.T0.AddMinutes(minute), "testing");
+            Repository.Selections[Mode] = new StrategySelection(name, version, by, Rig.T0.AddMinutes(minute), "testing");
 
         public Task<bool> Poll() => Service.PollOnceAsync(CancellationToken.None);
     }
@@ -556,6 +567,148 @@ public sealed class StrategySelectionTests
 
         Assert.False(await setup.Poll());
         Assert.Equal("good", setup.Specs.Active!.Name);
+    }
+
+    /// <summary>
+    /// A strategies folder for the live tests: the repository's files, safe v3, a copy of safe v2 (the spec the owner
+    /// marked live) with smaller orders, and safe v4, the same as a draft, written at run time.
+    /// </summary>
+    private static string LiveFolder()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"cix-strategies-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        var source = Path.Combine(AppContext.BaseDirectory, "strategies");
+        foreach (var file in Directory.EnumerateFiles(source, "*.json"))
+            File.Copy(file, Path.Combine(folder, Path.GetFileName(file)));
+        var v3 = JsonNode.Parse(File.ReadAllText(Path.Combine(source, "safe.v2.json")))!.AsObject();
+        v3["version"] = 3;
+        v3["parameters"]!["orderQuote"] = 4;
+        File.WriteAllText(Path.Combine(folder, "safe.v3.json"), v3.ToJsonString());
+        var draft = v3.DeepClone().AsObject(); // a draft of the same spec never runs
+        draft["version"] = 4;
+        draft["status"] = "draft";
+        File.WriteAllText(Path.Combine(folder, "safe.v4.json"), draft.ToJsonString());
+        return folder;
+    }
+
+    [Fact]
+    public async Task Live_SeedsOnlyTheSpecFilesMarkedLive()
+    {
+        var folder = LiveFolder();
+        try
+        {
+            var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live);
+
+            Assert.Equal(2, await setup.Service.SeedAsync(folder, CancellationToken.None));
+
+            var names = setup.Repository.Versions.Select(v => $"{v.Name}@v{v.Version}").Order(StringComparer.Ordinal).ToList();
+            Assert.Equal(["safe@v2", "safe@v3"], names);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Live_SwitchesToASpecFileMarkedLive_FromALiveRequestOnly()
+    {
+        var folder = LiveFolder();
+        try
+        {
+            var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live);
+            await setup.Service.InitializeAsync(folder, CancellationToken.None);
+            setup.Request("r-paper", "safe", 3, mode: TradingMode.Paper);
+            setup.Request("r-live", "safe", 3, minute: 1);
+            setup.Time.Advance(TimeSpan.FromMinutes(2));
+
+            Assert.True(await setup.Poll());
+
+            var active = setup.Specs.Active!;
+            Assert.Equal("safe", active.Name);
+            Assert.Equal(3, active.Version);
+            Assert.Equal("accepted", setup.RequestStatus("r-live"));
+            Assert.Equal("new", setup.RequestStatus("r-paper")); // the paper engine's to take
+            Assert.Equal("live", setup.Repository.Schema!.Mode);
+            Assert.True(setup.Repository.Selections.ContainsKey(TradingMode.Live));
+            Assert.False(setup.Repository.Selections.ContainsKey(TradingMode.Paper));
+            var entry = Assert.Single(setup.Switches);
+            Assert.Equal("activated", entry.Data!["action"]);
+            Assert.Equal("live", entry.Data["mode"]);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Live_RefusesAVersionNoLiveFileHolds_EvenWhenItsDocumentSaysLive()
+    {
+        var folder = LiveFolder();
+        try
+        {
+            var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live);
+            await setup.Service.SeedAsync(folder, CancellationToken.None);
+            setup.Repository.Put(StrategySchemaTests.Load("balanced", 1) with { Status = SpecStatus.Live });
+            setup.Select("balanced", 1);
+
+            Assert.False(await setup.Poll());
+
+            Assert.Equal("safe", setup.Specs.Active!.Name);
+            Assert.Equal("refused", setup.Service.Status.State);
+            Assert.Contains("isn't a spec file the owner marked live", setup.Service.Status.Problems[0], StringComparison.Ordinal);
+
+            // A live file's version with other values in the database is refused too.
+            var file = FileStrategySpecStore.Load(Path.Combine(folder, "safe.v3.json"), "safe", 3, TradingMode.Live);
+            setup.Repository.Put(StrategySchemaTests.With(file, "orderQuote", JsonValue.Create(3)));
+            setup.Select("safe", 3, minute: 1);
+
+            Assert.False(await setup.Poll());
+
+            Assert.Equal(2, setup.Specs.Active!.Version);
+            Assert.Contains("differs from the reviewed file strategies/safe.v3.json", setup.Service.Status.Problems[0], StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Live_WithoutItsSpecFiles_RefusesEverySelection()
+    {
+        var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live);
+        Assert.Equal(0, await setup.Service.SeedAsync(Path.Combine(Path.GetTempPath(), $"cix-missing-{Guid.NewGuid():N}"), CancellationToken.None));
+        setup.Repository.Put(StrategySchemaTests.Load("safe", 2));
+        setup.Select("safe", 2);
+
+        Assert.False(await setup.Poll());
+
+        Assert.Equal("refused", setup.Service.Status.State);
+        Assert.Contains("isn't a spec file the owner marked live", setup.Service.Status.Problems[0], StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("2")]
+    [InlineData("1")]
+    public void ASpecFile_WithItsStatusAsANumber_IsRefused(string status)
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"cix-strategies-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var spec = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", "safe.v1.json")))!.AsObject();
+            spec["status"] = JsonNode.Parse(status);
+            var path = Path.Combine(folder, "safe.v1.json");
+            File.WriteAllText(path, spec.ToJsonString());
+
+            Assert.Throws<InvalidOperationException>(() => FileStrategySpecStore.Load(path, "safe", 1, TradingMode.Paper));
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
     }
 
     [Fact]
