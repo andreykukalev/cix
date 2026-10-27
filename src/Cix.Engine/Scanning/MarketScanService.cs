@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Cix.Domain;
 using Cix.Domain.Exchange;
+using Cix.Domain.Risk;
 using Cix.Domain.Scanning;
 using Cix.Engine.Execution;
 using Cix.Engine.Journal;
@@ -354,6 +355,106 @@ public sealed partial class MarketScanService(
         return placed;
     }
 
+    /// <summary>The order source of the sells a strategy switch makes to bring holdings within the new strategy's caps.</summary>
+    public const string TrimSource = "strategy-trim";
+
+    /// <summary>
+    /// After a strategy switch: sells the part of each holding above the new strategy's per-coin and total exposure caps
+    /// (<see cref="StrategyTrim"/>), at the bid, through <see cref="ExecutionService"/> and so the risk gate. Once per switch:
+    /// a sell that is refused isn't tried again, and one still resting after <see cref="ProtectiveRepriceAfter"/> is cancelled
+    /// like a protective sell, so it never keeps a stop from selling. Skips coins with an open order or a protective sell in
+    /// <paramref name="scan"/>, so nothing is sold twice. Returns the orders placed, or null when the trim couldn't be judged
+    /// (halted, or the portfolio can't be valued): the caller tries again at the next scan.
+    /// </summary>
+    public async Task<int?> TrimToStrategyAsync(ScanResult scan, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(scan);
+        if (Halted)
+            return null;
+        if (riskLimits is null || specs.Active is not { } spec)
+            return 0;
+        var limits = Strategy.StrategySchema.LimitsOf(spec, riskLimits);
+        if (limits.MaxPositionQuotePerSymbol is null && limits.MaxExposureQuote is null)
+            return 0;
+        if (await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false) is not { } portfolio)
+        {
+            LogTrimSkipped(logger, spec.Label, "the portfolio can't be valued now");
+            return null;
+        }
+
+        if (portfolio.Snapshot.SellableBaseBySymbol is not { } sellable)
+        {
+            LogTrimSkipped(logger, spec.Label, "the amounts free to sell are unknown");
+            return null;
+        }
+
+        var open = await execution.GetOpenOrdersAsync(cancellationToken).ConfigureAwait(false);
+        var protective = scan.Exits.Where(x => ProtectiveReasons.Contains(x.Reason))
+            .GroupBy(x => x.Symbol, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Sum(x => x.BaseSize * x.LimitPrice), StringComparer.Ordinal);
+        var busy = open.Where(o => o.IsOpen).Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol)).Concat(protective.Keys)
+            .ToHashSet(StringComparer.Ordinal);
+        var holdings = new List<TrimHolding>();
+        foreach (var (symbol, value) in portfolio.Snapshot.PositionQuoteBySymbol)
+        {
+            // A coin being sold still counts toward the exposure, but isn't sold again.
+            if (value <= 0 || busy.Contains(symbol) || !universe.IsTradable(symbol))
+                continue;
+            if (features.GetFeatures(symbol).Bid is not { } bid || await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false) is not { } pair)
+                continue;
+            holdings.Add(new TrimHolding(symbol, value, sellable.GetValueOrDefault(symbol), bid, pair));
+        }
+
+        // Coins left out (busy, unpriced) still count toward the total cap, less what their protective sells take, and so do
+        // working buys, as the strategy gate counts them: only the rest is trimmed for it.
+        var positions = portfolio.Snapshot.PositionQuoteBySymbol.Where(p => p.Value > 0).ToList();
+        var leftOut = positions.Where(p => holdings.All(h => h.Symbol != p.Key))
+            .Sum(p => Math.Max(0m, p.Value - protective.GetValueOrDefault(p.Key)));
+        var workingBuys = Math.Max(0m, portfolio.Snapshot.TotalExposureQuote - positions.Sum(p => p.Value));
+        var trimLimits = limits.MaxExposureQuote is { } cap ? limits with { MaxExposureQuote = Math.Max(0m, cap - leftOut - workingBuys) } : limits;
+        var placed = 0;
+        foreach (var sell in StrategyTrim.Plan(holdings, trimLimits))
+        {
+            var clientOrderId = Guid.NewGuid().ToString();
+            var result = await execution.PlaceAsync(
+                new OrderIntent(sell.Symbol, OrderSide.Sell, sell.BaseSize, sell.LimitPrice, clientOrderId), postOnly: false, cancellationToken,
+                countsTowardRejectStreak: false, context: new OrderContext(TrimSource, Strategy: spec.Label)).ConfigureAwait(false);
+            if (result.Status != ExecutionStatus.Rejected)
+            {
+                lock (_protectiveOrderIds)
+                    _protectiveOrderIds.Add(clientOrderId); // cancelled if it rests, so it can't keep a stop from selling
+            }
+
+            var data = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tool"] = TrimSource,
+                ["clientOrderId"] = clientOrderId,
+                ["symbol"] = sell.Symbol,
+                ["side"] = "sell",
+                ["requestedSize"] = sell.BaseSize.ToString(CultureInfo.InvariantCulture),
+                ["requestedPrice"] = sell.LimitPrice.ToString(CultureInfo.InvariantCulture),
+                ["status"] = result.Status.ToString().ToLowerInvariant(),
+                ["rule"] = result.Rule,
+                ["reason"] = result.Reason,
+                ["rationale"] = $"strategy trim {sell.Symbol} {sell.Rule}: {sell.Reason}",
+            };
+            await AppendSafelyAsync(new JournalEntry(
+                JournalIds.New(time.GetUtcNow(), "order"), time.GetUtcNow(), "order", "engine", null, spec.Label,
+                Inv($"trim to {spec.Label} sell {sell.BaseSize} {sell.Symbol} @ {sell.LimitPrice}: {result.Status} ({result.Rule})"), data))
+                .ConfigureAwait(false);
+            LogTrim(logger, sell.Symbol, sell.BaseSize, spec.Label, result.Status.ToString(), sell.Reason);
+            if (result.Status == ExecutionStatus.Placed)
+                placed++;
+        }
+
+        return placed;
+    }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Trim {Symbol} {Size} for {Strategy}: {Status}. {Reason}")]
+    private static partial void LogTrim(ILogger logger, string symbol, decimal size, string strategy, string status, string reason);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "No trim to {Strategy}: {Reason}")]
+    private static partial void LogTrimSkipped(ILogger logger, string strategy, string reason);
+
     /// <summary>Cancels this engine's protective sells that have rested unfilled too long; the next scan sells again at the bid.</summary>
     public async Task<int> CancelStaleProtectiveExitsAsync(CancellationToken cancellationToken)
     {
@@ -390,7 +491,7 @@ public sealed partial class MarketScanService(
             .ConfigureAwait(false);
         lock (_protectiveOrderIds)
         {
-            foreach (var entry in orders.Where(e => e.Data?.GetValueOrDefault("tool") == "protective-exit" && e.Data.GetValueOrDefault("status") != "rejected"))
+            foreach (var entry in orders.Where(e => e.Data?.GetValueOrDefault("tool") is "protective-exit" or TrimSource && e.Data.GetValueOrDefault("status") != "rejected"))
             {
                 if (entry.Data!.GetValueOrDefault("clientOrderId") is { Length: > 0 } id)
                     _protectiveOrderIds.Add(id);
@@ -412,7 +513,7 @@ public sealed partial class MarketScanService(
         }
     }
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Journal write failed for a protective-exit {Kind} entry: {Detail}")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Journal write failed for an engine {Kind} entry: {Detail}")]
     private static partial void LogOrderJournalFailed(ILogger logger, string kind, string detail);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Protective {Reason} exit: sell {Size} {Symbol} at {Price}: {Status} ({Rule})")]
@@ -477,14 +578,62 @@ public sealed partial class MarketScanService(
     private static partial void LogJournalFailed(ILogger logger, string signal, string detail);
 }
 
-/// <summary>Scans every <see cref="ScannerOptions.Interval"/>. A failed scan is logged and retried at the next tick.</summary>
+/// <summary>
+/// Scans every <see cref="ScannerOptions.Interval"/>, and at once when the strategy switches, so sizes, signals and the coin
+/// filters follow the new strategy without waiting for the next tick. A failed scan is logged and retried at the next tick.
+/// </summary>
 public sealed partial class MarketScanBackgroundService(
     MarketScanService scanner,
     ScannerOptions options,
     TimeProvider time,
-    ILogger<MarketScanBackgroundService> logger) : BackgroundService
+    ILogger<MarketScanBackgroundService> logger,
+    RuntimeStrategySpecs? specs = null) : BackgroundService
 {
-    /// <summary>One scan; returns false if it failed. Tests call this instead of running the loop.</summary>
+    /// <summary>What starts the next scan.</summary>
+    internal enum ScanTrigger { Tick, Switch, Stopped }
+
+    /// <summary>The spec version the last scan started after; a newer one means a switch to scan for.</summary>
+    private long _seen = specs?.Version ?? 0;
+
+    /// <summary>The wait for a switch after <see cref="_seen"/>, kept across ticks so waits don't pile up.</summary>
+    private Task? _changed;
+
+    /// <summary>A switch whose trim hasn't been judged yet (the scan failed, or trading was halted): the next scans try it.</summary>
+    private bool _trimPending;
+
+    /// <summary>
+    /// Waits for <paramref name="tick"/> (false once the timer stops) or a strategy switch, whichever comes first. A switch is
+    /// known by the spec's version, not by which wait ended first, so one made while the tick was also due isn't missed.
+    /// </summary>
+    internal async Task<ScanTrigger> NextAsync(Task<bool> tick, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(tick);
+        if (specs is null)
+            return await tick.ConfigureAwait(false) ? ScanTrigger.Tick : ScanTrigger.Stopped;
+        while (true)
+        {
+            _changed ??= specs.WaitForChangeAsync(_seen, cancellationToken);
+            await Task.WhenAny(tick, _changed).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (specs.Version != _seen)
+            {
+                _seen = specs.Version;
+                _changed = null;
+                _trimPending = true;
+                LogSwitchScan(logger, specs.Active?.Label ?? "none");
+                return ScanTrigger.Switch;
+            }
+
+            if (tick.IsCompleted)
+                return await tick.ConfigureAwait(false) ? ScanTrigger.Tick : ScanTrigger.Stopped;
+            _changed = null; // ended without a newer version: wait again
+        }
+    }
+
+    /// <summary>
+    /// One scan; returns false if it failed. Tests call this instead of running the loop. After a strategy switch, holdings
+    /// above the new strategy's caps are trimmed after the protective exits, once the trim can be judged.
+    /// </summary>
     public async Task<bool> ScanOnceAsync(CancellationToken cancellationToken)
     {
         try
@@ -501,6 +650,8 @@ public sealed partial class MarketScanBackgroundService(
             var result = await scanner.ScanAsync(cancellationToken).ConfigureAwait(false);
             LogScanned(logger, result.Ranked.Count, result.Excluded.Count, result.Entries.Count, result.Exits.Count, Describe(result));
             await scanner.ApplyProtectiveExitsAsync(result, cancellationToken).ConfigureAwait(false);
+            if (_trimPending && await scanner.TrimToStrategyAsync(result, cancellationToken).ConfigureAwait(false) is not null)
+                _trimPending = false;
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -516,8 +667,17 @@ public sealed partial class MarketScanBackgroundService(
         await Task.Delay(TimeSpan.FromMinutes(1), time, stoppingToken).ConfigureAwait(false);
         await ScanOnceAsync(stoppingToken).ConfigureAwait(false);
         using var timer = new PeriodicTimer(options.Interval, time);
-        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
+        Task<bool>? tick = null;
+        while (true)
+        {
+            tick ??= timer.WaitForNextTickAsync(stoppingToken).AsTask();
+            var trigger = await NextAsync(tick, stoppingToken).ConfigureAwait(false);
+            if (trigger == ScanTrigger.Stopped)
+                return;
+            if (trigger == ScanTrigger.Tick)
+                tick = null; // a switch leaves the pending tick for the next round
             await ScanOnceAsync(stoppingToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>One line an owner can read in the logs: why each symbol did or didn't produce a signal.</summary>
@@ -536,6 +696,9 @@ public sealed partial class MarketScanBackgroundService(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Scan failed ({Error}): {Detail}")]
     private static partial void LogScanFailed(ILogger logger, string error, string detail);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Strategy switched to {Strategy}: scanning now")]
+    private static partial void LogSwitchScan(ILogger logger, string strategy);
 }
 
 public static class ScannerRegistration

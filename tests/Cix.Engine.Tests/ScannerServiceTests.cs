@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Cix.Domain.Exchange;
 using Cix.Engine.Scanning;
+using Cix.Engine.Strategy;
 using Cix.Engine.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol;
@@ -144,6 +145,46 @@ public sealed class ScannerServiceTests
         Assert.Equal("The market can't be scanned right now; try again shortly.", ex.Message);
         var background = new MarketScanBackgroundService(tools.Scanner, new ScannerOptions(), tools.Rig.Time, NullLogger<MarketScanBackgroundService>.Instance);
         Assert.False(await background.ScanOnceAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AStrategySwitch_StartsAScanAtOnce_WithoutWaitingForTheTick()
+    {
+        var tools = Uptrend();
+        var specs = new RuntimeStrategySpecs(ToolRig.Observer);
+        var service = new MarketScanBackgroundService(tools.Scanner, new ScannerOptions(), tools.Rig.Time, NullLogger<MarketScanBackgroundService>.Instance, specs);
+        var tick = new TaskCompletionSource<bool>().Task; // the 5-minute tick, still far off
+
+        var next = service.NextAsync(tick, CancellationToken.None);
+        Assert.False(next.IsCompleted);
+        specs.Activate(ToolRig.Observer with { Version = 2 }, tools.Rig.Time.GetUtcNow());
+
+        Assert.Equal(MarketScanBackgroundService.ScanTrigger.Switch, await next.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(service.NextAsync(tick, CancellationToken.None).IsCompleted); // one scan per switch
+    }
+
+    [Fact]
+    public async Task ASwitchMadeDuringAScan_IsScannedForNext_AndTheTickStillScans()
+    {
+        var tools = Uptrend();
+        var specs = new RuntimeStrategySpecs(ToolRig.Observer);
+        var service = new MarketScanBackgroundService(tools.Scanner, new ScannerOptions(), tools.Rig.Time, NullLogger<MarketScanBackgroundService>.Instance, specs);
+        var never = new TaskCompletionSource<bool>().Task;
+
+        specs.Activate(ToolRig.Observer with { Version = 2 }, tools.Rig.Time.GetUtcNow()); // while no one was waiting
+
+        Assert.Equal(MarketScanBackgroundService.ScanTrigger.Switch, await service.NextAsync(never, CancellationToken.None));
+        Assert.Equal(MarketScanBackgroundService.ScanTrigger.Tick, await service.NextAsync(Task.FromResult(true), CancellationToken.None));
+        Assert.Equal(MarketScanBackgroundService.ScanTrigger.Stopped, await service.NextAsync(Task.FromResult(false), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task WithoutRunTimeSwitching_OnlyTheTickScans()
+    {
+        var tools = Uptrend();
+        var service = new MarketScanBackgroundService(tools.Scanner, new ScannerOptions(), tools.Rig.Time, NullLogger<MarketScanBackgroundService>.Instance);
+
+        Assert.Equal(MarketScanBackgroundService.ScanTrigger.Tick, await service.NextAsync(Task.FromResult(true), CancellationToken.None));
     }
 
     [Fact]

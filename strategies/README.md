@@ -42,7 +42,9 @@ Within 30 seconds the engine reads it, validates the version against the schema 
 What a switch affects:
 - New trades, from the next scan and trader run: order size, limits, filters, entry rules, stop and target distances.
 - Open positions too: the trend EMAs and `trendExits` decide trend exits from the next scan. Their stops and targets stay as they were when bought.
-- Nothing is cancelled or sold by a switch.
+- The engine scans at once instead of waiting for the next 5-minute scan, so sizes, signals and the coin ranking follow the new strategy straight away.
+- Holdings above the new strategy's caps are trimmed: in that scan the engine sells, at the bid and through the risk gate, only the part of a coin above `maxPositionQuotePerSymbol`, then the part of the total (with buys still working, as the strategy gate counts it) above `maxExposureFraction` of the allocation, largest holdings first. Coins within the caps, coins with an open order or a protective sell, and amounts below the exchange minimum are left alone, so the total can stay up to about one minimum order above its cap. Each sell is journaled (kind `order`, tool `strategy-trim`). It runs once per switch; while trading is halted or the portfolio can't be read, it waits for the next scan. A refused sell isn't tried again, and one still unfilled after 4 minutes is cancelled like a protective sell, so it never keeps a stop from selling; the strategy's limits then only block new buys.
+- Nothing is cancelled by a switch.
 
 Live trading has no selection yet: it runs the configured spec until live strategy changes are designed with #71.
 
