@@ -174,6 +174,15 @@ public sealed class ScannerTests
     }
 
     [Fact]
+    public void ExclusionDetails_GiveTheFigureAndTheLimit_InPercent()
+    {
+        Assert.Equal("Spread 0.31% is above the maximum 0.2%.", Assert.Single(Scan([Input(Features(spread: 0.0031m))]).Excluded).Detail);
+        Assert.Equal("Hourly ATR 6% is above the maximum 5%.", Assert.Single(Scan([Input(Features(atrFraction: 0.06m))]).Excluded).Detail);
+        Assert.Equal("24h volume 2,400 is below the minimum 100,000.", Assert.Single(Scan([Input(hourly: Hourly(volume: 1m))]).Excluded).Detail);
+        Assert.Equal("Only 5 hourly candles in the last 24h; 12 needed.", Assert.Single(Scan([Input(hourly: Hourly(count: 5))]).Excluded).Detail);
+    }
+
+    [Fact]
     public void TheEntryRules_AreCheckedBeforeTheSignalLimit()
     {
         var result = Scan(

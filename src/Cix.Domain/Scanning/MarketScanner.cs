@@ -265,7 +265,7 @@ public static class MarketScanner
         var f = input.Features;
 
         if (!input.Allowed)
-            return (null, Out("not-allowed", "Not in the risk allowlist (owner-only config/risk-limits.json)."));
+            return (null, Out("not-allowed", "Not among the tradable pairs (the owner adds them from the dashboard, within config/risk-limits.json)."));
         if (input.Pair is null)
             return (null, Out("not-listed", "The exchange doesn't list this pair."));
         if (!input.Pair.Active)
@@ -287,13 +287,13 @@ public static class MarketScanner
         var cost = RoundTripCost(f.SpreadFraction.Value, p);
 
         if (quoteVolume < p.MinQuoteVolume24h)
-            return (null, Out("low-volume", Inv($"24h volume {quoteVolume:0} is below {p.MinQuoteVolume24h:0}.")));
+            return (null, Out("low-volume", Inv($"24h volume {quoteVolume:N0} is below the minimum {p.MinQuoteVolume24h:N0}.")));
         if (f.SpreadFraction.Value > p.MaxSpreadFraction)
-            return (null, Out("wide-spread", Inv($"Spread {f.SpreadFraction.Value:0.####} is above {p.MaxSpreadFraction:0.####}.")));
+            return (null, Out("wide-spread", Inv($"Spread {f.SpreadFraction.Value:0.##%} is above the maximum {p.MaxSpreadFraction:0.##%}.")));
         if (f.AtrFraction.Value > p.MaxAtrFraction)
-            return (null, Out("too-volatile", Inv($"Hourly ATR {f.AtrFraction.Value:0.####} is above {p.MaxAtrFraction:0.####}.")));
+            return (null, Out("too-volatile", Inv($"Hourly ATR {f.AtrFraction.Value:0.##%} is above the maximum {p.MaxAtrFraction:0.##%}.")));
         if (f.AtrFraction.Value < cost * p.MinAtrToCostRatio)
-            return (null, Out("costs-exceed-volatility", Inv($"Hourly ATR {f.AtrFraction.Value:0.####} is under {p.MinAtrToCostRatio}× the round-trip cost {cost:0.####}.")));
+            return (null, Out("costs-exceed-volatility", Inv($"Hourly ATR {f.AtrFraction.Value:0.##%} is under {p.MinAtrToCostRatio:0.##}× the round-trip cost {cost:0.##%}.")));
 
         return (new Metrics(quoteVolume, volumeRatio, cost), null);
     }
