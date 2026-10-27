@@ -50,7 +50,7 @@ Live trading switches the same way from the dashboard's Live view, with a real-m
 
 ### Live versions
 
-A live spec must fit `config/risk-limits.live.json`, which is tighter than paper's (a 5 EUR daily loss and 25 EUR per coin), and its instructions don't say "paper". Each is a copy of a paper version, so the paper one stays as it ran:
+A live spec must fit `config/risk-limits.live.json`, which is tighter than paper's (a 100 EUR allocation, 20 EUR per order, 25 EUR per coin and a 5 EUR daily loss), and its instructions don't say "paper". Each is a copy of a paper version, so the paper one stays as it ran:
 
 | Live version | Copy of | What changed |
 |---|---|---|
