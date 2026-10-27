@@ -115,7 +115,7 @@ set_image() {
 # lease, which the old one gives up only when it stops (ADR-0013, docs/persistence.md): without this, the new revision
 # waits out its startup probe and fails. Only while the engine runs a replica: with none, nothing holds the lease.
 retire_old_revisions() {
-  local image="$1" deadline app replicas revision list names name ok=true
+  local image="$1" deadline app replicas revision names name ok=true
   app="$(get "$engine_id")" || return 1
   replicas="$(jq -r '.properties.template.scale.minReplicas // 0' <<<"$app")"
   (( replicas >= 1 )) || return 0
@@ -131,8 +131,20 @@ retire_old_revisions() {
     if (( $(date +%s) >= deadline )); then echo "::error::Azure listed no revision of $engine running $image after $update_timeout seconds."; return 1; fi
     sleep "$poll"
   done
-  list="$(get "$engine_id/revisions")" || return 1
-  mapfile -t names < <(jq -r --arg keep "$revision" '.value[] | select(.properties.active == true and .name != $keep) | .name' <<<"$list")
+  # Every page of the list: Azure keeps up to 100 inactive revisions.
+  local page url="https://management.azure.com$engine_id/revisions?api-version=$api" found="" attempt
+  while [[ -n "$url" ]]; do
+    [[ "$url" == "https://management.azure.com$engine_id/revisions?"* ]] || { echo "::error::Unexpected next page from Azure."; return 1; }
+    for attempt in 1 2 3; do
+      if page="$(az rest --method get --url "$url" -o json)"; then break; fi
+      if (( attempt == 3 )); then return 1; fi
+      sleep "$poll"
+    done
+    found+="$(jq -r --arg keep "$revision" 'if (.value | type) == "array" then .value[] | select(.properties.active == true and .name != $keep) | .name
+      else error("no revisions") end' <<<"$page")"$'\n' || return 1
+    url="$(jq -r '.nextLink // ""' <<<"$page")"
+  done
+  mapfile -t names < <(grep -v '^$' <<<"$found" || true)
   # Azure names an app's revisions <app>--<suffix>: anything else isn't put in a URL.
   for name in "${names[@]}"; do
     [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,99}$ && "$name" == "$engine--"* ]] || { echo "::error::Unexpected revision name from Azure."; return 1; }
@@ -267,6 +279,7 @@ set_image "$engine_id" "$engine_image"
 if (( min_replicas < 1 )); then
   echo "::notice::The engine runs no replica (minimum replicas 0, agents.startEngine false): its new image starts with it, so there is no health to wait for."
 else
+  # set_image returns once the app is provisioned, before the new revision is ready (the #109 deploy got that far).
   retire_old_revisions "$engine_image"
   deadline=$(( $(date +%s) + health_timeout ))
   while :; do

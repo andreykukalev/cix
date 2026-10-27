@@ -43,6 +43,8 @@ FAKE_AZ = textwrap.dedent(r'''
     method, url = opt("--method"), opt("--url")
     prefix = "https://management.azure.com" + s["base"]
     resource, _, query = url.partition("?")
+    page = 0
+    if query.startswith("api-version=2025-01-01&$skiptoken="): page = int(query.rpartition("=")[2]); query = "api-version=2025-01-01"
     if query != "api-version=2025-01-01" or not resource.startswith(prefix): sys.exit("ERROR: (NotFound) " + url)
     parts = resource[len(prefix):].split("/")
     kind, name, rest = parts[0], parts[1], parts[2:]
@@ -93,7 +95,10 @@ FAKE_AZ = textwrap.dedent(r'''
         if e.get("runningStatus"): props["runningStatus"] = e["runningStatus"]
         out({"properties": props})
     elif rest == ["revisions"]:
-        out({"value": [{"name": full(r["name"]), "properties": {"active": r["active"]}} for r in e["revisions"]]})
+        size = s["page_size"] or len(e["revisions"]) or 1
+        listed = {"value": [{"name": full(r["name"]), "properties": {"active": r["active"]}} for r in e["revisions"][page * size:(page + 1) * size]]}
+        if (page + 1) * size < len(e["revisions"]): listed["nextLink"] = resource + "?api-version=2025-01-01&$skiptoken=%d" % (page + 1)
+        out(listed)
     elif method == "post":
         rev = next((r for r in e["revisions"] if r["name"] == short(rest[1])), None) or sys.exit("ERROR: (NotFound) revision")
         if rest[2:] != ["deactivate"] or s["fail_deactivate"]: sys.exit("ERROR: (AuthorizationFailed) " + "/".join(rest))
@@ -150,7 +155,7 @@ def names(prefix, env):
 def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", registry_env=None, min_replicas=1,
         running_status=None, revisions=None, engine_image=None, job_images=None, missing_engine=False, healthy_after=2,
         running_value="Running", new_fails=False, fail_patch=None, rev_lag=0, prov_lag=1, stale=0, conflict_once=False,
-        flaky_every=0, fail_push=False, no_digest=False, fail_deactivate=False, lease_fails_after=6, revisions_mode="Single",
+        flaky_every=0, fail_push=False, no_digest=False, fail_deactivate=False, lease_fails_after=6, revisions_mode="Single", page_size=0,
         revision_names=None,
         timeout=5, update_timeout=20, args=(), rollback_state=None, expect_rc=0, expect_engine=None, expect_jobs=None, expect_in_output=(),
         expect_calls=(), never_calls=(), expect_rollback_file=False):
@@ -170,7 +175,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
             "healthy_after": healthy_after, "running_value": running_value, "new_fails": new_fails, "new_engine": new_engine,
             "fail_patch": fail_patch or {}, "rev_lag": rev_lag, "prov_lag": prov_lag, "stale": stale, "conflict_once": conflict_once,
             "flaky_every": flaky_every, "gets": 0, "fail_deactivate": fail_deactivate, "lease_fails_after": lease_fails_after,
-            "revisions_mode": revisions_mode, "revision_names": revision_names or {},
+            "revisions_mode": revisions_mode, "page_size": page_size, "revision_names": revision_names or {},
         }
         json.dump(state, open(os.path.join(d, "state.json"), "w"))
         for tool, body in (("az", FAKE_AZ), ("docker", FAKE_DOCKER)):
@@ -253,6 +258,9 @@ results = [
     run("an old revision that can't be stopped rolls back, rather than wait out the startup probe", fail_deactivate=True, expect_rc=1,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=[f"refused to stop the engine's revision {engine_dev}--rev-1", "Rolled back"],
         never_calls=["rev-2 is healthy"]),
+    run("a running revision on a later page of the list is stopped too", page_size=1,
+        revisions=[{"name": "rev-0", "image": old_engine, "active": False, "polls": 0}, {"name": "rev-1", "image": old_engine, "active": True, "polls": 0}],
+        expect_engine=new_engine, expect_jobs=new_agent, expect_calls=["rev-1/deactivate", "skiptoken=2"]),
     run("an engine set by hand to run several revisions is rolled back, none stopped", revisions_mode="Multiple", expect_rc=1,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["runs several revisions at once", "Rolled back"], never_calls=["deactivate"]),
     run("a revision name Azure wouldn't give is never put in a URL", revision_names={"rev-0": "ca-cix-dev-engine--x/../y"}, expect_rc=1,
@@ -286,8 +294,10 @@ results = [
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["failed (provisioning Succeeded, running Failed)", "Rolled back"]),
     run("an engine that never becomes healthy is rolled back after the timeout", healthy_after=None, timeout=1, expect_rc=1,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["wasn't healthy after 1 seconds", "Rolled back"]),
-    run("a job that can't be updated rolls everything back", fail_patch={jobs_dev[1]: [new_agent]}, expect_rc=1,
-        expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["Rolled back"]),
+    run("a job that can't be updated rolls everything back, stopping the new revision", fail_patch={jobs_dev[1]: [new_agent]}, expect_rc=1,
+        expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["Rolled back"], expect_calls=["rev-2/deactivate"]),
+    run("Azure not listing the new revision in time rolls back", rev_lag=1000, expect_rc=1, update_timeout=1,
+        expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["Azure listed no revision of", "Rolled back"]),
     run("an engine update refused by Azure is rolled back too", fail_patch={engine_dev: [new_engine]}, expect_rc=1,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["Rolled back"]),
     run("a failed rollback says so, and leaves the rollback file for the workflow's next step", new_fails=True,
