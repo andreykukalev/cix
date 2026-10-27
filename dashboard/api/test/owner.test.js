@@ -245,12 +245,13 @@ test('the pairs view is the owner\'s only', async () => {
   assert.equal(owner.jsonBody.mode, 'paper');
 });
 
-test("live's strategy view reads the live engine's database, with paper's explanations; requests stay paper's", async () => {
+test("live's strategy view reads the live engine's database, with paper's explanations as a stand-in; requests stay paper's", async () => {
   reads.length = 0;
   const live = await routes['owner-strategies'].handler(request({ query: 'mode=live' }), context);
   assert.equal(live.status, 200);
   const where = Object.fromEntries(reads.map((r) => [r.id ?? r.container, r.database]));
-  assert.deepEqual(where, { 'strategy-schema-paper': 'cix', state: 'cix-live', 'engine-status-live': 'cix-live' });
+  assert.deepEqual(where, { 'strategy-schema-live': 'cix-live', state: 'cix-live', 'engine-status-live': 'cix-live', 'strategy-schema-paper': 'cix' },
+    "live's own schema first; paper's explanations only while the live engine hasn't written its own (the fake has none)");
   reads.length = 0;
   await routes['owner-requests'].handler(request(), context);
   assert.deepEqual([...new Set(reads.map((r) => r.database))], ['cix']);

@@ -483,6 +483,7 @@ async function refreshActivity() {
     renderVolume(activity);
   } catch (error) {
     if (error instanceof SignedOut) { signedOut(); return; }
+    if (state.mode !== mode) return; // the other mode's failure
     state.activity = null;
     meta.textContent = t("Couldn't load trading activity: {error}", { error: error.message });
   }
@@ -1030,6 +1031,7 @@ async function showJournalDay(day, kind) {
     renderJournal();
   } catch (error) {
     if (error instanceof SignedOut) { signedOut(); return; }
+    if (state.mode !== mode) return; // the other mode's failure
     banner(t("Couldn't load the journal: {error}", { error: error.message }), true);
   }
 }
@@ -1149,6 +1151,8 @@ function setMode(mode) {
   state.activity = null;
   state.journal = null; // the other mode's journal day
   state.strategiesError = null;
+  document.getElementById('volume-cards').replaceChildren(); // not the other mode's activity while this one's loads
+  document.getElementById('volume-chart').replaceChildren();
   state.pairsError = null;
   try { localStorage.setItem('cix-mode', mode); } catch { /* storage may be unavailable */ }
   for (const button of document.querySelectorAll('[data-mode]')) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
