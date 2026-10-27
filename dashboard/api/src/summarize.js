@@ -182,6 +182,18 @@ function portfolio(status, paperAccount) {
   };
 }
 
+/** The engine's strategy selection, as the page needs it: no more than strategies.js passes on. */
+function strategySelection(selection) {
+  if (!selection || typeof selection !== 'object') return null;
+  return {
+    state: selection.state ?? null,
+    requested: selection.requested ?? null,
+    requestedAt: selection.requestedAt ?? null,
+    activatedAt: selection.activatedAt ?? null,
+    checkedAt: selection.checkedAt ?? null,
+  };
+}
+
 /**
  * @param {{mode: string, status: object|null, engineState: object|null, paperAccount: object|null, journal: object[], marketViews?: object[], stateDocs: object[], readErrors?: string[]}} input
  *   Document values (the `value` of state documents, the `entry` of journal documents). `marketViews` are the latest
@@ -202,6 +214,8 @@ function summarize(input, now) {
       ...engineHealth(status, now),
       startedAt: status?.startedAt ?? null,
       strategy: status?.strategy ?? null,
+      // Where the engine stands on the owner's latest strategy switch: the header and the Active strategy tile show it.
+      strategySelection: strategySelection(status?.strategySelection),
       halted: status?.halted ?? kill?.engaged ?? null,
       haltedBy: status?.haltedBy ?? (kill?.engaged ? kill.by ?? null : null),
       haltCategory: status?.haltCategory ?? (kill?.engaged ? 'Halted (the reason is in the journal).' : null),

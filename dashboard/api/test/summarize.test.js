@@ -7,6 +7,7 @@ const NOW = Date.parse('2026-10-25T13:00:00Z');
 
 const status = {
   mode: 'paper', updatedAt: '2026-10-25T12:59:30+00:00', startedAt: '2026-10-25T12:00:00+00:00', strategy: 'risky@v1#abc',
+  strategySelection: { state: 'active', requested: 'risky@v1', requestedBy: 'owner', requestedAt: '2026-10-25T12:30:00+00:00', problems: [], checkedAt: '2026-10-25T12:59:00+00:00', activatedAt: '2026-10-25T12:31:00+00:00' },
   halted: false, lastReconciledAt: '2026-10-25T12:58:00+00:00', lastReconcileAttemptAt: '2026-10-25T12:58:00+00:00',
   lastReconcileProblem: null, unquotedSymbols: [],
   lastScan: { at: '2026-10-25T12:57:57+00:00', ranked: '10', excluded: '0', entrySignals: '1', exitSignals: '0', signalKey: 'buy:SOL-EUR' },
@@ -108,4 +109,14 @@ test('the journal list shows a manual request\'s summary as the engine wrote it'
   const e = { id: 'm', at: '2026-10-25T12:00:00Z', kind: 'manual-request', actor: 'engine', summary: 'Owner request x: agent-assisted sell LINK-EUR, 0.5 of the position (worried)', data: { mode: 'agent' } };
   const view = summarize({ mode: 'paper', status: null, journal: [e], stateDocs: [] }, NOW);
   assert.deepEqual(view.activity, [{ id: 'm', at: e.at, kind: 'manual-request', actor: 'engine', runId: null, summary: e.summary }]);
+});
+
+test('the engine section says which strategy runs and how it was chosen, for the header and the Active strategy tile', () => {
+  const view = summarize({ mode: 'paper', status, engineState: null, paperAccount: null, journal: [], stateDocs: [] }, NOW);
+  assert.equal(view.engine.strategy, 'risky@v1#abc');
+  assert.deepEqual(view.engine.strategySelection, {
+    state: 'active', requested: 'risky@v1', requestedAt: '2026-10-25T12:30:00+00:00', activatedAt: '2026-10-25T12:31:00+00:00', checkedAt: '2026-10-25T12:59:00+00:00',
+  }, 'no more than the page needs: not who asked, nor the problems');
+  assert.equal(summarize({ mode: 'paper', status: { ...status, strategySelection: undefined }, journal: [], stateDocs: [] }, NOW).engine.strategySelection, null);
+  assert.equal(summarize({ mode: 'paper', status: null, journal: [], stateDocs: [] }, NOW).engine.strategySelection, null);
 });

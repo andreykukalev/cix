@@ -98,12 +98,14 @@ test('the site lets only the owner role into every page and API route', () => {
   assert.ok(config.routes.every((r) => !r.methods), 'no rule is limited to some methods, so no method slips past one');
 });
 
-test('only the signed-out page and its stylesheet are open, and they hold nothing about the account', () => {
+test('only the signed-out page, its stylesheet and the icon are open, and they hold nothing about the account', () => {
   const open = config.routes.filter((r) => !r.allowedRoles && !r.statusCode).map((r) => r.route);
-  assert.deepEqual(open.sort(), ['/signed-out.html', '/styles.css']);
+  assert.deepEqual(open.sort(), ['/favicon.svg', '/signed-out.html', '/styles.css']);
   const fs = require('node:fs');
   const page = fs.readFileSync(require.resolve('../../app/signed-out.html'), 'utf8');
   assert.doesNotMatch(page, /<script|\/api\//, 'no script and no API call on the open page');
+  const icon = fs.readFileSync(require.resolve('../../app/favicon.svg'), 'utf8');
+  assert.doesNotMatch(icon, /<script|<foreignObject|href=|\/api\//i, 'the icon is a plain drawing: no script, link or embedded page');
 });
 
 test('anyone else is sent to the Microsoft sign-in, or to the signed-out page; GitHub and X sign-in are off', () => {

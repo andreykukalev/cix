@@ -21,6 +21,9 @@
       "route": "/styles.css"
     },
     {
+      "route": "/favicon.svg"
+    },
+    {
       "route": "/api/*",
       "allowedRoles": [
         "owner"
