@@ -59,7 +59,7 @@ test('every engine status has words, and only final ones end the wait', () => {
     assert.ok(V.STATUS[status], status);
   }
   const done = V.requestState({ status: 'filled', final: true, outcome: { filledSize: '0.5', averagePrice: '10.2' } });
-  assert.deepEqual(done, { label: 'Filled', tone: 'ok', final: true, detail: null, filled: '0.5 at 10.2' });
+  assert.deepEqual(done, { label: 'Filled', tone: 'ok', final: true, detail: null, english: null, filled: '0.5 at 10.2' });
   const declined = V.requestState({ status: 'declined', final: true, outcome: { rationale: 'Trend still up.' } });
   assert.equal(declined.detail, 'Trend still up.');
   assert.equal(V.requestState({ status: 'awaiting-agent', final: false }).tone, 'pending');
@@ -195,4 +195,57 @@ test('the active strategy: name, risk profile and mode, and where it came from, 
   assert.equal(custom.profileKey, 'custom');
   assert.equal(V.activeStrategy({ strategy: 'safe@v1#1a', strategySelection: { state: 'unreadable', activatedAt: '2026-10-27T10:00:00Z' } }).source, 'dashboard',
     'a switch that ran stays the source while the database is unreadable');
+});
+
+test('a declined request says its reason once, in the page language, and the step does not repeat it', () => {
+  const declined = {
+    status: 'declined', final: true,
+    outcome: { rationale: 'Trend still up; hold.', rationaleRu: 'Тренд ещё вверх; держим.', reason: 'Trend still up; hold.', reasonRu: null },
+    events: [{ status: 'declined', by: 'trader', detail: 'Trend still up; hold.' }, { status: 'awaiting-agent', by: 'engine', detail: 'Sent to the trader to analyse.', detailRu: 'Передан трейдеру на анализ.' }],
+  };
+  assert.equal(V.requestState(declined, 'en').detail, 'Trend still up; hold.');
+  assert.equal(V.requestState(declined, 'ru').detail, 'Тренд ещё вверх; держим.');
+  assert.equal(V.requestState(declined, 'ru').english, 'Trend still up; hold.', 'the English it came from, for a hover');
+  assert.equal(V.requestState(declined, 'en').english, null);
+  assert.equal(V.stepDetail(declined.events[0], declined, 'ru'), null);
+  assert.equal(V.stepDetail(declined.events[1], declined, 'ru'), 'Передан трейдеру на анализ.');
+  assert.equal(V.stepDetail(declined.events[1], declined, 'en'), 'Sent to the trader to analyse.');
+  const placed = { status: 'filled', outcome: { rationale: 'Agreed.', reason: 'Within all limits.', reasonRu: 'В пределах всех лимитов.' } };
+  assert.equal(V.requestState(placed, 'ru').detail, 'Agreed. · В пределах всех лимитов.', 'no Russian rationale: the English as written');
+});
+
+test('the coins say why there is no buy: filtered out, a strategy rule, or held back, with the figure behind it', () => {
+  const view = {
+    briefing: {
+      scanAt: '2026-10-27T10:00:00Z',
+      market: [
+        { symbol: 'BTC-EUR', rank: 1, signal: 'buy', note: null },
+        { symbol: 'LINK-EUR', rank: 2, note: 'signal limit reached', detail: 'Passed every entry rule, but the strategy allows 1 buy signal(s) per scan and higher-ranked BTC-EUR took them.', detailRu: 'Прошла все правила входа…' },
+        { symbol: 'SOL-EUR', rank: 3, note: 'trend down', detail: 'The strategy buys only in an uptrend (EMA20 above EMA50); the trend is down.' },
+        { symbol: 'ETH-EUR', rank: 4, note: 'already held' },
+        { symbol: 'DOGE-EUR', rank: null, note: 'wide-spread', detail: 'Spread 0.31% is above the maximum 0.2%.' },
+        { symbol: 'XRP-EUR', rank: null, note: 'news', detail: 'Flagged by the market analyst until 2026-10-27 18:00 UTC.' },
+      ],
+    },
+    portfolio: { holdings: [{ symbol: 'ETH-EUR', valueQuote: 12.3 }] },
+  };
+  const rows = Object.fromEntries(V.coins(view, { tradable: [{ symbol: 'BTC-EUR' }, { symbol: 'VVV-EUR' }] }, 'en').map((r) => [r.symbol, r]));
+  assert.equal(rows['BTC-EUR'].why, null);
+  assert.deepEqual(rows['LINK-EUR'].why, { kind: 'blocked', label: 'Held back', text: 'signal limit reached', detail: view.briefing.market[1].detail });
+  assert.equal(rows['SOL-EUR'].why.kind, 'rule');
+  assert.equal(rows['ETH-EUR'].why.detail, 'Already in the portfolio: the strategy opens no second position in a coin.');
+  assert.deepEqual([rows['DOGE-EUR'].why.kind, rows['DOGE-EUR'].why.detail], ['filtered', 'Spread 0.31% is above the maximum 0.2%.']);
+  // The analyst's news flag is a block, not a market filter, although the scanner drops the coin before ranking.
+  assert.equal(rows['XRP-EUR'].why.kind, 'blocked');
+  // A pair just added shows at once, before the engine's first scan of it.
+  assert.deepEqual([rows['VVV-EUR'].why.kind, rows['VVV-EUR'].note, rows['VVV-EUR'].inScan], ['pending', 'waiting for its first scan', false]);
+  assert.equal(V.coins(view, null, 'ru').find((r) => r.symbol === 'LINK-EUR').why.detail, 'Прошла все правила входа…');
+});
+
+test('a pair with any balance or a working order can not be removed, and the page says why', () => {
+  const view = { portfolio: { holdings: [{ symbol: 'ETH-EUR', valueQuote: 0.04 }] }, cycle: { ordersInFlight: [{ symbol: 'SOL-EUR' }] } };
+  assert.equal(V.removeBlock('ETH-EUR', view), 'There is still a ETH balance (about 0.04 EUR). A pair can be removed only when its balance is zero: sell it first.');
+  assert.equal(V.removeBlock('SOL-EUR', view), 'An order in SOL-EUR is still working: cancel it or let it fill first.');
+  assert.equal(V.removeBlock('LINK-EUR', view), null);
+  assert.equal(V.removeBlock('LINK-EUR', null), null);
 });

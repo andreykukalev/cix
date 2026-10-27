@@ -16,6 +16,8 @@
 // holdings), and the scan rows carry moves as fractions, not prices. Text from the analyst comes from the web, so it is
 // length-capped here and the page renders it as text only; links must be https.
 
+const { engineTextRu } = require('./engineText');
+
 const MAX_HIGHLIGHTS = 5;
 const MAX_ATTENTION = 8;
 const VIEW_MAX_AGE_MS = 24 * 3600 * 1000; // the API reads today's and yesterday's journal, so 24 hours is always covered
@@ -33,7 +35,7 @@ const THRESHOLDS = Object.freeze({
 // Exclusion codes from the scanner worth a look: [severity, direction, reason, reason in Russian].
 const EXCLUSIONS = Object.freeze({
   'too-volatile': [2, 'risk', 'Excluded: too volatile to trade', 'Исключена: слишком волатильна для торговли'],
-  'wide-spread': [2, 'risk', 'Excluded: spread too wide (thin market)', 'Исключена: слишком широкий spread (низкая ликвидность)'],
+  'wide-spread': [2, 'risk', 'Excluded: spread too wide (thin market)', 'Исключена: слишком широкий спред (низкая ликвидность)'],
   stale: [1, 'watch', 'Excluded: no fresh market data', 'Исключена: нет свежих рыночных данных'],
 });
 
@@ -137,11 +139,14 @@ function marketRows(lastScan) {
       volumeRatio: num(r.volumeRatio),
       signal: typeof r.signal === 'string' ? r.signal : null,
       note: text(r.note, 80),
+      detail: text(r.detail, 300), // the scanner's figure and threshold behind the note
+      detailRu: engineTextRu(text(r.detail, 300)),
     }));
 }
 
 const pct = (x) => `${x > 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
 const sellWhy = (signal) => signal.replace(/^sell\s*/, '').replace(/[()]/g, '');
+const SELL_WHY_RU = { stop: 'стоп-лосс', target: 'тейк-профит', 'trend-down': 'тренд развернулся вниз', exit: 'выход' };
 
 /**
  * Coins that need a look, most pressing first: one item per coin with every reason (in English, and in Russian in
@@ -161,8 +166,8 @@ function attention(rows, avoid, held) {
       severity = Math.max(severity, s);
       dirs.add(dir);
     };
-    if (r.signal === 'buy') add(2, 'opportunity', 'Buy signal from the scanner', 'Сканер дал сигнал buy');
-    else if (r.signal?.startsWith('sell')) add(3, 'risk', `Sell signal: ${sellWhy(r.signal) || 'exit'}`, `Сигнал sell: ${sellWhy(r.signal) || 'exit'}`);
+    if (r.signal === 'buy') add(2, 'opportunity', 'Buy signal from the scanner', 'Сканер дал сигнал на покупку');
+    else if (r.signal?.startsWith('sell')) add(3, 'risk', `Sell signal: ${sellWhy(r.signal) || 'exit'}`, `Сигнал на продажу: ${SELL_WHY_RU[sellWhy(r.signal) || 'exit'] ?? sellWhy(r.signal)}`);
     if (r.return24h !== null && Math.abs(r.return24h) >= THRESHOLDS.move24h) {
       add(Math.abs(r.return24h) >= THRESHOLDS.bigMove24h ? 3 : 2, r.return24h < 0 ? 'risk' : 'opportunity', `${pct(r.return24h)} in 24h`, `${pct(r.return24h)} за 24 часа`);
     }
@@ -175,7 +180,7 @@ function attention(rows, avoid, held) {
     if (r.volatility !== null && r.volatility >= THRESHOLDS.volatility) {
       add(1, 'watch', `Volatile: ${(r.volatility * 100).toFixed(1)}% hourly range`, `Волатильность: часовой диапазон ${(r.volatility * 100).toFixed(1)}%`);
     }
-    if (avoided.has(r.symbol)) add(2, 'risk', 'Analyst: avoid new entries', 'Analyst: не открывать новые позиции');
+    if (avoided.has(r.symbol)) add(2, 'risk', 'Analyst: avoid new entries', 'Аналитик: не открывать новые позиции');
     // Excluded coins carry no numbers, only why: the abnormal ones are often the ones to look at.
     if (r.rank === null && Object.hasOwn(EXCLUSIONS, r.note ?? '')) add(...EXCLUSIONS[r.note]);
     if (severity === 0) continue;

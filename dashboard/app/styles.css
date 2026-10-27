@@ -120,6 +120,16 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line
 th { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; }
 td.num, th.num { text-align: right; }
 td.why { min-width: 260px; max-width: 560px; color: var(--muted); }
+.why-kind {
+  display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap;
+  background: var(--chip); color: var(--text, inherit);
+}
+.why-kind.filtered { background: var(--chip); color: var(--muted); }
+.why-kind.rule { background: var(--warn-bg); color: var(--warn); }
+.why-kind.blocked { background: var(--bad-bg); color: var(--bad); }
+.why-kind.pending { background: var(--ok-bg); color: var(--ok); }
+.why-detail { display: block; font-size: 12px; margin-top: 2px; }
+.coins-legend { margin: 8px 0 0; line-height: 1.7; }
 tbody tr:hover { background: var(--chip); }
 tbody tr.empty td { color: var(--muted); font-style: italic; }
 time { white-space: nowrap; }
@@ -305,6 +315,8 @@ ul.changes .open { color: var(--warn); }
 .chips { list-style: none; margin: 8px 0 12px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .chips li { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border-radius: 999px; background: var(--chip); font-size: 13px; }
 .chips li button { padding: 2px 8px; font-size: 12px; }
+.pairs-blocked { margin: -4px 0 12px; padding-left: 18px; }
+.pairs-blocked li.head { list-style: none; margin-left: -18px; }
 .inline-form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin: 0 0 8px; }
 .inline-form .field { display: grid; gap: 4px; font-size: 13px; }
 .inline-form select { min-width: 10em; }

@@ -117,6 +117,11 @@ function says(en, ru, cls) {
   return el('span', { class: cls, lang: p.lang, title: p.lang === 'ru' && en ? `EN: ${en}` : null, text: p.text ?? '' });
 }
 
+/** The engine's sentence in the page's language: its Russian from the API when it sent one, else the page's own (t). */
+function engineSays(en, ru) {
+  return state.lang === 'ru' && typeof ru === 'string' && ru.trim() ? ru : t(en);
+}
+
 function tile(id, tone, value, sub) {
   const node = document.getElementById(id);
   node.className = `tile ${tone ?? ''}`;
@@ -326,7 +331,7 @@ function renderCoins(view) {
   const blocked = trading ? V.requestsBlocked(view.engine) : null;
   if (blocked) document.getElementById('coins-meta').textContent += ` · ${t('requests paused: {reason}', { reason: blocked })}`;
   for (const node of document.querySelectorAll('#coins .paper-only')) node.hidden = !trading;
-  rows('coins', V.coins(view), (c) => {
+  rows('coins', V.coins(view, state.pairs?.mode === state.mode ? state.pairs : null, state.lang), (c) => {
     const r = scan.get(c.symbol) ?? {};
     const cells = [
       el('span', { class: 'chip', text: c.symbol }),
@@ -336,11 +341,20 @@ function renderCoins(view) {
       td(r.volatility === null || r.volatility === undefined ? '–' : `${(r.volatility * 100).toFixed(1)}%`, 'num'),
       td(r.volumeRatio === null || r.volumeRatio === undefined ? '–' : `${r.volumeRatio.toFixed(1)}×`, 'num'),
       c.signal ? el('span', { class: `badge ${c.signal === 'buy' ? 'ok' : 'bad'}`, text: t(c.signal) }) : '–',
-      td(c.note ? t(c.note) : '', 'muted'),
+      whyCell(c),
     ];
     if (trading) cells.push(td(tradeButtons(c), 'actions'));
     return cells;
   }, t('No scan yet.'));
+}
+
+/** Why there is no buy: the kind (filtered out, a strategy rule, held back, a new pair), the reason, and the figures behind it. */
+function whyCell(c) {
+  if (!c.why) return td(c.note ?? '', 'muted');
+  return td([
+    el('span', { class: `why-kind ${c.why.kind}`, text: c.why.label }), ' ', c.why.text,
+    c.why.detail ? el('span', { class: 'why-detail', text: c.why.detail }) : null,
+  ], 'why');
 }
 
 function tradeButtons(c) {
@@ -540,22 +554,27 @@ async function refreshRequests() {
 
 function renderRequests(items) {
   rows('requests', items, (r) => {
-    const st = V.requestState(r);
+    const st = V.requestState(r, state.lang);
     const steps = el('details', {}, el('summary', { text: t(r.events.length === 1 ? '{n} step' : '{n} steps', { n: r.events.length }) }),
-      el('ol', { class: 'steps' }, r.events.map((e) => el('li', {}, when(e.at), ` ${t('{status} by {by}', { status: t(e.status ?? ''), by: t(e.by ?? '?') })}${e.detail ? `: ${t(e.detail)}` : ''}`))));
+      el('ol', { class: 'steps' }, r.events.map((e) => {
+        const said = V.stepDetail(e, r, state.lang);
+        return el('li', {}, when(e.at), ` ${t('{status} by {by}', { status: t(e.status ?? ''), by: t(e.by ?? '?') })}${said ? `: ${said}` : ''}`);
+      })));
     return [
       when(r.createdAt), V.what(r), r.mode === 'direct' ? t('direct') : t('trader'),
       el('span', { class: `badge ${st.tone}`, text: st.label }),
-      td([st.filled ? `${t('Filled {filled}.', { filled: st.filled })} ` : '', st.detail ? t(st.detail) : (st.final ? '' : t('in progress'))].join(''), 'why'),
+      el('td', { class: 'why', title: st.english ? `EN: ${st.english}` : null },
+        [st.filled ? `${t('Filled {filled}.', { filled: st.filled })} ` : '', st.detail ?? (st.final ? '' : t('in progress'))].join('')),
       steps,
     ];
   }, t('No requests in the last 7 days.'));
 }
 
-function requestStatus(text, tone) {
+function requestStatus(text, tone, english) {
   const node = document.getElementById('request-status');
   node.hidden = !text;
   node.textContent = text ?? '';
+  if (english) node.title = `EN: ${english}`; else node.removeAttribute('title');
   node.className = `request-status ${tone ?? ''}`;
 }
 
@@ -634,9 +653,9 @@ function track(item) {
   state.pending.set(item.id, entry);
   if (state.view) renderCoins(state.view);
   const show = (it) => {
-    const st = V.requestState(it);
-    const extra = [st.filled ? t('filled {filled}', { filled: st.filled }) : null, st.detail ? t(st.detail) : null].filter(Boolean).join(' · ');
-    requestStatus(`${V.what(it)}: ${st.label}${extra ? ` (${extra})` : ''}${st.final ? '' : '…'}`, st.final ? st.tone : 'pending');
+    const st = V.requestState(it, state.lang);
+    const extra = [st.filled ? t('filled {filled}', { filled: st.filled }) : null, st.detail].filter(Boolean).join(' · ');
+    requestStatus(`${V.what(it)}: ${st.label}${extra ? ` (${extra})` : ''}${st.final ? '' : '…'}`, st.final ? st.tone : 'pending', st.english);
     return st.final;
   };
   show(item);
@@ -746,7 +765,7 @@ function renderStrategies(view) {
   rows('switches', view.requests, (r) => [
     when(r.createdAt), `${r.name}@v${r.version}${r.note ? ` · ${r.note}` : ''}`,
     el('span', { class: `badge ${{ accepted: 'ok', new: 'pending', superseded: '', invalid: 'bad', expired: 'warn' }[r.status] ?? 'warn'}`, text: t(r.status) }),
-    td(r.detail ? t(r.detail) : (r.status === 'new' ? t('waiting for the engine') : ''), 'why'),
+    td(r.detail ? engineSays(r.detail, r.detailRu) : (r.status === 'new' ? t('waiting for the engine') : ''), 'why'),
   ], view.editable ? t('No switches in the last 7 days.') : t('Live has no switches yet.'));
 }
 
@@ -854,6 +873,7 @@ async function refreshPairs() {
     state.pairs = view;
     state.pairsError = null;
     renderPairs(view);
+    if (state.view) renderCoins(state.view); // the Coins table lists tradable pairs the scan hasn't covered yet
   } catch (error) {
     if (error instanceof SignedOut) { signedOut(); return; }
     state.pairsError = error.message;
@@ -873,12 +893,18 @@ function renderPairs(view) {
     view.changedAt ? t('changed {ago}', { ago: ago(view.changedAt) }) : null,
   ].filter(Boolean).join(' · ');
   document.getElementById('pairs-note').textContent = note;
+  const blockedPairs = [];
   document.getElementById('pairs-tradable').replaceChildren(...(view.tradable.length ? view.tradable.map((p) => {
-    const remove = el('button', { type: 'button', class: 'ghost', title: t('Stop trading {symbol}', { symbol: p.symbol }), text: p.pending === 'remove' ? t('removing…') : t('Remove') });
-    remove.disabled = busy || !!p.pending || view.tradable.length <= 1;
+    const blocked = p.pending ? null : V.removeBlock(p.symbol, state.view?.mode === state.mode ? state.view : null);
+    const remove = el('button', { type: 'button', class: 'ghost', title: blocked ?? t('Stop trading {symbol}', { symbol: p.symbol }), text: p.pending === 'remove' ? t('removing…') : t('Remove') });
+    remove.disabled = busy || !!p.pending || view.tradable.length <= 1 || !!blocked;
     remove.addEventListener('click', () => openPair('remove', p.symbol));
+    if (blocked) blockedPairs.push(el('li', {}, el('strong', { text: p.symbol }), `: ${blocked}`));
     return el('li', {}, el('span', { text: p.symbol }), remove);
   }) : [el('li', { class: 'muted', text: t('No pairs listed yet.') })]));
+  const blockedList = document.getElementById('pairs-blocked');
+  blockedList.hidden = !blockedPairs.length;
+  blockedList.replaceChildren(...(blockedPairs.length ? [el('li', { class: 'head', text: t("Remove is off while a pair still has a balance or a working order; the engine refuses it too:") }), ...blockedPairs] : []));
 
   const form = document.getElementById('pairs-add');
   const choice = document.getElementById('pairs-choice');
@@ -892,7 +918,7 @@ function renderPairs(view) {
   rows('pair-requests', view.requests, (r) => [
     when(r.createdAt), `${t(r.action === 'remove' ? 'Remove {symbol}' : 'Add {symbol}', { symbol: r.symbol ?? '?' })}${r.note ? ` · ${r.note}` : ''}`,
     el('span', { class: `badge ${{ accepted: 'ok', new: 'pending', invalid: 'bad', rejected: 'bad', expired: 'warn' }[r.status] ?? 'warn'}`, text: t(r.status) }),
-    td(r.detail ? t(r.detail) : (r.status === 'new' ? t('waiting for the engine') : ''), 'why'),
+    td(r.detail ? engineSays(r.detail, r.detailRu) : (r.status === 'new' ? t('waiting for the engine') : ''), 'why'),
   ], view.editable ? t('No pair changes in the last 7 days.') : t('Live has no pair changes.'));
 }
 
@@ -958,7 +984,8 @@ function trackPair(item) {
       clearInterval(timer);
       state.pairPending = false;
       requestStatus(text, tone);
-      refreshPairs();
+      refresh(); // the engine's status and the pairs: the Coins table shows the change at once, then its first scan
+      if (state.tab !== 'coins') refreshPairs();
     };
     if (Date.now() - started > 5 * 60_000) { stop(t('{label}: no answer after 5 minutes; see Your pair changes.', { label }), 'warn'); return; }
     try {
@@ -966,7 +993,7 @@ function trackPair(item) {
       if (!response.ok) return; // not readable yet, or offline for a moment
       const it = await response.json();
       if (it.status === 'new') return;
-      stop(`${label}: ${t(it.status)}. ${it.detail ? t(it.detail) : ''}`.trim(), it.status === 'accepted' ? 'ok' : 'bad');
+      stop(`${label}: ${t(it.status)}. ${it.detail ? engineSays(it.detail, it.detailRu) : ''}`.trim(), it.status === 'accepted' ? 'ok' : 'bad');
     } catch (error) {
       if (error instanceof SignedOut) { clearInterval(timer); signedOut(); }
     }

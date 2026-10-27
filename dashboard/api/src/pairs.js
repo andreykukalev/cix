@@ -6,6 +6,7 @@
 // dashboard's writer can only create documents in the requests container (ADR-0015, ADR-0016). Pure functions: tested on
 // their own.
 
+const { engineTextRu } = require('./engineText');
 const { cleanNote, RequestError } = require('./requests');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -57,6 +58,7 @@ function pairRequestItem(doc) {
     note: doc.note ?? null,
     status: doc.status ?? 'new',
     detail: last.detail ?? null,
+    detailRu: engineTextRu(last.detail),
     updatedAt: doc.updatedAt ?? null,
   };
 }

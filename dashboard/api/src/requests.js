@@ -3,6 +3,8 @@
 // requests container, where the engine picks them up. The engine checks everything again and is the only thing that acts
 // on a request; this side only makes sure what it writes is well formed. Pure functions: tested on their own.
 
+const { engineTextRu } = require('./engineText');
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SYMBOL = /^[A-Z0-9]{2,12}-[A-Z]{3,4}$/;
 const MAX_NOTE = 280;
@@ -91,8 +93,10 @@ function historyItem(doc) {
     outcome: {
       rule: o.rule ?? null,
       reason: o.reason ?? null,
+      reasonRu: engineTextRu(o.reason),
       decidedBy: o.decidedBy ?? null,
       rationale: o.rationale ?? null,
+      rationaleRu: o.rationaleRu ?? null,
       requestedSize: o.requestedSize ?? null,
       requestedPrice: o.requestedPrice ?? null,
       approvedSize: o.approvedSize ?? null,
@@ -100,7 +104,9 @@ function historyItem(doc) {
       filledSize: o.filledSize ?? null,
       averagePrice: o.averagePrice ?? null,
     },
-    events: (Array.isArray(doc.events) ? doc.events : []).map((e) => ({ at: e.at ?? null, status: e.status ?? null, by: e.by ?? null, detail: e.detail ?? null })),
+    events: (Array.isArray(doc.events) ? doc.events : []).map((e) => ({
+      at: e.at ?? null, status: e.status ?? null, by: e.by ?? null, detail: e.detail ?? null, detailRu: engineTextRu(e.detail),
+    })),
   };
 }
 

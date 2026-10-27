@@ -320,6 +320,24 @@ public sealed class RiskGateTests
     }
 
     [Fact]
+    public async Task TradableSymbols_SignalAChange_OnlyWhenTheListChanges()
+    {
+        var tradable = new TradableSymbols(OpenLimits());
+        var wait = tradable.WaitForChangeAsync(tradable.Version, CancellationToken.None);
+        Assert.False(wait.IsCompleted);
+
+        Assert.Empty(tradable.TrySet([Btc], Now)); // the same list: nothing to rescan
+        Assert.False(wait.IsCompleted);
+        Assert.NotEmpty(tradable.TrySet([], Now)); // refused: nothing changed
+        Assert.False(wait.IsCompleted);
+
+        Assert.Empty(tradable.TrySet([Btc, Sol], Now));
+        await wait.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, tradable.Version);
+        Assert.True(tradable.WaitForChangeAsync(0, CancellationToken.None).IsCompleted); // a change made while no one waited
+    }
+
+    [Fact]
     public void Constructor_ListForOtherLimits_Throws()
     {
         var tradable = new TradableSymbols(OpenLimits());

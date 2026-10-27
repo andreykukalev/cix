@@ -119,6 +119,24 @@ public sealed class ScannerFilterTests
     }
 
     [Fact]
+    public async Task TheStatusIsWritten_AsSoonAsAScanFinishes_NotOnlyEachMinute()
+    {
+        var tools = new ToolRig(ToolRig.Observer with { AllowedTools = ["scan_market"] });
+        ScannerServiceTests.SeedHourly(tools, 20m);
+        var status = new EngineStatusService(
+            tools.Rig.Execution, tools.Rig.KillSwitch, tools.Rig.State, Rig.Limits, new TradingContext(TradingMode.Paper), new InMemoryEngineStatusStore(),
+            new DependencyHealth(), tools.Rig.Time, NullLogger<EngineStatusService>.Instance, tools.Scanner, tools.Views, tools.Specs);
+        using var timer = new PeriodicTimer(TimeSpan.FromHours(1)); // the minute tick, far off
+
+        var next = status.NextAsync(timer, CancellationToken.None);
+        Assert.False(next.IsCompleted);
+        await tools.Scanner.ScanAsync(CancellationToken.None);
+
+        Assert.True(await next.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(status.NextAsync(timer, CancellationToken.None).IsCompleted); // once per scan
+    }
+
+    [Fact]
     public void Changes_ListOnlyWhatDiffers()
     {
         Assert.Empty(ScannerFilterRecorder.Changes(Strict, Strict with { }));

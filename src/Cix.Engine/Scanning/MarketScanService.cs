@@ -128,6 +128,19 @@ public sealed partial class MarketScanService(
     /// <summary>The most recent scan, or null before the first.</summary>
     public ScanResult? Latest { get; private set; }
 
+    private TaskCompletionSource _scanned = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private long _scans;
+
+    /// <summary>How many scans have finished since start.</summary>
+    public long Scans => Interlocked.Read(ref _scans);
+
+    /// <summary>Completes once a scan has finished after <paramref name="seen"/> (a <see cref="Scans"/>): the status is written then.</summary>
+    public Task WaitForScanAsync(long seen, CancellationToken cancellationToken)
+    {
+        var scanned = Volatile.Read(ref _scanned); // before the count: a scan in between shows in the count
+        return Scans != seen ? Task.CompletedTask : scanned.Task.WaitAsync(cancellationToken);
+    }
+
     public bool Halted => killSwitch.State.Engaged;
 
     /// <summary>True when the active spec lets agents call scan_market: the trader then runs on signals, not on a timer.</summary>
@@ -238,6 +251,8 @@ public sealed partial class MarketScanService(
             var result = await RunAsync(spec, parameters, cancellationToken).ConfigureAwait(false);
             await RecordNewSignalsAsync(result, spec).ConfigureAwait(false);
             Latest = result;
+            Interlocked.Increment(ref _scans);
+            Interlocked.Exchange(ref _scanned, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
             await RecordFiltersAsync(result, parameters, spec).ConfigureAwait(false);
             return result;
         }
@@ -617,10 +632,17 @@ public sealed partial class MarketScanBackgroundService(
     ScannerOptions options,
     TimeProvider time,
     ILogger<MarketScanBackgroundService> logger,
-    RuntimeStrategySpecs? specs = null) : BackgroundService
+    RuntimeStrategySpecs? specs = null,
+    TradableSymbols? tradable = null) : BackgroundService
 {
     /// <summary>What starts the next scan.</summary>
-    internal enum ScanTrigger { Tick, Switch, Stopped }
+    internal enum ScanTrigger { Tick, Switch, Pairs, Stopped }
+
+    /// <summary>
+    /// After the owner adds or removes a pair, the scan waits this long: time for the market data poller to load a new pair's
+    /// quote and hourly candles, so the scan judges it on data rather than reporting it stale.
+    /// </summary>
+    public static readonly TimeSpan PairsSettle = TimeSpan.FromSeconds(20);
 
     /// <summary>The spec version the last scan started after; a newer one means a switch to scan for.</summary>
     private long _seen = specs?.Version ?? 0;
@@ -628,35 +650,59 @@ public sealed partial class MarketScanBackgroundService(
     /// <summary>The wait for a switch after <see cref="_seen"/>, kept across ticks so waits don't pile up.</summary>
     private Task? _changed;
 
+    /// <summary>The tradable list's version the last scan started after; a newer one means pairs to scan.</summary>
+    private long _pairsSeen = tradable?.Version ?? 0;
+
+    /// <summary>The wait for a pair change after <see cref="_pairsSeen"/>.</summary>
+    private Task? _pairsChanged;
+
     /// <summary>A switch whose trim hasn't been judged yet (the scan failed, or trading was halted): the next scans try it.</summary>
     private bool _trimPending;
 
     /// <summary>
-    /// Waits for <paramref name="tick"/> (false once the timer stops) or a strategy switch, whichever comes first. A switch is
-    /// known by the spec's version, not by which wait ended first, so one made while the tick was also due isn't missed.
+    /// Waits for <paramref name="tick"/> (false once the timer stops), a strategy switch or a change to the tradable pairs,
+    /// whichever comes first. A change is known by its version, not by which wait ended first, so one made while the tick was
+    /// also due isn't missed. A switch comes before a pair change: its scan covers the new pairs too.
     /// </summary>
     internal async Task<ScanTrigger> NextAsync(Task<bool> tick, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tick);
-        if (specs is null)
+        if (specs is null && tradable is null)
             return await tick.ConfigureAwait(false) ? ScanTrigger.Tick : ScanTrigger.Stopped;
         while (true)
         {
-            _changed ??= specs.WaitForChangeAsync(_seen, cancellationToken);
-            await Task.WhenAny(tick, _changed).ConfigureAwait(false);
+            if (specs is not null)
+                _changed ??= specs.WaitForChangeAsync(_seen, cancellationToken);
+            if (tradable is not null)
+                _pairsChanged ??= tradable.WaitForChangeAsync(_pairsSeen, cancellationToken);
+            await Task.WhenAny(new[] { tick, _changed, _pairsChanged }.OfType<Task>()).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            if (specs.Version != _seen)
+            if (specs is not null && specs.Version != _seen)
             {
                 _seen = specs.Version;
                 _changed = null;
                 _trimPending = true;
+                if (tradable is not null)
+                    (_pairsSeen, _pairsChanged) = (tradable.Version, null); // this scan covers them
                 LogSwitchScan(logger, specs.Active?.Label ?? "none");
                 return ScanTrigger.Switch;
             }
 
+            if (tradable is not null && tradable.Version != _pairsSeen)
+            {
+                _pairsSeen = tradable.Version;
+                _pairsChanged = null;
+                LogPairsScan(logger, PairsSettle.TotalSeconds);
+                return ScanTrigger.Pairs;
+            }
+
             if (tick.IsCompleted)
                 return await tick.ConfigureAwait(false) ? ScanTrigger.Tick : ScanTrigger.Stopped;
-            _changed = null; // ended without a newer version: wait again
+            // Ended without a newer version: wait again.
+            if (_changed?.IsCompleted == true)
+                _changed = null;
+            if (_pairsChanged?.IsCompleted == true)
+                _pairsChanged = null;
         }
     }
 
@@ -705,7 +751,9 @@ public sealed partial class MarketScanBackgroundService(
             if (trigger == ScanTrigger.Stopped)
                 return;
             if (trigger == ScanTrigger.Tick)
-                tick = null; // a switch leaves the pending tick for the next round
+                tick = null; // a switch or a pair change leaves the pending tick for the next round
+            if (trigger == ScanTrigger.Pairs)
+                await Task.Delay(PairsSettle, time, stoppingToken).ConfigureAwait(false);
             await ScanOnceAsync(stoppingToken).ConfigureAwait(false);
         }
     }
@@ -729,6 +777,9 @@ public sealed partial class MarketScanBackgroundService(
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Strategy switched to {Strategy}: scanning now")]
     private static partial void LogSwitchScan(ILogger logger, string strategy);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Tradable pairs changed: scanning in {Seconds} seconds")]
+    private static partial void LogPairsScan(ILogger logger, double seconds);
 }
 
 public static class ScannerRegistration

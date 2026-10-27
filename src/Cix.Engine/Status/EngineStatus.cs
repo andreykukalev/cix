@@ -11,7 +11,8 @@ namespace Cix.Engine.Status;
 /// The engine's status for people and the dashboard, rewritten every minute as the <c>engine-status-&lt;mode&gt;</c> document
 /// in the state container (docs/persistence.md). Built only from what the engine already holds in memory: building it makes
 /// no exchange call and changes no state, and nothing reads it back, so it can't affect trading. It holds fixed codes and
-/// categories, never free text that could carry order IDs or amounts (those stay in the journal).
+/// categories, never free text that could carry order IDs or account amounts (those stay in the journal); the scan rows' details
+/// are the scanner's own sentences, from market data and the strategy's settings.
 /// </summary>
 /// <param name="UpdatedAt">When this was written: the engine's heartbeat, and its last successful database write.</param>
 /// <param name="HaltedBy">What engaged the kill switch: <c>owner</c>, <c>reconciler</c>, <c>safety-monitor</c>, <c>execution</c> or <c>engine</c>.</param>
@@ -70,12 +71,16 @@ public sealed record ScanStatus(
 
 /// <summary>
 /// One symbol in the latest scan: how it moved and what the scanner made of it. Moves and volatility are fractions
-/// (0.05 = 5%); no prices. Excluded symbols carry only the reason.
+/// (0.05 = 5%); no prices. Excluded symbols carry the filter's code and its sentence.
 /// </summary>
 /// <param name="Volatility">Hourly ATR as a fraction of the price.</param>
 /// <param name="VolumeRatio">The last hour's volume against the 24h hourly average.</param>
 /// <param name="Signal"><c>buy</c>, <c>sell (stop|target|trend-down)</c>, or null.</param>
-/// <param name="Note">Why there is no entry (for example <c>trend down</c>), or why the symbol was excluded.</param>
+/// <param name="Note">Why there is no entry (for example <c>trend down</c>), or the code of the filter that excluded the symbol.</param>
+/// <param name="Detail">
+/// The scanner's sentence behind <paramref name="Note"/>: the figure and the threshold it was held to (for example
+/// <c>Spread 0.31% is above the maximum 0.2%.</c>). Written by the scanner from market data and the strategy's settings only.
+/// </param>
 public sealed record MarketRow(
     string Symbol,
     int? Rank,
@@ -85,7 +90,8 @@ public sealed record MarketRow(
     decimal? Volatility,
     decimal? VolumeRatio,
     string? Signal,
-    string? Note);
+    string? Note,
+    string? Detail = null);
 
 public sealed record MarketViewStatus(string Regime, DateTimeOffset RecordedAt, DateTimeOffset ValidUntil, bool Active, IReadOnlyList<string> Avoid);
 
@@ -203,9 +209,9 @@ public sealed partial class EngineStatusService(
         return scan.Ranked.OrderBy(r => r.Rank)
             .Select(r => new MarketRow(
                 r.Symbol, r.Rank, r.Trend.ToString().ToLowerInvariant(), Round(r.Return1h), Round(r.Return24h), Round(r.AtrFraction),
-                Round(r.VolumeRatio, 2), Signal(r.Symbol), r.NoEntryReason))
+                Round(r.VolumeRatio, 2), Signal(r.Symbol), r.NoEntryReason, r.NoEntryDetail))
             .Concat(scan.Excluded.OrderBy(x => x.Symbol, StringComparer.Ordinal)
-                .Select(x => new MarketRow(x.Symbol, null, null, Round(x.Return1h), Round(x.Return24h), null, null, Signal(x.Symbol), x.Reason)))
+                .Select(x => new MarketRow(x.Symbol, null, null, Round(x.Return1h), Round(x.Return24h), null, null, Signal(x.Symbol), x.Reason, x.Detail)))
             .ToList();
     }
 
@@ -320,12 +326,40 @@ public sealed partial class EngineStatusService(
         using var timer = new PeriodicTimer(Interval, time);
         try
         {
-            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
+            while (await NextAsync(timer, stoppingToken).ConfigureAwait(false))
                 await WriteOnceAsync(stoppingToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
         }
+    }
+
+    private Task<bool>? _tick;
+    private Task? _scanned;
+    private long _scansSeen = scanner?.Scans ?? 0;
+
+    /// <summary>
+    /// Waits for the next minute or the end of a scan, whichever comes first (false once the timer stops): a scan's result,
+    /// a newly added pair's first one among them, reaches the dashboard at once rather than up to a minute later.
+    /// </summary>
+    internal async Task<bool> NextAsync(PeriodicTimer timer, CancellationToken cancellationToken)
+    {
+        _tick ??= timer.WaitForNextTickAsync(cancellationToken).AsTask();
+        if (scanner is not null)
+            _scanned ??= scanner.WaitForScanAsync(_scansSeen, cancellationToken);
+        await Task.WhenAny(new[] { _tick, _scanned }.OfType<Task>()).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (scanner is not null && _scanned?.IsCompleted == true)
+        {
+            _scansSeen = scanner.Scans;
+            _scanned = null;
+        }
+
+        if (!_tick.IsCompleted)
+            return true;
+        var ticked = await _tick.ConfigureAwait(false);
+        _tick = null;
+        return ticked;
     }
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Engine status could not be built ({Error}); trading is unaffected")]

@@ -8,6 +8,8 @@ namespace Cix.Domain.Risk;
 public sealed class TradableSymbols
 {
     private Snapshot _current;
+    private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private long _version;
 
     public TradableSymbols(RiskLimits limits, DateTimeOffset? since = null)
     {
@@ -25,6 +27,19 @@ public sealed class TradableSymbols
     public IReadOnlySet<string> Current => Volatile.Read(ref _current).Symbols;
 
     public bool Contains(string symbol) => Current.Contains(symbol);
+
+    /// <summary>How many times the list has changed since start.</summary>
+    public long Version => Interlocked.Read(ref _version);
+
+    /// <summary>
+    /// Completes once the list has changed since <paramref name="seen"/> (a <see cref="Version"/>): at once if it already has,
+    /// so a change made while the caller was busy isn't missed. The scanner rescans on it, so a new pair shows without waiting.
+    /// </summary>
+    public Task WaitForChangeAsync(long seen, CancellationToken cancellationToken)
+    {
+        var changed = Volatile.Read(ref _changed); // before the version: a change in between shows in the version
+        return Version != seen ? Task.CompletedTask : changed.Task.WaitAsync(cancellationToken);
+    }
 
     /// <summary>When <paramref name="symbol"/> became tradable (<see cref="DateTimeOffset.MinValue"/> for those there from the start), or null.</summary>
     public DateTimeOffset? AddedAt(string symbol) =>
@@ -59,6 +74,12 @@ public sealed class TradableSymbols
         var previous = Volatile.Read(ref _current);
         var addedAt = set.ToDictionary(s => s, s => previous.AddedAt.TryGetValue(s, out var since) ? since : at, StringComparer.Ordinal);
         Volatile.Write(ref _current, new Snapshot(set, addedAt));
+        if (!previous.Symbols.SetEquals(set))
+        {
+            Interlocked.Increment(ref _version);
+            Interlocked.Exchange(ref _changed, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+        }
+
         return problems;
     }
 

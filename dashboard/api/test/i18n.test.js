@@ -59,7 +59,8 @@ test('every label the page looks up has its Russian: statuses, selections, profi
   const labels = [
     ...Object.values(V.STATUS).map((s) => s.label), ...Object.values(V.SELECTION).map((s) => s.label),
     ...Object.values(V.PROFILES).flatMap((p) => [p.title, p.profile]), ...Object.values(V.SELL_DESCRIPTIONS), ...Object.values(V.PORTIONS),
-    'Custom', 'Manual', 'May (month)',
+    ...Object.values(V.BLOCK_DETAILS), ...Object.values(V.WHY_LABELS),
+    'Custom', 'Manual', 'May (month)', 'strategy exposure cap reached', 'cooldown until 13:00 UTC',
   ];
   assert.deepEqual(labels.filter((k) => !I.has(k)), []);
 });
