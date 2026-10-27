@@ -179,7 +179,9 @@ public static partial class StrategySchema
             new("maxDrawdownFraction", "Drawdown limit", "A fall of this share from the highest equity stops new buys until the owner resumes trading.", Inv(limits.MaxDrawdownFraction), "risk-limits"),
             new("maxOrdersPerMinute", "Orders per minute", "The most orders of any kind in one minute.", Inv(limits.MaxOrdersPerMinute), "risk-limits"),
             new("maxPriceDeviationFraction", "Price band", "An order's limit price must be within this share of the current price.", Inv(limits.MaxPriceDeviationFraction), "risk-limits"),
-            new("allowedSymbols", "Tradable coins", "Only these coins can be bought or sold.", string.Join(", ", limits.AllowedSymbols.Order(StringComparer.Ordinal)), "risk-limits"),
+            limits.AllowedQuoteCurrency is null
+                ? new MandatoryLimit("allowedSymbols", "Permitted coins", "Only these coins can be bought or sold. The owner can turn them off and on again from the Coins tab.", string.Join(", ", limits.AllowedSymbols.Order(StringComparer.Ordinal)), "risk-limits")
+                : new MandatoryLimit("allowedSymbols", "Permitted coins", string.Create(CultureInfo.InvariantCulture, $"Any pair in {limits.AllowedQuoteCurrency} that the exchange lists, up to {limits.MaxTradableSymbols} at once; the owner adds and removes them from the Coins tab."), string.Join(", ", limits.AllowedSymbols.Order(StringComparer.Ordinal)) + string.Create(CultureInfo.InvariantCulture, $" and any {limits.AllowedQuoteCurrency} pair, at most {limits.MaxTradableSymbols}"), "risk-limits"),
             new("minExitDistanceFraction", "Least stop and target distance", "A buy's stop and target must be at least this share away from its price.", Inv(MarketScanner.MinExitDistanceFraction), "engine"),
             new("protectiveExits", "Stops and targets watched", "The engine sells by itself when a position reaches its stop or target, between agent runs too.", "on", "engine"),
         ];
@@ -244,8 +246,8 @@ public static partial class StrategySchema
             errors.Add("parameters.timeframe must be \"1h\": the scanner works on hourly candles.");
         if (spec.Parameters.TryGetValue("symbols", out var symbols)
             && (symbols.ValueKind != JsonValueKind.Array || symbols.GetArrayLength() > 20
-                || symbols.EnumerateArray().Any(s => s.ValueKind != JsonValueKind.String || !limits.AllowedSymbols.Contains(s.GetString()!, StringComparer.Ordinal))))
-            errors.Add("parameters.symbols must be a list of at most 20 symbols from the mandatory allowlist.");
+                || symbols.EnumerateArray().Any(s => s.ValueKind != JsonValueKind.String || !limits.Permits(s.GetString()!))))
+            errors.Add("parameters.symbols must be a list of at most 20 symbols the mandatory limits permit.");
 
         if (spec.Parameters.TryGetValue(Scanner, out var scanner))
         {

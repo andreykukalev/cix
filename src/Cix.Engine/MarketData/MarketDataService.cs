@@ -36,11 +36,26 @@ public static class MarketDataRegistration
     /// <summary>Registers the poller for <paramref name="symbols"/> (the risk gate's allowlist) and the feature service.</summary>
     public static IServiceCollection AddCixMarketData(this IServiceCollection services, MarketDataOptions options, IEnumerable<string> symbols)
     {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(symbols);
         var symbolList = MarketDataPoller.NormaliseSymbols(symbols);
-        options.Validate(symbolList.Count);
+        return services.AddCixMarketData(options, () => symbolList, symbolList.Count);
+    }
+
+    /// <summary>
+    /// Registers the poller for the pairs tradable now (<paramref name="universe"/>, which follows the owner's run-time list),
+    /// checked against the rate limit for <paramref name="maxSymbols"/> of them, and the feature service.
+    /// </summary>
+    public static IServiceCollection AddCixMarketData(this IServiceCollection services, MarketDataOptions options, Scanning.MarketUniverse universe, int maxSymbols)
+    {
+        ArgumentNullException.ThrowIfNull(universe);
+        return services.AddCixMarketData(options, () => universe.Tradable, maxSymbols);
+    }
+
+    private static IServiceCollection AddCixMarketData(this IServiceCollection services, MarketDataOptions options, Func<IReadOnlyList<string>> symbols, int maxSymbols)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate(Math.Max(symbols().Count, maxSymbols));
 
         services.AddSingleton(options);
         services.AddSingleton<ICandleStore>(new InMemoryCandleStore());
@@ -53,7 +68,8 @@ public static class MarketDataRegistration
             sp.GetRequiredService<MarketState>(),
             sp.GetServices<IQuoteListener>(),
             options,
-            symbolList,
+            symbols,
+            maxSymbols,
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<ILogger<MarketDataPoller>>()));
         services.AddHostedService<MarketDataService>();

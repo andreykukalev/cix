@@ -18,7 +18,7 @@ public sealed partial class MarketDataPoller
     private readonly MarketState _state;
     private readonly IReadOnlyList<IQuoteListener> _listeners;
     private readonly MarketDataOptions _options;
-    private readonly IReadOnlyList<string> _symbols;
+    private readonly Func<IReadOnlyList<string>> _symbols;
     private readonly TimeProvider _time;
     private readonly ILogger<MarketDataPoller> _logger;
     private readonly Dictionary<(string Symbol, string Kind), DateTimeOffset> _nextDue = [];
@@ -34,23 +34,53 @@ public sealed partial class MarketDataPoller
         IEnumerable<string> symbols,
         TimeProvider time,
         ILogger<MarketDataPoller> logger)
+        : this(candles, quotes, store, state, listeners, options, Fixed(symbols), maxSymbols: null, time, logger)
     {
+    }
+
+    /// <summary>
+    /// Polls whatever <paramref name="symbols"/> returns at each poll (the pairs tradable now, which the owner can change), up to
+    /// <paramref name="maxSymbols"/>: the rate-limit check at startup covers that many.
+    /// </summary>
+    public MarketDataPoller(
+        IMarketDataSource candles,
+        IQuoteSource quotes,
+        ICandleStore store,
+        MarketState state,
+        IEnumerable<IQuoteListener> listeners,
+        MarketDataOptions options,
+        Func<IReadOnlyList<string>> symbols,
+        int? maxSymbols,
+        TimeProvider time,
+        ILogger<MarketDataPoller> logger)
+    {
+        ArgumentNullException.ThrowIfNull(symbols);
+        ArgumentNullException.ThrowIfNull(options);
         _candles = candles;
         _quotes = quotes;
         _store = store;
         _state = state;
         _listeners = listeners.ToList();
         _options = options;
-        _symbols = NormaliseSymbols(symbols);
+        _symbols = symbols;
         _time = time;
         _logger = logger;
 
-        if (_symbols.Count == 0)
+        var count = symbols().Count;
+        if (count == 0)
             throw new InvalidOperationException("Market data needs at least one symbol.");
-        options.Validate(_symbols.Count);
+        options.Validate(Math.Max(count, maxSymbols ?? 0));
     }
 
-    public IReadOnlyList<string> Symbols => _symbols;
+    /// <summary>The symbols the next poll covers.</summary>
+    public IReadOnlyList<string> Symbols => _symbols();
+
+    private static Func<IReadOnlyList<string>> Fixed(IEnumerable<string> symbols)
+    {
+        ArgumentNullException.ThrowIfNull(symbols);
+        var list = NormaliseSymbols(symbols);
+        return () => list;
+    }
 
     /// <summary>
     /// Polls every due quote, then at most one due candle series (the one waiting longest), so catch-up paging or a
@@ -59,13 +89,14 @@ public sealed partial class MarketDataPoller
     public async Task<int> PollOnceAsync(CancellationToken cancellationToken)
     {
         _requests = 0;
-        foreach (var symbol in _symbols)
+        var symbols = _symbols(); // one list per poll
+        foreach (var symbol in symbols)
         {
             if (DueSince(symbol, "quote") is not null)
                 await RunAsync(symbol, "quote", _options.QuoteInterval, () => PollQuoteAsync(symbol, cancellationToken)).ConfigureAwait(false);
         }
 
-        var next = _symbols
+        var next = symbols
             .SelectMany(symbol => _options.MinuteCandleInterval is null
                 ? new[] { (Symbol: symbol, Kind: "1h") }
                 : new[] { (Symbol: symbol, Kind: "1m"), (Symbol: symbol, Kind: "1h") })

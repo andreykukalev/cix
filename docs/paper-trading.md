@@ -21,7 +21,7 @@ The engine runs on your PC with simulated money and live Revolut X prices. A Cla
    ```
    The engine creates the `cix` database on start. Browse it at http://localhost:1234. `--restart unless-stopped` brings the emulator back after a reboot; its data lives in the container, so don't remove the container. Without Cosmos, paper balances reset whenever the engine stops.
 
-5. Choose what can be traded. The engine considers a curated universe (`Scanner:Universe` in `src/Cix.Engine/appsettings.json`: BTC, ETH, SOL, LINK, AVAX, SUI, NEAR against EUR) but trades only the symbols that are also in `config/risk-limits.json` → `AllowedSymbols`, which only you edit. To trade the whole universe, list all seven there. Symbols the exchange doesn't list or has suspended are skipped at every scan.
+5. Choose what can be traded. The engine considers a curated universe (`Scanner:Universe` in `src/Cix.Engine/appsettings.json`: BTC, ETH, SOL, LINK, AVAX, SUI, NEAR against EUR) but trades only the symbols that are also in `config/risk-limits.json` → `AllowedSymbols`, which only you edit. To trade the whole universe, list all seven there. Or add `"AllowedQuoteCurrency": "EUR"` and `"MaxTradableSymbols": 15` to that file's `Risk` section: you can then add and remove any EUR pair from the dashboard's Coins tab without a redeploy (ADR-0016). Symbols the exchange doesn't list or has suspended are skipped at every scan.
 
 ## Every session
 

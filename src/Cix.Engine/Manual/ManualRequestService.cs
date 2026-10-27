@@ -43,7 +43,8 @@ public sealed partial class ManualRequestService(
     TradingContext trading,
     TimeProvider time,
     ILogger<ManualRequestService> logger,
-    MarketViewStore? views = null) : BackgroundService
+    MarketViewStore? views = null,
+    TradableSymbols? tradable = null) : BackgroundService
 {
     public const string Kind = "manual-request";
     public const string DirectSource = "manual-direct";
@@ -232,7 +233,7 @@ public sealed partial class ManualRequestService(
             return;
         }
 
-        var (request, problem) = ManualRequestDocument.Parse(item.Document, limits.AllowedSymbols);
+        var (request, problem) = ManualRequestDocument.Parse(item.Document, tradable?.Current ?? limits.AllowedSymbols);
         if (request is null)
         {
             await RefuseAsync(item, null, ManualRequestStatus.Invalid, "invalid", problem!, slim: false, cancellationToken).ConfigureAwait(false);

@@ -14,6 +14,11 @@ public sealed class RiskLimitsOptions
     public decimal MaxPriceDeviationFraction { get; set; }
     public List<string> AllowedSymbols { get; set; } = [];
 
+    /// <summary>When set, the owner may add any pair in this quote currency from the dashboard, up to <see cref="MaxTradableSymbols"/>.</summary>
+    public string? AllowedQuoteCurrency { get; set; }
+
+    public int MaxTradableSymbols { get; set; }
+
     public RiskLimits ToRiskLimits() => new(
         AllocationQuote,
         MaxOrderQuote,
@@ -22,5 +27,7 @@ public sealed class RiskLimitsOptions
         MaxDrawdownFraction,
         MaxOrdersPerMinute,
         MaxPriceDeviationFraction,
-        AllowedSymbols.ToHashSet(StringComparer.Ordinal));
+        AllowedSymbols.ToHashSet(StringComparer.Ordinal),
+        string.IsNullOrWhiteSpace(AllowedQuoteCurrency) ? null : AllowedQuoteCurrency,
+        MaxTradableSymbols);
 }

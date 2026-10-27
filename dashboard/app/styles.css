@@ -299,3 +299,11 @@ body.gate { display: grid; place-items: center; min-height: 100vh; padding: 16px
 #params td.running { font-weight: 600; }
 ul.changes { margin: 0 0 12px; padding-left: 18px; font-size: 13px; }
 ul.changes .open { color: var(--warn); }
+
+/* Trading pairs on the Coins tab */
+.chips { list-style: none; margin: 8px 0 12px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.chips li { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border-radius: 999px; background: var(--chip); font-size: 13px; }
+.chips li button { padding: 2px 8px; font-size: 12px; }
+.inline-form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin: 0 0 8px; }
+.inline-form .field { display: grid; gap: 4px; font-size: 13px; }
+.inline-form select { min-width: 10em; }

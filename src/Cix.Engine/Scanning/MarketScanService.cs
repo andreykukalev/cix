@@ -53,19 +53,49 @@ public sealed class ScannerOptions
 /// </summary>
 public sealed class MarketUniverse
 {
+    private readonly IReadOnlyList<string> _universe;
+    private readonly Func<IReadOnlySet<string>> _tradable;
+    private Snapshot? _cache;
+
     public MarketUniverse(IEnumerable<string> universe, IReadOnlySet<string> allowlist)
+        : this(universe, () => allowlist)
     {
-        ArgumentNullException.ThrowIfNull(universe);
         ArgumentNullException.ThrowIfNull(allowlist);
-        Tradable = MarketDataPoller.NormaliseSymbols(allowlist);
-        Candidates = MarketDataPoller.NormaliseSymbols(universe.Concat(Tradable));
     }
 
-    public IReadOnlyList<string> Candidates { get; }
+    /// <summary>With the run-time list the owner changes from the dashboard: <see cref="Tradable"/> follows it.</summary>
+    public MarketUniverse(IEnumerable<string> universe, Cix.Domain.Risk.TradableSymbols tradable)
+        : this(universe, () => tradable.Current)
+    {
+        ArgumentNullException.ThrowIfNull(tradable);
+    }
 
-    public IReadOnlyList<string> Tradable { get; }
+    private MarketUniverse(IEnumerable<string> universe, Func<IReadOnlySet<string>> tradable)
+    {
+        ArgumentNullException.ThrowIfNull(universe);
+        _universe = MarketDataPoller.NormaliseSymbols(universe);
+        _tradable = tradable;
+    }
+
+    public IReadOnlyList<string> Candidates => Lists().Candidates;
+
+    public IReadOnlyList<string> Tradable => Lists().Tradable;
 
     public bool IsTradable(string symbol) => Tradable.Contains(symbol, StringComparer.Ordinal);
+
+    /// <summary>Both lists from one read of the tradable set, recomputed only when it changes.</summary>
+    private Snapshot Lists()
+    {
+        var source = _tradable();
+        if (Volatile.Read(ref _cache) is { } cached && ReferenceEquals(cached.Source, source))
+            return cached;
+        var tradable = MarketDataPoller.NormaliseSymbols(source);
+        var lists = new Snapshot(source, tradable, MarketDataPoller.NormaliseSymbols(_universe.Concat(tradable)));
+        Volatile.Write(ref _cache, lists);
+        return lists;
+    }
+
+    private sealed record Snapshot(IReadOnlySet<string> Source, IReadOnlyList<string> Tradable, IReadOnlyList<string> Candidates);
 }
 
 /// <summary>

@@ -18,7 +18,8 @@ public sealed class OrderTools(
     ExecutionService execution,
     RiskLimits limits,
     Analysis.MarketViewStore? views = null,
-    TimeProvider? time = null)
+    TimeProvider? time = null,
+    TradableSymbols? tradable = null)
 {
     public const decimal MinValue = 0.00000001m;
     public const decimal MaxBaseSize = 1_000_000m;
@@ -43,7 +44,7 @@ public sealed class OrderTools(
         CancellationToken cancellationToken = default)
     {
         await context.RequireAllowedAsync("place_order", cancellationToken).ConfigureAwait(false);
-        var normalised = ToolJson.Symbol(symbol, limits.AllowedSymbols);
+        var normalised = ToolJson.Symbol(symbol, tradable?.Current ?? limits.AllowedSymbols);
         var orderSide = side?.Trim().ToLowerInvariant() switch
         {
             "buy" => OrderSide.Buy,
