@@ -419,9 +419,12 @@ jobs:
             if SWA_CLI_DEPLOYMENT_TOKEN="$token" env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
                  .swa-cli/node_modules/.bin/swa deploy dashboard/app --api-location dashboard/api \
                  --api-language node --api-version 22 --env production 2>&1 | tee swa-deploy.log; then
-              exit 0
+              # The CLI exits 0 even when the upload itself fails: only its success line counts.
+              grep -q "Project deployed to" swa-deploy.log && exit 0
+              echo "::error::The SWA CLI exited without deploying the dashboard."; exit 1
             fi
-            grep -q "StaticSitesClient failed" swa-deploy.log && [ "$attempt" -lt 3 ] || exit 1
+            grep -Eq 'StaticSitesClient failed|Failed to download StaticSitesClient|Could not load StaticSitesClient metadata|Checksum mismatch for StaticSitesClient' \
+              swa-deploy.log && [ "$attempt" -lt 3 ] || exit 1
             echo "::warning::Downloading StaticSitesClient failed (attempt $attempt); retrying."
             sleep $((attempt * 20))
           done
