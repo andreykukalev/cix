@@ -413,9 +413,21 @@ jobs:
           # Hygiene, not a boundary: code in this step could still reach the runner's secrets. The real limit is the
           # identity's role, which grants no more than the deployment token the CLI is given anyway (ADR-0010).
           az logout
-          SWA_CLI_DEPLOYMENT_TOKEN="$token" env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
-            .swa-cli/node_modules/.bin/swa deploy dashboard/app --api-location dashboard/api \
-            --api-language node --api-version 22 --env production
+          # The CLI downloads Azure's StaticSitesClient on each run; a failed download is retried, nothing else is.
+          set -o pipefail # the deploy's status, not tee's
+          for attempt in 1 2 3; do
+            if SWA_CLI_DEPLOYMENT_TOKEN="$token" env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
+                 .swa-cli/node_modules/.bin/swa deploy dashboard/app --api-location dashboard/api \
+                 --api-language node --api-version 22 --env production 2>&1 | tee swa-deploy.log; then
+              # The CLI exits 0 even when the upload itself fails: only its success line counts.
+              grep -q "Project deployed to" swa-deploy.log && exit 0
+              echo "::error::The SWA CLI exited without deploying the dashboard."; exit 1
+            fi
+            grep -Eq 'StaticSitesClient failed|Failed to download StaticSitesClient|Could not load StaticSitesClient metadata|Checksum mismatch for StaticSitesClient' \
+              swa-deploy.log && [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::Downloading StaticSitesClient failed (attempt $attempt); retrying."
+            sleep $((attempt * 20))
+          done
 
   agents-images:
     # Step 1 of deploying the paper engine and the agent jobs to Azure Container Apps (after a push to main that changes
