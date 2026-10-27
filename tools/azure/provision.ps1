@@ -34,7 +34,7 @@
 .EXAMPLE
   .\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig -ImageTag <commit SHA>   # agents.deploy apps, first time
 .EXAMPLE
-  .\tools\azure\provision.ps1 -Environment live -PromoteFrom dev -ImageTag <commit SHA>   # the protected environment (ADR-0017)
+  .\tools\azure\provision.ps1 -Environment prod -PromoteFrom dev -ImageTag <commit SHA>   # the protected environment (ADR-0017)
 .PARAMETER ImageTag
   agents.deploy apps: the images to run, by the tag CI gave them (the commit SHA). They are deployed by digest, so what runs
   can't change if the tag is pushed again. Without it, the images the engine and the jobs run now are kept (CI deploys new ones).
@@ -99,7 +99,7 @@ Write-CixInfo "Shared account:  resource group $($shared.resourceGroup) ($($shar
 Write-CixInfo "CIX:             resource group $($settings.resourceGroup) ($($settings.location)), database '$($settings.cosmos.databaseName)' at $($settings.cosmos.databaseThroughput) RU/s"
 Write-CixInfo "Dashboard:       $(if ($settings.deployDashboard) { "Static Web App (Free) in $($settings.dashboardLocation)" } else { 'not deployed' })"
 $agents = if ($settings.ContainsKey('agents')) { $settings.agents.deploy } else { 'none' }
-Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "the paper engine and three jobs, in $($settings.agents.location)" } })"
+Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "$(if ($settings.protected) { 'the engine (on standby until you switch it)' } else { 'the paper engine' }) and three jobs, in $($settings.agents.location)" } })"
 $exchangeKeyFiles = @{ ExchangeApiKeyFile = $ExchangeApiKeyFile; ExchangePrivateKeyFile = $ExchangePrivateKeyFile }
 if (-not $settings.protected -and ($PromoteFrom -or $ExchangeApiKeyFile -or $ExchangePrivateKeyFile)) {
   throw "-PromoteFrom, -ExchangeApiKeyFile and -ExchangePrivateKeyFile are for a protected environment only; '$Environment' isn't one."
@@ -110,7 +110,12 @@ if (($PromoteFrom -or $ExchangeApiKeyFile -or $ExchangePrivateKeyFile) -and $age
 if ($PromoteFrom -and -not $ImageTag) { throw '-PromoteFrom needs -ImageTag: the tag CI gave the images to promote (the commit SHA).' }
 foreach ($name in @($exchangeKeyFiles.Keys)) {
   $file = $exchangeKeyFiles[$name]
-  if ($file -and -not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "-$name ${file}: no such file." }
+  if (-not $file) { continue }
+  if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "-$name ${file}: no such file." }
+  # A byte-order mark would stay in the secret and break the engine's signatures: only the first three bytes are read.
+  $stream = [IO.File]::OpenRead((Resolve-Path -LiteralPath $file).ProviderPath)
+  try { $head = New-Object byte[] 3; $read = $stream.Read($head, 0, 3) } finally { $stream.Dispose() }
+  if ($read -eq 3 -and $head[0] -eq 0xEF -and $head[1] -eq 0xBB -and $head[2] -eq 0xBF) { throw "-$name ${file} starts with a UTF-8 byte-order mark: save it without one (docs/live-trading.md)." }
 }
 if ($settings.protected) {
   # Real money (ADR-0017). Its database is its own, in the shared account (owner decision 5): the account's keys still reach it.
@@ -122,10 +127,13 @@ if ($settings.protected) {
 Write-CixStep 'Signing in'
 $account = Connect-CixAzure -Settings $settings -SubscriptionId $SubscriptionId
 if ($settings.protected) {
-  # CI and the agents have no role here (ADR-0017): anything that can reach the group from outside it is shown, to remove.
-  $outside = @(Get-CixServicePrincipalAccess -Settings $settings)
+  # CI and the agents have no role here (ADR-0017): anyone but you and the environment's own identities who holds a role on the
+  # group, in it or above it is shown. -Yes never goes on past them: you decide, having seen them.
+  $outside = @(Get-CixOutsideAccess -Settings $settings -SubscriptionId $account.id -OwnerId (Get-CixSignedInUser).Id)
   if ($outside.Count -gt 0) {
-    Write-CixWarn "Service principals with roles on $($settings.resourceGroup) (directly or inherited): $($outside -join '; '). A CI or agent identity among them could reach the real-money engine."
+    $list = "Others with roles on $($settings.resourceGroup), in it or above it: $($outside -join '; ')."
+    if ($Yes) { throw "$list A CI or agent identity among them could reach the real-money engine. Remove them, or run without -Yes to go on after seeing them." }
+    Write-CixWarn "$list A CI or agent identity among them could reach the real-money engine."
     Confirm-Step 'Go on anyway?'
   }
 }
@@ -153,7 +161,8 @@ if (-not $SkipInfrastructure) {
     }
   }
 
-  # The engine and agents (agents.deploy): checks and values found now, before the preview.
+  # The database claim and the engine and agents (agents.deploy): checks and values found now, before any change.
+  Assert-CixDatabaseClaim -Settings $settings -AccountName $sharedName
   $agentValues = @{}
   if ($agents -ne 'none') {
     Write-CixStep "Engine and agents ($agents, in $($settings.agents.location))"
@@ -179,6 +188,11 @@ if (-not $SkipInfrastructure) {
           }
         }
       }
+      $claudeToken = Join-CixPath (Get-CixRepoRoot) 'secrets' 'claude_token'
+      $uploadClaudeToken = $UploadClaudeToken -or -not (Test-CixVaultSecret -Vault $vault -Name 'claude-token')
+      if ($uploadClaudeToken -and -not (Test-Path $claudeToken)) { throw "Key Vault $vault has no claude-token. Run tools/setup-secrets.ps1 (it writes secrets/claude_token), then run this again: it uploads the file without showing it." }
+      # The engine's Entra app registration, looked up now (it is created only once you have said yes, below).
+      $audience = Get-CixEngineAudience -Settings $settings -OwnerId $me.Id
       # Checked before anything is changed: the images (for a protected environment, copied by digest from paper's registry)...
       if ($PromoteFrom) {
         $source = Read-CixEnvironment -Name $PromoteFrom
@@ -186,6 +200,11 @@ if (-not $SkipInfrastructure) {
         $sourceRegistry = Find-CixAgentsResource -Settings $source -Kind acr
         if (-not $sourceRegistry) { throw "Environment '$PromoteFrom' has no registry to promote from." }
         $promoted = Resolve-CixImageDigests -Settings $source -Registry $sourceRegistry -Tag $ImageTag
+        # Only what paper runs now: a tag CI pushed again, or an image that never ran there, isn't promoted.
+        $onPaper = Resolve-CixImageDigests -Settings $source -Registry $sourceRegistry
+        if (-not $onPaper -or $onPaper.Engine -ne $promoted.Engine -or $onPaper.Agent -ne $promoted.Agent) {
+          throw "$PromoteFrom doesn't run the images tagged $ImageTag now$(if ($onPaper) { " (it runs cix-engine@$($onPaper.Engine), cix-trader@$($onPaper.Agent))" }): promote the images paper runs. Nothing was changed."
+        }
         foreach ($image in @(@{ Repository = 'cix-engine'; Digest = $promoted.Engine }, @{ Repository = 'cix-trader'; Digest = $promoted.Agent })) {
           $from = "$($sourceRegistry.ToLowerInvariant()).azurecr.io/$($image.Repository)@$($image.Digest)"
           if ($WhatIfOnly) { Write-CixInfo "Would copy $from to $registry as $($image.Repository):$ImageTag."; continue }
@@ -205,13 +224,11 @@ if (-not $SkipInfrastructure) {
       Write-CixInfo "  cix-engine@$($images.Engine)"
       Write-CixInfo "  cix-trader@$($images.Agent)"
       # ...then the Claude credential: uploaded from secrets/claude_token (tools/setup-secrets.ps1 writes it) straight to Key Vault.
-      if ($UploadClaudeToken -or -not (Test-CixVaultSecret -Vault $vault -Name 'claude-token')) {
-        $local = Join-CixPath (Get-CixRepoRoot) 'secrets' 'claude_token'
-        if (-not (Test-Path $local)) { throw "Key Vault $vault has no claude-token. Run tools/setup-secrets.ps1 (it writes secrets/claude_token), then run this again: it uploads the file without showing it." }
+      if ($uploadClaudeToken) {
         if ($WhatIfOnly) { Write-CixInfo "Would upload secrets/claude_token to $vault as claude-token." }
         else {
           Confirm-Step "Upload secrets/claude_token to Key Vault $vault as claude-token?"
-          Set-CixVaultSecretFromFile -Vault $vault -Name 'claude-token' -Path $local
+          Set-CixVaultSecretFromFile -Vault $vault -Name 'claude-token' -Path $claudeToken
           Write-CixInfo "Uploaded claude-token to $vault (not shown)."
         }
       }
@@ -225,7 +242,6 @@ if (-not $SkipInfrastructure) {
         Write-CixInfo "Uploaded $($key.Name) to $vault (not shown)."
       }
       # ...then the engine's Entra app registration, made only once you have said yes.
-      $audience = Get-CixEngineAudience -Settings $settings -OwnerId $me.Id
       if (-not $audience -and -not $WhatIfOnly) {
         Confirm-Step "Create the engine's Entra app registration cix-engine-$($settings.environmentName) (single tenant, no secrets, no permissions)?"
         $audience = Get-CixEngineAudience -Settings $settings -OwnerId $me.Id -Create
@@ -239,7 +255,6 @@ if (-not $SkipInfrastructure) {
   }
 
   Write-CixStep "CIX ($($settings.resourceGroup), database '$($settings.cosmos.databaseName)')"
-  Assert-CixDatabaseClaim -Settings $settings -AccountName $sharedName
   Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -Agents $agentValues -WhatIf | Out-Null
   if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed.'; return }
   Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"

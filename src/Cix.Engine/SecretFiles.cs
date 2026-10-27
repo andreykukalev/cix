@@ -8,7 +8,7 @@ namespace Cix.Engine;
 /// <c>ToolServer__OperatorKey</c> sets <c>ToolServer:OperatorKey</c>. Only the names in <see cref="Allowed"/> are read, so a stray
 /// file can't switch the trading mode, a risk limit or an endpoint. The Revolut X keys (<see cref="LiveOnly"/>) are read in
 /// Live mode only, and a Paper engine refuses to start if they are there at all, so paper keeps holding no trading
-/// credentials (#68). The engine itself checks first and stands by instead (<see cref="StandbyHost"/>).
+/// credentials (#68). In Azure the engine checks first and stands by instead, without reading them (<see cref="StandbyHost"/>).
 /// </summary>
 public static class SecretFiles
 {

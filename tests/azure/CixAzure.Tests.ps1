@@ -1123,7 +1123,16 @@ Check 'provision.ps1 agents apps keeps the images the engine and the jobs run, b
 }
 
 # A protected environment (ADR-0017): the citest copy marked protected, its images promoted from dev's registry.
-$promoteFake = @{ 'acr list' = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}},{"name":"crcixdev1","tags":{"cix-environment":"dev"}}]' }
+$devApps = '/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.App'
+function Get-PromoteFake([string]$RunningDigest = "sha256:$('5' * 64)") {
+  <# Both registries, and dev's engine and trader job running $RunningDigest (the fake gives every image the 5s digest). #>
+  return @{
+    'acr list'      = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}},{"name":"crcixdev1","tags":{"cix-environment":"dev"}}]'
+    'resource list' = "[{`"id`":`"$devApps/containerApps/ca-cix-dev-engine`",`"name`":`"ca-cix-dev-engine`",`"type`":`"Microsoft.App/containerApps`",`"tags`":{`"cix-environment`":`"dev`"}},{`"id`":`"$devApps/jobs/caj-cix-dev-trader`",`"name`":`"caj-cix-dev-trader`",`"type`":`"Microsoft.App/jobs`",`"tags`":{`"cix-environment`":`"dev`"}}]"
+    'resource show' = "[{`"type`":`"Microsoft.App/containerApps`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdev1.azurecr.io/cix-engine@$RunningDigest`"}]}}},{`"type`":`"Microsoft.App/jobs`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdev1.azurecr.io/cix-trader@$RunningDigest`"}]}}}]"
+  }
+}
+$promoteFake = Get-PromoteFake
 function New-FakeKeyFiles {
   <# Two files standing in for the exchange keys, with content built at run time: not a secret. #>
   $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-keys-$([guid]::NewGuid().ToString('N'))"
@@ -1131,7 +1140,8 @@ function New-FakeKeyFiles {
   $marker = @('fake', 'exchange', 'key', '9c1d') -join '-'
   [IO.File]::WriteAllText((Join-Path $dir 'api.txt'), $marker)
   [IO.File]::WriteAllText((Join-Path $dir 'private.pem'), $marker)
-  return @{ Dir = $dir; Api = (Join-Path $dir 'api.txt'); Pem = (Join-Path $dir 'private.pem'); Marker = $marker }
+  [IO.File]::WriteAllText((Join-Path $dir 'bom.txt'), $marker, (New-Object Text.UTF8Encoding $true))
+  return @{ Dir = $dir; Api = (Join-Path $dir 'api.txt'); Pem = (Join-Path $dir 'private.pem'); Bom = (Join-Path $dir 'bom.txt'); Marker = $marker }
 }
 
 Check 'provision.ps1 protected apps (-Yes): checks access, promotes dev''s images by digest, uploads the keys unseen, then deploys' {
@@ -1142,7 +1152,7 @@ Check 'provision.ps1 protected apps (-Yes): checks access, promotes dev''s image
   finally { Remove-Item $keys.Dir -Recurse -Force }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   $calls = $r.Calls.Replace('"', '') # Windows logs arguments with spaces in quotes
-  foreach ($call in @('role assignment list --resource-group rg-cix-citest --include-inherited',
+  foreach ($call in @('role assignment list --all', 'role assignment list --scope /subscriptions/00000000-0000-0000-0000-000000000001 --include-inherited',
       'acr repository show-tags --name crcixdev1 --repository cix-engine',
       "acr import --name crcixcitest1 --source crcixdev1.azurecr.io/cix-engine@$digest5 --image cix-engine:abc123 --force",
       "acr import --name crcixcitest1 --source crcixdev1.azurecr.io/cix-trader@$digest5 --image cix-trader:abc123 --force",
@@ -1160,12 +1170,31 @@ Check 'provision.ps1 protected apps (-Yes): checks access, promotes dev''s image
   }
 }
 
-Check 'provision.ps1 protected: shows service principals with a role on the group or above it' {
-  $roles = '[{"principalType":"ServicePrincipal","scope":"/subscriptions/x","roleDefinitionName":"Contributor","principalName":"cix-agents-deploy-dev"},{"principalType":"ServicePrincipal","scope":"/subscriptions/x/resourceGroups/rg-cix-citest/providers/Microsoft.KeyVault/vaults/kvcixcitest1","roleDefinitionName":"Key Vault Secrets User","principalName":"id-cix-citest-engine"},{"principalType":"User","scope":"/subscriptions/x","roleDefinitionName":"Owner","principalName":"owner@example.com"}]'
-  $r = Invoke-AgentsProvision @{ 'role assignment list' = $roles } @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+$citestGroup = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-citest'
+Check 'provision.ps1 protected: anyone but the owner and its own identities with a role on the group, in it or above it, stops -Yes' {
+  $row = { param($Role, $Scope, $Id, $Name, $Type) "{`"roleDefinitionName`":`"$Role`",`"scope`":`"$Scope`",`"principalId`":`"$Id`",`"principalName`":`"$Name`",`"principalType`":`"$Type`"}" }
+  $roles = '[' + ((
+      (& $row 'Contributor' '/subscriptions/00000000-0000-0000-0000-000000000001' 'p1' 'cix-agents-deploy-dev' 'ServicePrincipal'),
+      (& $row 'AcrPush' "$citestGroup/providers/Microsoft.ContainerRegistry/registries/crcixcitest1" 'p2' 'cix-agents-deploy-citest' 'ServicePrincipal'),
+      (& $row 'Reader' '/providers/Microsoft.Management/managementGroups/mg1' 'p3' 'ops' 'Group'),
+      (& $row 'Key Vault Secrets User' "$citestGroup/providers/Microsoft.KeyVault/vaults/kvcixcitest1" 'e1' 'e1' 'ServicePrincipal'),
+      (& $row 'Owner' '/subscriptions/00000000-0000-0000-0000-000000000001' $ownerId 'owner@example.com' 'User'),
+      (& $row 'Contributor' '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev' 'p4' 'dev-only' 'ServicePrincipal'),
+      (& $row 'Contributor' '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-citestother' 'p5' 'look-alike' 'ServicePrincipal')) -join ',') + ']'
+  $identities = '[{"name":"id-cix-citest-engine","principalId":"e1"},{"name":"id-someone-else","principalId":"p2"}]'
+  $r = Invoke-AgentsProvision @{ 'role assignment list' = $roles; 'identity list' = $identities } @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+  foreach ($expected in @('Contributor on /subscriptions/00000000-0000-0000-0000-000000000001: cix-agents-deploy-dev (ServicePrincipal)',
+      "AcrPush on $citestGroup/providers/Microsoft.ContainerRegistry/registries/crcixcitest1: cix-agents-deploy-citest (ServicePrincipal)",
+      'Reader on /providers/Microsoft.Management/managementGroups/mg1: ops (Group)', 'run without -Yes')) {
+    if (-not $r.Error -or -not $r.Error.Contains($expected)) { throw "missing '$expected' in: $($r.Error)" }
+  }
+  foreach ($never in @('Key Vault Secrets User', 'owner@example.com', 'dev-only', 'look-alike')) {
+    if ($r.Error.Contains($never)) { throw "listed '$never': $($r.Error)" }
+  }
+  if ($r.Calls -match '(?m)\bdeployment\b') { throw 'went on to the preview' }
+
+  $r = Invoke-AgentsProvision @{ 'identity list' = $identities } @{ Yes = $true; WhatIfOnly = $true } 'none' $true
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
-  if (-not $r.Output.Contains('Service principals with roles on rg-cix-citest (directly or inherited): Contributor: cix-agents-deploy-dev.')) { throw "no warning in: $($r.Output)" }
-  if ($r.Output.Contains('id-cix-citest-engine') -or $r.Output.Contains('owner@example.com')) { throw "listed the environment's own identity or a user: $($r.Output)" }
   if (-not $r.Output.Contains('Preview only: nothing was changed.')) { throw "no preview in: $($r.Output)" }
 }
 
@@ -1174,14 +1203,20 @@ foreach ($case in @(
     @{ Name = '-PromoteFrom for a paper environment'; Protected = $false; Deploy = 'apps'; Arguments = @{ PromoteFrom = 'dev'; ImageTag = 'abc123' }; Says = 'are for a protected environment only' },
     @{ Name = '-PromoteFrom without -ImageTag'; Protected = $true; Deploy = 'apps'; Arguments = @{ PromoteFrom = 'dev' }; Says = '-PromoteFrom needs -ImageTag' },
     @{ Name = 'key files without the apps'; Protected = $true; Deploy = 'platform'; Arguments = @{ ExchangeApiKeyFile = 'KEYFILE' }; Says = 'go with agents.deploy apps' },
+    @{ Name = 'a key file with a byte-order mark'; Protected = $true; Deploy = 'apps'; Arguments = @{ ExchangeApiKeyFile = 'BOMFILE' }; Says = 'starts with a UTF-8 byte-order mark' },
     @{ Name = 'a key file that is not there'; Protected = $true; Deploy = 'apps'; Arguments = @{ ExchangePrivateKeyFile = 'no-such-key.pem' }; Says = 'no-such-key.pem: no such file' },
     @{ Name = 'no exchange keys given or in Key Vault'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev' }; Says = 'has no revolutx-api-key' },
-    @{ Name = 'promoting from a protected environment'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'citest'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = '-PromoteFrom citest is protected' })) {
+    @{ Name = 'promoting from a protected environment'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'citest'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = '-PromoteFrom citest is protected' },
+    @{ Name = 'promoting images paper doesn''t run'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $promoteFake['acr list'] }; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = "dev doesn't run the images tagged abc123 now: promote the images paper runs" },
+    @{ Name = 'a protected environment without secrets/claude_token'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $promoteFake['acr list']; 'keyvault secret list' = '[]' }; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = 'has no claude-token'; NoLocalToken = $true })) {
   Check "provision.ps1 refuses $($case.Name), before any change" {
     $keys = New-FakeKeyFiles
     $arguments = @{ Yes = $true }
-    foreach ($k in $case.Arguments.Keys) { $arguments[$k] = if ($case.Arguments[$k] -eq 'KEYFILE') { $keys.Api } else { $case.Arguments[$k] } }
-    try { $r = Invoke-AgentsProvision $promoteFake $arguments $case.Deploy $case.Protected }
+    foreach ($k in $case.Arguments.Keys) { $arguments[$k] = switch ($case.Arguments[$k]) { 'KEYFILE' { $keys.Api } 'BOMFILE' { $keys.Bom } default { $_ } } }
+    $fakeAnswers = if ($case['Fake']) { $case.Fake } else { $promoteFake }
+    # Skipped where a developer has secrets/claude_token (it is never in the repo), as below.
+    if ($case['NoLocalToken'] -and (Test-Path (Join-CixPath $repo 'secrets' 'claude_token'))) { Remove-Item $keys.Dir -Recurse -Force; return }
+    try { $r = Invoke-AgentsProvision $fakeAnswers $arguments $case.Deploy $case.Protected }
     finally { Remove-Item $keys.Dir -Recurse -Force }
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
     if ($r.Calls -match '(?m)\b(create|import|secret set)\b') { throw "it changed something before refusing: $($r.Calls)" }

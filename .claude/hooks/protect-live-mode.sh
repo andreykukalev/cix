@@ -118,6 +118,16 @@ if printf '%s' "$input" | grep -qiE '"command"[[:space:]]*:'; then
   fi
 fi
 
+# 2b. Azure CLI or PowerShell commands on the live environment (prod, in rg-cix-live: ADR-0017). Its resources are the owner's
+#     alone, from their own sign-in, and a session on their PC shares that sign-in: switching the engine, deploying, uploading
+#     keys or promoting images there is refused here whatever the command looks like (az rest, --yaml, provision.ps1).
+if [[ -n "$command" && "$read_only" == false ]]; then
+  if printf '%s' "$command" | grep -qiE '(^|[;&|(`[:space:]])(az|pwsh|powershell)([[:space:]]|$)|\.ps1' \
+     && printf '%s' "$command" | grep -qiE 'rg-cix-live|(ca|caj|id|cae|log|vnet)-cix-prod-?|(kv|cr|st)cixprod|-environment[=:[:space:]]+["'"'"']?prod([^a-z0-9-]|$)'; then
+    block
+  fi
+fi
+
 # 3. A Mode = Live setting anywhere else.
 if printf '%s' "$input" | grep -qiE 'mode[\"]*([[:space:]]*[:=][[:space:]]*|[[:space:]]+)[\"]*live'; then
   block

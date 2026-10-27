@@ -145,6 +145,21 @@ public sealed class ExchangeRegistrationTests
     }
 
     [Fact]
+    public void Live_NeedsDurableState_CosmosOrAStateFile()
+    {
+        // In Azure the live engine keeps its kill switch and baselines in its own database (AddCixCosmos replaces the store).
+        // Never memory: if Cosmos DB didn't replace the store, resolving it fails.
+        var withCosmos = Services(TradingMode.Live);
+        withCosmos.AddCixExecution(TradingMode.Live, new ExecutionOptions(), durableState: true);
+        using (var provider = withCosmos.BuildServiceProvider())
+            Assert.Throws<InvalidOperationException>(() => provider.GetRequiredService<IEngineStateStore>());
+
+        // Without either, it refuses to start: a restart must never forget an engaged kill switch.
+        var error = Assert.Throws<InvalidOperationException>(() => Services(TradingMode.Live).AddCixExecution(TradingMode.Live, new ExecutionOptions()));
+        Assert.Contains("Execution:StateFile", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Paper_WithMarketData_ResolvesThePoller_AndFeedsThePaperExchange()
     {
         var services = Services(TradingMode.Paper);

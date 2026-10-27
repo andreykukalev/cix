@@ -19,10 +19,11 @@ var builder = WebApplication.CreateBuilder(args);
 // read, which can't set it, because the mode decides which of them may be.
 var mode = TradingModeResolver.Resolve(builder.Configuration, builder.Environment.EnvironmentName);
 
-// A Paper engine holds no trading credentials. If the Revolut X keys are among its secret files, as in the live environment until
-// the owner switches its engine to Live (docs/live-trading.md), it stands by: it answers /healthz and runs nothing else.
+// A Paper engine holds no trading credentials. If the Revolut X keys are among its secret files in Azure, as in the live
+// environment until the owner switches its engine to Live (docs/live-trading.md), it stands by: it answers /healthz and runs
+// nothing else. Elsewhere it refuses to start (AddCixSecretFiles).
 var secretsDirectory = builder.Configuration["SecretsDirectory"] ?? SecretFiles.DefaultDirectory;
-if (mode == TradingMode.Paper && SecretFiles.LiveOnlyPresent(secretsDirectory) is { Count: > 0 } held)
+if (StandbyHost.HeldKeys(mode, builder.Environment.EnvironmentName, secretsDirectory) is { Count: > 0 } held)
 {
     await StandbyHost.RunAsync(builder, held);
     return;
@@ -67,11 +68,14 @@ builder.Services.AddCixMarketData(
     universe,
     limits.TradableCap);
 
-// The only order path: every placement goes through the risk gate (ApprovedOrder makes skipping it a compile error).
+// The only order path: every placement goes through the risk gate (ApprovedOrder makes skipping it a compile error). Its state
+// (the kill switch, loss baselines) goes to Cosmos DB when that is on (AddCixCosmos, below), else to a file in Live.
+var cosmos = builder.Configuration.GetSection(CosmosOptions.SectionName).Get<CosmosOptions>() ?? new CosmosOptions();
 builder.Services.AddCixExecution(
     mode,
     builder.Configuration.GetSection(ExecutionOptions.SectionName).Get<ExecutionOptions>() ?? new ExecutionOptions(),
-    builder.Configuration.GetSection(SafetyOptions.SectionName).Get<SafetyOptions>() ?? new SafetyOptions());
+    builder.Configuration.GetSection(SafetyOptions.SectionName).Get<SafetyOptions>() ?? new SafetyOptions(),
+    durableState: cosmos.Enabled);
 
 // The MCP tool server: agents' only way in. Loopback only (operator tools need the key from user secrets), or in Azure
 // Entra tokens from the agent jobs' managed identities, with no operator tools (ADR-0013).
@@ -100,7 +104,6 @@ builder.Services.AddCixManualRequests(
 builder.Services.AddCixStatus();
 
 // In Azure the engine decides when the agents run and queues each run for its job (ADR-0013); Compose keeps its shell loops.
-var cosmos = builder.Configuration.GetSection(CosmosOptions.SectionName).Get<CosmosOptions>() ?? new CosmosOptions();
 builder.Services.AddCixAgentRuns(
     builder.Configuration.GetSection(AgentRunOptions.SectionName).Get<AgentRunOptions>() ?? new AgentRunOptions(),
     toolServer.Auth,

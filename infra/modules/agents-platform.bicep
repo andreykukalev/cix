@@ -231,8 +231,8 @@ resource jobPoison 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   }
 ]
 
-// Secrets: the engine reads none (it has no key to read). The jobs' access to claude-token is granted by agents-apps.bicep,
-// once the owner has set it, on that secret alone.
+// Secrets: the jobs' access to claude-token, and in a protected environment the engine's to the exchange keys, are granted by
+// agents-apps.bicep, once the owner has set them, each on that secret alone.
 
 // The owner, named explicitly (not whoever deploys: a CI identity must never get this), can set and rotate secrets:
 // claude-token is put there by hand, never by a template.

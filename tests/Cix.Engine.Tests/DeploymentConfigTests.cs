@@ -87,6 +87,12 @@ public sealed class DeploymentConfigTests
             File.WriteAllText(Path.Combine(dir, "ToolServer__OperatorKey"), new string('k', 32));
             Assert.Equal(new[] { "RevolutX__PrivateKeyPem" }, SecretFiles.LiveOnlyPresent(dir));
             Assert.Empty(SecretFiles.LiveOnlyPresent("relative/secrets"));
+            // Standby in Azure (the template) and Production (the owner's way back to paper); Compose and a PC refuse instead.
+            Assert.Equal(new[] { "RevolutX__PrivateKeyPem" }, StandbyHost.HeldKeys(TradingMode.Paper, "Azure", dir));
+            Assert.Equal(new[] { "RevolutX__PrivateKeyPem" }, StandbyHost.HeldKeys(TradingMode.Paper, "Production", dir));
+            Assert.Empty(StandbyHost.HeldKeys(TradingMode.Paper, "Compose", dir));
+            Assert.Empty(StandbyHost.HeldKeys(TradingMode.Paper, "Development", dir));
+            Assert.Empty(StandbyHost.HeldKeys(TradingMode.Live, "Production", dir));
 
             var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
             builder.Configuration["ToolServer:Url"] = "http://127.0.0.1:0";

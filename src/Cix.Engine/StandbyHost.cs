@@ -14,6 +14,21 @@ public static partial class StandbyHost
     public const string Status = "standby";
     public const string Reason = "paper-holds-exchange-keys";
 
+    /// <summary>The environment the Azure templates pin every engine to.</summary>
+    public const string AzureEnvironment = "Azure";
+
+    /// <summary>
+    /// The key files that put this engine on standby: those a Paper engine finds in its secret files in Azure, as its template
+    /// deploys it, or in Production, where the owner put it back to paper and the revision must still start so the live one
+    /// stops. Elsewhere (Compose, a PC) a Paper engine with them refuses to start instead, as before (<see cref="SecretFiles"/>).
+    /// Names only.
+    /// </summary>
+    public static IReadOnlyList<string> HeldKeys(TradingMode mode, string environmentName, string secretsDirectory) =>
+        mode == TradingMode.Paper
+        && (string.Equals(environmentName, AzureEnvironment, StringComparison.Ordinal) || string.Equals(environmentName, TradingModeResolver.ProductionEnvironment, StringComparison.Ordinal))
+            ? SecretFiles.LiveOnlyPresent(secretsDirectory)
+            : [];
+
     /// <summary>The standby app on <paramref name="builder"/>, listening where the tool server would.</summary>
     public static WebApplication Build(WebApplicationBuilder builder)
     {

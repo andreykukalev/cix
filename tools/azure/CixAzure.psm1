@@ -558,21 +558,46 @@ function Set-CixVaultSecretFromFile {
     '--content-type', $ContentType, '--query', 'name', '-o', 'tsv') | Out-Null
 }
 
-function Get-CixServicePrincipalAccess {
+function Get-CixOutsideAccess {
   <#
-    Role assignments of service principals and managed identities on CIX's resource group, including those inherited from
-    the subscription: in a protected environment there should be none but its own identities' (ADR-0017), and above all no CI
-    identity's. Returns 'role: principal' lines; empty when the group doesn't exist yet. Names and IDs only.
+    Who else can reach a protected environment through Azure roles (ADR-0017): every role assignment on its resource group,
+    on anything inside it, or above it (the subscription, a management group), of any kind of principal (service principals,
+    groups, other users), except the signed-in owner and the environment's own managed identities (id-<prefix>-<env>-*). CI's
+    and the agents' identities above all should have none. Returns 'role on scope: principal (type)' lines; names and IDs only.
   #>
-  param([Parameter(Mandatory)][hashtable]$Settings)
-  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return @() }
-  $all = @(Invoke-CixAz @('role', 'assignment', 'list', '--resource-group', $Settings.resourceGroup, '--include-inherited', '-o', 'json') | ConvertFrom-CixJson)
-  # On the group itself or above it: the environment's own identities hold roles on single resources inside it, which is fine.
-  $inside = "/resourceGroups/$($Settings.resourceGroup)/providers/"
+  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$OwnerId)
+  $group = "/subscriptions/$SubscriptionId/resourceGroups/$($Settings.resourceGroup)"
+  $own = @{}
+  $own[$OwnerId.ToLowerInvariant()] = $true
+  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -eq 'true') {
+    $prefix = "id-$($Settings.namePrefix)-$($Settings.environmentName)-"
+    foreach ($identity in @(Invoke-CixAz @('identity', 'list', '--resource-group', $Settings.resourceGroup, '-o', 'json') | ConvertFrom-CixJson)) {
+      if ($identity -and $identity.PSObject.Properties['name'] -and $identity.PSObject.Properties['principalId'] -and
+          "$($identity.name)".StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { $own["$($identity.principalId)".ToLowerInvariant()] = $true }
+    }
+  }
+  # --all lists the subscription's assignments at every scope (az's --resource-group leaves out those on resources inside the
+  # group); --include-inherited on the subscription adds those above it, such as a management group's.
+  $all = @(Invoke-CixAz @('role', 'assignment', 'list', '--all', '-o', 'json') | ConvertFrom-CixJson) +
+    @(Invoke-CixAz @('role', 'assignment', 'list', '--scope', "/subscriptions/$SubscriptionId", '--include-inherited', '-o', 'json') | ConvertFrom-CixJson)
   return @($all | Where-Object {
-      $_ -and $_.PSObject.Properties['principalType'] -and "$($_.principalType)" -eq 'ServicePrincipal' -and
-      $_.PSObject.Properties['scope'] -and "$($_.scope)".IndexOf($inside, [StringComparison]::OrdinalIgnoreCase) -lt 0 } |
-    ForEach-Object { "$($_.roleDefinitionName): $($_.principalName)" } | Sort-Object -Unique)
+      $_ -and $_.PSObject.Properties['scope'] -and $_.PSObject.Properties['principalId'] -and
+      -not $own.ContainsKey("$($_.principalId)".ToLowerInvariant()) -and (Test-CixScopeReaches -Scope "$($_.scope)" -Group $group) } |
+    ForEach-Object {
+      $name = if ($_.PSObject.Properties['principalName'] -and $_.principalName) { "$($_.principalName)" } else { "$($_.principalId)" }
+      $type = if ($_.PSObject.Properties['principalType']) { "$($_.principalType)" } else { 'unknown' }
+      $role = if ($_.PSObject.Properties['roleDefinitionName']) { "$($_.roleDefinitionName)" } else { 'a role' }
+      "$role on $($_.scope): $name ($type)"
+    } | Sort-Object -Unique)
+}
+
+function Test-CixScopeReaches {
+  <# Whether a role assigned at $Scope reaches the resource group $Group: the group itself, a resource in it, or a scope above it. #>
+  param([Parameter(Mandatory)][AllowEmptyString()][string]$Scope, [Parameter(Mandatory)][string]$Group)
+  $s = $Scope.TrimEnd('/')
+  if ($s -eq '' -or $s.StartsWith('/providers/Microsoft.Management/managementGroups/', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  return $Group.Equals($s, [StringComparison]::OrdinalIgnoreCase) -or $Group.StartsWith("$s/", [StringComparison]::OrdinalIgnoreCase) -or
+    $s.StartsWith("$Group/", [StringComparison]::OrdinalIgnoreCase)
 }
 
 # The exchange keys of a protected environment's engine: the Key Vault secret, and what provision.ps1 calls the file it reads.
