@@ -78,6 +78,47 @@ public sealed class DeploymentConfigTests
     }
 
     [Fact]
+    public async Task APaperEngineHoldingTheKeys_StandsBy_AnsweringOnlyHealthz()
+    {
+        var dir = Directory.CreateTempSubdirectory("cix-secrets-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "RevolutX__PrivateKeyPem"), TestKeys.FakePem());
+            File.WriteAllText(Path.Combine(dir, "ToolServer__OperatorKey"), new string('k', 32));
+            Assert.Equal(new[] { "RevolutX__PrivateKeyPem" }, SecretFiles.LiveOnlyPresent(dir));
+            Assert.Empty(SecretFiles.LiveOnlyPresent("relative/secrets"));
+            // Standby in Azure (the template) and Production (the owner's way back to paper); Compose and a PC refuse instead.
+            Assert.Equal(new[] { "RevolutX__PrivateKeyPem" }, StandbyHost.HeldKeys(TradingMode.Paper, "Azure", dir));
+            Assert.Equal(new[] { "RevolutX__PrivateKeyPem" }, StandbyHost.HeldKeys(TradingMode.Paper, "Production", dir));
+            Assert.Empty(StandbyHost.HeldKeys(TradingMode.Paper, "Compose", dir));
+            Assert.Empty(StandbyHost.HeldKeys(TradingMode.Paper, "Development", dir));
+            Assert.Empty(StandbyHost.HeldKeys(TradingMode.Live, "Production", dir));
+
+            var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+            builder.Configuration["ToolServer:Url"] = "http://127.0.0.1:0";
+            await using var app = StandbyHost.Build(builder);
+            await app.StartAsync();
+            var server = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>(app.Services);
+            var address = server.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()!.Addresses.First();
+            using var http = new HttpClient();
+
+            using var health = await http.GetAsync(address + Tools.ToolServerRegistration.HealthEndpoint);
+            using var doc = System.Text.Json.JsonDocument.Parse(await health.Content.ReadAsStringAsync());
+            using var tools = await http.PostAsync(address + Tools.ToolServerRegistration.Endpoint, new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+
+            Assert.Equal(System.Net.HttpStatusCode.OK, health.StatusCode); // the platform keeps the revision
+            Assert.Equal((StandbyHost.Status, StandbyHost.Reason), (doc.RootElement.GetProperty("status").GetString(), doc.RootElement.GetProperty("reason").GetString()));
+            Assert.Equal(System.Net.HttpStatusCode.NotFound, tools.StatusCode); // no tools, no engine behind it
+            Assert.Null(app.Services.GetService(typeof(Execution.ExecutionService)));
+            await app.StopAsync();
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void SecretFiles_MissingOrRelativeDirectory_IsIgnored()
     {
         var config = new ConfigurationBuilder()

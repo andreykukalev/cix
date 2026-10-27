@@ -23,7 +23,7 @@ One Cosmos DB account, with a generic name (`cosmos-shared-<suffix>`), lives in 
 - **Keys stay account-wide (the owner's choice).** The engine uses the shared account's key, and the dashboard the read-only key. Either key reaches every project's database in the account. That is acceptable while every project is the owner's and on paper or test data.
 - **Throughput.** The free tier's 1000 RU/s covers CIX's 400 plus one more 400 RU/s database (another project, or a CIX prod environment). A third costs about $12 a month (the 200 RU/s over 1000).
 - **Ownership is tagged.** CIX's resource group carries `cix-database` and `cix-cosmos-account`. Provisioning refuses to deploy over a database that exists but isn't this environment's, and the reset script refuses a database that its group doesn't claim, or that another group claims too. Two environment files sharing a database name are refused.
-- **Live money stays out while keys are shared.** `provision.ps1` refuses a protected environment in the shared account without `-AllowProtectedInSharedAccount`; before going live, move it to its own account or adopt per-project access.
+- **Live money in the shared account** was refused until the owner decided (2026-10-26, owner decision 5 in the hosting memo) that the live database goes in the shared account too, in its own database, with the live engine on its own identity. ADR-0017 replaced the refusal (`-AllowProtectedInSharedAccount`) with a warning and a check that no service principal holds a role on the live group.
 
 ## Alternatives considered
 

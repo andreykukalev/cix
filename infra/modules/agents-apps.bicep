@@ -4,8 +4,10 @@
 //     stops the PC engine first; the engine lease keeps two engines from trading even if both run.
 //   - The jobs, each started by a message on its own queue, one execution at a time, never retried by the platform: the
 //     engine decides about retries (tools/trader/agent-job.sh).
-// The trading mode is not a parameter: this template only ever deploys a paper engine. The live engine gets its own
-// resource group, Key Vault and template, with no CI access (docs/research/azure-hosting.md).
+// The trading mode is not a parameter: this template only ever deploys a paper engine. A protected (real-money) environment
+// in its own resource group, with no CI access, also mounts the exchange keys from its own Key Vault (exchangeKeys): its
+// engine then stands by, running nothing, until the owner switches it from their own sign-in (docs/live-trading.md,
+// ADR-0017). A redeployment puts it back to paper, and so to standby.
 // Everything from agents-platform.bicep is found by name (agents-names.bicep), so the preview shows these apps in full.
 
 import { agentJobs, agentsNames, poisonQueue } from 'agents-names.bicep'
@@ -42,6 +44,9 @@ param analystModel string
 
 @description('When the Claude setup token expires (YYYY-MM-DD; not a secret). Runs warn from 14 days before. Empty: no check.')
 param claudeTokenExpires string
+
+@description('Protected environments only (main.bicep passes protectedEnvironment): mount the exchange keys from this environment\'s Key Vault into the engine as secret files.')
+param exchangeKeys bool = false
 
 var names = agentsNames(namePrefix, environmentName, resourceGroup().id)
 
@@ -101,6 +106,38 @@ resource jobSecret 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   }
 ]
 
+// The exchange's API key and private key: the owner uploads them (tools/azure/provision.ps1 -ExchangeApiKeyFile and
+// -ExchangePrivateKeyFile) before a protected environment's apps are deployed; never a template. The engine reads them as
+// the files it expects (SecretFiles.cs), and only its identity may read them, each secret on its own.
+var exchangeKeyFiles = [
+  { secret: 'revolutx-api-key', path: 'RevolutX__ApiKey' }
+  { secret: 'revolutx-private-key', path: 'RevolutX__PrivateKeyPem' }
+]
+
+resource exchangeKeySecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = [
+  for key in exchangeKeyFiles: {
+    parent: vault
+    name: key.secret
+  }
+]
+
+resource engineExchangeKeys 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for i in range(0, exchangeKeys ? length(exchangeKeyFiles) : 0): {
+    name: guid(exchangeKeySecrets[i].id, engineIdentity.id, '4633458b-17de-408a-b874-0445c86b69e6')
+    scope: exchangeKeySecrets[i]
+    properties: {
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6') // Key Vault Secrets User
+      principalId: engineIdentity.properties.principalId
+      principalType: 'ServicePrincipal'
+    }
+  }
+]
+
+// The vault's address from its name (known before the deployment starts, which a loop in a variable needs).
+var exchangeVaultUri = 'https://${names.vault}${environment().suffixes.keyvaultDns}/'
+var engineSecrets = [for key in exchangeKeyFiles: { name: key.secret, keyVaultUrl: '${exchangeVaultUri}secrets/${key.secret}', identity: engineIdentity.id }]
+var engineSecretFiles = [for key in exchangeKeyFiles: { secretRef: key.secret, path: key.path }]
+
 resource engine 'Microsoft.App/containerApps@2025-01-01' = {
   name: names.engineApp
   location: location
@@ -109,11 +146,13 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
     type: 'UserAssigned'
     userAssignedIdentities: { '${engineIdentity.id}': {} }
   }
+  dependsOn: [engineExchangeKeys]
   properties: {
     environmentId: appsEnvironment.id
     workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
+      secrets: exchangeKeys ? engineSecrets : []
       ingress: {
         external: false // the jobs in this environment only
         targetPort: 5077
@@ -167,8 +206,11 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
             { type: 'Liveness', tcpSocket: { port: 5077 }, periodSeconds: 30, failureThreshold: 3 }
             { type: 'Readiness', httpGet: { path: '/healthz', port: 5077 }, periodSeconds: 30, failureThreshold: 3 }
           ]
+          // The exchange keys as files, where the engine looks for its secrets (SecretFiles.DefaultDirectory).
+          volumeMounts: exchangeKeys ? [{ volumeName: 'secrets', mountPath: '/run/secrets' }] : []
         }
       ]
+      volumes: exchangeKeys ? [{ name: 'secrets', storageType: 'Secret', secrets: engineSecretFiles }] : []
       scale: {
         minReplicas: startEngine ? 1 : 0
         maxReplicas: 1 // never two engines from one deployment; the lease covers revision changes

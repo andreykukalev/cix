@@ -123,21 +123,45 @@ Check 'deployment parameters: valid JSON, no byte-order mark, arrays stay arrays
 
 $ownerId = '11111111-2222-3333-4444-555555555555'
 
-# The agents' templates deploy a paper engine only (the live engine gets its own template, outside CI). The live-mode hook
-# doesn't read Bicep, so this holds the line: one way to set the mode, to Paper, and never Production or exchange keys.
+# The agents' templates deploy a paper engine only: the owner switches a protected environment's engine to live from their own
+# sign-in (ADR-0017). The live-mode hook doesn't read Bicep, so this holds the line: one way to set the mode, to Paper, never
+# Production, and the exchange keys named in one place only, mounted only where main.bicep says the environment is protected.
+$exchangeKeyLines = @("{ secret: 'revolutx-api-key', path: 'RevolutX__ApiKey' }", "{ secret: 'revolutx-private-key', path: 'RevolutX__PrivateKeyPem' }")
 Check 'the Azure templates only ever run a paper engine' {
   $files = @(Get-ChildItem (Join-CixPath $repo 'infra') -Recurse -Filter '*.bicep')
   if ($files.Count -lt 3) { throw "found only $($files.Count) Bicep files" }
   $modes = @()
+  $keyLines = @()
   foreach ($file in $files) {
     $text = [IO.File]::ReadAllText($file.FullName)
     foreach ($line in ($text -split "`n")) {
       if ($line -match '(?i)trading(__|:)mode') { $modes += $line.Trim() }
       if ($line -match '(?i)ASPNETCORE_ENVIRONMENT' -and $line -notmatch "value: 'Azure'") { throw "$($file.Name): $($line.Trim())" }
-      if ($line -match '(?i)revolut|\blive\b' -and $line -notmatch '^\s*//') { throw "$($file.Name) mentions the exchange or live trading outside a comment: $($line.Trim())" }
+      if ($line -match '^\s*//') { continue }
+      if ($file.Name -eq 'agents-apps.bicep' -and $exchangeKeyLines -contains $line.Trim()) { $keyLines += $line.Trim(); continue }
+      if ($line -match '(?i)revolut|\blive\b') { throw "$($file.Name) mentions the exchange or live trading outside a comment: $($line.Trim())" }
     }
   }
   if ($modes.Count -ne 1 -or $modes[0] -ne "{ name: 'Trading__Mode', value: 'Paper' }") { throw "trading mode settings: $($modes -join ' | ')" }
+  if ($keyLines.Count -ne 2) { throw "the exchange key files are named $($keyLines.Count) times in agents-apps.bicep, not once each" }
+}
+
+Check 'only a protected environment gets the exchange keys, in its engine alone' {
+  $main = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'main.bicep'))
+  $apps = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-apps.bicep'))
+  if (([regex]::Matches($main, '(?m)^\s*exchangeKeys: protectedEnvironment\s*$')).Count -ne 1) { throw 'main.bicep must pass exchangeKeys: protectedEnvironment, once' }
+  if ($apps -notmatch '(?m)^param exchangeKeys bool = false\s*$') { throw 'exchangeKeys must default to false' }
+  # Every use of the keys' names is behind exchangeKeys: the secrets, the volume and its mount, and the engine's access.
+  foreach ($use in @('secrets: exchangeKeys ? engineSecrets : []', "volumes: exchangeKeys ? [{ name: 'secrets', storageType: 'Secret', secrets: engineSecretFiles }] : []",
+      "volumeMounts: exchangeKeys ? [{ volumeName: 'secrets', mountPath: '/run/secrets' }] : []", 'for i in range(0, exchangeKeys ? length(exchangeKeyFiles) : 0): {')) {
+    if (-not $apps.Contains($use)) { throw "agents-apps.bicep lacks: $use" }
+  }
+  foreach ($name in 'engineSecrets', 'engineSecretFiles') {
+    $uses = [regex]::Matches($apps, "\b$name\b").Count
+    if ($uses -ne 2) { throw "$name is used $($uses - 1) times, not once behind exchangeKeys" }
+  }
+  # The jobs never see them: their secrets stay claude-token alone.
+  if (([regex]::Matches($apps, 'exchangeKeyFiles')).Count -ne 5) { throw 'exchangeKeyFiles is used somewhere other than the engine' }
 }
 
 Check 'the agents'' templates set what the engine and the job scripts read' {
@@ -234,13 +258,14 @@ foreach ($case in @(
   }
 }
 
-Check 'agents stay off in a protected (live-money) environment' {
-  $s = Read-CixEnvironment -Name dev
-  $s.protected = $true
-  $s.agents.deploy = 'platform'
-  $message = $null
-  try { Assert-CixAgentSettings -Settings $s -Path 'prod.json' } catch { $message = $_.Exception.Message }
-  if (-not $message -or -not $message.Contains('must stay none in a protected')) { throw "got: $message" }
+Check 'the protected (live-money) environment: its own group and database, no dashboard, its engine in Azure' {
+  $s = Read-CixEnvironment -Name prod
+  Expect $s.protected $true 'protected'
+  Expect $s.resourceGroup 'rg-cix-live' 'resource group (owner decision 6)'
+  Expect $s.cosmos.databaseName 'cix-live' 'database (owner decision 5)'
+  Expect $s.deployDashboard $false 'deployDashboard'
+  Expect $s.tags.purpose 'cix-live-trading' 'tags'
+  if (@('platform', 'apps') -notcontains $s.agents.deploy) { throw "agents.deploy is $($s.agents.deploy)" }
 }
 
 Check 'ConvertFrom-CixJson sends array items one by one' {
@@ -959,17 +984,6 @@ Check 'provision.ps1 refuses to create the shared account over an untagged one' 
   if (-not $r.Error -or -not $r.Error.Contains('none tagged shared-role=cosmos')) { throw "got: $($r.Error)" }
 }
 
-Check 'provision.ps1 refuses a protected environment in the shared account' {
-  $prod = Join-CixPath $repo 'infra' 'environments' 'prodtest.json'
-  $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'prod.example.json') -Raw).Replace('"prod"', '"prodtest"')
-  [IO.File]::WriteAllText($prod, $json)
-  try {
-    $r = Invoke-WithFakeAz @{} { & (Join-Path $azureTools 'provision.ps1') -Environment prodtest -WhatIfOnly }
-    if (-not $r.Error -or -not $r.Error.Contains('-AllowProtectedInSharedAccount')) { throw "got: $($r.Error)" }
-  }
-  finally { Remove-Item $prod -Force }
-}
-
 Check 'two environment files sharing one database are refused' {
   $copy = Join-CixPath $repo 'infra' 'environments' 'devcopy.json'
   [IO.File]::WriteAllText($copy, (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"devcopy"'))
@@ -1004,9 +1018,10 @@ $agentsFake = @{
   'consumption budget'    = '[{"name":"budget-cix-citest"}]'
   'deployment sub create' = '{"properties":{"outputs":{"cosmosAccountName":{"value":"cosmos-shared-x"},"cosmosEndpoint":{"value":"https://cosmos-shared-x.documents.azure.com:443/"},"staticWebAppName":{"value":"stapp-cix-citest"},"dashboardUrl":{"value":"https://dash.example"},"registryServer":{"value":"crcixcitest1.azurecr.io"},"keyVaultName":{"value":"kvcixcitest1"},"engineAppName":{"value":"ca-cix-citest-engine"},"agentJobNames":{"value":["caj-cix-citest-trader","caj-cix-citest-requests","caj-cix-citest-analyst"]},"agentJobPrincipalIds":{"value":["aaaaaaaa-0000-0000-0000-000000000001","aaaaaaaa-0000-0000-0000-000000000002","aaaaaaaa-0000-0000-0000-000000000003"]}}}}'
 }
-function Invoke-AgentsProvision([hashtable]$Overrides, [hashtable]$Arguments, [string]$Deploy = 'apps') {
+function Invoke-AgentsProvision([hashtable]$Overrides, [hashtable]$Arguments, [string]$Deploy = 'apps', [bool]$Protected = $false) {
   $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
   $json = (Get-CitestJson $Deploy)
+  if ($Protected) { $json = $json.Replace('"protected": false', '"protected": true') }
   [IO.File]::WriteAllText($file, $json)
   $extra = @{}; foreach ($k in $agentsFake.Keys) { $extra[$k] = $agentsFake[$k] }
   foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
@@ -1105,6 +1120,107 @@ Check 'provision.ps1 agents apps keeps the images the engine and the jobs run, b
   }
   if ($r.Calls.Contains('show-tags')) { throw "looked for a tag although none was given: $($r.Calls)" }
   if ($r.Calls -cmatch '(^|\s)containerapp ') { throw "used the containerapp extension: $($r.Calls)" }
+}
+
+# A protected environment (ADR-0017): the citest copy marked protected, its images promoted from dev's registry.
+$devApps = '/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.App'
+function Get-PromoteFake([string]$RunningDigest = "sha256:$('5' * 64)") {
+  <# Both registries, and dev's engine and trader job running $RunningDigest (the fake gives every image the 5s digest). #>
+  return @{
+    'acr list'      = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}},{"name":"crcixdev1","tags":{"cix-environment":"dev"}}]'
+    'resource list' = "[{`"id`":`"$devApps/containerApps/ca-cix-dev-engine`",`"name`":`"ca-cix-dev-engine`",`"type`":`"Microsoft.App/containerApps`",`"tags`":{`"cix-environment`":`"dev`"}},{`"id`":`"$devApps/jobs/caj-cix-dev-trader`",`"name`":`"caj-cix-dev-trader`",`"type`":`"Microsoft.App/jobs`",`"tags`":{`"cix-environment`":`"dev`"}}]"
+    'resource show' = "[{`"type`":`"Microsoft.App/containerApps`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdev1.azurecr.io/cix-engine@$RunningDigest`"}]}}},{`"type`":`"Microsoft.App/jobs`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdev1.azurecr.io/cix-trader@$RunningDigest`"}]}}}]"
+  }
+}
+$promoteFake = Get-PromoteFake
+function New-FakeKeyFiles {
+  <# Two files standing in for the exchange keys, with content built at run time: not a secret. #>
+  $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-keys-$([guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Path $dir | Out-Null
+  $marker = @('fake', 'exchange', 'key', '9c1d') -join '-'
+  [IO.File]::WriteAllText((Join-Path $dir 'api.txt'), $marker)
+  [IO.File]::WriteAllText((Join-Path $dir 'private.pem'), $marker)
+  [IO.File]::WriteAllText((Join-Path $dir 'bom.txt'), $marker, (New-Object Text.UTF8Encoding $true))
+  return @{ Dir = $dir; Api = (Join-Path $dir 'api.txt'); Pem = (Join-Path $dir 'private.pem'); Bom = (Join-Path $dir 'bom.txt'); Marker = $marker }
+}
+
+Check 'provision.ps1 protected apps (-Yes): checks access, promotes dev''s images by digest, uploads the keys unseen, then deploys' {
+  $keys = New-FakeKeyFiles
+  try {
+    $r = Invoke-AgentsProvision $promoteFake @{ Yes = $true; ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = $keys.Api; ExchangePrivateKeyFile = $keys.Pem } 'apps' $true
+  }
+  finally { Remove-Item $keys.Dir -Recurse -Force }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  $calls = $r.Calls.Replace('"', '') # Windows logs arguments with spaces in quotes
+  foreach ($call in @('role assignment list --all', 'role assignment list --scope /subscriptions/00000000-0000-0000-0000-000000000001 --include-inherited',
+      'acr repository show-tags --name crcixdev1 --repository cix-engine',
+      "acr import --name crcixcitest1 --source crcixdev1.azurecr.io/cix-engine@$digest5 --image cix-engine:abc123 --force",
+      "acr import --name crcixcitest1 --source crcixdev1.azurecr.io/cix-trader@$digest5 --image cix-trader:abc123 --force",
+      "keyvault secret set --vault-name kvcixcitest1 --name revolutx-api-key --file $($keys.Api)",
+      "keyvault secret set --vault-name kvcixcitest1 --name revolutx-private-key --file $($keys.Pem)",
+      '--content-type Exchange key')) {
+    if (-not $calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
+  }
+  if ($calls.IndexOf('acr import') -gt $calls.IndexOf('acr repository show --name crcixcitest1')) { throw 'read the digests to deploy before copying them' }
+  if ($calls.IndexOf('keyvault secret set') -gt $calls.IndexOf('deployment sub create')) { throw 'uploaded the keys after the deployment that mounts them' }
+  if ($r.Output.Contains($keys.Marker) -or $r.Calls.Contains($keys.Marker)) { throw 'showed a key' }
+  if ($calls.Contains('cosmosdb keys')) { throw "read the account key for this PC's paper engine" }
+  foreach ($expected in @('This environment is protected (real money)', 'The engine stands by')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+
+$citestGroup = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-citest'
+Check 'provision.ps1 protected: anyone but the owner and its own identities with a role on the group, in it or above it, stops -Yes' {
+  $row = { param($Role, $Scope, $Id, $Name, $Type) "{`"roleDefinitionName`":`"$Role`",`"scope`":`"$Scope`",`"principalId`":`"$Id`",`"principalName`":`"$Name`",`"principalType`":`"$Type`"}" }
+  $roles = '[' + ((
+      (& $row 'Contributor' '/subscriptions/00000000-0000-0000-0000-000000000001' 'p1' 'cix-agents-deploy-dev' 'ServicePrincipal'),
+      (& $row 'AcrPush' "$citestGroup/providers/Microsoft.ContainerRegistry/registries/crcixcitest1" 'p2' 'cix-agents-deploy-citest' 'ServicePrincipal'),
+      (& $row 'Reader' '/providers/Microsoft.Management/managementGroups/mg1' 'p3' 'ops' 'Group'),
+      (& $row 'Key Vault Secrets User' "$citestGroup/providers/Microsoft.KeyVault/vaults/kvcixcitest1" 'e1' 'e1' 'ServicePrincipal'),
+      (& $row 'Owner' '/subscriptions/00000000-0000-0000-0000-000000000001' $ownerId 'owner@example.com' 'User'),
+      (& $row 'Contributor' '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-dev' 'p4' 'dev-only' 'ServicePrincipal'),
+      (& $row 'Contributor' '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-citestother' 'p5' 'look-alike' 'ServicePrincipal')) -join ',') + ']'
+  $identities = '[{"name":"id-cix-citest-engine","principalId":"e1"},{"name":"id-someone-else","principalId":"p2"}]'
+  $r = Invoke-AgentsProvision @{ 'role assignment list' = $roles; 'identity list' = $identities } @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+  foreach ($expected in @('Contributor on /subscriptions/00000000-0000-0000-0000-000000000001: cix-agents-deploy-dev (ServicePrincipal)',
+      "AcrPush on $citestGroup/providers/Microsoft.ContainerRegistry/registries/crcixcitest1: cix-agents-deploy-citest (ServicePrincipal)",
+      'Reader on /providers/Microsoft.Management/managementGroups/mg1: ops (Group)', 'run without -Yes')) {
+    if (-not $r.Error -or -not $r.Error.Contains($expected)) { throw "missing '$expected' in: $($r.Error)" }
+  }
+  foreach ($never in @('Key Vault Secrets User', 'owner@example.com', 'dev-only', 'look-alike')) {
+    if ($r.Error.Contains($never)) { throw "listed '$never': $($r.Error)" }
+  }
+  if ($r.Calls -match '(?m)\bdeployment\b') { throw 'went on to the preview' }
+
+  $r = Invoke-AgentsProvision @{ 'identity list' = $identities } @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if (-not $r.Output.Contains('Preview only: nothing was changed.')) { throw "no preview in: $($r.Output)" }
+}
+
+foreach ($case in @(
+    @{ Name = 'an exchange key file for a paper environment'; Protected = $false; Deploy = 'apps'; Arguments = @{ ExchangeApiKeyFile = 'KEYFILE' }; Says = 'are for a protected environment only' },
+    @{ Name = '-PromoteFrom for a paper environment'; Protected = $false; Deploy = 'apps'; Arguments = @{ PromoteFrom = 'dev'; ImageTag = 'abc123' }; Says = 'are for a protected environment only' },
+    @{ Name = '-PromoteFrom without -ImageTag'; Protected = $true; Deploy = 'apps'; Arguments = @{ PromoteFrom = 'dev' }; Says = '-PromoteFrom needs -ImageTag' },
+    @{ Name = 'key files without the apps'; Protected = $true; Deploy = 'platform'; Arguments = @{ ExchangeApiKeyFile = 'KEYFILE' }; Says = 'go with agents.deploy apps' },
+    @{ Name = 'a key file with a byte-order mark'; Protected = $true; Deploy = 'apps'; Arguments = @{ ExchangeApiKeyFile = 'BOMFILE' }; Says = 'starts with a UTF-8 byte-order mark' },
+    @{ Name = 'a key file that is not there'; Protected = $true; Deploy = 'apps'; Arguments = @{ ExchangePrivateKeyFile = 'no-such-key.pem' }; Says = 'no-such-key.pem: no such file' },
+    @{ Name = 'no exchange keys given or in Key Vault'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev' }; Says = 'has no revolutx-api-key' },
+    @{ Name = 'promoting from a protected environment'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'citest'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = '-PromoteFrom citest is protected' },
+    @{ Name = 'promoting images paper doesn''t run'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $promoteFake['acr list'] }; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = "dev doesn't run the images tagged abc123 now: promote the images paper runs" },
+    @{ Name = 'a protected environment without secrets/claude_token'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $promoteFake['acr list']; 'keyvault secret list' = '[]' }; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = 'has no claude-token'; NoLocalToken = $true })) {
+  Check "provision.ps1 refuses $($case.Name), before any change" {
+    $keys = New-FakeKeyFiles
+    $arguments = @{ Yes = $true }
+    foreach ($k in $case.Arguments.Keys) { $arguments[$k] = switch ($case.Arguments[$k]) { 'KEYFILE' { $keys.Api } 'BOMFILE' { $keys.Bom } default { $_ } } }
+    $fakeAnswers = if ($case['Fake']) { $case.Fake } else { $promoteFake }
+    # Skipped where a developer has secrets/claude_token (it is never in the repo), as below.
+    if ($case['NoLocalToken'] -and (Test-Path (Join-CixPath $repo 'secrets' 'claude_token'))) { Remove-Item $keys.Dir -Recurse -Force; return }
+    try { $r = Invoke-AgentsProvision $fakeAnswers $arguments $case.Deploy $case.Protected }
+    finally { Remove-Item $keys.Dir -Recurse -Force }
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
+    if ($r.Calls -match '(?m)\b(create|import|secret set)\b') { throw "it changed something before refusing: $($r.Calls)" }
+  }
 }
 
 Check 'provision.ps1 agents platform: no budget without an address that gets mail, and nothing for the apps' {

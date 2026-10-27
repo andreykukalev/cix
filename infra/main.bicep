@@ -3,7 +3,7 @@
 // in Docker on the owner's PC and connect to the database over HTTPS with the account key. In Azure the engine uses its
 // managed identity instead, with roles on CIX's containers only (modules/cosmos-engine-access.bicep).
 // agents (ADR-0013): 'platform' adds what the engine and the agent jobs run on (modules/agents-platform.bicep); 'apps'
-// also deploys the paper engine and the three jobs (modules/agents-apps.bicep). 'none', the default, adds neither.
+// also deploys the engine and the three jobs (modules/agents-apps.bicep). 'none', the default, adds neither.
 // Deploy with tools/azure/provision.ps1, which reads infra/environments/<name>.json. See docs/azure.md and ADR-0009.
 targetScope = 'subscription'
 
@@ -92,9 +92,9 @@ param budgetContactEmail string = ''
 @description('agents: your Entra object ID (provision.ps1 passes your sign-in\'s), given Key Vault Secrets Officer to set claude-token. Empty: no grant.')
 param ownerObjectId string = ''
 
-// A protected environment (real money) never gets this paper engine or its agents, whatever the parameters say: the live
-// engine has a template of its own. provision.ps1 refuses it too.
-var agentsDeploy = protectedEnvironment ? 'none' : agents
+// A protected environment (real money) gets the same engine and agents, pinned to paper like every other, plus the exchange
+// keys from its own Key Vault: its engine stands by until the owner switches it from their own sign-in (ADR-0017).
+var agentsDeploy = agents
 
 // cix-database and cix-cosmos-account claim the database for this environment: the scripts refuse to deploy over, or
 // reset, a database that no group or another group claims.
@@ -182,6 +182,7 @@ module agentsApps 'modules/agents-apps.bicep' = if (agentsDeploy == 'apps') {
     traderModel: traderModel
     analystModel: analystModel
     claudeTokenExpires: claudeTokenExpires
+    exchangeKeys: protectedEnvironment
   }
 }
 

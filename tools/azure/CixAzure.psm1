@@ -119,8 +119,8 @@ function Assert-CixAgentSettings {
   if ($a.ContainsKey('claudeTokenExpires') -and $a.claudeTokenExpires -and "$($a.claudeTokenExpires)" -notmatch '^\d{4}-\d{2}-\d{2}$') {
     throw "${Path}: agents.claudeTokenExpires must be a date (YYYY-MM-DD) or empty."
   }
-  # The templates deploy a paper engine only. The live engine gets its own resource group, Key Vault and template.
-  if ($Settings.protected -and $a.deploy -ne 'none') { throw "${Path}: agents.deploy must stay none in a protected (live-money) environment; the live engine gets its own setup (docs/research/azure-hosting.md)." }
+  # A protected environment's engine is pinned to paper too, and stands by holding the exchange keys until the owner switches it
+  # (ADR-0017); CI never deploys there (setup-ci-deploy.ps1 refuses it).
 }
 
 function Read-CixSharedSettings {
@@ -552,10 +552,59 @@ function Remove-CixVaultSecretAndAccess {
 
 function Set-CixVaultSecretFromFile {
   <# Stores a file's content as a secret. The value goes from the file to az directly: never through a variable or argument. #>
-  param([Parameter(Mandatory)][string]$Vault, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Path)
+  param([Parameter(Mandatory)][string]$Vault, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Path,
+    [string]$ContentType = 'Claude setup token or API key')
   Invoke-CixAz -Quiet @('keyvault', 'secret', 'set', '--vault-name', $Vault, '--name', $Name, '--file', $Path, '--encoding', 'utf-8',
-    '--content-type', 'Claude setup token or API key', '--query', 'name', '-o', 'tsv') | Out-Null
+    '--content-type', $ContentType, '--query', 'name', '-o', 'tsv') | Out-Null
 }
+
+function Get-CixOutsideAccess {
+  <#
+    Who else can reach a protected environment through Azure roles (ADR-0017): every role assignment on its resource group,
+    on anything inside it, or above it (the subscription, a management group), of any kind of principal (service principals,
+    groups, other users), except the signed-in owner and the environment's own managed identities (id-<prefix>-<env>-*). CI's
+    and the agents' identities above all should have none. Returns 'role on scope: principal (type)' lines; names and IDs only.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$OwnerId)
+  $group = "/subscriptions/$SubscriptionId/resourceGroups/$($Settings.resourceGroup)"
+  $own = @{}
+  $own[$OwnerId.ToLowerInvariant()] = $true
+  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -eq 'true') {
+    $prefix = "id-$($Settings.namePrefix)-$($Settings.environmentName)-"
+    foreach ($identity in @(Invoke-CixAz @('identity', 'list', '--resource-group', $Settings.resourceGroup, '-o', 'json') | ConvertFrom-CixJson)) {
+      if ($identity -and $identity.PSObject.Properties['name'] -and $identity.PSObject.Properties['principalId'] -and
+          "$($identity.name)".StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { $own["$($identity.principalId)".ToLowerInvariant()] = $true }
+    }
+  }
+  # --all lists the subscription's assignments at every scope (az's --resource-group leaves out those on resources inside the
+  # group); --include-inherited on the subscription adds those above it, such as a management group's.
+  $all = @(Invoke-CixAz @('role', 'assignment', 'list', '--all', '-o', 'json') | ConvertFrom-CixJson) +
+    @(Invoke-CixAz @('role', 'assignment', 'list', '--scope', "/subscriptions/$SubscriptionId", '--include-inherited', '-o', 'json') | ConvertFrom-CixJson)
+  return @($all | Where-Object {
+      $_ -and $_.PSObject.Properties['scope'] -and $_.PSObject.Properties['principalId'] -and
+      -not $own.ContainsKey("$($_.principalId)".ToLowerInvariant()) -and (Test-CixScopeReaches -Scope "$($_.scope)" -Group $group) } |
+    ForEach-Object {
+      $name = if ($_.PSObject.Properties['principalName'] -and $_.principalName) { "$($_.principalName)" } else { "$($_.principalId)" }
+      $type = if ($_.PSObject.Properties['principalType']) { "$($_.principalType)" } else { 'unknown' }
+      $role = if ($_.PSObject.Properties['roleDefinitionName']) { "$($_.roleDefinitionName)" } else { 'a role' }
+      "$role on $($_.scope): $name ($type)"
+    } | Sort-Object -Unique)
+}
+
+function Test-CixScopeReaches {
+  <# Whether a role assigned at $Scope reaches the resource group $Group: the group itself, a resource in it, or a scope above it. #>
+  param([Parameter(Mandatory)][AllowEmptyString()][string]$Scope, [Parameter(Mandatory)][string]$Group)
+  $s = $Scope.TrimEnd('/')
+  if ($s -eq '' -or $s.StartsWith('/providers/Microsoft.Management/managementGroups/', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  return $Group.Equals($s, [StringComparison]::OrdinalIgnoreCase) -or $Group.StartsWith("$s/", [StringComparison]::OrdinalIgnoreCase) -or
+    $s.StartsWith("$Group/", [StringComparison]::OrdinalIgnoreCase)
+}
+
+# The exchange keys of a protected environment's engine: the Key Vault secret, and what provision.ps1 calls the file it reads.
+$script:ExchangeKeySecrets = @(
+  @{ Name = 'revolutx-api-key'; Parameter = 'ExchangeApiKeyFile' },
+  @{ Name = 'revolutx-private-key'; Parameter = 'ExchangePrivateKeyFile' })
+function Get-CixExchangeKeySecrets { $script:ExchangeKeySecrets }
 
 function Get-CixEngineAudience {
   <#
