@@ -210,8 +210,8 @@ public sealed partial class StrategySelectionService(
         foreach (var path in Directory.EnumerateFiles(folder, "*.json").Order(StringComparer.Ordinal))
         {
             var match = SpecFileName().Match(Path.GetFileName(path));
-            if (!match.Success)
-                continue;
+            if (!match.Success || IsDraft(path))
+                continue; // a draft never runs, so it isn't seeded; skipped quietly
             StrategySpec spec;
             try
             {
@@ -563,13 +563,32 @@ public sealed partial class StrategySelectionService(
         {
             if (_fileHashes.TryGetValue(key, out var file) && file != spec.Hash)
                 return $"The database copy of {StrategySchema.Clip(key)} differs from the reviewed file strategies/{StrategySchema.Clip(spec.Name)}.v{spec.Version}.json; give a changed strategy a new version.";
-            if (trading.Mode == TradingMode.Live && file is null)
-                return $"{StrategySchema.Clip(key)} isn't a spec file the owner marked live in strategies/; live trading runs only those, exactly as reviewed.";
+            // A version that says live must be a file the owner marked live, in paper too (ADR-0022): a database document
+            // can't claim the status for itself.
+            if ((trading.Mode == TradingMode.Live || spec.Status == SpecStatus.Live) && file is null)
+                return $"{StrategySchema.Clip(key)} isn't a spec file the owner marked live in strategies/; live specs run only as their reviewed files.";
             if (!_reviewedInstructions.Contains(InstructionsHash(spec)))
                 return $"The instructions of {StrategySchema.Clip(key)} match no reviewed spec file in strategies/; instructions change only through a pull request.";
         }
 
         return null;
+    }
+
+    /// <summary>Whether a spec file says it's a draft; anything unreadable is left to the loader to report.</summary>
+    private static bool IsDraft(string path)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("status", out var status)
+                && status.ValueKind == JsonValueKind.String
+                && string.Equals(status.GetString(), "draft", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static string InstructionsHash(StrategySpec spec) =>

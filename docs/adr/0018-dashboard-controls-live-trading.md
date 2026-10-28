@@ -39,7 +39,7 @@ On 2026-10-27 the owner chose, on a decision card, to let the dashboard control 
 - **Strategies and pairs in live** use the same request types as paper's (`strategy-selection`, `tradable-pair`), taken by the live engine from its own `requests` container, with `confirmLive` as above.
   - The live engine seeds its database only with the spec files in `strategies/` the owner marked `live` (other files are skipped), and switches only to a version that one of those files holds, exactly as reviewed: same canonical hash, `live` status. A database document that says `live` but matches no such file is refused, so nothing but a reviewed pull request can add a live strategy. The Strategy tab lists only those specs and says so.
   - Pairs change within `config/risk-limits.live.json`, which keeps its own list (`tradable-pairs-live`); refusals name that file. Removing a pair still needs nothing held, reserved or working in it, and every order still goes through the risk gate.
-  - Paper is unchanged: it switches between `paper` specs only.
+  - Paper is unchanged: it switches between `paper` specs only. (Amended by ADR-0022: paper also runs the `live` specs, and both modes offer the same presets.)
 
 ## Alternatives considered
 

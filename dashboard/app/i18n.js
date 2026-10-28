@@ -734,6 +734,18 @@
       'Самый высокий из трёх, но в пределах всех обязательных ограничений. Ордера до 20 EUR, не больше 25 EUR в одной монете, до 80% средств в монетах, 15 минут между покупками и дневной стоп по убытку 5 EUR. Больше и крупнее сделки — сильнее колебания в обе стороны; больший риск не означает большего дохода.',
     'Highest of the three, still inside every mandatory limit. Orders up to 20 EUR, up to 80% of the allocation in coins, 15 minutes between buys, and a daily loss stop of 12 EUR. More and larger trades mean larger swings both ways; higher risk does not mean higher returns.':
       'Самый высокий из трёх, но в пределах всех обязательных ограничений. Ордера до 20 EUR, до 80% средств в монетах, 15 минут между покупками и дневной стоп по убытку 12 EUR. Больше и крупнее сделки — сильнее колебания в обе стороны; больший риск не означает большего дохода.',
+    'Trades rarely and small: only deep pullbacks to the 30-hour EMA in coins whose hourly moves are at least 7 times the round-trip cost, with the tightest spreads and the most volume.':
+      'Торгует редко и понемногу: только глубокие откаты к 30-часовой EMA в монетах, чьи часовые движения минимум в 7 раз больше издержек на сделку туда и обратно, с самыми узкими спредами и наибольшим объёмом.',
+    'Lowest of the three. 5 EUR orders, about 0.25 EUR at risk each, at most a quarter of the allocation in coins, 4 hours between buys and a 2 EUR daily loss stop. In the backtest it traded about once a week and broke even after costs; it can go weeks without a trade. No setting guarantees a result.':
+      'Самый низкий из трёх. Ордера по 5 EUR, около 0,25 EUR риска на сделку, в монетах не больше четверти средств, 4 часа между покупками и дневной стоп по убытку 2 EUR. В бэктесте торговал примерно раз в неделю и после издержек вышел в ноль; может неделями не совершать сделок. Никакие настройки не гарантируют результат.',
+    'The middle ground: the same deep pullbacks and cost filter as Safe, with a little more room on spread and volume, larger orders and more of the allocation in coins.':
+      'Золотая середина: те же глубокие откаты и фильтр издержек, что у Safe, чуть свободнее по спреду и объёму, с более крупными ордерами и большей долей средств в монетах.',
+    'Moderate. Orders up to 10 EUR, about 0.5 EUR at risk each, at most 40% of the allocation in coins, 2 hours between buys and a 3 EUR daily loss stop. In the backtest it traded about twice a week and roughly broke even after costs. Losses are limited by stops and trend exits, not prevented.':
+      'Умеренный. Ордера до 10 EUR, около 0,5 EUR риска на сделку, в монетах не больше 40% средств, 2 часа между покупками и дневной стоп по убытку 3 EUR. В бэктесте торговал примерно дважды в неделю и после издержек остался около нуля. Стопы и выходы по тренду ограничивают убытки, но не исключают их.',
+    'Takes more of the same opportunities: the cost filter and deep-pullback entries of Safe and Balanced, on more coins (less volume needed, more volatile ones allowed), with the largest orders, two buys per run and the most of the allocation in coins.':
+      'Берёт больше таких же возможностей: фильтр издержек и вход на глубоких откатах, как у Safe и Balanced, но на большем числе монет (нужен меньший объём, допускаются более волатильные), с самыми крупными ордерами, двумя покупками за запуск и наибольшей долей средств в монетах.',
+    'Highest of the three, still inside every mandatory limit. Orders up to 20 EUR, about 1 EUR at risk each, at most 25 EUR in one coin, up to 60% of the allocation in coins, an hour between buys and a 5 EUR daily loss stop. In the backtest it traded about three times a week, roughly broke even after costs and had the largest swings. Higher risk does not mean higher returns.':
+      'Самый высокий из трёх, но в пределах всех обязательных ограничений. Ордера до 20 EUR, около 1 EUR риска на сделку, не больше 25 EUR в одной монете, до 60% средств в монетах, час между покупками и дневной стоп по убытку 5 EUR. В бэктесте торговал примерно трижды в неделю, после издержек остался около нуля и колебался сильнее остальных. Больший риск не означает большего дохода.',
     'Trend indicators': 'Индикаторы тренда',
     'Entry conditions': 'Условия входа',
     'Position size': 'Размер позиции',
@@ -837,6 +849,8 @@
       'Движок сам продаёт, когда позиция доходит до стопа или цели, в том числе между запусками агентов.',
     'Live trading switches only between the strategies you marked live in strategies/; every switch asks you to confirm it.':
       'Реальная торговля переключается только между стратегиями, которые вы отметили как live в strategies/; каждое переключение нужно подтвердить.',
+    'Paper offers the same strategies as live, the ones you marked live in strategies/, so you can run different ones side by side.':
+      'Paper предлагает те же стратегии, что и live (отмеченные как live в strategies/), чтобы можно было запустить разные и сравнить.',
     'The engine hasn\'t listed the exchange\'s pairs yet; it does when it starts.': 'Движок ещё не получил список пар биржи; он делает это при запуске.',
 
     // What the engine says about a strategy switch (StrategySelection.cs)

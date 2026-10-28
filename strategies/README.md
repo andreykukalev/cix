@@ -9,6 +9,31 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 
 ## Safe, Balanced and Risky
 
+The Strategy tab offers three presets, the same in paper and live (ADR-0022): the newest version of `safe`, `balanced` and `risky` that the owner marked `live`, plus the strategy running now if it is another one. Older and paper-only versions stay here and in the journal, unlisted.
+
+### Calibrated presets: Safe v3, Balanced v3, Risky v4
+
+Calibrated on Revolut X hourly candles for every EUR pair from December 2025 to October 2026, with fees, spreads sampled from the live tickers and slippage (the report is linked from the pull request). All three share one signal, from the only region of settings that came close to breaking even after costs in that period: a deep pullback (price at or under the 30-hour EMA) in an uptrend (EMA 30 above EMA 55), in a coin whose hourly ATR is at least 7 times its round-trip cost, with a wide stop and the trend exit doing most of the exiting. No setting showed a reliable profit: these presets trade rarely and roughly break even, where the earlier ones lost steadily. They differ in size, exposure, frequency and how many coins qualify.
+
+| | Safe v3 | Balanced v3 | Risky v4 |
+|---|---|---|---|
+| Order size / risk per trade | 5 / 0.25 EUR | 10 / 0.5 EUR | 20 / 1 EUR |
+| Per coin / total in coins | 10 EUR / 25% | 20 EUR / 40% | 25 EUR / 60% |
+| Daily loss stop | 2 EUR | 3 EUR | 5 EUR |
+| Buys per run / signals per scan / cooldown | 1 / 1 / 4 h | 1 / 2 / 2 h | 2 / 3 / 1 h |
+| Trend EMAs / entry | 30 / 55; at or under the fast EMA | same | same |
+| Stop / reward-to-risk | 5 ATR / 2 | 4 ATR / 2 | 4 ATR / 2 |
+| 24h volume, spread, hourly ATR (max; min as × cost) | ≥ 250,000 EUR, ≤ 0.1%, ≤ 4%; 7× | ≥ 100,000 EUR, ≤ 0.15%, ≤ 6%; 7× | ≥ 50,000 EUR, ≤ 0.15%, ≤ 8%; 7× |
+
+They start as `draft`, fitted to `config/risk-limits.live.json`; once the owner marks them `live`, both modes offer them.
+
+Two things to watch when they run:
+
+- **The trend exit is the trader agent's.** In the backtest almost every position closed on the trend turning down; the engine itself sells only on a stop or a target, and with a 4–5 ATR stop that leaves a position open longer if the agent can't run. With trend exits off, the backtest lost 1.6% (Safe) and 7.7% (Balanced) instead of breaking even.
+- **The slow EMA is 55, the most the scan's 60 hourly candles allow** (`ScannerParameters.MaxEmaPeriod`), so it is seeded from only a few hours more than its period. The backtest computed it the same way.
+
+### Earlier versions
+
 Three paper strategies to choose from. Each states its purpose and risk profile in the file. None promises a return, and a riskier one is not expected to earn more: it takes larger and more frequent positions, so both gains and losses can be bigger.
 
 | | Safe v1 | Balanced v1 | Risky v2 |
