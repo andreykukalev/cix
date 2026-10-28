@@ -323,13 +323,14 @@ test('each watched coin shows its level: trading, filtered out, waiting for data
       { symbol: 'ETH-EUR', rank: null, note: 'too-volatile' },
       { symbol: 'ADA-EUR', rank: null, note: 'insufficient-history' },
       { symbol: 'SOL-EUR', rank: 2 },
+      { symbol: 'XRP-EUR', rank: null, note: 'news' },
     ] },
     portfolio: { holdings: [{ symbol: 'BTC-EUR', valueQuote: '20' }, { symbol: 'ETH-EUR', valueQuote: '9' }, { symbol: 'SOL-EUR', valueQuote: '4' }, { symbol: 'UNI-EUR', valueQuote: '1' }] },
   };
-  const pairs = { tradable: ['BTC-EUR', 'DOGE-EUR', 'ETH-EUR', 'ADA-EUR', 'XRP-EUR'].map((symbol) => ({ symbol, adopted: false })).concat([{ symbol: 'SOL-EUR', adopted: true }]) };
+  const pairs = { tradable: ['BTC-EUR', 'DOGE-EUR', 'ETH-EUR', 'ADA-EUR', 'XRP-EUR', 'LTC-EUR'].map((symbol) => ({ symbol, adopted: false })).concat([{ symbol: 'SOL-EUR', adopted: true }]) };
   const levels = Object.fromEntries(V.coins(view, pairs, 'en').map((r) => [r.symbol, r.level?.key ?? null]));
   assert.deepEqual(levels, {
-    'BTC-EUR': 'trading', 'DOGE-EUR': 'filtered', 'ETH-EUR': 'outside', 'ADA-EUR': 'waiting', 'XRP-EUR': 'new', 'SOL-EUR': 'adopted', 'UNI-EUR': null,
+    'BTC-EUR': 'trading', 'DOGE-EUR': 'filtered', 'ETH-EUR': 'outside', 'ADA-EUR': 'waiting', 'XRP-EUR': 'flagged', 'LTC-EUR': 'new', 'SOL-EUR': 'adopted', 'UNI-EUR': null,
   });
   assert.equal(V.coins(view, pairs, 'en').find((r) => r.symbol === 'ETH-EUR').level.label, 'Held, outside the strategy');
   assert.ok(V.coins(view, null, 'en').every((r) => r.level === null), 'no levels before the pairs are loaded');

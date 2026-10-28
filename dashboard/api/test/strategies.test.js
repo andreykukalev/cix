@@ -118,5 +118,5 @@ test('the switch preview: which watched coins would enter and leave trading, wit
   ]);
   assert.deepEqual(V.strategyCoins(preview('risky')), ['Enter trading: DOGE-EUR, SOL-EUR (held).']);
   assert.deepEqual(V.strategyCoins({ enter: [], leave: [] }), ['No coin enters or leaves trading.']);
-  assert.match(V.strategyCoins(null)[0], /hasn't previewed this strategy/);
+  assert.match(V.strategyCoins(null)[0], /^No preview for this strategy yet/);
 });

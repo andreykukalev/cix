@@ -339,7 +339,7 @@ public sealed partial class MarketScanService(
 
     /// <summary>
     /// Runs the market filters of every other strategy the owner could switch to on the same inputs: one implementation of
-    /// the filters serves the scan and the preview. A spec whose filters can't be read is left out, never fails the scan.
+    /// the filters serves the scan and the preview. A spec whose preview fails for any reason is left out and logged; it never fails the scan.
     /// </summary>
     private IReadOnlyList<StrategyPreview> Preview(StrategySpec? active, IReadOnlyList<ScanInput> inputs, IReadOnlyList<HeldPosition> held, DateTimeOffset now)
     {
@@ -351,9 +351,11 @@ public sealed partial class MarketScanService(
             ScanResult scan;
             try
             {
-                scan = MarketScanner.Scan(inputs, held, FromSpec(other, options.Parameters), now, allowEntries: false);
+                scan = MarketScanner.Scan(inputs, held, FromSpec(other, options.Parameters), now, allowEntries: false, view: views?.Current); // a news flag holds whatever the strategy
             }
-            catch (InvalidOperationException ex)
+#pragma warning disable CA1031 // anything: a spec that isn't running must never stop the scan or the protective exits after it
+            catch (Exception ex)
+#pragma warning restore CA1031
             {
                 LogPreviewSkipped(logger, other.Label, ex.Message);
                 continue;

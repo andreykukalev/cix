@@ -26,7 +26,8 @@ public sealed record ScannerFilterState(
 
 /// <summary>
 /// What a change of filters (a strategy switch) did to the watched coins (ADR-0021): those that now pass and didn't, those that
-/// passed and don't, and of the coins that no longer pass, the ones the account holds. Those keep their stops and targets; the
+/// passed and don't, and of those that left, the ones the account holds. A switch to a strategy with the same coin filters
+/// moves no coin and records no change. Those keep their stops and targets; the
 /// owner decides what to do with them.
 /// </summary>
 public sealed record FilterChange(
@@ -116,11 +117,13 @@ public sealed partial class ScannerFilterRecorder(IScannerFilterStore store, IJo
 
             if (previous is null || previous.Filters != filters)
             {
+                var removed = previous?.Passing.Except(passing, StringComparer.Ordinal).ToList() ?? [];
                 var change = previous is null ? null : new FilterChange(
                     scan.AsOf, previous.Spec, spec,
                     passing.Except(previous.Passing, StringComparer.Ordinal).ToList(),
-                    previous.Passing.Except(passing, StringComparer.Ordinal).ToList(),
-                    (held ?? []).Where(s => !passing.Contains(s, StringComparer.Ordinal)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
+                    removed,
+                    // Only coins the switch moved out: a balance the strategy never traded (dust, an adopted coin) isn't news.
+                    removed.Intersect(held ?? [], StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
                 var next = new ScannerFilterState(spec, filters, scan.AsOf, passing, excluded, scan.AsOf, change ?? previous?.LastChange);
                 _candidate = null;
                 Take(next); // the change is taken before it is journaled: a failed save never journals it twice

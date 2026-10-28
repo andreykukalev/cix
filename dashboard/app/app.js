@@ -369,17 +369,20 @@ function renderCoins(view) {
   renderFilterChange(view.engine?.filterChange ?? null);
 }
 
+const dismissedChanges = {}; // per mode, for when the browser keeps no storage
+
 /** The banner after a strategy switch (ADR-0021): which coins entered and left trading, until the owner dismisses it. */
 function renderFilterChange(change) {
   const key = `cix-filter-change-${state.mode}`;
-  let dismissed = null;
-  try { dismissed = localStorage.getItem(key); } catch { /* storage may be unavailable: the banner shows */ }
+  let dismissed = dismissedChanges[state.mode] ?? null;
+  try { dismissed = localStorage.getItem(key) ?? dismissed; } catch { /* storage may be unavailable: this page's memory stands in */ }
   const shown = V.filterChange(change, dismissed);
   const node = document.getElementById('coins-change');
   node.hidden = !shown;
   if (!shown) { node.replaceChildren(); return; }
   const close = el('button', { type: 'button', class: 'ghost', text: t('Dismiss') });
   close.addEventListener('click', () => {
+    dismissedChanges[state.mode] = shown.at;
     try { localStorage.setItem(key, shown.at); } catch { /* storage may be unavailable */ }
     node.hidden = true;
   });

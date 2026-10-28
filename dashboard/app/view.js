@@ -95,6 +95,7 @@
   const LEVELS = {
     trading: { label: 'In trading', tone: 'ok', detail: 'Passes the strategy\'s filters at the latest scan: the strategy can buy it.' },
     filtered: { label: 'Filtered out', tone: '', detail: 'Watched, but the strategy\'s filters exclude it at the latest scan: it isn\'t bought. The reason is under Why no buy.' },
+    flagged: { label: 'Flagged by the analyst', tone: 'warn', detail: 'The market analyst flagged news about it: no strategy buys it until the flag ends.' },
     waiting: { label: 'Waiting for data', tone: 'pending', detail: 'Not enough fresh prices or hourly candles yet: it isn\'t bought until the scan has them.' },
     outside: { label: 'Held, outside the strategy', tone: 'warn', detail: 'You hold it, but the strategy\'s filters exclude it: it keeps its stop and target and the strategy buys no more. Keep it or sell it yourself.' },
     new: { label: 'Just added', tone: 'pending', detail: 'Its prices are loading; the engine scans a new pair within a minute of adding it.' },
@@ -108,8 +109,9 @@
     const key = pair.adopted ? 'adopted'
       : !row.inScan ? 'new'
         : row.rank !== null && row.rank !== undefined ? 'trading'
-          : WAITING.has(row.note) ? 'waiting'
-            : row.held ? 'outside' : 'filtered';
+          : row.note === 'news' ? 'flagged'
+            : WAITING.has(row.note) ? 'waiting'
+              : row.held ? 'outside' : 'filtered';
     return { key, label: t(LEVELS[key].label), tone: LEVELS[key].tone, detail: t(LEVELS[key].detail) };
   }
 
@@ -383,7 +385,7 @@
    * preview yet or nothing moves.
    */
   function strategyCoins(preview) {
-    if (!preview) return [t('The engine hasn\'t previewed this strategy on your coins yet; it does at every scan.')];
+    if (!preview) return [t('No preview for this strategy yet: the engine previews the strategies in its strategy files at every scan.')];
     const lines = [];
     const held = (c) => (c.held ? `${c.symbol} (${t('held')})` : c.symbol);
     if (preview.enter.length) lines.push(t('Enter trading: {coins}.', { coins: list(preview.enter.map(held)) }));

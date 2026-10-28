@@ -411,8 +411,11 @@
       'В портфеле и вне новой стратегии: {coins}. Стоп-лосс и тейк-профит остаются, стратегия больше не докупает; оставить или продать решаете вы.',
     'No coin entered or left trading.': 'Ни одна монета не начала и не перестала торговаться.',
     'Which coins trade': 'Какие монеты торгуются',
-    'The engine hasn\'t previewed this strategy on your coins yet; it does at every scan.':
-      'Движок ещё не проверил эту стратегию на ваших монетах; он делает это при каждом сканировании.',
+    'No preview for this strategy yet: the engine previews the strategies in its strategy files at every scan.':
+      'Для этой стратегии предпросмотра пока нет: движок проверяет стратегии из своих файлов стратегий при каждом сканировании.',
+    'Flagged by the analyst': 'Отмечена аналитиком',
+    'The market analyst flagged news about it: no strategy buys it until the flag ends.':
+      'Аналитик рынка отметил новости по ней: ни одна стратегия её не покупает, пока отметка действует.',
     'Enter trading: {coins}.': 'Начнут торговаться: {coins}.',
     'Leave trading: {coins}.': 'Перестанут торговаться: {coins}.',
     'You hold {coins}: they keep their stop and target, and the new strategy buys no more.':

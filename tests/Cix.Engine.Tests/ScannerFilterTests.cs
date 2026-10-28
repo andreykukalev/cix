@@ -73,13 +73,13 @@ public sealed class ScannerFilterTests
         Assert.Null(store.Saved!.LastChange); // the first record isn't a switch
 
         await Recorder(store, rig).RecordAsync(
-            Scan(60, ["BTC-EUR", "DOGE-EUR"], ("ETH-EUR", "wide-spread")), Strict, "safe@v2#c", CancellationToken.None, held: ["ETH-EUR", "BTC-EUR"]);
+            Scan(60, ["BTC-EUR", "DOGE-EUR"], ("ETH-EUR", "wide-spread")), Strict, "safe@v2#c", CancellationToken.None, held: ["ETH-EUR", "BTC-EUR", "UNI-EUR"]);
 
         var changed = rig.Journal.Entries.Last();
         Assert.Equal(("DOGE-EUR", "ETH-EUR", "ETH-EUR"), (changed.Data!["added"], changed.Data["removed"], changed.Data["heldOutside"]));
         var last = store.Saved!.LastChange!;
         Assert.Equal((T0.AddMinutes(60), "risky@v2#b", "safe@v2#c"), (last.At, last.FromSpec, last.ToSpec));
-        Assert.Equal(new[] { "ETH-EUR" }, last.HeldOutside); // held, no longer passing: it keeps its stop, the owner decides
+        Assert.Equal(new[] { "ETH-EUR" }, last.HeldOutside); // held and moved out: it keeps its stop, the owner decides; UNI never passed
 
         // Coins passing later under the same filters keep the switch on record, for the Coins tab's banner.
         var recorder = Recorder(store, rig);
