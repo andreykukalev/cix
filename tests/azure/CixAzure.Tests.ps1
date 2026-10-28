@@ -805,7 +805,8 @@ Check 'setup-ci-deploy.ps1 -For agents adds what its earlier role lacks (stoppin
 
 foreach ($case in @(
     @{ Name = 'agents.deploy none'; Deploy = 'none'; Overrides = @{}; Says = 'run provision.ps1 with agents.deploy platform first' },
-    @{ Name = 'a protected environment'; Deploy = 'none'; Protected = $true; Overrides = @{}; Says = 'is protected (live money)' },
+    @{ Name = 'a protected environment without its apps'; Deploy = 'platform'; Protected = $true; Overrides = @{}; Says = 'deploy the live engine with provision.ps1 first' },
+    @{ Name = 'a protected environment''s identity trusting main itself'; Deploy = 'apps'; Protected = $true; Overrides = @{ 'ad app list' = '[{"appId":"66666666-6666-6666-6666-666666666666","displayName":"cix-agents-deploy-citest"}]'; 'ad sp list' = '[{"id":"77777777-7777-7777-7777-777777777777"}]'; 'ad app federated-credential' = $mainCredential }; Says = 'also trusts repo:owner@11/repo@22:ref:refs/heads/main' },
     @{ Name = 'apps not deployed yet'; Deploy = 'apps'; Overrides = @{ 'resource list' = '[]' }; Says = "ca-cix-citest-engine isn't in rg-cix-citest" },
     @{ Name = 'an older, broader role of the same name'; Deploy = 'platform'; Overrides = @{ 'role definition' = "[{`"permissions`":[{`"actions`":[`"Microsoft.App/containerApps/listSecrets/action`",`"Microsoft.App/containerApps/write`"],`"notActions`":[],`"dataActions`":[],`"notDataActions`":[]}],`"assignableScopes`":[`"$agentsGroupId`"]}]" }; Says = 'grants other rights than it should' },
     @{ Name = 'no registry yet'; Deploy = 'platform'; Overrides = @{ 'acr list' = '[]' }; Says = 'No container registry for citest' },
@@ -814,6 +815,26 @@ foreach ($case in @(
     $r = Invoke-SetupAgentsCi $case.Overrides $case.Deploy ([bool]$case['Protected'])
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
     if ($r.Calls -match '(?m)\bcreate\b') { throw 'it changed something before refusing' }
+  }
+}
+
+Check 'setup-ci-deploy.ps1 -For agents (-Yes), protected: trusts only its GitHub environment, and sets LIVE_* variables alone' {
+  $r = Invoke-SetupAgentsCi @{} 'apps' $true
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  $calls = $r.Calls.Replace('"', '')
+  $creates = @($calls -split "`n" | Where-Object { $_ -match '\bcreate\b' })
+  if ($creates[-1] -notmatch 'federated-credential create') { throw "the trust must be created last; creates were: $($creates -join '; ')" }
+  foreach ($scope in @($agentsTargets) + @($agentsRegistryId)) {
+    if (-not $calls.Contains("--role CIX agents deployer (citest) --scope $scope")) { throw "the deployer role isn't on $scope`: $($r.Calls)" }
+  }
+  Expect @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' }).Count 6 'role assignments'
+  foreach ($expected in @('trusted only for repo:owner@11/repo@22:environment:citest', 'Trusts repo:owner@11/repo@22:environment:citest.',
+      'LIVE_AZURE_CLIENT_ID = 66666666-6666-6666-6666-666666666666', 'LIVE_REGISTRY = crcixcitest1', 'LIVE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa',
+      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'create citest with you as its required reviewer', 'waits in CI for your approval')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+  foreach ($never in @('refs/heads/main', 'AGENTS_', ' AZURE_CLIENT_ID', ' AZURE_TENANT_ID', ' AZURE_SUBSCRIPTION_ID')) {
+    if ($r.Output.Contains($never)) { throw "mentions '$never' in: $($r.Output)" }
   }
 }
 
@@ -979,11 +1000,11 @@ Check 'only the deploy-dashboard and deploy-agents jobs may request Azure sign-i
     if ($triggers.Count -eq 0) { throw "$($f.Name): couldn't read its triggers" }
     $unexpected = @($triggers | Where-Object { $_ -notin 'push', 'pull_request', 'workflow_dispatch' })
     if ($unexpected.Count -gt 0) { throw "$($f.Name) runs on $($unexpected -join ', '); only push, pull_request and workflow_dispatch are allowed" }
-    # id-token, in any spelling, only in ci.yml: once inside the deploy-dashboard job and once inside deploy-agents.
+    # id-token, in any spelling, only in ci.yml: once inside each of the deploy-dashboard, deploy-agents and deploy-live jobs.
     $grants = @([regex]::Matches($text, 'id-token'))
     if ($f.Name -ne 'ci.yml') { if ($grants.Count -gt 0) { throw "$($f.Name) mentions id-token" }; continue }
-    Expect $grants.Count 2 'id-token mentions in ci.yml'
-    foreach ($job in 'deploy-dashboard', 'deploy-agents') {
+    Expect $grants.Count 3 'id-token mentions in ci.yml'
+    foreach ($job in 'deploy-dashboard', 'deploy-agents', 'deploy-live') {
       $jobStart = $text.IndexOf("`n  ${job}:")
       if ($jobStart -lt 0) { throw "ci.yml has no $job job" }
       $next = [regex]::Match($text.Substring($jobStart + 1), '\n  [A-Za-z_-]+:')
@@ -1232,6 +1253,39 @@ Check 'provision.ps1 protected: anyone but the owner and its own identities with
   $r = Invoke-AgentsProvision @{ 'identity list' = $identities } @{ Yes = $true; WhatIfOnly = $true } 'none' $true
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   if (-not $r.Output.Contains('Preview only: nothing was changed.')) { throw "no preview in: $($r.Output)" }
+}
+
+# The live deploy's identity (ADR-0019): its own roles on the registry, the engine and the jobs are expected; nothing else it holds.
+Check 'provision.ps1 protected: the live deploy''s expected roles pass, anything else it holds is listed' {
+  $row = { param($Role, $Scope, $Id, $Name = 'cix-agents-deploy-citest') "{`"roleDefinitionName`":`"$Role`",`"scope`":`"$Scope`",`"principalId`":`"$Id`",`"principalName`":`"$Name`",`"principalType`":`"ServicePrincipal`"}" }
+  $registry = "$citestGroup/providers/Microsoft.ContainerRegistry/registries/crcixcitest1"
+  $roles = '[' + ((
+      (& $row 'AcrPush' $registry 'p2'), (& $row 'CIX agents deployer (citest)' $registry 'p2'),
+      (& $row 'CIX agents deployer (citest)' "$citestGroup/providers/Microsoft.App/containerApps/ca-cix-citest-engine" 'p2'),
+      (& $row 'CIX agents deployer (citest)' "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-analyst" 'p2'),
+      (& $row 'CIX agents deployer (citest)' "$citestGroup/providers/Microsoft.KeyVault/vaults/kvcixcitest1" 'p2'),
+      (& $row 'Contributor' $citestGroup 'p2'),
+      (& $row 'AcrPush' $registry 'p9' 'someone-else')) -join ',') + ']'
+  $role = { param($Actions) "[{`"permissions`":[{`"actions`":$Actions,`"notActions`":[],`"dataActions`":[],`"notDataActions`":[]}],`"assignableScopes`":[`"$citestGroup`"]}]" }
+  $fake = @{ 'role assignment list' = $roles; 'ad sp list' = '[{"id":"p2"}]'; 'role definition list' = (& $role $agentsActions) }
+  $r = Invoke-AgentsProvision $fake @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+  foreach ($expected in @("CIX agents deployer (citest) on $citestGroup/providers/Microsoft.KeyVault/vaults/kvcixcitest1", "Contributor on ${citestGroup}:", "AcrPush on ${registry}: someone-else")) {
+    if (-not $r.Error -or -not $r.Error.Contains($expected)) { throw "missing '$expected' in: $($r.Error)" }
+  }
+  foreach ($never in @('ca-cix-citest-engine', 'caj-cix-citest-analyst', "CIX agents deployer (citest) on ${registry}:", "AcrPush on ${registry}: cix-agents-deploy-citest")) {
+    if ($r.Error.Contains($never)) { throw "listed '$never': $($r.Error)" }
+  }
+
+  # Its expected roles alone pass; none pass once its role grants more, or another service principal has its name.
+  $mine = '[' + ((& $row 'AcrPush' $registry 'p2'), (& $row 'CIX agents deployer (citest)' "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-trader" 'p2') -join ',') + ']'
+  $r = Invoke-AgentsProvision @{ 'role assignment list' = $mine; 'ad sp list' = '[{"id":"p2"}]'; 'role definition list' = (& $role $agentsActions) } @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($variant in @(@{ 'ad sp list' = '[{"id":"p2"}]'; 'role definition list' = (& $role '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/listSecrets/action"]') },
+      @{ 'ad sp list' = '[{"id":"p2"},{"id":"p7"}]'; 'role definition list' = (& $role $agentsActions) }, @{ 'ad sp list' = '[{"id":"p2"}]'; 'role definition list' = '[]' })) {
+    $variant['role assignment list'] = $mine
+    $r = Invoke-AgentsProvision $variant @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+    if (-not $r.Error -or -not $r.Error.Contains("AcrPush on ${registry}: cix-agents-deploy-citest")) { throw "didn't list the deployer's roles: $($r.Error)" }
+  }
 }
 
 foreach ($case in @(

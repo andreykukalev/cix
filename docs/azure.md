@@ -145,7 +145,7 @@ Once its deploy identity is set up (below), CI deploys after a push to `main` th
    - if anything fails after the engine changed, it puts the engine and the jobs back on the images they ran before (stopping the failed revision) and fails the run. A run cancelled halfway does the same in its last step. If even that fails, the run says so: check the engine's revisions and the jobs in the portal, or run `provision.ps1` again;
    - an engine you stopped (its latest revision deactivated, or stopped with `az containerapp stop`) is left alone, with a warning, and nothing is deployed. Run *CI* by hand once it runs again.
 
-A run that is no longer the tip of `main` still deploys when the newer commits changed nothing that goes into the images or CI; otherwise the newer run deploys. Runs deploy one at a time. Nothing deploys while `agents.deploy` is `none` or `AGENTS_AZURE_CLIENT_ID` isn't set. CI never deploys infrastructure, settings or roles: those stay with `provision.ps1`. It never deploys a protected environment. The image artifact is kept for a day, so re-running only the deploy job later than that fails; run the whole workflow instead.
+A run that is no longer the tip of `main` still deploys when the newer commits changed nothing that goes into the images or CI; otherwise the newer run deploys. Runs deploy one at a time. Nothing deploys while `agents.deploy` is `none` or `AGENTS_AZURE_CLIENT_ID` isn't set. CI never deploys infrastructure, settings or roles: those stay with `provision.ps1`. The protected (live) environment gets the same images only after you approve the run, in a job of its own, `deploy-live`, with an identity of its own ([live-trading.md](live-trading.md#deploys-from-main), ADR-0019). The image artifact is kept for a day, so re-running only the deploy job later than that fails; run the whole workflow instead.
 
 **Set it up** once `provision.ps1` has deployed `agents.deploy` `platform` (needs Owner on the subscription), and again after it has deployed `apps`:
 
@@ -165,7 +165,7 @@ Optionally set the repository variable `CLAUDE_CODE_VERSION` to pin the Claude C
   - use the engine's Cosmos DB roles: read CIX's database, add journal entries (forged ones too), and overwrite any document in `state` and `requests`: the kill switch and halts, the paper account, the lease, the archived strategy specs, and your requests. It can't delete anything, change or remove a journal entry, or reach other projects' databases in the shared account;
   - read `claude-token`, through a job's identity, and use the subscription it belongs to;
   - send run messages on the queues.
-- Change the trading mode and the environment name. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group, Key Vault, identity and database, where CI has no role (see the hosting memo). The paper engine's roles stop at CIX's paper database, so CI can't reach the live database (its own database in the same free account, owner decision 5 in the memo) through them.
+- Change the trading mode and the environment name. What keeps it paper is that nothing in this resource group holds exchange keys: the live engine gets its own group, Key Vault, identity and database, where this identity has no role (see the hosting memo). The live deploy's own identity there signs in only from jobs the owner approved (ADR-0019). The paper engine's roles stop at CIX's paper database, so CI can't reach the live database (its own database in the same free account, owner decision 5 in the memo) through them.
 
 Anyone who can push to `main` can already reach most of this through the code the engine runs. What is still to do before the cutover is in the [hosting memo](research/azure-hosting.md) ("Code changes", item 6).
 
@@ -177,7 +177,7 @@ If you suspect misuse:
 
 **To stop the engine in an emergency,** deactivate its revision (portal: the engine app, *Revisions*, *Deactivate*). CI then leaves it stopped. Remove `AGENTS_AZURE_CLIENT_ID` too if you don't want any image pushed meanwhile.
 
-The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode or `Production`, or names the exchange outside the two key files. Those are mounted in a protected environment's engine only, which then stands by in paper until the owner switches it from their own sign-in ([live-trading.md](live-trading.md), ADR-0017). CI never deploys a protected environment.
+The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode or `Production`, or names the exchange outside the two key files. Those are mounted in a protected environment's engine only, which then stands by in paper until the owner switches it from their own sign-in ([live-trading.md](live-trading.md), ADR-0017). CI deploys only new images there, after the owner approves each run, and the engine keeps the settings it was switched to (ADR-0019).
 
 ## 3. Switch the engine to Azure
 

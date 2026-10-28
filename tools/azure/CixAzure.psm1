@@ -126,7 +126,7 @@ function Assert-CixAgentSettings {
     throw "${Path}: agents.claudeTokenExpires must be a date (YYYY-MM-DD) or empty."
   }
   # A protected environment's engine is pinned to paper too, and stands by holding the exchange keys until the owner switches it
-  # (ADR-0017); CI never deploys there (setup-ci-deploy.ps1 refuses it).
+  # (ADR-0017); CI deploys new images there only after the owner approves each run, keeping its settings (ADR-0019).
 }
 
 function Read-CixSharedSettings {
@@ -569,15 +569,69 @@ function Set-CixVaultSecretFromFile {
     '--content-type', $ContentType, '--query', 'name', '-o', 'tsv') | Out-Null
 }
 
+function Get-CixAgentsDeployerActions {
+  <#
+    What the custom role "CIX agents deployer (<environment>)" grants (setup-ci-deploy.ps1 -For agents): reading and updating
+    the engine and the jobs, which tools/ci/deploy-agents.sh patches only the containers of through the management API, and
+    stopping the engine's old revision so that the new one can take the engine lease. Sorted.
+  #>
+  return @('Microsoft.App/containerApps/read', 'Microsoft.App/containerApps/revisions/read', 'Microsoft.App/containerApps/write',
+    'Microsoft.App/containerApps/revisions/deactivate/action',
+    'Microsoft.App/jobs/read', 'Microsoft.App/jobs/write', 'Microsoft.ContainerRegistry/registries/read') | Sort-Object
+}
+
+function Get-CixAgentsDeployTargets {
+  <# The engine and the three jobs CI deploys, as <type>/<name>: the names infra/modules/agents-names.bicep gives them. #>
+  param([Parameter(Mandatory)][hashtable]$Settings)
+  $p = "$($Settings.namePrefix)-$($Settings.environmentName)"
+  $take = { param([string]$Text, [int]$Length) if ($Text.Length -gt $Length) { $Text.Substring(0, $Length) } else { $Text } }
+  return @("Microsoft.App/containerApps/$(& $take "ca-$p-engine" 32)") +
+    @('trader', 'requests', 'analyst' | ForEach-Object { "Microsoft.App/jobs/$(& $take "caj-$p-$_" 32)" })
+}
+
+function Get-CixLiveDeployerGrants {
+  <#
+    The role assignments the live deploy's identity (ADR-0019) is expected to hold, as 'principal id|role|scope' keys in lower
+    case: AcrPush and "CIX agents deployer (<environment>)" on a registry in the group, and that role on the engine and the
+    three jobs. None while its service principal (cix-agents-deploy-<environment>) isn't the only one of that name, or its
+    role is missing or grants more than deploying images (Get-CixAgentsDeployerActions) within the group.
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$Group)
+  $roleName = "CIX agents deployer ($($Settings.environmentName))"
+  # Quotes inside native arguments don't survive Windows PowerShell 5.1, but these single quotes are OData's, inside one argument.
+  $principals = @(Invoke-CixAz @('ad', 'sp', 'list', '--filter', "displayName eq 'cix-agents-deploy-$($Settings.environmentName)'", '--only-show-errors', '-o', 'json') |
+      ConvertFrom-CixJson | Where-Object { $_ -and $_.PSObject.Properties['id'] -and $_.id })
+  if ($principals.Count -ne 1) { return @() }
+  $roles = @(Invoke-CixAz @('role', 'definition', 'list', '--name', $roleName, '--custom-role-only', 'true', '--scope', $Group, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+  if ($roles.Count -ne 1) { return @() }
+  $field = { param($o, $n) if ($o -and $o.PSObject.Properties[$n]) { @($o.$n) } else { @() } }
+  $permissions = @(& $field $roles[0] 'permissions')
+  $actions = @($permissions | ForEach-Object { & $field $_ 'actions' } | Where-Object { $_ })
+  $extra = @($permissions | ForEach-Object { @(& $field $_ 'notActions') + @(& $field $_ 'dataActions') + @(& $field $_ 'notDataActions') } | Where-Object { $_ })
+  $allowed = @(Get-CixAgentsDeployerActions)
+  if ($extra.Count -gt 0 -or @($actions | Where-Object { $allowed -cnotcontains $_ }).Count -gt 0 -or
+    ((& $field $roles[0] 'assignableScopes') -join ',') -ne $Group) { return @() }
+  $id = "$($principals[0].id)".ToLowerInvariant()
+  $registries = @(Invoke-CixAz @('acr', 'list', '--resource-group', $Settings.resourceGroup, '-o', 'json') | ConvertFrom-CixJson |
+      Where-Object { $_ -and $_.PSObject.Properties['name'] } | ForEach-Object { "$Group/providers/Microsoft.ContainerRegistry/registries/$($_.name)" })
+  $grants = @()
+  foreach ($registry in $registries) { $grants += "$id|acrpush|$registry".ToLowerInvariant(); $grants += "$id|$roleName|$registry".ToLowerInvariant() }
+  foreach ($target in @(Get-CixAgentsDeployTargets -Settings $Settings)) { $grants += "$id|$roleName|$Group/providers/$target".ToLowerInvariant() }
+  return $grants
+}
+
 function Get-CixOutsideAccess {
   <#
     Who else can reach a protected environment through Azure roles (ADR-0017): every role assignment on its resource group,
     on anything inside it, or above it (the subscription, a management group), of any kind of principal (service principals,
-    groups, other users), except the signed-in owner and the environment's own managed identities (id-<prefix>-<env>-*). CI's
-    and the agents' identities above all should have none. Returns 'role on scope: principal (type)' lines; names and IDs only.
+    groups, other users), except the signed-in owner, the environment's own managed identities (id-<prefix>-<env>-*), and the
+    live deploy's expected roles (Get-CixLiveDeployerGrants, ADR-0019): anything else that identity holds is listed. The
+    paper CI's and the agents' identities above all should have none. Returns 'role on scope: principal (type)' lines;
+    names and IDs only.
   #>
   param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$OwnerId)
   $group = "/subscriptions/$SubscriptionId/resourceGroups/$($Settings.resourceGroup)"
+  $expected = @()
   $own = @{}
   $own[$OwnerId.ToLowerInvariant()] = $true
   if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -eq 'true') {
@@ -586,6 +640,7 @@ function Get-CixOutsideAccess {
       if ($identity -and $identity.PSObject.Properties['name'] -and $identity.PSObject.Properties['principalId'] -and
           "$($identity.name)".StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { $own["$($identity.principalId)".ToLowerInvariant()] = $true }
     }
+    $expected = @(Get-CixLiveDeployerGrants -Settings $Settings -Group $group)
   }
   # --all lists the subscription's assignments at every scope (az's --resource-group leaves out those on resources inside the
   # group); --include-inherited on the subscription adds those above it, such as a management group's.
@@ -593,7 +648,8 @@ function Get-CixOutsideAccess {
     @(Invoke-CixAz @('role', 'assignment', 'list', '--scope', "/subscriptions/$SubscriptionId", '--include-inherited', '-o', 'json') | ConvertFrom-CixJson)
   return @($all | Where-Object {
       $_ -and $_.PSObject.Properties['scope'] -and $_.PSObject.Properties['principalId'] -and
-      -not $own.ContainsKey("$($_.principalId)".ToLowerInvariant()) -and (Test-CixScopeReaches -Scope "$($_.scope)" -Group $group) } |
+      -not $own.ContainsKey("$($_.principalId)".ToLowerInvariant()) -and (Test-CixScopeReaches -Scope "$($_.scope)" -Group $group) -and
+      $expected -notcontains "$($_.principalId)|$(if ($_.PSObject.Properties['roleDefinitionName']) { $_.roleDefinitionName })|$("$($_.scope)".TrimEnd('/'))".ToLowerInvariant() } |
     ForEach-Object {
       $name = if ($_.PSObject.Properties['principalName'] -and $_.principalName) { "$($_.principalName)" } else { "$($_.principalId)" }
       $type = if ($_.PSObject.Properties['principalType']) { "$($_.principalType)" } else { 'unknown' }

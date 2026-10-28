@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/ci/deploy-agents.sh against a fake az and docker: every path, including the rollbacks. And tools/ci/agents-tip.sh,
-which decides whether a run deploys at all, against a fake gh, and that it agrees with tools/ci/plan.sh on which files
-change the images.
+which decides whether a run deploys at all, and tools/ci/live-approved.sh, which lets a run deploy live only with the
+owner's approval, against a fake gh; and that agents-tip.sh agrees with tools/ci/plan.sh on which files change the images.
 
 Runs in CI (no Azure, no Docker daemon needed). Each scenario writes an environment file and a fake Azure state, runs the
 script, and checks what it did to the engine and the jobs, and that it pushed only after loading the images.
@@ -16,6 +16,7 @@ import textwrap
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPT = os.path.join(ROOT, "tools", "ci", "deploy-agents.sh")
 TIP_SCRIPT = os.path.join(ROOT, "tools", "ci", "agents-tip.sh")
+APPROVED_SCRIPT = os.path.join(ROOT, "tools", "ci", "live-approved.sh")
 PLAN_SCRIPT = os.path.join(ROOT, "tools", "ci", "plan.sh")
 SUB = "00000000-0000-0000-0000-000000000001"
 REGISTRY = "crcixdevabc123"
@@ -27,6 +28,7 @@ OLD, NEW = "1111111", "2222222222222222222222222222222222222222"
 FAKE_AZ = textwrap.dedent(r'''
     #!/usr/bin/env python3
     import json, os, sys
+    ENGINE_ENV = [{"name": "Strategy__Name", "value": "safe"}, {"name": "Strategy__Version", "value": "2"}]
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, "state.json")
     s = json.load(open(path))
@@ -70,7 +72,9 @@ FAKE_AZ = textwrap.dedent(r'''
     if method == "patch":
         body = json.loads(opt("--body"))
         image = body["properties"]["template"]["containers"][0]["image"]
-        if body != {"properties": {"template": {"containers": [{"name": "engine", "image": image}]}}}: sys.exit("ERROR: sent more than the containers")
+        # The container's settings (for live, the mode and strategy the owner switched it to) go back as they were.
+        if body != {"properties": {"template": {"containers": [{"name": "engine", "image": image, "env": ENGINE_ENV}]}}}:
+            sys.exit("ERROR: sent more than the containers, or changed their settings")
         if image in s["fail_patch"].get(name, []): sys.exit("ERROR: (BadRequest) update failed")
         if s["conflict_once"]: s["conflict_once"] = False; save(); sys.exit("ERROR: (Conflict) an operation is in progress")
         # Single revision mode: the revisions running stay active until the new one is ready (below).
@@ -89,7 +93,7 @@ FAKE_AZ = textwrap.dedent(r'''
             if e["stale_left"] == 0: e["image"] = e.pop("pending")
         elif e.get("prov_left", 0) > 0: e["prov_left"] -= 1; provisioning = "InProgress"
         save()
-        props = {"template": {"containers": [{"name": "engine", "image": e["image"]}], "scale": {"minReplicas": e["min"], "maxReplicas": 1}},
+        props = {"template": {"containers": [{"name": "engine", "image": e["image"], "env": ENGINE_ENV}], "scale": {"minReplicas": e["min"], "maxReplicas": 1}},
                  "configuration": {"activeRevisionsMode": s["revisions_mode"]},
                  "latestRevisionName": full(latest), "provisioningState": provisioning}
         if e.get("runningStatus"): props["runningStatus"] = e["runningStatus"]
@@ -156,7 +160,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
         running_status=None, revisions=None, engine_image=None, job_images=None, missing_engine=False, healthy_after=2,
         running_value="Running", new_fails=False, fail_patch=None, rev_lag=0, prov_lag=1, stale=0, conflict_once=False,
         flaky_every=0, fail_push=False, no_digest=False, fail_deactivate=False, lease_fails_after=6, revisions_mode="Single", page_size=0,
-        revision_names=None,
+        revision_names=None, extra_env=None, expect_deployed=None,
         timeout=5, update_timeout=20, args=(), rollback_state=None, expect_rc=0, expect_engine=None, expect_jobs=None, expect_in_output=(),
         expect_calls=(), never_calls=(), expect_rollback_file=False):
     engine, jobs = names(prefix, env)
@@ -185,6 +189,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
         for archive in ("engine.tar.gz", "trader.tar.gz"):
             open(os.path.join(d, archive), "w").close()
         rollback_file = os.path.join(d, "rollback.json")
+        deploy_output = os.path.join(d, "deploy-output")
         if rollback_state:
             json.dump(rollback_state(jobs), open(rollback_file, "w"))
         env_vars = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], SETTINGS=settings, TAG=NEW, REGISTRY=REGISTRY,
@@ -192,7 +197,9 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
                         TRADER_ARCHIVE=os.path.join(d, "trader.tar.gz"), ROLLBACK_FILE=rollback_file,
                         HEALTH_TIMEOUT_SECONDS=str(timeout), POLL_SECONDS="0",
                         # Updates get their own, longer timeout: a slow runner must not time out the update in a health test.
-                        UPDATE_TIMEOUT_SECONDS=str(update_timeout))
+                        UPDATE_TIMEOUT_SECONDS=str(update_timeout), DEPLOY_OUTPUT=deploy_output)
+        env_vars.pop("APPROVED_RUN", None)
+        env_vars.update(extra_env or {})
         if fail_push:
             env_vars["FAIL_PUSH"] = "1"
         if no_digest:
@@ -203,6 +210,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
         log_path = os.path.join(d, "calls.log")
         calls = open(log_path).read() if os.path.exists(log_path) else ""
         rollback_left = os.path.exists(rollback_file)
+        said_deployed = os.path.exists(deploy_output) and open(deploy_output).read() == "deployed=true\n"
     problems = []
     if p.returncode != expect_rc:
         problems.append(f"exit {p.returncode}, wanted {expect_rc}")
@@ -221,6 +229,8 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
     for call in never_calls:
         if call in calls or call in out:
             problems.append(f"unexpected {call!r}")
+    if expect_deployed is not None and said_deployed != expect_deployed:
+        problems.append("it " + ("said" if said_deployed else "didn't say") + " deployed=true")
     if rollback_left != expect_rollback_file:
         problems.append("the rollback file was " + ("left behind" if rollback_left else "removed"))
     return report("deploy-agents", name, problems, out + "\n--- calls\n" + calls)
@@ -246,7 +256,7 @@ def tampered(jobs):
 
 engine_dev, jobs_dev = names("cix", "dev")
 results = [
-    run("deploys the engine, waits for it to be healthy, then the jobs",
+    run("deploys the engine, waits for it to be healthy, then the jobs", expect_deployed=True,
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Engine revision {engine_dev}--rev-2 is healthy", f"Deployed {NEW}"],
         expect_calls=[f"docker push --quiet {new_engine_tag}", f"docker push --quiet {new_agent_tag}", f"az acr login --name {REGISTRY}"]),
     run("the old revision is stopped, so the new engine can take the engine lease",
@@ -290,7 +300,7 @@ results = [
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Deployed {NEW}"]),
     run("an engine with no replica gets its new image without waiting", min_replicas=0,
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["The engine runs no replica"], never_calls=["/revisions/rev-2", "deactivate"]),
-    run("an engine that fails comes back to the old image, and the jobs stay", new_fails=True, expect_rc=1,
+    run("an engine that fails comes back to the old image, and the jobs stay", new_fails=True, expect_rc=1, expect_deployed=False,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["failed (provisioning Succeeded, running Failed)", "Rolled back"]),
     run("an engine that never becomes healthy is rolled back after the timeout", healthy_after=None, timeout=1, expect_rc=1,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["wasn't healthy after 1 seconds", "Rolled back"]),
@@ -314,7 +324,7 @@ results = [
         never_calls=["az "]),
     run("a failed push changes nothing", fail_push=True, expect_rc=1, expect_engine=old_engine, expect_jobs=old_agent,
         never_calls=["--method patch"]),
-    run("nothing to do when the commit already runs", engine_image=new_engine, job_images={j: new_agent for j in jobs_dev},
+    run("nothing to do when the commit already runs", engine_image=new_engine, job_images={j: new_agent for j in jobs_dev}, expect_deployed=True,
         expect_in_output=["Already running"], expect_calls=[f"docker push --quiet {new_engine_tag}"], never_calls=["--method patch"]),
     run("an engine whose latest revision was deactivated by hand is left alone",
         revisions=[{"name": "rev-1", "image": old_engine, "active": False, "polls": 0}],
@@ -327,12 +337,20 @@ results = [
     run("a job not running from the registry is left to provision.ps1",
         job_images={**{j: old_agent for j in jobs_dev}, jobs_dev[2]: "mcr.microsoft.com/k8se/quickstart-jobs:latest"},
         expect_rc=1, expect_in_output=["not an image from"], never_calls=["docker", "--method patch"]),
-    run("agents.deploy platform only pushes the images, for provision.ps1 to create the apps from", deploy="platform",
+    run("agents.deploy platform only pushes the images, for provision.ps1 to create the apps from", deploy="platform", expect_deployed=False,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["provision.ps1 -ImageTag " + NEW],
         expect_calls=[f"docker push --quiet {new_engine_tag}", f"docker push --quiet {new_agent_tag}"], never_calls=["az rest"]),
     run("agents.deploy none deploys nothing", deploy="none", expect_in_output=["no registry in Azure"], never_calls=["az ", "docker"]),
-    run("never a protected environment", protected=True, expect_rc=1, expect_in_output=["protected environment"],
-        never_calls=["az ", "docker"]),
+    run("a protected environment only in a run the owner approved", protected=True, expect_rc=1, expect_deployed=False,
+        expect_in_output=["protected environment", "APPROVED_RUN"], never_calls=["az ", "docker"]),
+    run("... whose ID is a number", protected=True, extra_env={"APPROVED_RUN": "12 ; true"}, expect_rc=1,
+        expect_in_output=["protected environment"], never_calls=["az ", "docker"]),
+    run("a protected environment deploys in an approved run, its settings untouched", protected=True, env="prod",
+        extra_env={"APPROVED_RUN": "1234567890"}, expect_engine=new_engine, expect_jobs=new_agent, expect_deployed=True,
+        expect_in_output=[f"Deployed {NEW}"], expect_calls=["ca-cix-prod-engine"]),
+    run("... and an interrupted one is rolled back without an approval", protected=True, env="prod", args=["--roll-back"],
+        engine_image=new_engine, job_images={j: new_agent for j in names("cix", "prod")[1]}, rollback_state=interrupted,
+        expect_rc=1, expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["was interrupted", "Rolled back"]),
     run("a registry of another environment is refused", registry_env="prod", expect_rc=1,
         expect_in_output=["isn't tagged cix-environment=dev"], never_calls=["docker", "az rest"]),
     run("no engine yet is left to provision.ps1", missing_engine=True, expect_rc=1,
@@ -401,6 +419,57 @@ results += [
     tip("an unreadable tip fails the run", tip_sha="", expect=None, expect_rc=1),
 ]
 
+
+# The fake gh for live-approved.sh: this run's approvals from $APPROVALS, or a failed call when it's empty.
+FAKE_GH_APPROVALS = textwrap.dedent(r'''
+    #!/bin/sh
+    echo "gh $*" >> "$(dirname "$0")/calls.log"
+    [ "$1 $2" = "api repos/o/r/actions/runs/42/approvals" ] && [ -n "$APPROVALS" ] && { echo "$APPROVALS"; exit 0; }
+    exit 1
+''').lstrip()
+
+
+def approval(login, state="approved", environment="prod"):
+    return {"state": state, "comment": "", "environments": [{"name": environment}], "user": {"login": login}}
+
+
+def approved(name, *, approvals, ref="refs/heads/main", run_id="42", expect_rc, expect_in_output=(), never_gh=False):
+    with tempfile.TemporaryDirectory() as d:
+        gh = os.path.join(d, "gh")
+        open(gh, "w").write(FAKE_GH_APPROVALS)
+        os.chmod(gh, 0o755)
+        env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], GH_TOKEN="t", GITHUB_REPOSITORY="o/r",
+                   GITHUB_REPOSITORY_OWNER="Owner", GITHUB_RUN_ID=run_id, GITHUB_REF=ref, LIVE_ENVIRONMENT="prod",
+                   APPROVALS=approvals if isinstance(approvals, str) else json.dumps(approvals))
+        p = subprocess.run(["bash", APPROVED_SCRIPT], env=env, capture_output=True, text=True, timeout=30)
+        asked = os.path.exists(os.path.join(d, "calls.log"))
+    out = p.stdout + p.stderr
+    problems = [] if p.returncode == expect_rc else [f"exit {p.returncode}, wanted {expect_rc}"]
+    problems += [f"output lacks {t!r}" for t in expect_in_output if t not in out]
+    if never_gh and asked:
+        problems.append("it asked GitHub")
+    return report("live-approved", name, problems, out)
+
+
+results += [
+    approved("the owner's approval for prod lets the run deploy live", approvals=[approval("owner")], expect_rc=0,
+             expect_in_output=["The owner (Owner) approved this run for prod."]),
+    approved("someone else's approval doesn't", approvals=[approval("collaborator")], expect_rc=1,
+             expect_in_output=["no approval by Owner for prod", "nothing was deployed"]),
+    approved("nor the owner's for another environment", approvals=[approval("owner", environment="staging")], expect_rc=1,
+             expect_in_output=["no approval by Owner for prod"]),
+    approved("nor a run with no approvals (an environment created without its rules)", approvals=[], expect_rc=1,
+             expect_in_output=["required reviewer"]),
+    approved("a rejection stops it, even beside an approval", approvals=[approval("owner"), approval("owner", state="rejected")],
+             expect_rc=1, expect_in_output=["was rejected for prod"]),
+    approved("approvals GitHub couldn't give stop it", approvals="", expect_rc=1, expect_in_output=["Couldn't read this run's approvals"]),
+    approved("so does an answer that isn't a list", approvals={"message": "Not Found"}, expect_rc=1,
+             expect_in_output=["Couldn't read this run's approvals"]),
+    approved("only from main, and GitHub isn't asked otherwise", approvals=[approval("owner")], ref="refs/heads/feature",
+             expect_rc=1, expect_in_output=["only from main"], never_gh=True),
+    approved("a run ID that isn't a number is refused", approvals=[approval("owner")], run_id="42/../1", expect_rc=1,
+             never_gh=True),
+]
 
 def plan_images(path):
     """What plan.sh says about `images` for a pull request that changes only this file."""

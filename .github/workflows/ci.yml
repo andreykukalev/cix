@@ -336,7 +336,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write # for the Azure sign-in; only this job and deploy-agents have it
+      id-token: write # for the Azure sign-in; only this job, deploy-agents and deploy-live have it
     concurrency:
       group: deploy-dashboard
       cancel-in-progress: false
@@ -500,10 +500,13 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      id-token: write # for the Azure sign-in; only this job and deploy-dashboard have it
+      id-token: write # for the Azure sign-in; only this job, deploy-live and deploy-dashboard have it
     concurrency:
       group: deploy-agents
       cancel-in-progress: false
+    outputs:
+      deployed: ${{ steps.deploy.outputs.deployed }} # paper runs this commit's images: deploy-live may follow
+
     env:
       AGENTS_AZURE_CLIENT_ID: ${{ vars.AGENTS_AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
@@ -543,6 +546,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy the engine and the agents
+        id: deploy
         if: steps.tip.outputs.deploy == 'true'
         env:
           ENGINE_SHA256: ${{ needs.agents-images.outputs.engine_sha256 }}
@@ -554,7 +558,7 @@ jobs:
           printf '%s  engine.tar.gz\n%s  trader.tar.gz\n' "$ENGINE_SHA256" "$TRADER_SHA256" | sha256sum -c --strict --quiet -
           SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" REGISTRY="$AGENTS_REGISTRY" TAG="$GITHUB_SHA" \
             ENGINE_ARCHIVE=engine.tar.gz TRADER_ARCHIVE=trader.tar.gz ROLLBACK_FILE="$RUNNER_TEMP/agents-rollback.json" \
-            bash tools/ci/deploy-agents.sh
+            DEPLOY_OUTPUT="$GITHUB_OUTPUT" bash tools/ci/deploy-agents.sh
 
       - name: Roll back an interrupted deployment
         # Only does something when the deploy step stopped halfway (cancelled, or timed out) and left the previous images
@@ -562,4 +566,81 @@ jobs:
         if: (cancelled() || failure()) && steps.tip.outputs.deploy == 'true'
         run: |
           SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" ROLLBACK_FILE="$RUNNER_TEMP/agents-rollback.json" \
+            bash tools/ci/deploy-agents.sh --roll-back
+
+  deploy-live:
+    # The live engine and its jobs (ADR-0019): the images paper now runs, once the owner approves. The job is in the GitHub
+    # environment prod, whose rules (the owner as required reviewer, main only) hold it until the owner presses Approve, and
+    # the live deploy identity trusts only jobs in that environment. tools/ci/live-approved.sh checks the approval again,
+    # so an environment created without its rules fails closed. Only the images change: the live engine keeps the mode,
+    # environment and strategy the owner switched it to. Infrastructure, settings and keys stay with provision.ps1.
+    # Set up once with tools/azure/setup-ci-deploy.ps1 -Environment prod -For agents (docs/live-trading.md).
+    needs: [agents-images, deploy-agents]
+    if: >-
+      !cancelled() && needs.deploy-agents.result == 'success' && needs.deploy-agents.outputs.deployed == 'true'
+      && vars.LIVE_AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: prod
+    permissions:
+      contents: read
+      actions: read # this run's approvals
+      id-token: write # for the Azure sign-in
+    concurrency:
+      # One at a time; a newer run waiting for approval replaces an older one still waiting.
+      group: deploy-live
+      cancel-in-progress: false
+    env:
+      LIVE_SUBSCRIPTION_ID: ${{ vars.LIVE_SUBSCRIPTION_ID }}
+      LIVE_REGISTRY: ${{ vars.LIVE_REGISTRY }}
+      SETTINGS: infra/environments/prod.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Approved by the owner, on main?
+        env:
+          GH_TOKEN: ${{ github.token }} # this step and the next only
+          LIVE_ENVIRONMENT: prod
+        run: bash tools/ci/live-approved.sh
+
+      - name: Still the tip of main?
+        id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Approval can come hours later: by then a newer commit may have deployed paper, and its own run deploys live.
+        run: bash tools/ci/agents-tip.sh
+
+      - uses: actions/download-artifact@v4
+        if: steps.tip.outputs.deploy == 'true'
+        with:
+          name: agents-images # kept for a day: approve within a day, or run CI on main by hand to build it again
+
+      - uses: azure/login@v2
+        if: steps.tip.outputs.deploy == 'true'
+        with:
+          client-id: ${{ vars.LIVE_AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.LIVE_TENANT_ID }}
+          subscription-id: ${{ vars.LIVE_SUBSCRIPTION_ID }}
+
+      - name: Deploy the live engine and its agents
+        if: steps.tip.outputs.deploy == 'true'
+        env:
+          ENGINE_SHA256: ${{ needs.agents-images.outputs.engine_sha256 }}
+          TRADER_SHA256: ${{ needs.agents-images.outputs.trader_sha256 }}
+        run: |
+          for h in "$ENGINE_SHA256" "$TRADER_SHA256"; do
+            [[ "$h" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::The images' hashes are missing."; exit 1; }
+          done
+          # The same archives paper deployed: the hashes come from the job that built them.
+          printf '%s  engine.tar.gz\n%s  trader.tar.gz\n' "$ENGINE_SHA256" "$TRADER_SHA256" | sha256sum -c --strict --quiet -
+          SUBSCRIPTION_ID="$LIVE_SUBSCRIPTION_ID" REGISTRY="$LIVE_REGISTRY" TAG="$GITHUB_SHA" APPROVED_RUN="$GITHUB_RUN_ID" \
+            ENGINE_ARCHIVE=engine.tar.gz TRADER_ARCHIVE=trader.tar.gz ROLLBACK_FILE="$RUNNER_TEMP/live-rollback.json" \
+            bash tools/ci/deploy-agents.sh
+
+      - name: Roll back an interrupted deployment
+        if: (cancelled() || failure()) && steps.tip.outputs.deploy == 'true'
+        run: |
+          SUBSCRIPTION_ID="$LIVE_SUBSCRIPTION_ID" ROLLBACK_FILE="$RUNNER_TEMP/live-rollback.json" \
             bash tools/ci/deploy-agents.sh --roll-back

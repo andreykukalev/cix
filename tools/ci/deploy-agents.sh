@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Deploys the paper engine and the agent jobs to Azure Container Apps (ADR-0013, docs/azure.md), after a merge to main:
+# Deploys the engine and the agent jobs to Azure Container Apps (ADR-0013, docs/azure.md), after a merge to main: paper's,
+# and then, once paper runs the same images and the owner has approved the run, the live environment's (ADR-0019):
 #   1. pushes the two images CI built to the environment's registry, tagged with the commit (agents.deploy platform stops
 #      here: the apps don't exist yet, and provision.ps1 -ImageTag creates them from these images);
 #   2. points the engine at its new image and, when it runs a replica (minimum replicas 1, set by agents.startEngine),
@@ -9,7 +10,8 @@
 # The apps get the images by digest, as the registry gave them on the push: what runs can't change if a tag is pushed again.
 # If anything fails once the engine has changed, the engine and the jobs go back to the images they ran before, and the
 # run fails. An engine stopped or rolled back by hand (the emergency stop, the cutover) is left alone. Nothing here changes
-# infrastructure or settings: provision.ps1 (the owner) creates the apps, their settings and roles.
+# infrastructure or settings: provision.ps1 (the owner) creates the apps, their settings and roles. So the live engine keeps
+# the trading mode, environment and strategy the owner switched it to (or its standby): only the image changes.
 #
 # Changes go through the management API (az rest), as a JSON merge patch of the containers only, so no CLI extension is
 # needed and nothing else in the apps is sent or changed.
@@ -18,7 +20,10 @@
 # Environment: SETTINGS (infra/environments/<env>.json), SUBSCRIPTION_ID, REGISTRY (the registry's name), TAG (the commit
 # SHA), ENGINE_ARCHIVE and TRADER_ARCHIVE (the images as docker save wrote them, tagged cix-engine:ci and cix-trader:ci),
 # and optionally ROLLBACK_FILE (where the previous images are kept while the apps are changing), HEALTH_TIMEOUT_SECONDS
-# (720: the engine's startup probe allows 10 minutes), UPDATE_TIMEOUT_SECONDS (600) and POLL_SECONDS (15).
+# (720: the engine's startup probe allows 10 minutes), UPDATE_TIMEOUT_SECONDS (600), POLL_SECONDS (15) and DEPLOY_OUTPUT
+# (a file, such as $GITHUB_OUTPUT, that gets deployed=true once the apps run this commit's images).
+# A protected environment (live money) also needs APPROVED_RUN: the workflow run the owner approved, which
+# tools/ci/live-approved.sh checked. Without it the script refuses, before any call.
 #
 #   deploy-agents.sh --roll-back   puts back the images in ROLLBACK_FILE, if an interrupted run left it behind.
 set -euo pipefail
@@ -44,9 +49,10 @@ if [[ "$deploy" != apps && "$deploy" != platform ]]; then
   echo "::notice::agents.deploy is '$deploy' in $SETTINGS: there is no registry in Azure to deploy to."
   exit 0
 fi
-if [[ "$(jq -r '.protected // false' "$SETTINGS")" == true ]]; then
-  fail "$SETTINGS is a protected environment: CI never deploys there."
+if [[ "$(jq -r '.protected // false' "$SETTINGS")" == true && "$mode" == deploy && ! "${APPROVED_RUN:-}" =~ ^[0-9]{1,20}$ ]]; then
+  fail "$SETTINGS is a protected environment: CI deploys there only in a run the owner approved (APPROVED_RUN, ADR-0019)."
 fi
+deployed() { [[ -z "${DEPLOY_OUTPUT:-}" ]] || echo "deployed=true" >> "$DEPLOY_OUTPUT"; }
 group="$(jq -r .resourceGroup "$SETTINGS")"
 prefix="$(jq -r .namePrefix "$SETTINGS")"
 env_name="$(jq -r .environmentName "$SETTINGS")"
@@ -246,7 +252,7 @@ fi
 if [[ "$previous_engine" == "$engine_image" ]]; then
   all_current=true
   for job in "${jobs[@]}"; do [[ "${previous_job[$job]}" == "$agent_image" ]] || all_current=false; done
-  if [[ "$all_current" == true ]]; then say "Already running $TAG: nothing to deploy."; exit 0; fi
+  if [[ "$all_current" == true ]]; then say "Already running $TAG: nothing to deploy."; deployed; exit 0; fi
 fi
 say "Engine: $previous_engine -> $engine_image"
 for job in "${jobs[@]}"; do say "Job $job: ${previous_job[$job]} -> $agent_image"; done
@@ -312,4 +318,5 @@ for job in "${jobs[@]}"; do
 done
 trap - EXIT INT TERM
 rm -f "$state_file"
+deployed
 say "Deployed $TAG: the engine and the jobs ${jobs[*]}."
