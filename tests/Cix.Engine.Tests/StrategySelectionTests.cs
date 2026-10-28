@@ -83,7 +83,7 @@ public sealed class StrategySchemaTests
     private static StrategySpec LoadDraft(string name, int version)
     {
         var node = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", $"{name}.v{version}.json")))!.AsObject();
-        Assert.Equal("draft", (string?)node["status"]);
+        Assert.Contains((string?)node["status"], new[] { "draft", "live" }); // drafted here; the owner marks them live
         node["status"] = "paper";
         var folder = Path.Combine(Path.GetTempPath(), $"cix-draft-{Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
@@ -651,8 +651,8 @@ public sealed class StrategySelectionTests
     }
 
     /// <summary>
-    /// A strategies folder for the live tests: the repository's files, safe v3, a copy of safe v2 (the spec the owner
-    /// marked live) with smaller orders, and safe v4, the same as a draft, written at run time.
+    /// A strategies folder for the live tests: the repository's files, safe v90, a copy of safe v2 (the spec the owner
+    /// marked live) with smaller orders, and safe v91, the same as a draft, written at run time.
     /// </summary>
     private static string LiveFolder()
     {
@@ -661,14 +661,14 @@ public sealed class StrategySelectionTests
         var source = Path.Combine(AppContext.BaseDirectory, "strategies");
         foreach (var file in Directory.EnumerateFiles(source, "*.json"))
             File.Copy(file, Path.Combine(folder, Path.GetFileName(file)));
-        var v3 = JsonNode.Parse(File.ReadAllText(Path.Combine(source, "safe.v2.json")))!.AsObject();
-        v3["version"] = 3;
-        v3["parameters"]!["orderQuote"] = 4;
-        File.WriteAllText(Path.Combine(folder, "safe.v3.json"), v3.ToJsonString());
-        var draft = v3.DeepClone().AsObject(); // a draft of the same spec never runs
-        draft["version"] = 4;
+        var copy = JsonNode.Parse(File.ReadAllText(Path.Combine(source, "safe.v2.json")))!.AsObject();
+        copy["version"] = 90; // versions the repository won't reach, so they shadow no real file
+        copy["parameters"]!["orderQuote"] = 4;
+        File.WriteAllText(Path.Combine(folder, "safe.v90.json"), copy.ToJsonString());
+        var draft = copy.DeepClone().AsObject(); // a draft of the same spec never runs
+        draft["version"] = 91;
         draft["status"] = "draft";
-        File.WriteAllText(Path.Combine(folder, "safe.v4.json"), draft.ToJsonString());
+        File.WriteAllText(Path.Combine(folder, "safe.v91.json"), draft.ToJsonString());
         return folder;
     }
 
@@ -679,15 +679,15 @@ public sealed class StrategySelectionTests
         try
         {
             var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live);
-            // The repository's files the owner marked live (safe v2, and any added since), plus safe v3; never a draft or paper spec.
+            // The repository's files the owner marked live (safe v2, and any added since), plus safe v90; never a draft or paper spec.
             var expected = Directory.EnumerateFiles(folder, "*.json")
                 .Select(f => JsonNode.Parse(File.ReadAllText(f))!)
                 .Where(s => (string?)s["status"] == "live")
                 .Select(s => $"{(string)s["name"]!}@v{(int)s["version"]!}")
                 .Order(StringComparer.Ordinal).ToList();
             Assert.Contains("safe@v2", expected);
-            Assert.Contains("safe@v3", expected);
-            Assert.DoesNotContain("safe@v4", expected);
+            Assert.Contains("safe@v90", expected);
+            Assert.DoesNotContain("safe@v91", expected);
             Assert.DoesNotContain("balanced@v1", expected);
 
             Assert.Equal(expected.Count, await setup.Service.SeedAsync(folder, CancellationToken.None));
@@ -709,15 +709,15 @@ public sealed class StrategySelectionTests
         {
             var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live);
             await setup.Service.InitializeAsync(folder, CancellationToken.None);
-            setup.Request("r-paper", "safe", 3, mode: TradingMode.Paper);
-            setup.Request("r-live", "safe", 3, minute: 1);
+            setup.Request("r-paper", "safe", 90, mode: TradingMode.Paper);
+            setup.Request("r-live", "safe", 90, minute: 1);
             setup.Time.Advance(TimeSpan.FromMinutes(2));
 
             Assert.True(await setup.Poll());
 
             var active = setup.Specs.Active!;
             Assert.Equal("safe", active.Name);
-            Assert.Equal(3, active.Version);
+            Assert.Equal(90, active.Version);
             Assert.Equal("accepted", setup.RequestStatus("r-live"));
             Assert.Equal("new", setup.RequestStatus("r-paper")); // the paper engine's to take
             Assert.Equal("live", setup.Repository.Schema!.Mode);
@@ -751,14 +751,14 @@ public sealed class StrategySelectionTests
             Assert.Contains("isn't a spec file the owner marked live", setup.Service.Status.Problems[0], StringComparison.Ordinal);
 
             // A live file's version with other values in the database is refused too.
-            var file = FileStrategySpecStore.Load(Path.Combine(folder, "safe.v3.json"), "safe", 3, TradingMode.Live);
+            var file = FileStrategySpecStore.Load(Path.Combine(folder, "safe.v90.json"), "safe", 90, TradingMode.Live);
             setup.Repository.Put(StrategySchemaTests.With(file, "orderQuote", JsonValue.Create(3)));
-            setup.Select("safe", 3, minute: 1);
+            setup.Select("safe", 90, minute: 1);
 
             Assert.False(await setup.Poll());
 
             Assert.Equal(2, setup.Specs.Active!.Version);
-            Assert.Contains("differs from the reviewed file strategies/safe.v3.json", setup.Service.Status.Problems[0], StringComparison.Ordinal);
+            Assert.Contains("differs from the reviewed file strategies/safe.v90.json", setup.Service.Status.Problems[0], StringComparison.Ordinal);
         }
         finally
         {
@@ -778,6 +778,26 @@ public sealed class StrategySelectionTests
 
         Assert.Equal("refused", setup.Service.Status.State);
         Assert.Contains("isn't a spec file the owner marked live", setup.Service.Status.Problems[0], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Paper_RefusesALiveVersion_NoLiveFileHolds()
+    {
+        var setup = new Setup();
+        await setup.Service.SeedAsync("strategies", CancellationToken.None);
+        // safe v1's reviewed values and instructions, but a document that calls itself live (ADR-0022).
+        setup.Repository.Put(StrategySchemaTests.Load("safe", 1) with { Version = 7, Status = SpecStatus.Live });
+        setup.Select("safe", 7);
+
+        Assert.False(await setup.Poll());
+
+        Assert.Equal("refused", setup.Service.Status.State);
+        Assert.Contains("isn't a spec file the owner marked live", setup.Service.Status.Problems[0], StringComparison.Ordinal);
+
+        // The same document as a paper version runs.
+        setup.Repository.Put(StrategySchemaTests.Load("safe", 1) with { Version = 8 });
+        setup.Select("safe", 8, minute: 1);
+        Assert.True(await setup.Poll());
     }
 
     [Theory]

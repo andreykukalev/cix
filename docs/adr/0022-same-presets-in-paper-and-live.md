@@ -14,7 +14,8 @@ Until now the two modes offered different lists. Live switched only to the spec 
 
 **Both modes offer the same presets: the newest version of each strategy the owner marked `live`.**
 
-- Paper may activate a `paper` or a `live` spec from the database; a `draft` never runs. Live is unchanged: only spec files marked `live`, exactly as merged, with the real-money confirmation.
+- Paper may activate a `paper` or a `live` spec from the database; a `draft` never runs. A database version that says `live` must match a spec file the owner marked `live`, in paper too, so a document can't claim the status for itself. Live is unchanged: only spec files marked `live`, exactly as merged, with the real-money confirmation.
+- Draft files are skipped quietly when the engines seed the database.
 - The paper engine seeds the `live` spec files as well as the `paper` ones, so the same versions are in both databases.
 - The Strategy tab, in both modes, lists the newest `live` version of each name, plus the strategy running now if it is something else. Older versions and paper-only specs stay in the files, the database and the journal; they are no longer offered.
 - A new preset version starts as a `draft` fitted to `config/risk-limits.live.json` (the test `EverySpecFileMarkedLiveOrDrafted_FitsTheLiveLimitsFile` checks it). Marking it `live` stays the owner's edit, and from then on both modes offer it. Neither engine switches by itself: each keeps running its selection until the owner switches it.

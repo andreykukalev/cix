@@ -27,6 +27,11 @@ Calibrated on Revolut X hourly candles for every EUR pair from December 2025 to 
 
 They start as `draft`, fitted to `config/risk-limits.live.json`; once the owner marks them `live`, both modes offer them.
 
+Two things to watch when they run:
+
+- **The trend exit is the trader agent's.** In the backtest almost every position closed on the trend turning down; the engine itself sells only on a stop or a target, and with a 4–5 ATR stop that leaves a position open longer if the agent can't run. With trend exits off, the backtest lost 1.6% (Safe) and 7.7% (Balanced) instead of breaking even.
+- **The slow EMA is 55, the most the scan's 60 hourly candles allow** (`ScannerParameters.MaxEmaPeriod`), so it is seeded from only a few hours more than its period. The backtest computed it the same way.
+
 ### Earlier versions
 
 Three paper strategies to choose from. Each states its purpose and risk profile in the file. None promises a return, and a riskier one is not expected to earn more: it takes larger and more frequent positions, so both gains and losses can be bigger.

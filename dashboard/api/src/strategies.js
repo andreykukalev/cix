@@ -154,7 +154,7 @@ function order(a, b) {
  * The versions the tab offers, the same in both modes (ADR-0022): the newest version of each strategy the owner marked live,
  * so paper and live list the same presets and can run different ones side by side, plus the one running, whatever it is.
  * Older and paper-only versions stay in the database and the journal, unlisted. The engine checks every switch again: live
- * takes only the spec files marked live, and a document added by hand isn't offered.
+ * takes only the spec files marked live, and both modes refuse a version that says live but has no file the owner marked live.
  */
 function offered(versions, active) {
   const valid = (Array.isArray(versions) ? versions : [])
