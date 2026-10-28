@@ -81,7 +81,8 @@ public sealed class OrderTools(
         var spec = context.Spec;
         var result = await execution.PlaceAsync(
             new OrderIntent(normalised, orderSide, baseSize, limitPrice, clientOrderId), postOnly, cancellationToken,
-            context: new OrderContext("place_order", stopLoss, takeProfit, context.RunId, spec?.Label),
+            context: new OrderContext("place_order", stopLoss, takeProfit, context.RunId, spec?.Label,
+                ExitReason: orderSide == OrderSide.Sell ? ExitReasons.Agent : null),
             strategy: Strategy.StrategySchema.LimitsOf(spec, limits)).ConfigureAwait(false);
 
         var inv = CultureInfo.InvariantCulture;

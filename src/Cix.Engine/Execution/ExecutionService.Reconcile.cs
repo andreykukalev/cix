@@ -363,6 +363,8 @@ public sealed partial class ExecutionService
                     data["stopLoss"] = stop.ToString(inv);
                 if (sent.TakeProfit is { } target)
                     data["takeProfit"] = target.ToString(inv);
+                if (sent.ExitReason is { } why)
+                    data["exitReason"] = why;
             }
 
             recorded = recorded || await RecordAsync(

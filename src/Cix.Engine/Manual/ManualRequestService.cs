@@ -376,7 +376,7 @@ public sealed partial class ManualRequestService(
         var result = await execution.PlaceAsync(
             new OrderIntent(request.Symbol, side, size, price, clientOrderId), postOnly: false, CancellationToken.None, // claimed: see it through
             countsTowardRejectStreak: !request.IsSell, // a sell never adds risk, as for the engine's protective sells
-            context: new OrderContext(source, stopLoss, takeProfit, runId, specs.Active?.Label),
+            context: new OrderContext(source, stopLoss, takeProfit, runId, specs.Active?.Label, request.IsSell ? ExitReasons.Manual : null),
             strategyFiltered: source == AgentSource).ConfigureAwait(false); // an agent-assisted buy follows the strategy's filters
 
         var status = result.Status switch

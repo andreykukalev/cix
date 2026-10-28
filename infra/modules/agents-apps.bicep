@@ -203,7 +203,9 @@ resource engine 'Microsoft.App/containerApps@2025-01-01' = {
             // The engine listens only once the database answers (it waits, with backoff): allow it 10 minutes to start
             // (Container Apps allows at most 10 failures).
             { type: 'Startup', tcpSocket: { port: 5077 }, periodSeconds: 60, failureThreshold: 10 }
-            { type: 'Liveness', tcpSocket: { port: 5077 }, periodSeconds: 30, failureThreshold: 3 }
+            // /healthz answers 503 only when the safety checks have made no progress for 15 minutes (a stuck process, not an
+            // outage: SafetyMonitor.StalledAfter), so a hung engine is restarted rather than left with its port open.
+            { type: 'Liveness', httpGet: { path: '/healthz', port: 5077 }, periodSeconds: 30, timeoutSeconds: 5, failureThreshold: 3 }
             { type: 'Readiness', httpGet: { path: '/healthz', port: 5077 }, periodSeconds: 30, failureThreshold: 3 }
           ]
           // The exchange keys as files, where the engine looks for its secrets (SecretFiles.DefaultDirectory).

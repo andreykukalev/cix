@@ -129,7 +129,7 @@ public sealed class ManualRequestTests
         Assert.Equal(0.0005m, Dec(rig.Outcome("req-direct-1", "filledSize")));
         Assert.Null(rig.InLedger("req-direct-1"));
         var fill = Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "fill");
-        Assert.Equal(ManualRequestService.DirectSource, fill.Data!["source"]);
+        Assert.Equal((ManualRequestService.DirectSource, ExitReasons.Manual), (fill.Data!["source"], fill.Data["exitReason"]));
         rig.Tools.Rig.Quote(60_000m, 60_010m);
         Assert.Equal(0.0005m, (await rig.Tools.Rig.Snapshot()).SellableBaseBySymbol![Btc]); // half is left
     }

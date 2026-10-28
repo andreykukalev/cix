@@ -1,3 +1,4 @@
+using Cix.Domain;
 using Cix.Domain.Risk;
 using Cix.Engine.MarketData;
 
@@ -25,6 +26,13 @@ public sealed partial class SafetyMonitor : BackgroundService
     public const string CriticalBy = "risk-critical";
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
+    /// <summary>
+    /// How long the running checks may go without progress (a round, or a step of one, starting or finishing) before the engine
+    /// counts as stalled: then <c>/healthz</c> fails and the platform restarts it. Far above a slow step (each exchange call gives
+    /// up within about a minute), so an exchange or database outage alone should not restart it.
+    /// </summary>
+    public static readonly TimeSpan StalledAfter = TimeSpan.FromMinutes(15);
+
     private readonly ExecutionService _execution;
     private readonly KillSwitch _killSwitch;
     private readonly MarketState _market;
@@ -35,6 +43,7 @@ public sealed partial class SafetyMonitor : BackgroundService
     private readonly TradableSymbols? _tradable;
     private readonly DateTimeOffset _startedAt;
     private DateTimeOffset _lastReconcile = DateTimeOffset.MinValue;
+    private long _progressTicks; // when a round last started or finished, or the loop started; 0 until it starts
 
     public SafetyMonitor(
         ExecutionService execution,
@@ -58,32 +67,77 @@ public sealed partial class SafetyMonitor : BackgroundService
         _startedAt = time.GetUtcNow();
     }
 
-    /// <summary>One round of checks.</summary>
+    /// <summary>
+    /// Whether the running checks have stopped making progress for <see cref="StalledAfter"/>. False until the loop starts, so
+    /// a monitor that isn't hosted (tests, a standby engine) never counts as stalled.
+    /// </summary>
+    public bool IsStalled
+    {
+        get
+        {
+            var ticks = Volatile.Read(ref _progressTicks);
+            return ticks != 0 && _time.GetUtcNow() - new DateTimeOffset(ticks, TimeSpan.Zero) > StalledAfter;
+        }
+    }
+
+    private void MarkProgress()
+    {
+        if (Volatile.Read(ref _progressTicks) != 0)
+            Volatile.Write(ref _progressTicks, _time.GetUtcNow().UtcTicks);
+    }
+
+    /// <summary>
+    /// One round of checks. Each step runs even when an earlier one fails (a valuation that can't save its baselines still
+    /// leaves the stale-data check and the reconciliation to run); a failed step is logged.
+    /// </summary>
     public async Task<SafetyCheckResult> CheckOnceAsync(CancellationToken cancellationToken)
+    {
+        MarkProgress();
+        try
+        {
+            return await CheckStepsAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            MarkProgress();
+        }
+    }
+
+    private async Task<SafetyCheckResult> CheckStepsAsync(CancellationToken cancellationToken)
     {
         var now = _time.GetUtcNow();
         string? reason = null;
         var by = By;
         var buysCancelled = 0;
 
-        var snapshot = await _execution.SampleAsync(cancellationToken).ConfigureAwait(false);
-        if (snapshot is { PeakEquity: > 0 })
+        PortfolioSnapshot? snapshot = null;
+        try
         {
-            var drawdown = (snapshot.PeakEquity - snapshot.Equity) / snapshot.PeakEquity;
-            if (drawdown >= HardCeilings.MaxDrawdownFraction)
+            snapshot = await _execution.SampleAsync(cancellationToken).ConfigureAwait(false);
+            if (snapshot is { PeakEquity: > 0 })
             {
-                by = CriticalBy;
-                // The same text each minute, so a halt already in place records it beside once, not every minute.
-                reason = $"Critical: drawdown reached the {HardCeilings.MaxDrawdownFraction:P0} hard ceiling. Buys, the strategy and the agents stop until the owner resumes; stop-loss sells go on.";
-                LogCritical(_logger, drawdown);
-            }
-            else if (drawdown >= _limits.MaxDrawdownFraction && !_killSwitch.IsEngaged)
-            {
-                buysCancelled = await _execution.CancelOpenBuysAsync(cancellationToken).ConfigureAwait(false);
-                if (buysCancelled > 0)
-                    LogDrawdownBuysCancelled(_logger, buysCancelled, drawdown);
+                var drawdown = (snapshot.PeakEquity - snapshot.Equity) / snapshot.PeakEquity;
+                if (drawdown >= HardCeilings.MaxDrawdownFraction)
+                {
+                    by = CriticalBy;
+                    // The same text each minute, so a halt already in place records it beside once, not every minute.
+                    reason = $"Critical: drawdown reached the {HardCeilings.MaxDrawdownFraction:P0} hard ceiling. Buys, the strategy and the agents stop until the owner resumes; stop-loss sells go on.";
+                    LogCritical(_logger, drawdown);
+                }
+                else if (drawdown >= _limits.MaxDrawdownFraction && !_killSwitch.IsEngaged)
+                {
+                    buysCancelled = await _execution.CancelOpenBuysAsync(cancellationToken).ConfigureAwait(false);
+                    if (buysCancelled > 0)
+                        LogDrawdownBuysCancelled(_logger, buysCancelled, drawdown);
+                }
             }
         }
+        catch (Exception ex) when (Failed(ex, cancellationToken))
+        {
+            LogCheckFailed(_logger, "valuation", ex.GetType().Name, ex.Message);
+        }
+
+        MarkProgress(); // each step counts: a slow exchange makes a round long, not stalled
 
         // Give the poller time to deliver first quotes after a start. Then stale data halts everything only where it protects
         // something (ADR-0021): a coin the account holds, whose stop can't be watched, or every watched coin, when the feed is
@@ -123,16 +177,45 @@ public sealed partial class SafetyMonitor : BackgroundService
         // isn't re-engaged every minute (each engagement cancels the open orders again).
         var halt = _killSwitch.State;
         if (reason is not null && (!halt.Engaged || (by == CriticalBy && halt.By != CriticalBy && halt.AlsoBy != CriticalBy)))
-            await _execution.EngageKillSwitchAsync(reason, by, cancellationToken).ConfigureAwait(false);
+        {
+            try
+            {
+                await _execution.EngageKillSwitchAsync(reason, by, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (Failed(ex, cancellationToken))
+            {
+                LogCheckFailed(_logger, "kill switch", ex.GetType().Name, ex.Message);
+            }
+
+            MarkProgress();
+        }
 
         if (now - _lastReconcile >= _options.ReconcileInterval)
         {
             _lastReconcile = now;
-            var report = await _execution.ReconcileAsync(cancellationToken).ConfigureAwait(false);
-            reason ??= report.KillSwitchReason;
+            try
+            {
+                var report = await _execution.ReconcileAsync(cancellationToken).ConfigureAwait(false);
+                reason ??= report.KillSwitchReason;
+            }
+            catch (Exception ex) when (Failed(ex, cancellationToken))
+            {
+                LogCheckFailed(_logger, "reconciliation", ex.GetType().Name, ex.Message);
+            }
         }
 
         return new SafetyCheckResult(reason, buysCancelled);
+    }
+
+    /// <summary>A step's failure, not the engine stopping (an SDK timeout is an OperationCanceledException too).</summary>
+    private static bool Failed(Exception ex, CancellationToken cancellationToken) =>
+        ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested;
+
+    /// <summary>Starts the loop, and from now on <see cref="IsStalled"/> watches it.</summary>
+    public override Task StartAsync(CancellationToken cancellationToken)
+    {
+        Volatile.Write(ref _progressTicks, _time.GetUtcNow().UtcTicks);
+        return base.StartAsync(cancellationToken);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -146,7 +229,7 @@ public sealed partial class SafetyMonitor : BackgroundService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                LogCheckFailed(_logger, ex.GetType().Name, ex.Message);
+                LogCheckFailed(_logger, "round", ex.GetType().Name, ex.Message);
             }
         }
     }
@@ -160,6 +243,6 @@ public sealed partial class SafetyMonitor : BackgroundService
     [LoggerMessage(Level = LogLevel.Critical, Message = "Drawdown {Drawdown} is at or above the hard ceiling: critical state, stop-loss sells go on")]
     private static partial void LogCritical(ILogger logger, decimal drawdown);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Safety check failed ({Error}): {Detail}")]
-    private static partial void LogCheckFailed(ILogger logger, string error, string detail);
+    [LoggerMessage(Level = LogLevel.Error, Message = "Safety check failed at {Step} ({Error}): {Detail}")]
+    private static partial void LogCheckFailed(ILogger logger, string step, string error, string detail);
 }

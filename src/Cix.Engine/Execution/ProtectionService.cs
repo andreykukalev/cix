@@ -437,7 +437,7 @@ public sealed partial class ProtectionService : BackgroundService
                 var result = await _execution.PlaceAsync(
                     new OrderIntent(symbol, OrderSide.Sell, sellable, floor, clientOrderId, OrderPurpose.ProtectiveExit, TimeInForce.ImmediateOrCancel),
                     postOnly: false, cancellationToken, countsTowardRejectStreak: false,
-                    context: new OrderContext(Source, Strategy: _strategy()),
+                    context: new OrderContext(Source, Strategy: _strategy(), ExitReason: ExitReasons.Stop),
                     beforeSend: async ct => // paced at the send itself, not at the door of the placement lock
                     {
                         await PaceAsync(ct).ConfigureAwait(false);

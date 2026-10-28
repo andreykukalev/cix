@@ -34,6 +34,24 @@ public sealed class OrderToolTests
     }
 
     [Fact]
+    public async Task AnAgentsSell_CarriesItsExitReason_ToTheFill_AndABuyNone()
+    {
+        var tools = new ToolRig(ToolRig.Observer with { Name = "trader", AllowedTools = ["place_order"] }, btc: 0.001m);
+        tools.Header(ToolServerOptions.AgentHeader, "trader");
+
+        var sell = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "sell", 0.0005m, 60_000m, Why, cancellationToken: CancellationToken.None));
+        var buy = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var sent = tools.Rig.Store.Current.SentOrders;
+        await tools.Rig.Execution.ReconcileAsync(CancellationToken.None); // the sell filled at the bid: its fill is journaled
+
+        Assert.Equal(("placed", "placed"), (sell.GetProperty("status").GetString(), buy.GetProperty("status").GetString()));
+        Assert.Equal(Execution.ExitReasons.Agent, Assert.Single(sent, o => o.Side == "sell").ExitReason);
+        Assert.Null(Assert.Single(sent, o => o.Side == "buy").ExitReason);
+        var fill = Assert.Single(tools.Journal.Entries, e => e.Kind == "fill" && e.Data!["side"] == "sell");
+        Assert.Equal(("place_order", Execution.ExitReasons.Agent), (fill.Data!["source"], fill.Data["exitReason"]));
+    }
+
+    [Fact]
     public async Task OrderTheGateRejects_IsNeverSent_AndTheReasonIsReturnedAndJournaled()
     {
         var tools = Trader();
