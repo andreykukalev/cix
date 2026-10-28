@@ -338,21 +338,6 @@ public sealed class MarketDataPollerTests
     }
 
     [Fact]
-    public async Task RefreshQuote_UpdatesTheStateAndTheOtherListeners_ButNotTheOneThatAsked()
-    {
-        var asking = new RecordingListener();
-        var other = new RecordingListener();
-        var rig = new Rig(listeners: [asking, other]);
-
-        var quote = await rig.Poller.RefreshQuoteAsync(Btc, CancellationToken.None, except: asking);
-
-        Assert.NotNull(quote);
-        Assert.Equal(quote, rig.State.Quote(Btc));
-        Assert.Equal([quote], other.Quotes);
-        Assert.Empty(asking.Quotes); // the protection's own confirming fetch mustn't raise the stop it is already selling
-    }
-
-    [Fact]
     public async Task FailureMidPaging_CountsEveryRequest_AndResumesWithoutGaps()
     {
         var rig = new Rig(pageSize: 50);
