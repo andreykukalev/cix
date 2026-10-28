@@ -27,6 +27,12 @@ public enum OrderPurpose
     /// reduces risk, so a halt (the owner's pause or a safety halt) doesn't block it; every other check still applies.
     /// </summary>
     ProtectiveExit,
+
+    /// <summary>
+    /// The owner's own sell from the dashboard (a direct request): it only reduces risk, so a halt doesn't block it either, and
+    /// the owner can close positions while trading is paused (pre-live assessment F-08). Every other check still applies.
+    /// </summary>
+    OwnerSell,
 }
 
 /// <summary>An order an agent (or strategy) wants to place, before risk checks.</summary>
@@ -50,6 +56,12 @@ public sealed record OrderIntent(
 
     /// <summary>An engine stop-loss sell: immediate-or-cancel, so it never rests and can't be left working by a halt.</summary>
     public bool IsProtectiveExit => Purpose == OrderPurpose.ProtectiveExit && Side == OrderSide.Sell && TimeInForce == TimeInForce.ImmediateOrCancel;
+
+    /// <summary>The owner's direct sell from the dashboard (<see cref="OrderPurpose.OwnerSell"/>).</summary>
+    public bool IsOwnerSell => Purpose == OrderPurpose.OwnerSell && Side == OrderSide.Sell;
+
+    /// <summary>A sell a halt lets through: the engine's stop-loss sell, or the owner's own.</summary>
+    public bool PassesHalt => IsProtectiveExit || IsOwnerSell;
 }
 
 /// <summary>Portfolio state the risk gate needs, in the allocation's quote currency.</summary>

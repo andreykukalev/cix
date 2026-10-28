@@ -330,8 +330,9 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         await _lock.WaitAsync(cancellationToken, urgent: intent.IsProtectiveExit).ConfigureAwait(false);
         try
         {
-            // A halt stops new risk; the engine's stop-loss sells take risk off and go on (the gate checks the rest).
-            if (_killSwitch.IsEngaged && !intent.IsProtectiveExit)
+            // A halt stops new risk; the engine's stop-loss sells and the owner's own sells take risk off and go on (the gate
+            // checks the rest).
+            if (_killSwitch.IsEngaged && !intent.PassesHalt)
                 return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
             var now = _time.GetUtcNow();
@@ -873,7 +874,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         Func<CancellationToken, Task>? beforeSend, CancellationToken cancellationToken)
     {
         // The kill switch may have engaged while the portfolio was being read; it flips before taking the lock.
-        if (_killSwitch.IsEngaged && order.Purpose != OrderPurpose.ProtectiveExit)
+        if (_killSwitch.IsEngaged && order.Purpose is not (OrderPurpose.ProtectiveExit or OrderPurpose.OwnerSell))
             return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
         // Another engine of this mode may be trading, or this one couldn't renew its lease: it must not act (ADR-0013).

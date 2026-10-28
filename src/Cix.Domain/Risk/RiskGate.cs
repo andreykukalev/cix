@@ -26,7 +26,8 @@ public sealed record RiskVerdict(RiskOutcome Outcome, ApprovedOrder? Order, stri
 /// Final authority on every order. Deterministic and side-effect free.
 /// Risk-reducing sells stay allowed during drawdown and daily-loss halts. The kill switch blocks everything except the
 /// engine's protective exits (<see cref="OrderIntent.IsProtectiveExit"/>): immediate-or-cancel sells of a held position, which
-/// still pass every other check, priced within <see cref="RiskLimits.EmergencySlippageFraction"/> of the reference price.
+/// still pass every other check, priced within <see cref="RiskLimits.EmergencySlippageFraction"/> of the reference price; and
+/// the owner's own sells (<see cref="OrderIntent.IsOwnerSell"/>), which pass every other check as they stand.
 /// </summary>
 public sealed class RiskGate
 {
@@ -73,9 +74,12 @@ public sealed class RiskGate
 
         if (intent.Purpose == OrderPurpose.ProtectiveExit && !intent.IsProtectiveExit)
             return RiskVerdict.Reject("invalid-order", "A protective exit must be an immediate-or-cancel sell.");
+        if (intent.Purpose == OrderPurpose.OwnerSell && !intent.IsOwnerSell)
+            return RiskVerdict.Reject("invalid-order", "An owner's sell must be a sell.");
 
-        // A halt stops new risk, never the stop-loss that takes risk off: it can only sell what is held, and can't rest.
-        if (portfolio.KillSwitchEngaged && !intent.IsProtectiveExit)
+        // A halt stops new risk, never a sell that takes risk off: the stop-loss (which can't rest) and the owner's own, both
+        // sized to what is held.
+        if (portfolio.KillSwitchEngaged && !intent.PassesHalt)
             return RiskVerdict.Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
         // Both: on the watched list of the moment, and permitted by the owner's limits file (a list can never widen it).
