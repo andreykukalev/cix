@@ -7,7 +7,8 @@
 #   2. claims the run at the engine (POST /runs/{id}/claim). Only a run the engine still wants, for this job's identity, is
 #      run; anything else ends here without using Claude;
 #   3. runs it once, with the claimed run ID on every tool call;
-#   4. reports how it ended (done, failed or not-run) so the engine counts the caps, refunds and retries.
+#   4. reports how it ended (done, failed or not-run, and why it didn't run: usage-limit or credentials) so the engine
+#      counts the caps, refunds and retries, and the dashboard can tell a Claude limit from a failure.
 #
 # Every call uses an Entra token from the job's managed identity (the platform's IDENTITY_ENDPOINT); tokens are kept in
 # variables, passed to curl through a file descriptor rather than its arguments, and never printed.
@@ -157,9 +158,11 @@ job_claim() {
   return 1
 }
 
-# Reports outcome $1 (done, failed, not-run) for the claimed run.
+# Reports outcome $1 (done, failed, not-run) for the claimed run, with reason $2 for a not-run (usage-limit, credentials).
 job_report() {
-  job_engine_call "/runs/$job_run_id/outcome" "{\"outcome\":\"$1\"}" || { say "$job_run_id: couldn't report '$1' (HTTP $job_status); the engine gives up on it after its timeout."; return 1; }
+  local body
+  body="$(jq -cn --arg o "$1" --arg r "${2:-}" '{outcome: $o} + (if $r == "" then {} else {reason: $r} end)')"
+  job_engine_call "/runs/$job_run_id/outcome" "$body" || { say "$job_run_id: couldn't report '$1' (HTTP $job_status); the engine gives up on it after its timeout."; return 1; }
   case "$job_status" in
     204) say "$job_run_id reported: $1." ;;
     404) say "$job_run_id: the engine had already given up on this run; '$1' not recorded." ;;
@@ -180,14 +183,15 @@ job_main() {
   # For the MCP connection (mcp-azure.json): this run's tool calls carry the engine token and the claimed run ID.
   CIX_ENGINE_TOKEN="$(job_token "$CIX_ENGINE_AUDIENCE")" || { say "No engine token for the run."; job_report not-run; return 1; }
   export CIX_ENGINE_TOKEN
-  local rc=0 outcome
+  local rc=0 outcome reason=""
+  not_run_reason=""
   "$2" "$job_purpose" || rc=$?
   unset CIX_ENGINE_TOKEN
   case "$rc" in
     0) outcome="done" ;;
-    "$NOT_RUN") outcome=not-run ;;
+    "$NOT_RUN") outcome=not-run; reason="$not_run_reason" ;;
     *) outcome=failed ;;
   esac
-  job_report "$outcome" || return 1
+  job_report "$outcome" "$reason" || return 1
   [[ "$outcome" != failed ]]
 }

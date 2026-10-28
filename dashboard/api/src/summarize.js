@@ -74,33 +74,42 @@ function agentRuns(entries) {
   return [...runs.values()].sort((a, b) => (time(b.lastAt) ?? 0) - (time(a.lastAt) ?? 0));
 }
 
+const NOT_RUN_REASONS = new Set(['usage-limit', 'credentials']);
+
 /**
  * The engine's agent jobs (trader, trader-requests, analyst) from its agent-run journal entries, for the health monitors:
- * the latest run and how it ended, and today's failed and not-run counts. Entries come newest first.
+ * the latest run and how it ended, and today's failed and not-run counts. A run that didn't start because of Claude's usage
+ * limit is its own state (`limit`) and count, apart from failures and other not-runs: limits run out now and then, and the
+ * engine runs them again later by itself. Entries come newest first.
  */
 function agentJobs(entries, now) {
   const dayStart = new Date(now);
   dayStart.setUTCHours(0, 0, 0, 0);
   const jobs = {};
+  const empty = () => ({ last: null, failedToday: 0, notRunToday: 0, limitedToday: 0, cappedAt: null });
   for (const e of entries) {
     const d = e.data ?? {};
     if (e.kind !== 'agent-run' || !d.job || !e.runId) continue;
-    const job = jobs[d.job] ??= { last: null, failedToday: 0, notRunToday: 0, cappedAt: null };
-    if (!job.last) job.last = { runId: e.runId, purpose: d.purpose ?? null, step: d.step ?? null, at: e.at }; // its latest step
+    const job = jobs[d.job] ??= empty();
+    const reason = d.step === 'not-run' && NOT_RUN_REASONS.has(d.reason) ? d.reason : null;
+    if (!job.last) job.last = { runId: e.runId, purpose: d.purpose ?? null, step: d.step ?? null, reason, at: e.at }; // its latest step
     const today = (time(e.at) ?? 0) >= dayStart.getTime();
     if (today && d.step === 'failed') job.failedToday += 1;
-    if (today && (d.step === 'not-run' || d.step === 'not-sent')) job.notRunToday += 1;
+    if (today && reason === 'usage-limit') job.limitedToday += 1;
+    else if (today && (d.step === 'not-run' || d.step === 'not-sent')) job.notRunToday += 1;
   }
   for (const e of entries) {
     if (e.kind === 'agent-run' && e.data?.step === 'capped' && (time(e.at) ?? 0) >= dayStart.getTime()) {
-      (jobs.trader ??= { last: null, failedToday: 0, notRunToday: 0, cappedAt: null }).cappedAt ??= e.at;
+      (jobs.trader ??= empty()).cappedAt ??= e.at;
     }
   }
   for (const job of Object.values(jobs)) {
     if (job.last) {
-      const step = job.last.step;
-      job.last.state = step === 'done' ? 'done' : step === 'failed' ? 'failed' : step === 'not-run' || step === 'not-sent' ? 'not-run' : 'running';
+      const { step, reason } = job.last;
+      job.last.state = step === 'done' ? 'done' : step === 'failed' ? 'failed'
+        : reason === 'usage-limit' ? 'limit' : step === 'not-run' || step === 'not-sent' ? 'not-run' : 'running';
       delete job.last.step;
+      delete job.last.reason;
     }
   }
   return jobs;

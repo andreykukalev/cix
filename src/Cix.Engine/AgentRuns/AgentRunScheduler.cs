@@ -233,7 +233,14 @@ public sealed partial class AgentRunScheduler(
     }
 
     /// <summary>How a claimed run ended. No if there is no such claimed run for that job (unknown, or reported already).</summary>
-    public async Task<AgentRunAnswer> CompleteAsync(string runId, string? role, AgentRunOutcome outcome, CancellationToken cancellationToken)
+    public Task<AgentRunAnswer> CompleteAsync(string runId, string? role, AgentRunOutcome outcome, CancellationToken cancellationToken) =>
+        CompleteAsync(runId, role, outcome, null, cancellationToken);
+
+    /// <summary>
+    /// How a claimed run ended, and for a not-run why it didn't start (<see cref="AgentRunKinds.ParseNotRunReason"/>). The
+    /// reason is journaled only when the run counts as not run, so the dashboard can show a Claude limit apart from a failure.
+    /// </summary>
+    public async Task<AgentRunAnswer> CompleteAsync(string runId, string? role, AgentRunOutcome outcome, string? notRunReason, CancellationToken cancellationToken)
     {
         if (!ToolCallContext.IsSafeLabel(runId) || AgentRunKinds.ForRole(role) is not { } kind)
             return AgentRunAnswer.No;
@@ -250,8 +257,10 @@ public sealed partial class AgentRunScheduler(
             await SaveAsync(state, cancellationToken).ConfigureAwait(false);
             _usedRuns.TryRemove(runId, out _);
             LogCompleted(logger, run.Id, outcome.Name());
-            var note = reported == outcome ? string.Empty : $" (reported {reported.Name()}, but it made tool calls)";
-            await JournalAsync(run, outcome.Name(), Inv($"{Label(run)} {run.Id} ended: {outcome.Name()}{note}")).ConfigureAwait(false);
+            var reason = outcome == AgentRunOutcome.NotRun ? AgentRunKinds.ParseNotRunReason(notRunReason) : null;
+            var note = reported != outcome ? $" (reported {reported.Name()}, but it made tool calls)"
+                : reason is not null ? $" ({AgentRunKinds.NotRunReasonText(reason)})" : string.Empty;
+            await JournalAsync(run, outcome.Name(), Inv($"{Label(run)} {run.Id} ended: {outcome.Name()}{note}"), reason).ConfigureAwait(false);
             return AgentRunAnswer.Yes;
         }
         catch (AgentRunsUnavailableException)
@@ -368,10 +377,12 @@ public sealed partial class AgentRunScheduler(
 
     private static string Reason(AgentRun run) => run.Key.Length > 0 ? $"{run.Purpose} {run.Key}" : run.Purpose;
 
-    private async Task JournalAsync(AgentRun? run, string step, string summary)
+    private async Task JournalAsync(AgentRun? run, string step, string summary, string? reason = null)
     {
         var now = time.GetUtcNow();
         var data = new Dictionary<string, string>(StringComparer.Ordinal) { ["step"] = step };
+        if (reason is not null)
+            data["reason"] = reason;
         if (run is not null)
         {
             data["job"] = run.Kind.Role();
