@@ -103,8 +103,10 @@ public sealed partial class SafetyMonitor : BackgroundService
             }
         }
 
-        // The critical state is recorded even over another halt (beside it), so Resume has to name it too.
-        if (reason is not null && (!_killSwitch.IsEngaged || by == CriticalBy))
+        // The critical state is recorded even over another halt (beside it), so Resume has to name it too; once recorded, it
+        // isn't re-engaged every minute (each engagement cancels the open orders again).
+        var halt = _killSwitch.State;
+        if (reason is not null && (!halt.Engaged || (by == CriticalBy && halt.By != CriticalBy && halt.AlsoBy != CriticalBy)))
             await _execution.EngageKillSwitchAsync(reason, by, cancellationToken).ConfigureAwait(false);
 
         if (now - _lastReconcile >= _options.ReconcileInterval)

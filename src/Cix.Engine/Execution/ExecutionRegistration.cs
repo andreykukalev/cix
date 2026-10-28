@@ -88,11 +88,12 @@ public static class ExecutionRegistration
         services.AddSingleton(sp =>
         {
             var poller = sp.GetRequiredService<MarketDataPoller>();
+            var trigger = sp.GetRequiredService<ProtectionTrigger>();
             return new ProtectionService(
                 sp.GetRequiredService<ExecutionService>(),
-                sp.GetRequiredService<ProtectionTrigger>(),
+                trigger,
                 sp.GetRequiredService<MarketState>(),
-                poller.RefreshQuoteAsync,
+                (symbol, ct) => poller.RefreshQuoteAsync(symbol, ct, except: trigger), // the exit reads the book itself
                 sp.GetRequiredService<Journal.IJournal>(),
                 sp.GetRequiredService<RiskLimits>(),
                 options,

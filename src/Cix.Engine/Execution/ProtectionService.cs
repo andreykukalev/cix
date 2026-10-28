@@ -78,6 +78,17 @@ public sealed class ProtectionTrigger(TimeProvider time) : IQuoteListener
             _stops = copy;
     }
 
+    /// <summary>Drops one coin's stop, once its position is gone: the next plan refresh arms it again if anything is still held.</summary>
+    public void Disarm(string symbol)
+    {
+        var key = MarketDataPoller.NormaliseSymbol(symbol);
+        lock (_gate)
+        {
+            if (_stops.ContainsKey(key))
+                _stops = _stops.Where(s => s.Key != key).ToDictionary(s => s.Key, s => s.Value, StringComparer.Ordinal);
+        }
+    }
+
     /// <summary>The armed stop for <paramref name="symbol"/>, if any.</summary>
     public decimal? StopFor(string symbol)
     {
@@ -155,8 +166,8 @@ public sealed partial class ProtectionService : BackgroundService
     /// <summary>The fixed codes a blocked or failed try reports; free text stays in the journal.</summary>
     public static readonly IReadOnlySet<string> Problems = new HashSet<string>(StringComparer.Ordinal)
     {
-        "quote-unavailable", "quote-stale", "spread-too-wide", "ioc-unfilled", "ioc-rested", "orders-unavailable", "balances-unavailable",
-        "rejected", "exchange-refused", "placement-uncertain",
+        "quote-unavailable", "quote-stale", "spread-too-wide", "ioc-unfilled", "ioc-rested", "coins-reserved", "orders-unavailable",
+        "balances-unavailable", "rejected", "exchange-refused", "placement-uncertain",
     };
 
     private static readonly TimeSpan[] FillLookups = [TimeSpan.Zero, TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1)];
@@ -260,7 +271,8 @@ public sealed partial class ProtectionService : BackgroundService
         ArgumentNullException.ThrowIfNull(hit);
         lock (_startGate)
         {
-            if (_running.ContainsKey(hit.Symbol))
+            // A hit queued before the coin's exit ended (and disarmed it) is stale: the next plan refresh re-arms what is still held.
+            if (_running.ContainsKey(hit.Symbol) || _trigger.StopFor(hit.Symbol) is null)
                 return false;
             _running[hit.Symbol] = RunTrackedAsync(hit);
             return true;
@@ -319,7 +331,10 @@ public sealed partial class ProtectionService : BackgroundService
 
             var (problem, detail, filled) = await TryOnceAsync().ConfigureAwait(false);
             if (problem == "done")
+            {
+                _trigger.Disarm(symbol); // nothing held: a hit still queued, or the next quote, mustn't start an exit for a sold coin
                 return await EndAsync(ExitOutcome.Exited).ConfigureAwait(false);
+            }
             if (problem == "above-stop")
                 return await EndAsync(soldBase > 0 || tries > 0 ? ExitOutcome.Recovered : ExitOutcome.NotConfirmed).ConfigureAwait(false);
 
@@ -390,32 +405,44 @@ public sealed partial class ProtectionService : BackgroundService
                     }
                 }
 
-                decimal sellable;
+                SellableNow now_;
                 try
                 {
-                    sellable = await _execution.SellableNowAsync(symbol, cancellationToken).ConfigureAwait(false);
+                    now_ = await _execution.SellableNowAsync(symbol, cancellationToken).ConfigureAwait(false);
                 }
                 catch (PortfolioUnavailableException ex)
                 {
                     return ("balances-unavailable", ex.Message, false);
                 }
 
-                if (sellable <= 0)
+                if (!now_.HoldsPosition)
                     return ("done", null, false);
+                var sellable = now_.Sellable;
+                if (sellable <= 0)
+                {
+                    // Held, but nothing free: an open sell (one the cancel pass missed, or placed since) holds the coins. Cancel
+                    // the engine's orders again next time rather than call the exit finished with the position still on.
+                    cancelledOwn = false;
+                    return ("coins-reserved", "the coins are held but reserved by an open order", false);
+                }
 
                 // As low as the emergency band allows below the mid: the exchange fills at the bids above it.
                 var floor = quote.Mid * (1 - _limits.EmergencySlippageFraction);
                 if (quote.Bid < floor)
                     return ("spread-too-wide", Inv($"bid {quote.Bid} is below the band floor {floor:0.########} ({_limits.EmergencySlippageFraction:P1} under mid {quote.Mid})"), false);
 
-                await PaceAsync(cancellationToken).ConfigureAwait(false);
                 tries++;
                 var clientOrderId = Guid.NewGuid().ToString();
                 var sendAt = _time.GetUtcNow();
                 var result = await _execution.PlaceAsync(
                     new OrderIntent(symbol, OrderSide.Sell, sellable, floor, clientOrderId, OrderPurpose.ProtectiveExit, TimeInForce.ImmediateOrCancel),
                     postOnly: false, cancellationToken, countsTowardRejectStreak: false,
-                    context: new OrderContext(Source, Strategy: _strategy())).ConfigureAwait(false);
+                    context: new OrderContext(Source, Strategy: _strategy()),
+                    beforeSend: async ct => // paced at the send itself, not at the door of the placement lock
+                    {
+                        await PaceAsync(ct).ConfigureAwait(false);
+                        sendAt = _time.GetUtcNow();
+                    }).ConfigureAwait(false);
                 var answeredAt = _time.GetUtcNow();
 
                 ExchangeOrder? order = null;
@@ -466,6 +493,7 @@ public sealed partial class ProtectionService : BackgroundService
                     ["rule"] = result.Rule,
                     ["reason"] = result.Reason,
                     ["filledSize"] = Inv($"{filledBase}"),
+                    ["sentAt"] = sendAt.ToString("O", CultureInfo.InvariantCulture),
                     ["detectionMs"] = Ms(hit.DetectedAt - hit.Quote.AsOf),
                     ["confirmMs"] = Ms(quote.AsOf - hit.DetectedAt),
                     ["submitMs"] = Ms(answeredAt - sendAt),
@@ -579,8 +607,6 @@ public sealed partial class ProtectionService : BackgroundService
         {
             if (_time.GetUtcNow() >= nextRefresh)
             {
-                // Until the first stops are armed (after a start, before the first quotes), try again sooner.
-                nextRefresh = _time.GetUtcNow() + (ArmedAt is null ? TimeSpan.FromSeconds(5) : _options.PlanRefreshInterval);
                 try
                 {
                     await RefreshAsync(stoppingToken).ConfigureAwait(false);
@@ -589,11 +615,17 @@ public sealed partial class ProtectionService : BackgroundService
                 {
                     LogPlansFailed(_logger, ex.GetType().Name, ex.Message);
                 }
+
+                // After a start, before the first quotes, held coins have no price and so no armed stop: try again sooner,
+                // rather than leave them unwatched for a whole refresh interval.
+                var waitingForQuotes = ArmedAt is null || (_trigger.Armed.Count == 0 && _market.QuoteTimes().Count == 0);
+                nextRefresh = _time.GetUtcNow() + (waitingForQuotes ? TimeSpan.FromSeconds(5) : _options.PlanRefreshInterval);
             }
 
-            // Wake on the next hit, or at the next refresh.
-            using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            wait.CancelAfter(nextRefresh - _time.GetUtcNow() is var left && left > TimeSpan.Zero ? left : TimeSpan.FromMilliseconds(1));
+            // Wake on the next hit, or at the next refresh (on the engine's clock, so tests can drive it).
+            var left = nextRefresh - _time.GetUtcNow();
+            using var timer = new CancellationTokenSource(left > TimeSpan.Zero ? left : TimeSpan.FromMilliseconds(1), _time);
+            using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, timer.Token);
             try
             {
                 if (await _trigger.Hits.WaitToReadAsync(wait.Token).ConfigureAwait(false))

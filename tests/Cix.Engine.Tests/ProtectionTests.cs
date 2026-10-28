@@ -238,6 +238,74 @@ public sealed class ProtectionTests
     }
 
     [Fact]
+    public async Task ASoldCoin_IsDisarmed_SoAHitQueuedMeanwhileStartsNothing()
+    {
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m));
+        var hit = p.Hit(Btc, 61_000m); // what the quote listener queued just before the exit ended
+
+        var outcome = await p.ExitAsync(Btc, stop: 61_000m);
+        var books = p.Books;
+        var startedAgain = p.Service.Start(hit);
+        await p.Service.WhenIdleAsync();
+
+        Assert.Equal(ExitOutcome.Exited, outcome);
+        Assert.Empty(p.Trigger.Armed);
+        Assert.False(startedAgain);
+        Assert.Equal(books, p.Books); // no fetch for a coin that is gone: the budget is for the coins still held
+        p.Trigger.OnQuote(p.Normal(Btc) with { Bid = 59_000m, Ask = 59_010m });
+        Assert.False(p.Trigger.Hits.TryRead(out _)); // and a later quote under the old stop is no hit either
+    }
+
+    [Fact]
+    public async Task AnOpenSellOfTheEngines_IsCancelledFirst_SoTheCoinsAreFreeToSell()
+    {
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m));
+        var target = await p.Rig.Execution.PlaceAsync(new OrderIntent(Btc, OrderSide.Sell, 0.001m, 60_010m, "target"), false, CancellationToken.None); // rests at the ask
+        Assert.Equal(ExecutionStatus.Placed, target.Status);
+        Assert.Single(await p.Rig.Paper.GetOpenOrdersAsync(Btc, CancellationToken.None));
+
+        var outcome = await p.ExitAsync(Btc, stop: 61_000m);
+
+        Assert.Equal(ExitOutcome.Exited, outcome);
+        Assert.Equal(0m, await p.Held());
+        Assert.Empty(await p.Rig.Paper.GetOpenOrdersAsync(Btc, CancellationToken.None));
+        var order = Assert.Single(p.Orders());
+        Assert.Equal(("placed", 0.001m), (order.Data!["status"], ProtectionRig.D(order.Data["filledSize"])));
+    }
+
+    [Fact]
+    public async Task CoinsReservedByAnOrderTheEngineCannotCancel_AreNotCalledSold_TheExitWaitsAndSellsWhenTheyAreFree()
+    {
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m));
+        // A sell the engine didn't place (placed by hand, or one it lost track of): it reserves the whole position.
+        var pair = await p.Rig.Pairs.GetAsync(Btc, CancellationToken.None);
+        var snapshot = await p.Rig.Portfolio.GetSnapshotAsync(0, [], CancellationToken.None);
+        var verdict = new RiskGate(Rig.Limits, p.Rig.Time, p.Rig.Tradable).Evaluate(new OrderIntent(Btc, OrderSide.Sell, 0.001m, 60_010m, "by-hand"), snapshot, p.Rig.State.Snapshot(Btc), pair);
+        var foreign = await p.Rig.Paper.PlaceLimitOrderAsync(verdict.Order!, postOnly: true, CancellationToken.None);
+        IReadOnlyList<BlockedExit>? whileBlocked = null;
+        p.Book = (s, n) =>
+        {
+            if (n == 6)
+            {
+                whileBlocked = p.Service.Blocked;
+                p.Rig.Paper.CancelOrderAsync(foreign.VenueOrderId, CancellationToken.None).GetAwaiter().GetResult(); // the owner cancels it by hand
+            }
+
+            return null;
+        };
+
+        var outcome = await p.ExitAsync(Btc, stop: 61_000m);
+
+        Assert.Equal(ExitOutcome.Exited, outcome);
+        var blocked = Assert.Single(whileBlocked!);
+        Assert.Equal(("coins-reserved", 5), (blocked.Problem, blocked.Attempts));
+        Assert.Equal(("coins-reserved", "0"), (Assert.Single(p.Rig.Journal.Entries, e => e.Kind == "exit-blocked").Data!["problem"], p.Rig.Journal.Entries.Single(e => e.Kind == "exit-blocked").Data!["ordersSent"]));
+        Assert.Single(p.Orders()); // one sell, once the coins were free; never "exited, sold 0"
+        Assert.Equal(0m, await p.Held());
+        Assert.Single(p.Rig.Journal.Entries, e => e.Kind == ProtectionService.Source);
+    }
+
+    [Fact]
     public async Task AGapBelowTheBand_BlocksTheExitAfterFiveTries_WhichSellsByItselfWhenTheBookComesBack()
     {
         var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m));
@@ -530,8 +598,10 @@ public sealed class ProtectionTests
             Assert.Equal("placed", Assert.Single(p.Orders(symbol)).Data!["status"]);
         }
 
-        // Never more than the configured orders in any one second, across all coins.
-        var sent = symbols.SelectMany(s => p.Orders(s)).Select(o => o.At).OrderBy(t => t).ToList();
+        // Never more than the configured orders in any one second, across all coins: measured at the send itself (the journal
+        // entry comes later, after the fill is read, so its time can shift with the other exits' waits).
+        var sent = symbols.SelectMany(s => p.Orders(s))
+            .Select(o => DateTimeOffset.Parse(o.Data!["sentAt"], System.Globalization.CultureInfo.InvariantCulture)).OrderBy(t => t).ToList();
         for (var i = 0; i + p.Options.MaxOrdersPerSecond < sent.Count; i++)
             Assert.True(sent[i + p.Options.MaxOrdersPerSecond] - sent[i] >= TimeSpan.FromSeconds(1), "paced at most 5 a second");
 

@@ -145,11 +145,13 @@ public sealed partial class MarketDataPoller
     /// Fetches <paramref name="symbol"/>'s quote now, outside the schedule, and hands it on like a polled one (the market
     /// state, then the listeners, such as the paper exchange). For the protective exits, which confirm a stop on a fresh book
     /// before selling. Returns the quote, or null if it was invalid or out of order; exchange errors propagate.
+    /// <paramref name="except"/> is a listener that asked for the quote and reads the result itself, so it isn't told again:
+    /// otherwise the protection's own confirming fetch would raise the stop it is already selling.
     /// </summary>
-    public async Task<MarketQuote?> RefreshQuoteAsync(string symbol, CancellationToken cancellationToken) =>
-        await FetchQuoteAsync(NormaliseSymbol(symbol), cancellationToken).ConfigureAwait(false);
+    public async Task<MarketQuote?> RefreshQuoteAsync(string symbol, CancellationToken cancellationToken, IQuoteListener? except = null) =>
+        await FetchQuoteAsync(NormaliseSymbol(symbol), cancellationToken, except).ConfigureAwait(false);
 
-    private async Task<MarketQuote?> FetchQuoteAsync(string symbol, CancellationToken cancellationToken)
+    private async Task<MarketQuote?> FetchQuoteAsync(string symbol, CancellationToken cancellationToken, IQuoteListener? except = null)
     {
         var quote = await _quotes.GetQuoteAsync(symbol, cancellationToken).ConfigureAwait(false);
         if (!_state.Update(quote))
@@ -160,6 +162,8 @@ public sealed partial class MarketDataPoller
 
         foreach (var listener in _listeners)
         {
+            if (ReferenceEquals(listener, except))
+                continue;
             try
             {
                 listener.OnQuote(quote);
