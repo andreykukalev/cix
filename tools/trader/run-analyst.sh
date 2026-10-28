@@ -63,8 +63,8 @@ run_once() {
   log="$logs/$run_id.json"
   export CIX_RUN_ID="$run_id"
 
-  load_credentials || return "$NOT_RUN"
-  check_expiry || return "$NOT_RUN"
+  load_credentials || { not_run_reason=credentials; return "$NOT_RUN"; }
+  check_expiry || { not_run_reason=credentials; return "$NOT_RUN"; }
   wait_for_engine
   say "$run_id starting ($auth, model $model)"
 
@@ -84,6 +84,7 @@ run_once() {
   fi
   if hit_usage_limit "$log" "$logs/$run_id.err"; then
     say "$run_id: Claude usage or rate limit reached; retrying in $retry minutes."
+    not_run_reason=usage-limit
     return "$NOT_RUN"
   fi
   if ! jq -e . "$log" >/dev/null 2>&1; then

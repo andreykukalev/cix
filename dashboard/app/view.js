@@ -487,7 +487,7 @@
     requestsBad: 2 * MIN, // the engine checks the owner's requests every 5 seconds
     staleOrder: 50 * MIN, // the specs' tidy rule: the trader cancels its orders older than this
   };
-  const JOB_STATES = { done: 'Done', failed: 'Failed', 'not-run': "Didn't start", running: 'Running now' };
+  const JOB_STATES = { done: 'Done', failed: 'Failed', 'not-run': "Didn't start", limit: 'Claude limit', running: 'Running now' };
   const PURPOSES = { signals: 'for new signals', heartbeat: 'position review', scheduled: 'scheduled', requests: 'for your requests', analyst: 'market check' };
 
   function age(iso, now) {
@@ -498,14 +498,17 @@
   function jobMonitor(job, ago, extra) {
     if (!job?.last) return { tone: 'warn', value: t('No runs yet'), sub: [t('none in the last 2 days')] };
     const l = job.last;
-    const tone = l.state === 'failed' ? 'bad' : l.state === 'not-run' || job.failedToday > 0 ? 'warn' : 'ok';
+    // Claude's usage limit isn't a fault: the engine retries the run by itself once it resets, so it only warns.
+    const tone = l.state === 'failed' ? 'bad' : l.state === 'not-run' || l.state === 'limit' || job.failedToday > 0 ? 'warn' : 'ok';
     return {
       tone,
       value: t(JOB_STATES[l.state] ?? 'Running now'),
       sub: [
         `${t('last run {ago}', { ago: ago(l.at) })}${PURPOSES[l.purpose] ? ` · ${t(PURPOSES[l.purpose])}` : ''}`,
+        l.state === 'limit' ? t('Claude usage limit reached: retried automatically') : null,
         job.failedToday > 0 ? t('{n} failed today', { n: job.failedToday }) : null,
-        job.notRunToday > 0 ? t("{n} didn't start today (usage limit or credentials)", { n: job.notRunToday }) : null,
+        job.limitedToday > 0 ? t('{n} stopped by the Claude limit today', { n: job.limitedToday }) : null,
+        job.notRunToday > 0 ? t("{n} didn't start today (credentials or queue)", { n: job.notRunToday }) : null,
         ...extra,
       ].filter(Boolean),
     };

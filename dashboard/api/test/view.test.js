@@ -330,6 +330,13 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   selling.engine.protection = { armed: 1, exiting: ['BTC-EUR'], blocked: [] };
   assert.deepEqual([V.monitors(selling, now, ago).positions.tone, V.monitors(selling, now, ago).positions.value], ['warn', 'Selling']);
 
+  // Claude's usage limit is shown as such, and only warns: the engine retries the run by itself.
+  const limited = structuredClone(healthy);
+  limited.jobs.analyst = { last: { runId: 'analyst-3', purpose: 'analyst', state: 'limit', at: at(30) }, failedToday: 0, notRunToday: 0, limitedToday: 2, cappedAt: null };
+  const l = V.monitors(limited, now, ago).analyst;
+  assert.deepEqual([l.tone, l.value, ...l.sub],
+    ['warn', 'Claude limit', 'last run 30 min ago · market check', 'Claude usage limit reached: retried automatically', '2 stopped by the Claude limit today']);
+
   const overdue = structuredClone(healthy);
   overdue.jobs.analyst.last.at = at(14 * 60);
   assert.deepEqual([V.monitors(overdue, now, ago).analyst.tone, V.monitors(overdue, now, ago).analyst.value], ['bad', 'Overdue']);

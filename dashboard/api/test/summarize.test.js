@@ -135,8 +135,24 @@ test('agent jobs: the latest run of each job and how it ended, with today\'s fai
     { at: '2026-10-27T12:00:00Z', kind: 'tool-call', actor: 'trader', runId: 'run-2', data: { tool: 'scan_market' } },
   ];
   const jobs = agentJobs(entries, now);
-  assert.deepEqual(jobs.trader, { last: { runId: 'run-2', purpose: 'signals', at: '2026-10-27T12:19:40Z', state: 'done' }, failedToday: 1, notRunToday: 0, cappedAt: null });
+  assert.deepEqual(jobs.trader, { last: { runId: 'run-2', purpose: 'signals', at: '2026-10-27T12:19:40Z', state: 'done' }, failedToday: 1, notRunToday: 0, limitedToday: 0, cappedAt: null });
   assert.equal(jobs.analyst.last.state, 'running');
+});
+
+test('agent jobs: a run stopped by the Claude usage limit is its own state and count, not a failure', () => {
+  const { agentJobs } = require('../src/summarize');
+  const now = Date.parse('2026-10-28T19:30:00Z');
+  const run = (at, id, step, reason) => ({ at, kind: 'agent-run', actor: 'engine', runId: id, data: { step, job: 'analyst', purpose: 'analyst', ...(reason ? { reason } : {}) } });
+  const jobs = agentJobs([
+    run('2026-10-28T17:15:00Z', 'analyst-3', 'not-run', 'usage-limit'),
+    run('2026-10-28T16:45:00Z', 'analyst-2', 'not-run', 'usage-limit'),
+    run('2026-10-28T10:45:00Z', 'analyst-1', 'not-run', 'credentials'),
+    run('2026-10-28T04:45:00Z', 'analyst-0', 'not-run', '<b>made up</b>'),
+  ], now);
+  assert.deepEqual(jobs.analyst, { last: { runId: 'analyst-3', purpose: 'analyst', at: '2026-10-28T17:15:00Z', state: 'limit' }, failedToday: 0, notRunToday: 2, limitedToday: 2, cappedAt: null });
+  // A reason on any step but not-run (the engine never writes one) doesn't make it a limit.
+  const odd = agentJobs([run('2026-10-28T17:15:00Z', 'analyst-4', 'failed', 'usage-limit')], now);
+  assert.deepEqual([odd.analyst.last.state, odd.analyst.failedToday, odd.analyst.limitedToday], ['failed', 1, 0]);
 });
 
 test('the last coin filter change reaches the page checked again, and the switch previews stay with the Strategy tab', () => {

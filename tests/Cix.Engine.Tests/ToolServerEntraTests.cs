@@ -248,11 +248,54 @@ public sealed class ToolServerEntraTests
             Assert.Equal(HttpStatusCode.OK, (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/claim", Token(TraderId))).Status);
             Assert.False(await IsRefusedAsync(address, "get_portfolio", run.Id));
             Assert.Equal(HttpStatusCode.NoContent,
-                (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/outcome", Token(TraderId), """{"outcome":"not-run"}""")).Status);
+                (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/outcome", Token(TraderId), """{"outcome":"not-run","reason":"usage-limit"}""")).Status);
 
             Assert.Equal((1, 0), (setup.Scheduler.State!.Runs, setup.Scheduler.State.Refunds)); // no refund
-            Assert.Contains("reported not-run", Assert.Single(setup.Steps("failed")).Summary, StringComparison.Ordinal);
+            var failed = Assert.Single(setup.Steps("failed"));
+            Assert.Contains("reported not-run", failed.Summary, StringComparison.Ordinal);
+            Assert.False(failed.Data!.ContainsKey("reason")); // it ran, so it isn't shown as a limit
             Assert.Empty(setup.Steps("not-run"));
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task ARunStoppedByTheClaudeLimit_IsJournaledWithItsReason_AndRefunded()
+    {
+        var setup = new AgentRunSchedulerTests.Setup();
+        await setup.Scheduler.PollOnceAsync(CancellationToken.None);
+        var run = setup.Queue.Sent.Single().Run;
+        var (app, address, _) = await StartAsync(setup.Scheduler);
+        await using (app)
+        {
+            Assert.Equal(HttpStatusCode.OK, (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/claim", Token(TraderId))).Status);
+            Assert.Equal(HttpStatusCode.NoContent,
+                (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/outcome", Token(TraderId), """{"outcome":"not-run","reason":"usage-limit"}""")).Status);
+
+            Assert.Equal((0, 1), (setup.Scheduler.State!.Runs, setup.Scheduler.State.Refunds)); // refunded, retried after the gap
+            var entry = Assert.Single(setup.Steps("not-run"));
+            Assert.Equal("usage-limit", entry.Data!["reason"]);
+            Assert.EndsWith("ended: not-run (Claude usage limit)", entry.Summary, StringComparison.Ordinal);
+            await app.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task AnUnknownNotRunReason_IsDropped()
+    {
+        var setup = new AgentRunSchedulerTests.Setup();
+        await setup.Scheduler.PollOnceAsync(CancellationToken.None);
+        var run = setup.Queue.Sent.Single().Run;
+        var (app, address, _) = await StartAsync(setup.Scheduler);
+        await using (app)
+        {
+            Assert.Equal(HttpStatusCode.OK, (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/claim", Token(TraderId))).Status);
+            Assert.Equal(HttpStatusCode.NoContent,
+                (await PostAsync($"{address}{ToolServerRegistration.RunsEndpoint}/{run.Id}/outcome", Token(TraderId), """{"outcome":"not-run","reason":"<b>x</b>"}""")).Status);
+
+            var entry = Assert.Single(setup.Steps("not-run"));
+            Assert.False(entry.Data!.ContainsKey("reason"));
+            Assert.EndsWith("ended: not-run", entry.Summary, StringComparison.Ordinal);
             await app.StopAsync();
         }
     }

@@ -71,6 +71,31 @@ public static class AgentRunKinds
         "not-run" => AgentRunOutcome.NotRun,
         _ => null,
     };
+
+    /// <summary>Claude's usage or rate limit stopped the run before it did any work.</summary>
+    public const string UsageLimit = "usage-limit";
+
+    /// <summary>The Claude credential was missing, malformed or expired.</summary>
+    public const string Credentials = "credentials";
+
+    /// <summary>
+    /// Why a job says its run didn't start: <see cref="UsageLimit"/> or <see cref="Credentials"/>; null for anything else, so
+    /// an unknown reason is dropped rather than journaled.
+    /// </summary>
+    public static string? ParseNotRunReason(string? value) => value switch
+    {
+        UsageLimit => UsageLimit,
+        Credentials => Credentials,
+        _ => null,
+    };
+
+    /// <summary>The reason in words, for the journal.</summary>
+    public static string NotRunReasonText(string reason) => reason switch
+    {
+        UsageLimit => "Claude usage limit",
+        Credentials => "Claude credentials",
+        _ => throw new ArgumentOutOfRangeException(nameof(reason)),
+    };
 }
 
 /// <summary>
