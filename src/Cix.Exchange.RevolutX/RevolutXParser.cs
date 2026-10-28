@@ -59,7 +59,8 @@ internal static class RevolutXParser
             Dec(c, "volume"))).ToList();
 
     /// <summary>
-    /// Top of the public order book: <c>{ data: { bids: [{price, quantity, count}], asks: [...] }, metadata: { timestamp } }</c>.
+    /// Top of an order book. The public book says <c>{ data: { bids: [{price, quantity, count}], asks: [...] }, metadata: { timestamp } }</c>;
+    /// the signed <c>/api/1.0/order-book</c> names its levels <c>{p, q, no, s, pdt, ...}</c> (confirmed on the live account, October 2026).
     /// Uses the exchange timestamp when present (never later than <paramref name="receivedAt"/>), otherwise the receipt time.
     /// </summary>
     public static MarketQuote ParseOrderBookTop(JsonElement root, string symbol, DateTimeOffset receivedAt)
@@ -71,15 +72,15 @@ internal static class RevolutXParser
             throw new FormatException("Order book has no bids or asks.");
 
         // Sort defensively: best bid is the highest price, best ask the lowest.
-        var bestBid = bids.EnumerateArray().OrderByDescending(l => Dec(l, "price")).First();
-        var bestAsk = asks.EnumerateArray().OrderBy(l => Dec(l, "price")).First();
+        var bestBid = bids.EnumerateArray().OrderByDescending(l => Dec(l, "price", "p")).First();
+        var bestAsk = asks.EnumerateArray().OrderBy(l => Dec(l, "price", "p")).First();
 
         var quote = new MarketQuote(
             NormaliseSymbol(symbol),
-            Dec(bestBid, "price"),
-            Dec(bestBid, "quantity"),
-            Dec(bestAsk, "price"),
-            Dec(bestAsk, "quantity"),
+            Dec(bestBid, "price", "p"),
+            Dec(bestBid, "quantity", "q"),
+            Dec(bestAsk, "price", "p"),
+            Dec(bestAsk, "quantity", "q"),
             MetadataAsOf(root, receivedAt));
         if (!quote.IsValid)
             throw new FormatException("Order book top is invalid: prices must be positive, sizes non-negative and bid <= ask.");
@@ -265,6 +266,10 @@ internal static class RevolutXParser
 
     private static decimal Dec(JsonElement e, string name) =>
         DecOrNull(e, name) ?? throw new FormatException($"Missing number '{name}'.");
+
+    /// <summary>A number under <paramref name="name"/> or, failing that, <paramref name="alias"/>: two endpoints, two spellings.</summary>
+    private static decimal Dec(JsonElement e, string name, string alias) =>
+        DecOrNull(e, name) ?? DecOrNull(e, alias) ?? throw new FormatException($"Missing number '{name}' (or '{alias}').");
 
     private static decimal? DecOrNull(JsonElement e, string name)
     {

@@ -161,8 +161,9 @@ def signed_top(revx: RevX, symbol: str) -> tuple[Decimal, Decimal, int | None]:
     """Best bid, best ask and metadata.timestamp from the signed order book, as the live engine reads it."""
     book = revx.request("GET", f"/api/1.0/order-book/{symbol}", params={"limit": 5})
     data = book.get("data", {}) if isinstance(book, dict) else {}
-    bid = max(dec(level["price"]) for level in data["bids"])
-    ask = min(dec(level["price"]) for level in data["asks"])
+    # The signed book names its levels {p, q, no, ...}; the public one {price, quantity, count}. Read either.
+    bid = max(dec(level.get("p", level.get("price"))) for level in data["bids"])
+    ask = min(dec(level.get("p", level.get("price"))) for level in data["asks"])
     return bid, ask, (book.get("metadata") or {}).get("timestamp")
 
 
