@@ -394,7 +394,7 @@ function renderFilterChange(change) {
     node.hidden = true;
   });
   node.replaceChildren(
-    el('strong', { text: `${shown.title} (${when(shown.at)})` }),
+    el('strong', {}, `${shown.title} (`, when(shown.at), ')'),
     el('ul', {}, shown.lines.map((line) => el('li', { text: line }))),
     close);
 }
