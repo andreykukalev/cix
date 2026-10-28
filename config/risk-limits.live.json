@@ -5,8 +5,8 @@
     "MaxPositionQuotePerSymbol": 25,
     "MaxDailyLossQuote": 5,
     "MaxDrawdownFraction": 0.10,
-    "MaxOrdersPerMinute": 4,
+    "MaxOrdersPerMinute": 5,
     "MaxPriceDeviationFraction": 0.01,
-    "AllowedSymbols": [ "BTC-EUR", "ETH-EUR", "SOL-EUR", "XRP-EUR" ]
+    "AllowedSymbols": [ "BTC-EUR", "ETH-EUR", "XRP-EUR", "SOL-EUR", "AAVE-EUR", "HYPE-EUR", "ENA-EUR", "INJ-EUR", "HBAR-EUR", "DOT-EUR" ]
   }
 }
