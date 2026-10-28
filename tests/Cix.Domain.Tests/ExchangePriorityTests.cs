@@ -19,6 +19,30 @@ public sealed class ExchangePriorityTests
         Assert.False(ExchangePriority.IsUrgent); // an async method's scope never leaks to its caller
     }
 
+    [Fact]
+    public void AConditionalScope_IsUrgentWhileItsConditionHolds_AndEndsWithIt()
+    {
+        var stopWaiting = false;
+        using (ExchangePriority.BeginUrgentWhen(() => stopWaiting))
+        {
+            Assert.False(ExchangePriority.IsUrgent);
+            stopWaiting = true;
+            Assert.True(ExchangePriority.IsUrgent); // checked as each request is made
+
+            using (ExchangePriority.BeginUrgent())
+            {
+                stopWaiting = false;
+                Assert.True(ExchangePriority.IsUrgent);
+            }
+
+            Assert.False(ExchangePriority.IsUrgent);
+            stopWaiting = true;
+            Assert.True(ExchangePriority.IsUrgent); // the inner scope gave the condition back
+        }
+
+        Assert.False(ExchangePriority.IsUrgent);
+    }
+
     private static async Task UrgentlyAsync()
     {
         using var scope = ExchangePriority.BeginUrgent();

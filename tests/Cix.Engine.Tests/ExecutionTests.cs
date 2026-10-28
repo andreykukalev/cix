@@ -564,8 +564,10 @@ public sealed class PriorityGateTests
         var stop = gate.WaitAsync(CancellationToken.None, urgent: true);
         Assert.False(agent1.IsCompleted || agent2.IsCompleted || stop.IsCompleted);
 
+        Assert.True(gate.UrgentWaiting); // the holder's requests go urgent meanwhile
         gate.Release();
         await stop.WaitAsync(Soon); // the stop-loss sell came last and goes first
+        Assert.False(gate.UrgentWaiting);
         Assert.False(agent1.IsCompleted);
 
         gate.Release();
@@ -589,6 +591,7 @@ public sealed class PriorityGateTests
 
         await cts.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+        Assert.False(gate.UrgentWaiting);
         gate.Release();
 
         await next.WaitAsync(Soon); // the gate passed over the cancelled wait

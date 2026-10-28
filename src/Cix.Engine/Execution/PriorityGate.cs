@@ -12,6 +12,16 @@ internal sealed class PriorityGate
     private readonly LinkedList<TaskCompletionSource> _normal = new();
     private bool _held;
 
+    /// <summary>Whether an urgent waiter is queued: the holder should then finish quickly, its requests urgent too.</summary>
+    public bool UrgentWaiting
+    {
+        get
+        {
+            lock (_sync)
+                return _urgent.Count > 0;
+        }
+    }
+
     /// <summary>Waits for the gate. A cancelled wait never takes it; a wait already let in holds it, to be released.</summary>
     public Task WaitAsync(CancellationToken cancellationToken, bool urgent = false)
     {

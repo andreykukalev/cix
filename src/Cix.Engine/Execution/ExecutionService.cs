@@ -132,6 +132,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
     private readonly PriorityGate _lock = new(); // the protective exits go first (F-06)
     private readonly bool _waitForFirstReconcile;
     private readonly DateTimeOffset _startedAt;
+    private bool _firstReconcileLapseLogged;
 
     /// <summary>
     /// The longest orders wait for the first complete reconciliation after a start (<c>waitForFirstReconcile</c>). After it
@@ -341,6 +342,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         await _lock.WaitAsync(cancellationToken, urgent: intent.IsProtectiveExit).ConfigureAwait(false);
         try
         {
+            using var stopsFirst = UrgentWhileAStopWaits();
             // A halt stops new risk; the engine's stop-loss sells and the owner's own sells take risk off and go on (the gate
             // checks the rest).
             if (_killSwitch.IsEngaged && !intent.PassesHalt)
@@ -349,8 +351,16 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             // After a start the account is compared with the exchange before anything trades (F-12), so an order or a deposit
             // from elsewhere while the engine was down halts it first. The stops and the owner's sells don't wait.
             var now = _time.GetUtcNow();
-            if (_waitForFirstReconcile && LastReconciledAt is null && !intent.PassesHalt && now - _startedAt < FirstReconcileWait)
-                return Reject("not-reconciled", "The engine is comparing the account with the exchange after its start; orders wait for that, about a minute.");
+            if (_waitForFirstReconcile && LastReconciledAt is null && !intent.PassesHalt)
+            {
+                if (now - _startedAt < FirstReconcileWait)
+                    return Reject("not-reconciled", "The engine is comparing the account with the exchange after its start; orders wait for that, about a minute.");
+                if (!_firstReconcileLapseLogged)
+                {
+                    _firstReconcileLapseLogged = true; // under the lock
+                    LogFirstReconcileLapsed(_logger, FirstReconcileWait.TotalMinutes);
+                }
+            }
 
             PruneSent(now);
             lock (_pending)
@@ -531,6 +541,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            using var stopsFirst = UrgentWhileAStopWaits();
             return await work(new ExclusiveView(
                 ct => _exchange.GetOpenOrdersAsync(null, ct),
                 SampleAsync,
@@ -541,6 +552,10 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             _lock.Release();
         }
     }
+
+    // While a stop-loss sell waits for the lock, the holder's requests are urgent too, so the ordinary rate share never holds
+    // the holder, and the stop behind it, back (F-06, F-07). Checked per request; one booked before the stop came still waits.
+    private ExchangePriority.Scope UrgentWhileAStopWaits() => ExchangePriority.BeginUrgentWhen(() => _lock.UrgentWaiting);
 
     /// <summary>How long agents' views of open orders and the portfolio may be cached, so a looping agent can't use up the exchange's rate limit.</summary>
     public static readonly TimeSpan OpenOrdersCacheTtl = TimeSpan.FromSeconds(10);
@@ -729,6 +744,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            using var stopsFirst = UrgentWhileAStopWaits();
             var notCancelled = new List<string>();
             var cancelled = 0;
             IReadOnlyList<ExchangeOrder> open;
@@ -830,6 +846,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            using var stopsFirst = UrgentWhileAStopWaits();
             var open = await _exchange.GetOpenOrdersAsync(null, cancellationToken).ConfigureAwait(false);
             var targets = open.Where(o => o.IsOpen && o.Side == OrderSide.Buy).Select(o => o.VenueOrderId).ToHashSet(StringComparer.Ordinal);
             lock (_pending)
@@ -1135,6 +1152,9 @@ public sealed partial class ExecutionService : IActiveSymbolSource
 
     [LoggerMessage(Level = LogLevel.Critical, Message = "Kill switch engaged by {By}: {Reason}")]
     private static partial void LogKillSwitch(ILogger logger, string by, string reason);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "No reconciliation completed in the {Minutes} minutes after the start; orders go on without it")]
+    private static partial void LogFirstReconcileLapsed(ILogger logger, double minutes);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Kill switch released by {By}")]
     private static partial void LogKillSwitchReleased(ILogger logger, string by);

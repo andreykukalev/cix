@@ -51,6 +51,7 @@ public sealed partial class ExecutionService
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            using var stopsFirst = UrgentWhileAStopWaits();
             IReadOnlyList<ExchangeOrder> open;
             IReadOnlyList<Balance> balances;
             try
