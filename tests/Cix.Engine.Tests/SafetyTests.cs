@@ -399,6 +399,61 @@ public sealed class SafetyMonitorTests
     }
 
     [Fact]
+    public async Task AResumedDrawdownPause_StaysResumed_AfterARestart()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m); // equity 260.005
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // 18.75% down
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        await rig.Execution.ReleaseKillSwitchAsync("owner");
+
+        var restarted = rig.Restart(() => rig.Store); // a deploy: a new engine on the same saved state
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        restarted.Quote(60_000.00m, 60_010.00m);
+        var check = await restarted.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.True(rig.Store.Current.DrawdownPaused);
+        Assert.False(restarted.KillSwitch.IsEngaged);
+        Assert.Null(check.KillSwitchReason);
+        Assert.Equal("drawdown-halt", (await restarted.Buy(0.0001m, 59_000m, "refused")).Rule);
+    }
+
+    [Fact]
+    public async Task ADrawdownReachedDuringAnotherHalt_IsRecordedBesideIt_Once()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m);
+        await rig.Execution.EngageKillSwitchAsync("Paused by the owner from the dashboard (request p-1).", "owner", CancellationToken.None);
+
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // 18.75% down while paused
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        var also = rig.KillSwitch.State.AlsoAt;
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.Equal(("owner", SafetyMonitor.DrawdownBy), (rig.KillSwitch.State.By, rig.KillSwitch.State.AlsoBy)); // Resume must name it
+        Assert.NotNull(also);
+        Assert.Equal(also, rig.KillSwitch.State.AlsoAt); // once, not every minute
+        Assert.True(rig.Store.Current.DrawdownPaused);
+    }
+
+    [Fact]
+    public async Task AfterTheOwnerResumesACriticalHalt_ADrawdownStillOverTheLimit_DoesntPauseAgain()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m);
+        rig.Store.Update(s => s with { PeakEquity = 400m }); // 35% down: the hard ceiling
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        Assert.Equal(SafetyMonitor.CriticalBy, rig.KillSwitch.State.By);
+        await rig.Execution.ReleaseKillSwitchAsync("owner");
+
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // recovered to 18.75% down: still over the limit
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.False(rig.KillSwitch.IsEngaged); // one Resume is enough
+    }
+
+    [Fact]
     public async Task HardCeilingAlone_EngagesOnce_NotAgainEveryMinute()
     {
         var rig = new Rig(eur: 200m, btc: 0.001m);

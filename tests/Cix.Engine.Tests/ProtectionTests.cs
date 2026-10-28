@@ -650,6 +650,7 @@ public sealed class ProtectionTests
 
         Assert.Equal((1, (DateTimeOffset?)p.Rig.Time.GetUtcNow(), 0, 0), (status.Protection!.Armed, status.Protection.ArmedAt, status.Protection.Exiting.Count, status.Protection.Blocked.Count));
         Assert.Equal("Critical: drawdown reached the hard ceiling. Nothing new until you resume; stop-losses keep selling.", EngineStatusService.HaltCategoryFor(SafetyMonitor.CriticalBy));
+        Assert.Equal("Drawdown reached the limit. Nothing new until you resume; stop-losses and your own sells go on.", EngineStatusService.HaltCategoryFor(SafetyMonitor.DrawdownBy));
     }
 
     [Fact]

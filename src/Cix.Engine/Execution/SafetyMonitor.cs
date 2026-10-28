@@ -47,7 +47,7 @@ public sealed partial class SafetyMonitor : BackgroundService
     private readonly TradableSymbols? _tradable;
     private readonly DateTimeOffset _startedAt;
     private DateTimeOffset _lastReconcile = DateTimeOffset.MinValue;
-    private bool _drawdownArmed = true; // false once the drawdown halt engaged, until the drawdown is back under the limit
+    private bool _drawdownPaused; // the drawdown pause engaged (or a halt covered it) and the drawdown isn't back under the limit since
     private long _progressTicks; // when a round last started or finished, or the loop started; 0 until it starts
 
     public SafetyMonitor(
@@ -70,6 +70,14 @@ public sealed partial class SafetyMonitor : BackgroundService
         _logger = logger;
         _tradable = tradable;
         _startedAt = time.GetUtcNow();
+        _drawdownPaused = execution.DrawdownPaused; // saved, so a restart doesn't pause again for the same drawdown
+    }
+
+    private void SetDrawdownPaused(bool paused)
+    {
+        _drawdownPaused = paused;
+        if (_execution.DrawdownPaused != paused)
+            _execution.SaveDrawdownPaused(paused); // a write that fails is tried again next round
     }
 
     /// <summary>
@@ -128,20 +136,18 @@ public sealed partial class SafetyMonitor : BackgroundService
                     // The same text each minute, so a halt already in place records it beside once, not every minute.
                     reason = $"Critical: drawdown reached the {HardCeilings.MaxDrawdownFraction:P0} hard ceiling. Buys, the strategy and the agents stop until the owner resumes; stop-loss sells go on.";
                     LogCritical(_logger, drawdown);
+                    SetDrawdownPaused(true); // the owner's Resume of the critical halt covers the drawdown limit too
                 }
                 else if (drawdown >= _limits.MaxDrawdownFraction)
                 {
-                    if (_killSwitch.IsEngaged)
+                    if (!_drawdownPaused)
                     {
-                        _drawdownArmed = false; // halted already: the owner's Resume covers this drawdown too
-                    }
-                    else if (_drawdownArmed)
-                    {
+                        // Over another halt it is recorded beside it, so the owner sees it before resuming.
                         by = DrawdownBy;
                         reason = $"Drawdown reached the {_limits.MaxDrawdownFraction:P0} limit. Buys, the strategy and the agents stop until the owner resumes; stop-loss sells and the owner's own sells go on.";
                         LogDrawdownHalt(_logger, drawdown);
                     }
-                    else
+                    else if (!_killSwitch.IsEngaged)
                     {
                         // Resumed while still down: the gate refuses buys until the drawdown is back under the limit.
                         buysCancelled = await _execution.CancelOpenBuysAsync(cancellationToken).ConfigureAwait(false);
@@ -151,7 +157,7 @@ public sealed partial class SafetyMonitor : BackgroundService
                 }
                 else
                 {
-                    _drawdownArmed = true; // back under the limit: the next fall to it pauses again
+                    SetDrawdownPaused(false); // back under the limit: the next fall to it pauses again
                 }
             }
         }
@@ -197,15 +203,18 @@ public sealed partial class SafetyMonitor : BackgroundService
         }
 
         // The critical state is recorded even over another halt (beside it), so Resume has to name it too; once recorded, it
-        // isn't re-engaged every minute (each engagement cancels the open orders again).
+        // isn't re-engaged every minute (each engagement cancels the open orders again). The drawdown pause is recorded beside
+        // another halt the same way, unless the critical state already is (it says more).
         var halt = _killSwitch.State;
-        if (reason is not null && (!halt.Engaged || (by == CriticalBy && halt.By != CriticalBy && halt.AlsoBy != CriticalBy)))
+        var critical = halt.By == CriticalBy || halt.AlsoBy == CriticalBy;
+        if (reason is not null && (!halt.Engaged || (by == CriticalBy && !critical)
+            || (by == DrawdownBy && !critical && halt.By != DrawdownBy && halt.AlsoBy != DrawdownBy)))
         {
             try
             {
                 await _execution.EngageKillSwitchAsync(reason, by, cancellationToken).ConfigureAwait(false);
                 if (by == DrawdownBy)
-                    _drawdownArmed = false;
+                    SetDrawdownPaused(true);
             }
             catch (Exception ex) when (Failed(ex, cancellationToken))
             {
@@ -213,6 +222,10 @@ public sealed partial class SafetyMonitor : BackgroundService
             }
 
             MarkProgress();
+        }
+        else if (by == DrawdownBy)
+        {
+            SetDrawdownPaused(true); // the halt in place names it already, or the critical state does
         }
 
         if (now - _lastReconcile >= _options.ReconcileInterval)

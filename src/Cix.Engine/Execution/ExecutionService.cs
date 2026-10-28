@@ -288,6 +288,25 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         }
     }
 
+    /// <summary>
+    /// Whether the drawdown pause engaged (or a halt in place covered it) and the drawdown hasn't been back under the limit
+    /// since: the engine doesn't pause again for it after the owner resumes (pre-live assessment F-10).
+    /// </summary>
+    public bool DrawdownPaused => _store.Current.DrawdownPaused;
+
+    /// <summary>Saves <see cref="DrawdownPaused"/>; a write that fails is logged, and the caller tries again.</summary>
+    public void SaveDrawdownPaused(bool paused)
+    {
+        try
+        {
+            _store.Update(s => s with { DrawdownPaused = paused });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogStateWriteFailed(_logger, ex.Message);
+        }
+    }
+
     private static OrderIntent ToIntent(SentOrder o) =>
         new(o.Symbol, o.Side == "sell" ? OrderSide.Sell : OrderSide.Buy, o.Size, o.LimitPrice, o.ClientOrderId);
 
@@ -429,7 +448,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             if (verdict.Order is not { } order)
             {
                 if (countsTowardRejectStreak
-                    && verdict.Rule is not ("kill-switch" or "invalid-order")
+                    && verdict.Rule is not ("kill-switch" or "invalid-order" or "drawdown-halt") // a limit in force, not a broken loop
                     && Interlocked.Increment(ref _consecutiveRejects) >= _safety.MaxConsecutiveRejects)
                     Interlocked.Exchange(ref _streakTripped, 1);
                 LogRejected(_logger, intent.ClientOrderId ?? string.Empty, verdict.Rule, verdict.Reason);

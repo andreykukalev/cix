@@ -42,6 +42,7 @@ Every document has `id`, `type`, `about` (a one-line description for anyone brow
 |---|---|
 | `killSwitch` | Whether trading is halted (`engaged`), why (`reason`), by whom (`by`) and since when (`since`). A new Live state starts engaged until the owner confirms. `alsoBy`, `alsoReason` and `alsoAt`: the latest other cause found while it was already engaged (journaled as `also-triggered`), so the dashboard's Resume can't release it unseen (ADR-0018). |
 | `peakEquity` | Highest equity seen, for the drawdown limit. |
+| `drawdownPaused` | True once the drawdown limit paused trading (or a halt already in place covered it), until equity is back within the limit: after the owner resumes, and across restarts, the engine doesn't pause again for the same drawdown. |
 | `day`, `dayStartEquity` | The UTC day and the equity at its start, for the daily loss limit. |
 | `holdings` | Balances per currency at the last reconciliation, and the value of the engine's open orders then. Used to spot deposits, withdrawals or outside trades, including while the engine was down. |
 | `orders` | Orders the engine **sent and hasn't yet seen finish**. Each is readable: `clientOrderId`, `symbol`, `side`, `size`, `limitPrice`, `sentAt`, `source` (`place_order` for an agent's order, `protective-exit` for the engine's own stop or target sell), `venueOrderId` (the exchange's ID, once confirmed), and for a buy its `stopLoss`, `takeProfit`, `runId` and `strategy`. Written **before** the order is sent. Removed once reconciliation has seen it finished for a full interval. |

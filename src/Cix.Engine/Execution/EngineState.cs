@@ -93,7 +93,8 @@ public sealed record EngineState(
     IReadOnlyList<string>? KnownClientOrderIds = null,
     HoldingsBaseline? Holdings = null,
     IReadOnlyList<SentOrder>? Orders = null,
-    IReadOnlyDictionary<string, PositionPlanState>? Positions = null)
+    IReadOnlyDictionary<string, PositionPlanState>? Positions = null,
+    bool DrawdownPaused = false)
 {
     /// <summary>Client order IDs the engine sent and hasn't yet seen finish; recorded before each send.</summary>
     [JsonIgnore]
