@@ -334,13 +334,33 @@ foreach ($r in $revisions) { az containerapp revision activate -n ca-cix-dev-eng
 | `-IncludeRequests` | Also removes your requests from the dashboard (the `requests` container) for the mode: `paper` takes those without a `tradingMode`. Kept by default. |
 
 Safeguards:
-- It refuses environments marked `protected`, in the settings file or in the `cix-protected` tag on CIX's resource group (set by the template from the same setting). The group must also be tagged `cix-environment=<environment>`.
+- It refuses environments marked `protected`, in the settings file or in the `cix-protected` tag on CIX's resource group (set by the template from the same setting), unless you pass `-LiveWhenFlat` (below). The group must also be tagged `cix-environment=<environment>`.
 - The database must be this environment's alone: its group's `cix-database` and `cix-cosmos-account` tags must name it, and no other group may claim it (the group Azure makes for this environment's Container Apps environment, `ME_cae-...`, copies the tags and is ignored). So a copied or mistyped settings file can't point a reset (or a deployment) at another environment's or project's database. Two environment files sharing one database name are refused outright.
 - Agents can't run it: a hook blocks the script for every Claude agent, along with deleting Cosmos DB resources, regenerating keys, or `docker compose down -v`. It is the one thing allowed to delete journal entries, an owner-approved exception to the append-only rule ([ADR-0008](adr/0008-azure-database-local-agents-dashboard.md)).
 - It acts only on CIX's database (`cosmos.databaseName`) in the single shared account (tagged `shared-role=cosmos` in the shared resource group), and checks the database exists first. Other projects' databases are never touched.
 - It touches only the `journal` and `state` containers, and the owner's `requests` only with `-IncludeRequests`. It deletes documents one by one and never a container, the database or the shared account, so it works with a delete lock on the account.
 - It refuses while the engine is running.
 - It deletes nothing without `-Apply` and the typed confirmation, and prints a summary of what was planned and what was done.
+
+### Live too: only with an all-cash account
+
+The protected environment (`prod`, real money) is reset only with `-LiveWhenFlat`, and only its live state, journal and requests. A reset forgets every position's entry price, stop and target, so it is refused unless the account has nothing to protect:
+- the live engine must be stopped (no `-IgnoreRunningEngine`); its last status must list no holding worth `-DustQuote` or more (1 in the quote currency by default, at most 5; a smaller residual can't be sold anyway), from a valuation at most 10 minutes older than that status; and its state must hold no order in flight and no position plan (the engine drops a plan once less than the exchange's minimum is held). Both checks run again after you type the confirmation, just before anything is deleted;
+- `-IncludeSpecArchive` is refused (the archive holds the specs you reviewed for live), and the group must be tagged `cix-protected=true`;
+- the confirmation to type is `reset prod real money live state`.
+
+Afterwards the live engine starts halted with a fresh state and peak equity until you press Resume on the dashboard's Live view. Add the coins again on the Coins tab: the watched list is part of the state.
+
+`-Target Journal` or `All` deletes the real-money journal for good, every buy and sell in it. Look through it or copy what you need first (Data Explorer in the portal), or keep the older days with `-JournalBefore`.
+
+To reset both databases in one go, sell the live coins first, stop both engines (as in step 2, for `ca-cix-dev-engine` in `rg-cix-dev` and `ca-cix-prod-engine` in `rg-cix-live`), then:
+
+```powershell
+.\tools\azure\reset-paper-and-live.ps1 -Target All -IncludeRequests           # dry run of both
+.\tools\azure\reset-paper-and-live.ps1 -Target All -IncludeRequests -Apply    # live first, then paper; one confirmation each
+```
+
+Live goes first, so if it refuses, paper is left as it was.
 
 The local emulator is reset differently: `docker compose down -v` removes its volume.
 

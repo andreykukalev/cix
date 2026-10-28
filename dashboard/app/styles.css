@@ -138,6 +138,12 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line
 th { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; }
 td.num, th.num { text-align: right; }
 td.why { min-width: 260px; max-width: 560px; color: var(--muted); }
+/* Coins table: the figures between the coin and the reason are centred, and the held badge stays on one line. */
+@media (min-width: 641px) {
+  #coins th:nth-child(n+2):nth-child(-n+9), #coins td:nth-child(n+2):nth-child(-n+9) { text-align: center; }
+  #coins th:nth-child(2), #coins td:nth-child(2) { min-width: 110px; }
+}
+#coins td .badge { white-space: nowrap; }
 .why-kind {
   display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap;
   background: var(--chip); color: var(--text, inherit);

@@ -581,6 +581,64 @@ foreach ($case in @(
   }
 }
 
+# The protected (real-money) environment: refused without -LiveWhenFlat, and with it only while the live account is flat.
+Check 'reset-database.ps1 refuses the protected environment without -LiveWhenFlat, and -LiveWhenFlat anywhere else' {
+  $r = Invoke-WithFakeAz @{} { & (Join-Path $azureTools 'reset-database.ps1') -Environment prod -Target All }
+  if (-not $r.Error -or -not $r.Error.Contains('Only -LiveWhenFlat resets it')) { throw "prod: $($r.Error)" }
+  $r = Invoke-WithFakeAz @{} { & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -LiveWhenFlat -Target All }
+  if (-not $r.Error -or -not $r.Error.Contains("is for a protected environment; 'dev' isn't one")) { throw "dev: $($r.Error)" }
+  foreach ($extra in @(@{ IgnoreRunningEngine = $true }, @{ IncludeSpecArchive = $true }, @{ Mode = 'paper' })) {
+    $r = Invoke-WithFakeAz @{} { & (Join-Path $azureTools 'reset-database.ps1') -Environment prod -LiveWhenFlat -Target All @extra }
+    if (-not $r.Error -or -not $r.Error.Contains('protected environment')) { throw "$($extra.Keys): $($r.Error)" }
+  }
+}
+
+$liveTags = '{"cix-environment":"prod","cix-protected":"true","cix-database":"cix-live","cix-cosmos-account":"cosmos-shared-x"}'
+function Invoke-LiveReset([string]$Holdings, [string]$StateValue, [string[]]$More = @()) {
+  <# A dry run of -LiveWhenFlat against a fake account: the live status ten minutes old, valued a minute before. #>
+  $heartbeat = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
+  $valued = [DateTimeOffset]::UtcNow.AddMinutes(-11).ToString('o')
+  $holdingsField = if ($Holdings) { ",`"holdings`":$Holdings" } else { '' }
+  $status = "{`"id`":`"engine-status-live`",`"updatedAt`":`"$heartbeat`",`"value`":{`"portfolio`":{`"at`":`"$valued`",`"currency`":`"EUR`"$holdingsField}}}"
+  $state = "{`"id`":`"engine-state-live`",`"updatedAt`":`"$heartbeat`",`"value`":$StateValue}"
+  $cosmos = Start-FakeCosmos (@((Reply 404), (Reply 200 $status), (Reply 200 $status), (Reply 200 $state)) + $More)
+  $accounts = "[{`"name`":`"cosmos-shared-x`",`"documentEndpoint`":`"http://127.0.0.1:$($cosmos.Port)/`",`"tags`":{`"shared-role`":`"cosmos`"}}]"
+  try {
+    return Invoke-WithFakeAz @{ CosmosAccounts = $accounts; GroupExists = 'true'; GroupTags = $liveTags; GroupList = "[{`"name`":`"rg-cix-live`",`"tags`":$liveTags}]" } {
+      & (Join-Path $azureTools 'reset-database.ps1') -Environment prod -LiveWhenFlat -Target State
+    }
+  }
+  finally { $null = Stop-FakeCosmos $cosmos }
+}
+
+Check 'reset-database.ps1 -LiveWhenFlat refuses while the live account holds a coin or an order is in flight' {
+  $r = Invoke-LiveReset '[{"symbol":"SOL-EUR","valueQuote":12.5},{"symbol":"DOGE-EUR","valueQuote":"0.30"}]' '{"orders":[{"side":"Buy","symbol":"ETH-EUR"}]}'
+  foreach ($expected in @("isn't flat", 'SOL-EUR: about 12.5 EUR', 'order in flight: Buy ETH-EUR')) {
+    if (-not $r.Error -or -not $r.Error.Contains($expected)) { throw "missing '$expected' in: $($r.Error)" }
+  }
+  if ($r.Error.Contains('DOGE-EUR')) { throw "a residual below -DustQuote blocked the reset: $($r.Error)" }
+
+  # A plan the status hasn't caught up with yet (a buy filled since the last valuation), and an order in the older format.
+  $r = Invoke-LiveReset '[]' '{"orders":[],"knownClientOrderIds":["c-1"],"positions":{"ADA-EUR":{"symbol":"ADA-EUR","status":"open"}}}'
+  foreach ($expected in @('position plan for ADA-EUR (open)', '1 order(s) sent and not yet seen finish')) {
+    if (-not $r.Error -or -not $r.Error.Contains($expected)) { throw "missing '$expected' in: $($r.Error)" }
+  }
+
+  # A portfolio without its holdings proves nothing.
+  $r = Invoke-LiveReset '' '{"orders":[]}'
+  if (-not $r.Error -or -not $r.Error.Contains('without its holdings')) { throw "no holdings: $($r.Error)" }
+}
+
+Check 'reset-database.ps1 -LiveWhenFlat plans the live state of a flat account, residuals aside, and deletes nothing in a dry run' {
+  $docs = '{"Documents":[{"id":"engine-state-live","type":"engine-state"},{"id":"tradable-pairs-live","type":"tradable-pairs"},{"id":"spec-safe@v2-abc","type":"strategy-spec"}],"_count":3}'
+  $r = Invoke-LiveReset '[{"symbol":"DOGE-EUR","valueQuote":0.3}]' '{"orders":[],"positions":{}}' @((Reply 200 $docs))
+  if ($r.Error) { throw $r.Error }
+  foreach ($expected in @('DOGE-EUR: residual of about 0.3 EUR', 'Flat at the engine''s last status', 'would remove state/engine-state-live',
+      'would remove state/tradable-pairs-live', 'keeps state/spec-safe@v2-abc', 'no position plan', 'Dry run: nothing was changed')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+}
+
 # A copy of dev.json as environment 'citest' (its own group and database), with agents.deploy set here and the engine
 # stopped, rather than whatever dev.json has; written to infra/environments/citest.json by the helpers below, and removed after.
 function Get-CitestJson([string]$Deploy) {
