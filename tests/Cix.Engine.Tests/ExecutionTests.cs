@@ -104,6 +104,53 @@ public sealed class ExecutionTests
     }
 
     [Fact]
+    public async Task ALatestQuoteThatIsATicker_OrAnOldBook_GetsAFreshBookBeforeTheOrderIsPriced()
+    {
+        var fetched = new List<DateTimeOffset>();
+        Rig rig = null!;
+        rig = new Rig(refreshQuote: (symbol, _) =>
+        {
+            Assert.Equal(Rig.Btc, symbol);
+            fetched.Add(rig.Time.GetUtcNow());
+            rig.Quote(60_000.00m, 60_010.00m); // the book the poller would fetch, with sizes, to the state and the paper exchange
+            return Task.FromResult<MarketQuote?>(rig.State.Quote(Rig.Btc));
+        });
+
+        rig.Time.Advance(TimeSpan.FromSeconds(5));
+        rig.Ticker(59_990.00m, 60_000.00m); // the latest quote is a ticker: no sizes to fill against, no book to price on
+        var result = await rig.Buy(0.0005m, 60_010.00m);
+
+        Assert.Equal(ExecutionStatus.Placed, result.Status);
+        Assert.Equal(new[] { Rig.T0 + TimeSpan.FromSeconds(5) }, fetched);
+        Assert.Equal(OrderStatus.Filled, (await rig.Paper.GetOrderAsync(result.Placed!.VenueOrderId, CancellationToken.None))!.Status); // against the fresh book
+
+        rig.Time.Advance(TimeSpan.FromSeconds(10));
+        Assert.Equal(ExecutionStatus.Placed, (await rig.Buy(0.0005m, 60_010.00m, "c-2")).Status); // the book is 10 s old, within the quote interval: no fetch
+        Assert.Single(fetched);
+
+        rig.Time.Advance(TimeSpan.FromSeconds(15));
+        Assert.Equal(ExecutionStatus.Placed, (await rig.Buy(0.0005m, 60_010.00m, "c-3")).Status); // 25 s old: fetched again
+        Assert.Equal(2, fetched.Count);
+    }
+
+    [Fact]
+    public async Task ActiveSymbols_AreTheHeldCoins_AndThoseWithARecentOrder()
+    {
+        var rig = new Rig();
+        Assert.Empty(rig.Execution.ActiveSymbols); // nothing sampled, nothing sent
+
+        await rig.Buy(0.001m, 60_010.00m);
+        Assert.Equal(new[] { Rig.Btc }, rig.Execution.ActiveSymbols); // an order was just sent in it
+
+        rig.Time.Advance(ExecutionService.RecentOrderWindow + TimeSpan.FromSeconds(1));
+        Assert.Empty(rig.Execution.ActiveSymbols); // the order is old news and nothing has been sampled yet
+
+        rig.Quote(60_000.00m, 60_010.00m);
+        Assert.NotNull(await rig.Execution.SampleAsync(CancellationToken.None));
+        Assert.Equal(new[] { Rig.Btc }, rig.Execution.ActiveSymbols); // the sample shows the coin held
+    }
+
+    [Fact]
     public async Task OversizedOrder_IsResizedByTheGate_BeforeItIsSent()
     {
         var rig = new Rig();

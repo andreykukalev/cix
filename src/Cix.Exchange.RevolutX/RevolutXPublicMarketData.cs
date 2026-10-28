@@ -5,11 +5,12 @@ using static Cix.Exchange.RevolutX.RevolutXTransport;
 namespace Cix.Exchange.RevolutX;
 
 /// <summary>
-/// Revolut X public (unauthenticated) market data: pairs, candles and the top of the order book. Needs no API key, holds no signer and has
-/// no order methods, so paper trading runs without any trading credentials on the machine.
+/// Revolut X public (unauthenticated) market data: pairs, candles, the top of the order book, and every pair's bid and ask in
+/// one tickers request. Needs no API key, holds no signer and has no order methods, so paper trading runs without any trading
+/// credentials on the machine.
 /// </summary>
 /// <remarks>Public endpoints allow 1 request per second, so callers should cache pairs and poll candles sparingly.</remarks>
-public sealed class RevolutXPublicMarketData : IMarketDataSource, IQuoteSource
+public sealed class RevolutXPublicMarketData : IMarketDataSource, IQuoteSource, IBulkQuoteSource
 {
     private readonly RevolutXTransport _transport;
     private readonly string? _region;
@@ -55,6 +56,24 @@ public sealed class RevolutXPublicMarketData : IMarketDataSource, IQuoteSource
         EnsureSuccess(response);
         var receivedAt = _time.GetUtcNow();
         return Parse(response, root => RevolutXParser.ParseOrderBookTop(root, normalised, receivedAt));
+    }
+
+    /// <summary>
+    /// Every requested pair's bid and ask from one public request (<c>/api/1.0/public/tickers</c>, which returns every pair the
+    /// exchange lists, 375 on 2026-10-28, with no sizes): the price of a watched coin costs the same for 50 coins as for one.
+    /// Pairs the exchange doesn't list are left out.
+    /// </summary>
+    public async Task<IReadOnlyList<MarketQuote>> GetQuotesAsync(IReadOnlyCollection<string> symbols, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(symbols);
+        var wanted = symbols.Select(RevolutXParser.NormaliseSymbol).ToHashSet(StringComparer.Ordinal);
+        if (wanted.Count == 0)
+            return [];
+
+        var response = await _transport.SendAsync(HttpMethod.Get, "/api/1.0/public/tickers", RegionQuery(null), null, cancellationToken).ConfigureAwait(false);
+        EnsureSuccess(response);
+        var receivedAt = _time.GetUtcNow();
+        return Parse(response, root => RevolutXParser.ParseTickers(root, receivedAt)).Where(q => wanted.Contains(q.Symbol)).ToList();
     }
 
     private string? RegionQuery(string? query) =>

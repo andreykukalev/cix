@@ -33,29 +33,34 @@ public sealed class FeatureService(ICandleStore store, MarketState state, Market
 
 public static class MarketDataRegistration
 {
-    /// <summary>Registers the poller for <paramref name="symbols"/> (the risk gate's allowlist) and the feature service.</summary>
+    private static readonly IReadOnlySet<string> NoSymbols = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>Registers the poller for a fixed list of <paramref name="symbols"/> (every one gets order books) and the feature service. For tests.</summary>
     public static IServiceCollection AddCixMarketData(this IServiceCollection services, MarketDataOptions options, IEnumerable<string> symbols)
     {
         ArgumentNullException.ThrowIfNull(symbols);
         var symbolList = MarketDataPoller.NormaliseSymbols(symbols);
-        return services.AddCixMarketData(options, () => symbolList, symbolList.Count);
+        return services.AddCixMarketData(options, () => symbolList, symbolList.Count, signedQuotes: false, activeOnly: false);
     }
 
     /// <summary>
-    /// Registers the poller for the pairs tradable now (<paramref name="universe"/>, which follows the owner's run-time list),
-    /// checked against the rate limit for <paramref name="maxSymbols"/> of them, and the feature service.
+    /// Registers the poller for the pairs watched now (<paramref name="universe"/>, which follows the owner's run-time list),
+    /// checked against the rate limit for <paramref name="maxSymbols"/> of them, and the feature service. With
+    /// <paramref name="signedQuotes"/> (live) the quotes and tickers count against the signed budget. Order books go only to the
+    /// active coins (<see cref="IActiveSymbolSource"/>, the execution service) and to coins the tickers leave out.
     /// </summary>
-    public static IServiceCollection AddCixMarketData(this IServiceCollection services, MarketDataOptions options, Scanning.MarketUniverse universe, int maxSymbols)
+    public static IServiceCollection AddCixMarketData(this IServiceCollection services, MarketDataOptions options, Scanning.MarketUniverse universe, int maxSymbols, bool signedQuotes)
     {
         ArgumentNullException.ThrowIfNull(universe);
-        return services.AddCixMarketData(options, () => universe.Tradable, maxSymbols);
+        return services.AddCixMarketData(options, () => universe.Tradable, maxSymbols, signedQuotes, activeOnly: true);
     }
 
-    private static IServiceCollection AddCixMarketData(this IServiceCollection services, MarketDataOptions options, Func<IReadOnlyList<string>> symbols, int maxSymbols)
+    private static IServiceCollection AddCixMarketData(
+        this IServiceCollection services, MarketDataOptions options, Func<IReadOnlyList<string>> symbols, int maxSymbols, bool signedQuotes, bool activeOnly)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
-        options.Validate(Math.Max(symbols().Count, maxSymbols));
+        options.Validate(Math.Max(symbols().Count, maxSymbols), signedQuotes);
 
         services.AddSingleton(options);
         services.AddSingleton<ICandleStore>(new InMemoryCandleStore());
@@ -72,7 +77,9 @@ public static class MarketDataRegistration
             maxSymbols,
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<ILogger<MarketDataPoller>>(),
-            tickers: sp.GetService<IBulkQuoteSource>())); // live only: the signed tickers endpoint
+            tickers: sp.GetService<IBulkQuoteSource>(), // signed in live, public in paper
+            signedQuotes: signedQuotes,
+            active: activeOnly ? () => sp.GetService<IActiveSymbolSource>()?.ActiveSymbols ?? NoSymbols : null));
         services.AddHostedService<MarketDataService>();
         return services;
     }

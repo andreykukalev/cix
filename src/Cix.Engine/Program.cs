@@ -62,11 +62,13 @@ builder.Services.AddCixExchange(
 var scanner = builder.Configuration.GetSection(ScannerOptions.SectionName).Get<ScannerOptions>() ?? new ScannerOptions();
 var universe = new MarketUniverse(scanner.EffectiveUniverse, tradable);
 
-// Polls quotes and candles for the tradable pairs; fails startup if the schedule for the most there may be exceeds the rate limit.
+// Tickers for every watched pair, order books for the active ones, candles for all; fails startup if the schedule for the most
+// there may be exceeds the rate limit (ADR-0021).
 builder.Services.AddCixMarketData(
     builder.Configuration.GetSection(MarketDataOptions.SectionName).Get<MarketDataOptions>() ?? new MarketDataOptions(),
     universe,
-    limits.TradableCap);
+    limits.TradableCap,
+    signedQuotes: mode == TradingMode.Live);
 
 // The only order path: every placement goes through the risk gate (ApprovedOrder makes skipping it a compile error). Its state
 // (the kill switch, loss baselines) goes to Cosmos DB when that is on (AddCixCosmos, below), else to a file in Live.

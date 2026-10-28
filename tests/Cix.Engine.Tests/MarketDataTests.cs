@@ -244,7 +244,7 @@ public sealed class MarketDataPollerTests
         var rig = new Rig(options: LiveSchedule());
         var tickers = new SimulatedTickers(rig.Time);
         var listener = new RecordingListener();
-        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [listener], rig.Options, ["BTC-EUR", "ETH-EUR"], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers);
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [listener], rig.Options, ["BTC-EUR", "ETH-EUR"], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers, signedQuotes: true);
 
         await PollFor(poller, rig.Time, TimeSpan.FromSeconds(20));
 
@@ -263,7 +263,7 @@ public sealed class MarketDataPollerTests
     {
         var rig = new Rig(options: LiveSchedule());
         var tickers = new SimulatedTickers(rig.Time) { Failing = true };
-        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers);
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers, signedQuotes: true);
 
         await poller.PollOnceAsync(CancellationToken.None);
         var fromBook = rig.State.Quote(Btc)!;
@@ -289,7 +289,7 @@ public sealed class MarketDataPollerTests
         var rig = new Rig(options: LiveSchedule());
         var tickers = new SimulatedTickers(rig.Time);
         var listener = new RecordingListener();
-        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [listener], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers);
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [listener], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers, signedQuotes: true);
         rig.Market.QuoteLag = TimeSpan.FromMilliseconds(500); // the exchange stamps the book snapshot a little before the ticker capture
 
         await poller.PollOnceAsync(CancellationToken.None); // ticker at T, then the scheduled book at T - 0.5 s
@@ -320,6 +320,67 @@ public sealed class MarketDataPollerTests
         Assert.Throws<InvalidOperationException>(() => new MarketDataOptions { TickerInterval = TimeSpan.FromMilliseconds(500) }.Validate(1));
         Assert.Throws<InvalidOperationException>(() => new MarketDataOptions { TickerInterval = TimeSpan.FromMinutes(2) }.Validate(1));
         new MarketDataOptions { TickerInterval = null }.Validate(1); // off is allowed
+    }
+
+    [Fact]
+    public async Task PaperTickers_RunEveryFiveSeconds_AndOrderBooksGoOnlyToTheActiveCoins()
+    {
+        var rig = new Rig(options: LiveSchedule());
+        var tickers = new SimulatedTickers(rig.Time);
+        var active = new HashSet<string>(StringComparer.Ordinal) { "BTC-EUR" }; // held, or an order in it
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [], rig.Options, ["BTC-EUR", "ETH-EUR"], rig.Time,
+            NullLogger<MarketDataPoller>.Instance, tickers, signedQuotes: false, active: () => active);
+
+        await PollFor(poller, rig.Time, TimeSpan.FromSeconds(40));
+
+        Assert.Equal(8, tickers.Requests.Count); // the public tickers every 5 s, both symbols in each
+        Assert.Equal(2, rig.Market.Requests.Count(r => r.Kind == "quote")); // BTC's book at 0 s and 20 s; ETH never
+        Assert.Equal(new[] { "BTC-EUR" }, poller.BookSymbols());
+        Assert.Equal(0m, rig.State.Quote("ETH-EUR")!.BidSize); // ETH is priced from the tickers alone
+        Assert.NotNull(rig.State.Quote("ETH-EUR"));
+
+        active.Add("ETH-EUR"); // bought: its book is wanted from the next poll
+        await poller.PollOnceAsync(CancellationToken.None);
+        Assert.Equal(3, rig.Market.Requests.Count(r => r.Kind == "quote"));
+        Assert.Equal(1m, rig.State.Quote("ETH-EUR")!.BidSize);
+    }
+
+    [Fact]
+    public async Task ACoinTheTickersLeaveOut_KeepsItsOrderBook_EvenWhenNobodyHoldsIt()
+    {
+        var rig = new Rig(options: LiveSchedule());
+        var tickers = new SimulatedTickers(rig.Time);
+        tickers.Missing.Add("ETH-EUR");
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [], rig.Options, ["BTC-EUR", "ETH-EUR"], rig.Time,
+            NullLogger<MarketDataPoller>.Instance, tickers, signedQuotes: false, active: () => new HashSet<string>());
+
+        await poller.PollOnceAsync(CancellationToken.None); // the first tickers answer says which coins it leaves out
+        rig.Time.Advance(TimeSpan.FromSeconds(1));
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "ETH-EUR" }, poller.BookSymbols());
+        Assert.Equal(1, rig.Market.Requests.Count(r => r.Kind == "quote"));
+        Assert.Equal(1m, rig.State.Quote("ETH-EUR")!.BidSize); // its only price is the book
+        Assert.Equal(0m, rig.State.Quote("BTC-EUR")!.BidSize);
+    }
+
+    [Fact]
+    public async Task NothingWatched_PollsNothing()
+    {
+        var rig = new Rig(options: LiveSchedule());
+        var tickers = new SimulatedTickers(rig.Time);
+        var symbols = new List<string>();
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [], rig.Options, () => symbols, maxSymbols: 50, rig.Time,
+            NullLogger<MarketDataPoller>.Instance, tickers, signedQuotes: false, active: () => new HashSet<string>());
+
+        Assert.Equal(0, await poller.PollOnceAsync(CancellationToken.None));
+        Assert.Empty(tickers.Requests);
+        Assert.Empty(rig.Market.Requests);
+
+        symbols.Add("BTC-EUR"); // the owner added the first coin
+        rig.Time.Advance(TimeSpan.FromSeconds(1));
+        Assert.True(await poller.PollOnceAsync(CancellationToken.None) > 0);
+        Assert.Single(tickers.Requests);
     }
 
     [Fact]
@@ -430,14 +491,15 @@ public sealed class MarketDataPollerTests
     }
 
     [Fact]
-    public void TooManySymbols_FailsAtStartup()
+    public void AScheduleThatCannotFitTheCap_FailsAtStartup()
     {
         var time = new MutableTime(Start);
         var market = new SimulatedMarket(time);
-        string[] symbols = ["BTC-EUR", "ETH-EUR", "SOL-EUR", "XRP-EUR", "LINK-EUR", "AVAX-EUR", "SUI-EUR", "NEAR-EUR"]; // 8 x 6.2 = 49.6 a minute > 48
+        var options = new MarketDataOptions { HourCandleInterval = TimeSpan.FromMinutes(1) }; // 50 coins' candles alone are 50 a minute
 
         Assert.Throws<InvalidOperationException>(() => new MarketDataPoller(
-            market, market, new InMemoryCandleStore(), new MarketState(time), [], new MarketDataOptions(), symbols, time, NullLogger<MarketDataPoller>.Instance));
+            market, market, new InMemoryCandleStore(), new MarketState(time), [], options, () => ["BTC-EUR"], maxSymbols: 50, time, NullLogger<MarketDataPoller>.Instance));
+        options.Validate(20); // 20 + 12 tickers + 6 (one book) = 38
     }
 
     [Theory]
@@ -447,15 +509,17 @@ public sealed class MarketDataPollerTests
         Assert.Throws<InvalidOperationException>(() => new MarketDataOptions { MaxBudgetShare = (decimal)share }.Validate(1));
 
     [Fact]
-    public void Options_DefaultScheduleFitsTheSevenSymbolUniverse()
+    public void DefaultSchedule_FitsFiftyWatchedCoins()
     {
         var options = new MarketDataOptions();
-        Assert.Equal(43.4m, options.PlannedRequestsPerMinute(7)); // 6 quotes + 0.2 hourly-candle polls per symbol, no 1m candles
-        options.Validate(7);
+        Assert.Equal(10m, options.CandleRequestsPerMinute(50));                             // 0.2 hourly-candle polls per coin
+        Assert.Equal(28m, options.PlannedPublicRequestsPerMinute(50, books: 1, signedQuotes: false)); // + 12 tickers + one 10-second book
+        options.Validate(50);
+        options.Validate(50, signedQuotes: true);                                           // live: 30 tickers + 50 × 6 books = 330 of 800
     }
 
     [Fact]
-    public void ShippedSettings_PollQuotesEveryTwentySeconds_AndFitFifteenSymbols()
+    public void ShippedSettings_PollBooksEveryTwentySeconds_AndFitFiftyCoins_StretchingTheBooksWhenManyAreActive()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (!File.Exists(Path.Combine(root.FullName, "Cix.slnx")))
@@ -465,19 +529,23 @@ public sealed class MarketDataPollerTests
             .Build();
         var options = new MarketDataOptions();
         config.GetSection(MarketDataOptions.SectionName).Bind(options);
-        var universe = config.GetSection("Scanner:Universe").Get<string[]>()!;
 
         Assert.Equal(TimeSpan.FromSeconds(20), options.QuoteInterval);
-        Assert.Equal(10, universe.Length);
-        Assert.Equal(38.4m, options.PlannedRequestsPerMinute(12)); // 3 quotes + 0.2 hourly-candle polls per symbol
-        options.Validate(universe.Length);
-        options.Validate(15);                                       // exactly 48, the budget
-        Assert.Throws<InvalidOperationException>(() => options.Validate(16));
+        Assert.Equal((TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5)), (options.TickerInterval, options.PublicTickerInterval));
+        Assert.Equal(25m, options.PlannedPublicRequestsPerMinute(50, books: 1, signedQuotes: false)); // 10 candles + 12 tickers + 3
+        options.Validate(50);
+        options.Validate(50, signedQuotes: true);
+        // Paper leaves 48 - 10 - 12 = 26 books a minute: 8 active coins keep 20 s, 13 get 30 s, 26 get a minute.
+        Assert.Equal(TimeSpan.FromSeconds(20), options.BookInterval(50, active: 8, signedQuotes: false));
+        Assert.Equal(TimeSpan.FromSeconds(30), options.BookInterval(50, active: 13, signedQuotes: false));
+        Assert.Equal(TimeSpan.FromSeconds(60), options.BookInterval(50, active: 26, signedQuotes: false));
+        Assert.Equal(TimeSpan.FromSeconds(20), options.BookInterval(50, active: 0, signedQuotes: false));
+        Assert.Equal(TimeSpan.FromSeconds(20), options.BookInterval(50, active: 50, signedQuotes: true)); // live: 150 + 30 of 800
     }
 
     [Fact]
     public void Options_MinuteCandlesCountTowardsTheBudget() =>
-        Assert.Equal(39.6m, WithMinuteCandles().PlannedRequestsPerMinute(3)); // 12 quotes + 1 + 0.2 per symbol
+        Assert.Equal(3.6m, WithMinuteCandles().CandleRequestsPerMinute(3)); // 1 + 0.2 per coin
 
     [Fact]
     public async Task DefaultSchedule_FetchesNoMinuteCandles_AndQuotesEveryTenSeconds()

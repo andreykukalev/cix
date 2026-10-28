@@ -52,8 +52,10 @@ public static class ExchangeRegistration
             return services;
         }
 
-        // Paper quotes stay public: the paper exchange fills against the order book's sizes, which tickers don't carry.
+        // Paper stays public: every watched coin's price from one public tickers request, and order books, whose sizes the
+        // paper exchange fills against, for the coins with a position or an order and before each order (ADR-0021).
         services.AddSingleton<IQuoteSource>(sp => sp.GetRequiredService<RevolutXPublicMarketData>());
+        services.AddSingleton<IBulkQuoteSource>(sp => sp.GetRequiredService<RevolutXPublicMarketData>());
 
         services.AddSingleton(paper);
         services.AddSingleton(sp => new PaperExchange(

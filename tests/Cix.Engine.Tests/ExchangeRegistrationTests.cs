@@ -109,11 +109,11 @@ public sealed class ExchangeRegistrationTests
         Assert.Null(provider.GetService<RevolutXClient>());
         Assert.IsType<PaperExchange>(provider.GetRequiredService<IExchangeClient>());
 
-        // Resolving market data must work with empty credentials: it uses public endpoints only, and has no tickers
-        // (the paper exchange fills against order-book sizes, which tickers don't carry).
+        // Resolving market data must work with empty credentials: it uses public endpoints only, tickers included (the paper
+        // exchange fills against order-book sizes, which it still gets for the coins with a position or an order).
         Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IMarketDataSource>());
         Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IQuoteSource>());
-        Assert.Null(provider.GetService<IBulkQuoteSource>());
+        Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IBulkQuoteSource>());
     }
 
     [Fact]

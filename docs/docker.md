@@ -113,7 +113,7 @@ The coin filters come with the strategy (its `scanner` parameters), so changing 
 
 The trader calls Claude only when the scanner's signals change (checked every minute), plus a position review every 4 hours (`TRADER_HEARTBEAT_MINUTES` in `.env`). The engine log shows each scan's ranking and why each symbol did or didn't signal (`Scan: ... ranked [...] excluded [...]`). See `strategies\README.md` for the settings.
 
-Each symbol in `AllowedSymbols` is polled, so the number of coins is limited by the market-data request budget (the `MarketData` section in `appsettings.json`): quotes every 20 seconds fit up to 15 symbols, and the engine refuses to start above that.
+Every watched coin's price comes from one public tickers request every 5 seconds, so the number of coins is limited only by the candles (one request per coin every 5 minutes) and by the order books, which go to the coins with a position or an order (the `MarketData` section in `appsettings.json`, ADR-0021). The engine refuses to start if the schedule for the most coins the limits allow doesn't fit the public budget of 48 requests a minute.
 
 ## Notes
 
