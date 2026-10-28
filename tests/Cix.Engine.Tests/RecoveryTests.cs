@@ -318,4 +318,36 @@ public sealed class HealthEndpointTests
         Assert.Equal(("ready", "paper", false), (root.GetProperty("status").GetString(), root.GetProperty("mode").GetString(), root.GetProperty("halted").GetBoolean()));
         await app.StopAsync();
     }
+
+    [Fact]
+    public async Task Healthz_Fails_OnceTheSafetyChecksStall_SoTheLivenessProbeRestartsTheEngine()
+    {
+        var tools = new ToolRig();
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddSingleton(new TradingContext(TradingMode.Paper));
+        builder.Services.AddSingleton(tools.Rig.Monitor);
+        builder.Services.AddCixToolServer(new ToolServerOptions { OperatorKey = ToolRig.OperatorKey }, tools.Specs, tools.Journal);
+        await using var app = builder.Build();
+        app.UseCixToolServer();
+        await app.StartAsync();
+        await tools.Rig.Monitor.StartAsync(CancellationToken.None);
+        var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
+        using var http = new HttpClient();
+        try
+        {
+            using var running = await http.GetAsync(address + ToolServerRegistration.HealthEndpoint);
+            tools.Rig.Time.Advance(SafetyMonitor.StalledAfter + TimeSpan.FromMinutes(1));
+            using var stalled = await http.GetAsync(address + ToolServerRegistration.HealthEndpoint);
+            using var doc = JsonDocument.Parse(await stalled.Content.ReadAsStringAsync());
+
+            Assert.Equal((HttpStatusCode.OK, HttpStatusCode.ServiceUnavailable), (running.StatusCode, stalled.StatusCode));
+            Assert.Equal("stalled", doc.RootElement.GetProperty("status").GetString());
+        }
+        finally
+        {
+            await tools.Rig.Monitor.StopAsync(CancellationToken.None);
+            await app.StopAsync();
+        }
+    }
 }

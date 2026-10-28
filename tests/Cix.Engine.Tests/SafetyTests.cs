@@ -125,6 +125,48 @@ public sealed class FailureTests
     }
 
     [Fact]
+    public async Task AValuationThatCannotSaveItsBaselines_StillLeavesTheReconciliationToRun()
+    {
+        var store = new FailingStore();
+        var rig = new Rig(eur: 1_000m, store: store);
+        await rig.Snapshot(); // baselines written while the database works
+        rig.Time.Advance(TimeSpan.FromDays(1)); // a new UTC day: the next valuation writes its baseline
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Paper.PlaceLimitOrderAsync(new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 59_900m, "someone-else").Approved(), false, CancellationToken.None);
+        store.FailWrites = true;
+
+        var result = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.StartsWith("Open orders the engine didn't send", result.KillSwitchReason, StringComparison.Ordinal);
+        Assert.Empty(await rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None)); // cancelled, though the halt couldn't be saved
+    }
+
+    [Fact]
+    public async Task Checks_CountAsStalled_OnlyOnceRunning_AndAfterFifteenQuietMinutes()
+    {
+        var rig = new Rig();
+        rig.Time.Advance(TimeSpan.FromMinutes(20));
+        Assert.False(rig.Monitor.IsStalled); // not started: never stalled
+
+        await rig.Monitor.StartAsync(CancellationToken.None);
+        try
+        {
+            rig.Time.Advance(TimeSpan.FromMinutes(14));
+            var quiet = rig.Monitor.IsStalled;
+            rig.Time.Advance(TimeSpan.FromMinutes(2));
+            var stalled = rig.Monitor.IsStalled;
+            rig.Quote(60_000.00m, 60_010.00m);
+            await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+            Assert.Equal((false, true, false), (quiet, stalled, rig.Monitor.IsStalled));
+        }
+        finally
+        {
+            await rig.Monitor.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task OrderThatCannotBeRecorded_IsNotSent()
     {
         var store = new FailingStore();
