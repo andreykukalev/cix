@@ -12,8 +12,11 @@ public sealed partial class MarketDataPoller
     public const int MinuteInterval = 1;
     public const int HourInterval = 60;
 
+    private const string TickersKey = "*";
+
     private readonly IMarketDataSource _candles;
     private readonly IQuoteSource _quotes;
+    private readonly IBulkQuoteSource? _tickers;
     private readonly ICandleStore _store;
     private readonly MarketState _state;
     private readonly IReadOnlyList<IQuoteListener> _listeners;
@@ -33,8 +36,9 @@ public sealed partial class MarketDataPoller
         MarketDataOptions options,
         IEnumerable<string> symbols,
         TimeProvider time,
-        ILogger<MarketDataPoller> logger)
-        : this(candles, quotes, store, state, listeners, options, Fixed(symbols), maxSymbols: null, time, logger)
+        ILogger<MarketDataPoller> logger,
+        IBulkQuoteSource? tickers = null)
+        : this(candles, quotes, store, state, listeners, options, Fixed(symbols), maxSymbols: null, time, logger, tickers)
     {
     }
 
@@ -52,12 +56,14 @@ public sealed partial class MarketDataPoller
         Func<IReadOnlyList<string>> symbols,
         int? maxSymbols,
         TimeProvider time,
-        ILogger<MarketDataPoller> logger)
+        ILogger<MarketDataPoller> logger,
+        IBulkQuoteSource? tickers = null)
     {
         ArgumentNullException.ThrowIfNull(symbols);
         ArgumentNullException.ThrowIfNull(options);
         _candles = candles;
         _quotes = quotes;
+        _tickers = tickers;
         _store = store;
         _state = state;
         _listeners = listeners.ToList();
@@ -90,6 +96,11 @@ public sealed partial class MarketDataPoller
     {
         _requests = 0;
         var symbols = _symbols(); // one list per poll
+
+        // Every symbol's bid and ask in one request, when the exchange offers tickers: the fastest view of a falling price.
+        if (_tickers is not null && _options.TickerInterval is { } tickerInterval && DueSince(TickersKey, "tickers") is not null)
+            await RunAsync(TickersKey, "tickers", tickerInterval, () => PollTickersAsync(symbols, cancellationToken)).ConfigureAwait(false);
+
         foreach (var symbol in symbols)
         {
             if (DueSince(symbol, "quote") is not null)
@@ -135,6 +146,49 @@ public sealed partial class MarketDataPoller
         }
     }
 
+    /// <summary>
+    /// One tickers request for all the symbols, handed on like polled quotes. A ticker carries no sizes, so the paper exchange
+    /// (which fills against sizes) never runs on tickers: paper has no bulk source. The order-book quotes keep their own
+    /// schedule, and the market state keeps whichever quote is newer.
+    /// </summary>
+    private async Task PollTickersAsync(IReadOnlyList<string> symbols, CancellationToken cancellationToken)
+    {
+        _requests++;
+        var quotes = await _tickers!.GetQuotesAsync(symbols, cancellationToken).ConfigureAwait(false);
+        var wanted = symbols.ToHashSet(StringComparer.Ordinal);
+        var accepted = 0;
+        foreach (var quote in quotes)
+        {
+            var symbol = NormaliseSymbol(quote.Symbol);
+            if (!wanted.Contains(symbol))
+                continue;
+            if (!_state.Update(quote))
+                continue;
+            accepted++;
+            Notify(quote with { Symbol = symbol }, symbol, except: null);
+        }
+
+        if (accepted < wanted.Count)
+            LogTickersMissing(_logger, accepted, wanted.Count);
+    }
+
+    private void Notify(MarketQuote quote, string symbol, IQuoteListener? except)
+    {
+        foreach (var listener in _listeners)
+        {
+            if (ReferenceEquals(listener, except))
+                continue;
+            try
+            {
+                listener.OnQuote(quote);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                LogListenerFailed(_logger, listener.GetType().Name, symbol, ex.Message);
+            }
+        }
+    }
+
     private async Task PollQuoteAsync(string symbol, CancellationToken cancellationToken)
     {
         _requests++;
@@ -160,20 +214,7 @@ public sealed partial class MarketDataPoller
             return null;
         }
 
-        foreach (var listener in _listeners)
-        {
-            if (ReferenceEquals(listener, except))
-                continue;
-            try
-            {
-                listener.OnQuote(quote);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                LogListenerFailed(_logger, listener.GetType().Name, symbol, ex.Message);
-            }
-        }
-
+        Notify(quote, symbol, except);
         return quote;
     }
 
@@ -220,6 +261,9 @@ public sealed partial class MarketDataPoller
 
     [LoggerMessage(Level = LogLevel.Information, Message = "No {Interval}m candles for {Symbol} from {Since} until {First}")]
     private static partial void LogCandleGap(ILogger logger, int interval, string symbol, DateTimeOffset since, DateTimeOffset first);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Tickers covered {Covered} of {Wanted} symbols; the rest keep their order-book quotes")]
+    private static partial void LogTickersMissing(ILogger logger, int covered, int wanted);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Rejected an invalid, future or out-of-order quote for {Symbol}")]
     private static partial void LogQuoteRejected(ILogger logger, string symbol);

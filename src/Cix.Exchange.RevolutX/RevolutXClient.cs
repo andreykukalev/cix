@@ -23,9 +23,11 @@ namespace Cix.Exchange.RevolutX;
 /// <item>Other 4xx: never retried.</item>
 /// </list>
 /// </remarks>
-public sealed class RevolutXClient : IExchangeClient
+public sealed class RevolutXClient : IExchangeClient, IQuoteSource, IBulkQuoteSource
 {
     private const int MaxPages = 50;
+
+    private readonly TimeProvider _time;
 
     private readonly RevolutXTransport _transport;
 
@@ -42,8 +44,39 @@ public sealed class RevolutXClient : IExchangeClient
             throw new ArgumentException("RevolutX:ApiKey is not configured.", nameof(options));
 
         time ??= TimeProvider.System;
+        _time = time;
         var auth = new RevolutXAuth(options.ApiKey, signer ?? BouncyCastleEd25519Signer.FromPem(options.PrivateKeyPem), time);
         _transport = new RevolutXTransport(http, options, auth, options.RequestsPerSecond, options.RequestsPerMinute, time, delay);
+    }
+
+    /// <summary>
+    /// Top of the order book over the signed endpoint, within the signed budget (100 a second) rather than the public one
+    /// (1 a second): the live engine's quotes, and the fresh book a stop-loss sell is confirmed on.
+    /// </summary>
+    public async Task<MarketQuote> GetQuoteAsync(string symbol, CancellationToken cancellationToken)
+    {
+        var normalised = RevolutXParser.NormaliseSymbol(symbol);
+        var path = $"/api/1.0/order-book/{Uri.EscapeDataString(normalised)}";
+        var response = await _transport.SendAsync(HttpMethod.Get, path, "limit=5", null, cancellationToken).ConfigureAwait(false);
+        EnsureSuccess(response);
+        var receivedAt = _time.GetUtcNow();
+        return Parse(response, root => RevolutXParser.ParseOrderBookTop(root, normalised, receivedAt));
+    }
+
+    /// <summary>Every requested pair's bid and ask in one signed request (<c>/api/1.0/tickers</c>); no sizes.</summary>
+    public async Task<IReadOnlyList<MarketQuote>> GetQuotesAsync(IReadOnlyCollection<string> symbols, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(symbols);
+        var wanted = symbols.Select(RevolutXParser.NormaliseSymbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        if (wanted.Count == 0)
+            return [];
+
+        var query = "symbols=" + Uri.EscapeDataString(string.Join(',', wanted));
+        var response = await _transport.SendAsync(HttpMethod.Get, "/api/1.0/tickers", query, null, cancellationToken).ConfigureAwait(false);
+        EnsureSuccess(response);
+        var receivedAt = _time.GetUtcNow();
+        var set = wanted.ToHashSet(StringComparer.Ordinal);
+        return Parse(response, root => RevolutXParser.ParseTickers(root, receivedAt)).Where(q => set.Contains(q.Symbol)).ToList();
     }
 
     public async Task<IReadOnlyList<Balance>> GetBalancesAsync(CancellationToken cancellationToken)

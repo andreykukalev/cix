@@ -11,6 +11,13 @@ public sealed class MarketDataOptions
     /// <summary>Order-book quotes per symbol. The code default of 10 seconds fits 7 symbols; appsettings.json sets 20 seconds, which fits 15 (ADR-0006).</summary>
     public TimeSpan QuoteInterval { get; set; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// How often to refresh every symbol's bid and ask in one tickers request, when the exchange client offers one (live, over
+    /// the signed endpoint and its 1,000 a minute budget; paper has none and keeps the order-book quotes alone). Null turns it
+    /// off. The stop-loss protection sees a price move this soon instead of at the next order-book quote.
+    /// </summary>
+    public TimeSpan? TickerInterval { get; set; } = TimeSpan.FromSeconds(2);
+
     /// <summary>How often to fetch new 1-minute candles, or null (the default) to skip them; no feature uses them yet.</summary>
     public TimeSpan? MinuteCandleInterval { get; set; }
 
@@ -41,6 +48,8 @@ public sealed class MarketDataOptions
     {
         if (QuoteInterval <= TimeSpan.Zero || MinuteCandleInterval <= TimeSpan.Zero || HourCandleInterval <= TimeSpan.Zero)
             throw new InvalidOperationException("MarketData intervals must be positive.");
+        if (TickerInterval is { } tickers && (tickers < TimeSpan.FromSeconds(1) || tickers > TimeSpan.FromMinutes(1)))
+            throw new InvalidOperationException("MarketData:TickerInterval must be between 1 second and 1 minute (or null to turn tickers off).");
         if (MaxBudgetShare is <= 0 or > 1)
             throw new InvalidOperationException("MarketData:MaxBudgetShare must be above 0 and at most 1.");
         if (MaxCatchUpPages < 1)

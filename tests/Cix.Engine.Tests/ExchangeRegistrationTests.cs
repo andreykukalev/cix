@@ -109,8 +109,11 @@ public sealed class ExchangeRegistrationTests
         Assert.Null(provider.GetService<RevolutXClient>());
         Assert.IsType<PaperExchange>(provider.GetRequiredService<IExchangeClient>());
 
-        // Resolving market data must work with empty credentials: it uses public endpoints only.
+        // Resolving market data must work with empty credentials: it uses public endpoints only, and has no tickers
+        // (the paper exchange fills against order-book sizes, which tickers don't carry).
         Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IMarketDataSource>());
+        Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IQuoteSource>());
+        Assert.Null(provider.GetService<IBulkQuoteSource>());
     }
 
     [Fact]
@@ -122,10 +125,12 @@ public sealed class ExchangeRegistrationTests
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(PaperExchange));
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(IQuoteListener));
 
-        // Market data stays on the unsigned public client even in Live mode.
+        // Candles and pairs stay on the unsigned public client; live quotes (tickers, order books) go over the signed client,
+        // which can't be resolved here (the placeholder key isn't a key), so its registrations are checked by type.
         using var provider = services.BuildServiceProvider();
         Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IMarketDataSource>());
-        Assert.IsType<RevolutXPublicMarketData>(provider.GetRequiredService<IQuoteSource>());
+        Assert.Contains(services, d => d.ServiceType == typeof(IQuoteSource));
+        Assert.Contains(services, d => d.ServiceType == typeof(IBulkQuoteSource));
     }
 
     [Fact]

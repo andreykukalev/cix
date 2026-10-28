@@ -49,6 +49,32 @@ internal sealed class SimulatedMarket(TimeProvider time, int pageSize = 100) : I
     }
 }
 
+/// <summary>Simulated tickers endpoint: every requested symbol's bid and ask (no sizes) in one request, plus a pair nobody asked for.</summary>
+internal sealed class SimulatedTickers(TimeProvider time) : IBulkQuoteSource
+{
+    public List<(IReadOnlyCollection<string> Symbols, DateTimeOffset At)> Requests { get; } = [];
+    public bool Failing { get; set; }
+
+    /// <summary>How far behind the clock the exchange stamps the tickers.</summary>
+    public TimeSpan Lag { get; set; }
+
+    /// <summary>Symbols the exchange doesn't list.</summary>
+    public HashSet<string> Missing { get; } = new(StringComparer.Ordinal);
+
+    public Task<IReadOnlyList<MarketQuote>> GetQuotesAsync(IReadOnlyCollection<string> symbols, CancellationToken cancellationToken)
+    {
+        Requests.Add((symbols, time.GetUtcNow()));
+        if (Failing)
+            throw new HttpRequestException("Simulated network failure.");
+
+        var asOf = time.GetUtcNow() - Lag;
+        var mid = 100m + (decimal)(asOf - SimulatedMarket.Genesis).TotalHours;
+        var quotes = symbols.Where(s => !Missing.Contains(s)).Select(s => new MarketQuote(s, mid - 0.05m, 0m, mid + 0.05m, 0m, asOf)).ToList();
+        quotes.Add(new MarketQuote("XYZ-EUR", 1m, 0m, 1.1m, 0m, asOf));
+        return Task.FromResult<IReadOnlyList<MarketQuote>>(quotes);
+    }
+}
+
 internal sealed class RecordingListener : IQuoteListener
 {
     public List<MarketQuote> Quotes { get; } = [];
@@ -193,6 +219,73 @@ public sealed class MarketDataPollerTests
         Assert.Equal(12, quotes.Count);
         Assert.All(quotes.Zip(quotes.Skip(1)), p => Assert.Equal(TimeSpan.FromSeconds(5), p.Second - p.First));
         Assert.True(rig.Market.Requests.GroupBy(r => r.At).Max(g => g.Count(r => r.Kind != "quote")) <= rig.Options.MaxCatchUpPages);
+    }
+
+    private static MarketDataOptions LiveSchedule() =>
+        new() { QuoteInterval = TimeSpan.FromSeconds(20), TickerInterval = TimeSpan.FromSeconds(2), HourCandleInterval = TimeSpan.FromMinutes(5) };
+
+    /// <summary>Polls once a second for <paramref name="duration"/>, like the hosted service.</summary>
+    private static async Task PollFor(MarketDataPoller poller, MutableTime time, TimeSpan duration)
+    {
+        var end = time.GetUtcNow() + duration;
+        while (time.GetUtcNow() < end)
+        {
+            await poller.PollOnceAsync(CancellationToken.None);
+            time.Advance(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    [Fact]
+    public async Task Tickers_RefreshEverySymbolInOneRequestEveryTwoSeconds_WhileOrderBooksKeepTheirSchedule()
+    {
+        var rig = new Rig(options: LiveSchedule());
+        var tickers = new SimulatedTickers(rig.Time);
+        var listener = new RecordingListener();
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [listener], rig.Options, ["BTC-EUR", "ETH-EUR"], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers);
+
+        await PollFor(poller, rig.Time, TimeSpan.FromSeconds(20));
+
+        Assert.Equal(10, tickers.Requests.Count); // one request for both symbols every 2 s
+        Assert.All(tickers.Requests, r => Assert.Equal(new[] { "BTC-EUR", "ETH-EUR" }, r.Symbols.Order(StringComparer.Ordinal).ToArray()));
+        Assert.Equal(2, rig.Market.Requests.Count(r => r.Kind == "quote")); // the order books still once per 20 s per symbol
+        var btc = rig.State.Quote(Btc)!;
+        Assert.Equal((Start + TimeSpan.FromSeconds(18), 0m), (btc.AsOf, btc.BidSize)); // the latest ticker, which has no size
+        Assert.Null(rig.State.Quote("XYZ-EUR")); // a pair outside the universe is dropped
+        Assert.Equal(22, listener.Quotes.Count); // 2 order books + 10 tickers × 2 symbols
+        Assert.DoesNotContain(listener.Quotes, q => q.Symbol == "XYZ-EUR");
+    }
+
+    [Fact]
+    public async Task Tickers_Failing_LeaveTheOrderBookQuotesRunning_AndALaggingTicker_NeverReplacesANewerBook()
+    {
+        var rig = new Rig(options: LiveSchedule());
+        var tickers = new SimulatedTickers(rig.Time) { Failing = true };
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers);
+
+        await poller.PollOnceAsync(CancellationToken.None);
+        var fromBook = rig.State.Quote(Btc)!;
+
+        tickers.Failing = false;
+        tickers.Lag = TimeSpan.FromSeconds(30); // the exchange's ticker snapshot is older than the book we just read
+        rig.Time.Advance(TimeSpan.FromSeconds(2));
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal(1m, fromBook.BidSize); // the order book came through the failed tickers request
+        Assert.Equal(fromBook, rig.State.Quote(Btc)); // the lagging ticker was rejected as older
+        Assert.Equal(2, tickers.Requests.Count); // tried again on schedule despite the failure
+
+        tickers.Lag = TimeSpan.Zero;
+        rig.Time.Advance(TimeSpan.FromSeconds(2));
+        await poller.PollOnceAsync(CancellationToken.None);
+        Assert.Equal(0m, rig.State.Quote(Btc)!.BidSize); // a fresh ticker replaces it
+    }
+
+    [Fact]
+    public void TickerInterval_OutsideOneSecondToOneMinute_IsRefused()
+    {
+        Assert.Throws<InvalidOperationException>(() => new MarketDataOptions { TickerInterval = TimeSpan.FromMilliseconds(500) }.Validate(1));
+        Assert.Throws<InvalidOperationException>(() => new MarketDataOptions { TickerInterval = TimeSpan.FromMinutes(2) }.Validate(1));
+        new MarketDataOptions { TickerInterval = null }.Validate(1); // off is allowed
     }
 
     [Fact]
