@@ -90,7 +90,7 @@ param monthlyBudget int = 40
 @description('agents: the budget\'s first month (YYYY-MM-01); it can\'t be moved once the budget exists.')
 param budgetStartDate string = '2026-11-01'
 
-@description('agents: where budget alerts go (provision.ps1 passes your sign-in address; it isn\'t kept in the repo). Empty: no budget.')
+@description('agents: where budget and engine alerts go (provision.ps1 passes your sign-in address; it isn\'t kept in the repo). Empty: neither.')
 param budgetContactEmail string = ''
 
 @description('agents: your Entra object ID (provision.ps1 passes your sign-in\'s), given Key Vault Secrets Officer to set claude-token. Empty: no grant.')
@@ -152,6 +152,21 @@ module agentsPlatform 'modules/agents-platform.bicep' = if (agentsDeploy != 'non
     budgetStartDate: budgetStartDate
     budgetContactEmail: budgetContactEmail
     ownerObjectId: ownerObjectId
+  }
+}
+
+// The owner hears about a blocked exit, a halt, a lost lease or a silent engine without opening the dashboard (F-01).
+module engineAlerts 'modules/engine-alerts.bicep' = if (agentsDeploy != 'none' && !empty(budgetContactEmail)) {
+  name: 'cix-${environmentName}-engine-alerts'
+  scope: group
+  dependsOn: [agentsPlatform]
+  params: {
+    namePrefix: namePrefix
+    environmentName: environmentName
+    location: agentsLocation
+    tags: allTags
+    contactEmail: budgetContactEmail
+    watchHeartbeat: agentsDeploy == 'apps' && startEngine
   }
 }
 
