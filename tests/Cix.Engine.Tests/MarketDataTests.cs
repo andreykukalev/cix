@@ -16,6 +16,9 @@ internal sealed class SimulatedMarket(TimeProvider time, int pageSize = 100) : I
     public List<(string Kind, DateTimeOffset At)> Requests { get; } = [];
     public bool Failing { get; set; }
 
+    /// <summary>How far behind the clock the exchange stamps an order book (its snapshot time).</summary>
+    public TimeSpan QuoteLag { get; set; }
+
     public Task<IReadOnlyList<PairInfo>> GetPairsAsync(CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
@@ -43,9 +46,9 @@ internal sealed class SimulatedMarket(TimeProvider time, int pageSize = 100) : I
         if (Failing)
             throw new HttpRequestException("Simulated network failure.");
 
-        var now = time.GetUtcNow();
-        var mid = 100m + (decimal)(now - Genesis).TotalHours;
-        return Task.FromResult(new MarketQuote(symbol, mid - 0.05m, 1m, mid + 0.05m, 1m, now));
+        var asOf = time.GetUtcNow() - QuoteLag;
+        var mid = 100m + (decimal)(asOf - Genesis).TotalHours;
+        return Task.FromResult(new MarketQuote(symbol, mid - 0.05m, 1m, mid + 0.05m, 1m, asOf));
     }
 }
 
@@ -278,6 +281,37 @@ public sealed class MarketDataPollerTests
         rig.Time.Advance(TimeSpan.FromSeconds(2));
         await poller.PollOnceAsync(CancellationToken.None);
         Assert.Equal(0m, rig.State.Quote(Btc)!.BidSize); // a fresh ticker replaces it
+    }
+
+    [Fact]
+    public async Task ARefreshedBook_StampedBeforeTheLatestTicker_IsStillReturned_SoAStopCanBeConfirmed()
+    {
+        var rig = new Rig(options: LiveSchedule());
+        var tickers = new SimulatedTickers(rig.Time);
+        var listener = new RecordingListener();
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [listener], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers);
+        rig.Market.QuoteLag = TimeSpan.FromMilliseconds(500); // the exchange stamps the book snapshot a little before the ticker capture
+
+        await poller.PollOnceAsync(CancellationToken.None); // ticker at T, then the scheduled book at T - 0.5 s
+        var heard = listener.Quotes.Count;
+        var book = await poller.RefreshQuoteAsync(Btc, CancellationToken.None, except: listener);
+
+        Assert.NotNull(book); // the protection gets the book it asked for, whatever the two endpoints' stamps say
+        Assert.Equal(1m, book.BidSize);
+        Assert.Equal(Start - TimeSpan.FromMilliseconds(500), book.AsOf);
+        Assert.Equal(0m, rig.State.Quote(Btc)!.BidSize); // the state keeps the later-stamped ticker for the risk gate
+        Assert.Equal(1, heard); // listeners heard the ticker only: a book the state kept out isn't handed on
+    }
+
+    [Fact]
+    public async Task ARefreshedBook_FromTheFuture_IsStillRefused()
+    {
+        var rig = new Rig(options: LiveSchedule());
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance);
+        rig.Market.QuoteLag = TimeSpan.FromSeconds(-5);
+
+        Assert.Null(await poller.RefreshQuoteAsync(Btc, CancellationToken.None));
+        Assert.Null(rig.State.Quote(Btc));
     }
 
     [Fact]

@@ -134,13 +134,14 @@ public sealed class RevolutXClientTests
         var h = new ClientHarness();
         h.Handler.RespondFixture("tickers.json");
 
-        var quotes = await h.Create().GetQuotesAsync(["eth/eur", "BTC-EUR", "NEW-EUR", "SOL-EUR", "ETH-EUR"], CancellationToken.None);
+        var quotes = await h.Create().GetQuotesAsync(["eth/eur", "BTC-EUR", "NEW-EUR", "SOL-EUR", "ETH-EUR", "ODD-EUR", "BAD-EUR"], CancellationToken.None);
 
         var request = Assert.Single(h.Handler.Requests);
-        Assert.Equal("https://revx.revolut.com/api/1.0/tickers?symbols=BTC-EUR%2CETH-EUR%2CNEW-EUR%2CSOL-EUR", request.Uri.ToString());
+        Assert.Equal("https://revx.revolut.com/api/1.0/tickers?symbols=BAD-EUR,BTC-EUR,ETH-EUR,NEW-EUR,ODD-EUR,SOL-EUR", request.Uri.ToString()); // the documented literal comma
         Assert.Equal("test-api-key-not-real", request.Headers[RevolutXAuth.ApiKeyHeader]);
-        Assert.Equal("1792677504427GET/api/1.0/tickerssymbols=BTC-EUR%2CETH-EUR%2CNEW-EUR%2CSOL-EUR", Assert.Single(h.Signer.Messages));
-        Assert.Equal(new[] { "BTC-EUR", "ETH-EUR", "SOL-EUR" }, quotes.Select(q => q.Symbol).ToArray()); // NEW/EUR has a zero bid: left out, the rest kept
+        Assert.Equal("1792677504427GET/api/1.0/tickerssymbols=BAD-EUR,BTC-EUR,ETH-EUR,NEW-EUR,ODD-EUR,SOL-EUR", Assert.Single(h.Signer.Messages));
+        // NEW/EUR has a zero bid, ODD/EUR a crossed book and BAD/EUR an unreadable price: each left out on its own, the rest kept
+        Assert.Equal(new[] { "BTC-EUR", "ETH-EUR", "SOL-EUR" }, quotes.Select(q => q.Symbol).ToArray());
         var btc = quotes[0];
         Assert.Equal((58390.10m, 58404.50m, 0m, 0m), (btc.Bid, btc.Ask, btc.BidSize, btc.AskSize)); // tickers carry no sizes
         Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1792677504000), btc.AsOf); // the exchange's metadata timestamp, before receipt

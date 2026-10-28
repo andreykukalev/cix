@@ -39,13 +39,33 @@ public sealed class MarketDataOptions
     /// <summary>Quotes older than this make features stale (the risk gate has its own hard limit).</summary>
     public TimeSpan MaxQuoteAge { get; set; } = TimeSpan.FromMinutes(2);
 
-    /// <summary>Planned steady-state requests per minute for <paramref name="symbolCount"/> symbols.</summary>
+    /// <summary>Revolut X signed endpoints allow 1,000 requests a minute (and 100 a second); the live quotes and tickers use them.</summary>
+    public const int SignedRequestsPerMinute = 1_000;
+
+    /// <summary>Planned steady-state public requests per minute for <paramref name="symbolCount"/> symbols (quotes and candles; paper's whole schedule).</summary>
     public decimal PlannedRequestsPerMinute(int symbolCount) =>
         symbolCount * (PerMinute(QuoteInterval) + (MinuteCandleInterval is { } minute ? PerMinute(minute) : 0m) + PerMinute(HourCandleInterval));
 
-    /// <summary>Throws if the schedule would exceed the public rate-limit budget.</summary>
-    public void Validate(int symbolCount)
+    /// <summary>Planned steady-state signed requests per minute when the quotes and tickers go over the signed endpoints (live).</summary>
+    public decimal PlannedSignedRequestsPerMinute(int symbolCount) =>
+        symbolCount * PerMinute(QuoteInterval) + (TickerInterval is { } tickers ? PerMinute(tickers) : 0m);
+
+    /// <summary>
+    /// Throws if the schedule would exceed the rate-limit budget: the public one for the whole schedule (paper, and live's
+    /// candles), and with <paramref name="signedQuotes"/> also the signed one for the quotes and tickers (live). The public check
+    /// stays for live too, so a schedule that fits live still fits paper, where the same settings file runs.
+    /// </summary>
+    public void Validate(int symbolCount, bool signedQuotes = false)
     {
+        if (signedQuotes)
+        {
+            var signed = PlannedSignedRequestsPerMinute(symbolCount);
+            var signedBudget = SignedRequestsPerMinute * MaxBudgetShare;
+            if (signed > signedBudget)
+                throw new InvalidOperationException(
+                    $"Live quotes and tickers would need {signed:0.#} signed requests a minute for {symbolCount} symbols; the budget is {signedBudget:0.#}.");
+        }
+
         if (QuoteInterval <= TimeSpan.Zero || MinuteCandleInterval <= TimeSpan.Zero || HourCandleInterval <= TimeSpan.Zero)
             throw new InvalidOperationException("MarketData intervals must be positive.");
         if (TickerInterval is { } tickers && (tickers < TimeSpan.FromSeconds(1) || tickers > TimeSpan.FromMinutes(1)))

@@ -71,7 +71,7 @@ public sealed class RevolutXClient : IExchangeClient, IQuoteSource, IBulkQuoteSo
         if (wanted.Count == 0)
             return [];
 
-        var query = "symbols=" + Uri.EscapeDataString(string.Join(',', wanted));
+        var query = "symbols=" + string.Join(',', wanted.Select(Uri.EscapeDataString)); // the documented literal comma, which the signature covers as sent
         var response = await _transport.SendAsync(HttpMethod.Get, "/api/1.0/tickers", query, null, cancellationToken).ConfigureAwait(false);
         EnsureSuccess(response);
         var receivedAt = _time.GetUtcNow();
