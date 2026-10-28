@@ -137,12 +137,18 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
     /// </summary>
     public Task WarmUpAsync(CancellationToken cancellationToken) => EnsurePairsAsync(cancellationToken);
 
-    /// <summary>Feeds a new best bid/ask; resting orders on that symbol fill if the market reached them.</summary>
+    /// <summary>
+    /// Feeds a new best bid/ask; resting orders on that symbol fill if the market reached them. A quote without sizes (a
+    /// ticker) is ignored: the paper exchange fills only against an order book, so it never fills more than the book showed,
+    /// and a taker order placed between books gets a book fetched for it (<see cref="Execution.ExecutionService"/>).
+    /// </summary>
     public void OnQuote(MarketQuote quote)
     {
         ArgumentNullException.ThrowIfNull(quote);
         if (!quote.IsValid)
             throw new ArgumentException("A quote needs positive prices, non-negative sizes and bid <= ask.", nameof(quote));
+        if (quote.BidSize <= 0 && quote.AskSize <= 0)
+            return;
 
         lock (_gate)
         {

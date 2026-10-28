@@ -72,6 +72,33 @@ public sealed class PublicMarketDataTests
     }
 
     [Fact]
+    public async Task GetQuotesAsync_PublicTickers_OneRequestForEveryPair_KeepsOnlyTheWantedOnes_WithNoCredentials()
+    {
+        var (client, handler) = Create();
+        handler.RespondFixture("tickers.json"); // the public endpoint answers with every pair the exchange lists, in the same shape
+
+        var quotes = await client.GetQuotesAsync(["eth/eur", "BTC-EUR", "NEW-EUR", "ODD-EUR", "BAD-EUR", "XYZ-EUR"], CancellationToken.None);
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("https://revx.revolut.com/api/1.0/public/tickers?region=EEA", request.Uri.ToString()); // no symbols filter: one request whatever the list
+        Assert.DoesNotContain(RevolutXAuth.ApiKeyHeader, request.Headers.Keys);
+        Assert.DoesNotContain(RevolutXAuth.SignatureHeader, request.Headers.Keys);
+        // SOL/EUR wasn't asked for; NEW/EUR has a zero bid, ODD/EUR a crossed book, BAD/EUR an unreadable price; XYZ/EUR isn't listed
+        Assert.Equal(new[] { "BTC-EUR", "ETH-EUR" }, quotes.Select(q => q.Symbol).ToArray());
+        Assert.Equal((58390.10m, 58404.50m, 0m, 0m), (quotes[0].Bid, quotes[0].Ask, quotes[0].BidSize, quotes[0].AskSize)); // no sizes
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1792677504000), quotes[0].AsOf);
+    }
+
+    [Fact]
+    public async Task GetQuotesAsync_NoSymbols_SendsNothing()
+    {
+        var (client, handler) = Create();
+
+        Assert.Empty(await client.GetQuotesAsync([], CancellationToken.None));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
     public async Task GetQuoteAsync_ServerError_Throws()
     {
         var (client, handler) = Create();

@@ -3,9 +3,20 @@ using Cix.Domain.Exchange;
 namespace Cix.Engine.MarketData;
 
 /// <summary>
-/// Decides what is due and fetches it: quotes for every symbol, then new closed 1-hour candles (and 1-minute candles when enabled).
-/// Deterministic given the clock, so tests drive it with <see cref="PollOnceAsync"/>; <see cref="MarketDataService"/>
-/// calls it every second. Failures are logged and retried at the next interval; they never stop the loop.
+/// The coins whose order books are worth polling: those with a position or an order, where a fill, a stop confirmation or
+/// a paper fill needs sizes. Every other watched coin gets its price from the tickers.
+/// </summary>
+public interface IActiveSymbolSource
+{
+    IReadOnlySet<string> ActiveSymbols { get; }
+}
+
+/// <summary>
+/// Decides what is due and fetches it: every watched coin's bid and ask in one tickers request, order books for the active
+/// coins (<see cref="IActiveSymbolSource"/>) and for coins the tickers leave out, then new closed 1-hour candles (and 1-minute
+/// candles when enabled). Deterministic given the clock, so tests drive it with <see cref="PollOnceAsync"/>;
+/// <see cref="MarketDataService"/> calls it every second. Failures are logged and retried at the next interval; they never
+/// stop the loop. An empty watched list polls nothing.
 /// </summary>
 public sealed partial class MarketDataPoller
 {
@@ -22,6 +33,8 @@ public sealed partial class MarketDataPoller
     private readonly IReadOnlyList<IQuoteListener> _listeners;
     private readonly MarketDataOptions _options;
     private readonly Func<IReadOnlyList<string>> _symbols;
+    private readonly Func<IReadOnlySet<string>>? _active;
+    private readonly bool _signedQuotes;
     private readonly TimeProvider _time;
     private readonly ILogger<MarketDataPoller> _logger;
     private readonly Dictionary<(string Symbol, string Kind), DateTimeOffset> _nextDue = [];
@@ -38,14 +51,18 @@ public sealed partial class MarketDataPoller
         IEnumerable<string> symbols,
         TimeProvider time,
         ILogger<MarketDataPoller> logger,
-        IBulkQuoteSource? tickers = null)
-        : this(candles, quotes, store, state, listeners, options, Fixed(symbols), maxSymbols: null, time, logger, tickers)
+        IBulkQuoteSource? tickers = null,
+        bool signedQuotes = false,
+        Func<IReadOnlySet<string>>? active = null)
+        : this(candles, quotes, store, state, listeners, options, Fixed(symbols), maxSymbols: null, time, logger, tickers, signedQuotes, active)
     {
     }
 
     /// <summary>
-    /// Polls whatever <paramref name="symbols"/> returns at each poll (the pairs tradable now, which the owner can change), up to
-    /// <paramref name="maxSymbols"/>: the rate-limit check at startup covers that many.
+    /// Polls whatever <paramref name="symbols"/> returns at each poll (the pairs watched now, which the owner can change), up to
+    /// <paramref name="maxSymbols"/>: the rate-limit check at startup covers that many. <paramref name="signedQuotes"/> says the
+    /// quotes and tickers go over the signed endpoints (live) and their budget. <paramref name="active"/> names the coins whose
+    /// order books are polled on the schedule; null polls every symbol's book, for engines without tickers and for tests.
     /// </summary>
     public MarketDataPoller(
         IMarketDataSource candles,
@@ -58,7 +75,9 @@ public sealed partial class MarketDataPoller
         int? maxSymbols,
         TimeProvider time,
         ILogger<MarketDataPoller> logger,
-        IBulkQuoteSource? tickers = null)
+        IBulkQuoteSource? tickers = null,
+        bool signedQuotes = false,
+        Func<IReadOnlySet<string>>? active = null)
     {
         ArgumentNullException.ThrowIfNull(symbols);
         ArgumentNullException.ThrowIfNull(options);
@@ -70,13 +89,11 @@ public sealed partial class MarketDataPoller
         _listeners = listeners.ToList();
         _options = options;
         _symbols = symbols;
+        _active = active;
+        _signedQuotes = signedQuotes;
         _time = time;
         _logger = logger;
-
-        var count = symbols().Count;
-        if (count == 0)
-            throw new InvalidOperationException("Market data needs at least one symbol.");
-        options.Validate(Math.Max(count, maxSymbols ?? 0), signedQuotes: tickers is not null); // tickers exist only where quotes are signed (live)
+        options.Validate(Math.Max(symbols().Count, maxSymbols ?? 0), signedQuotes);
     }
 
     /// <summary>The symbols the next poll covers.</summary>
@@ -90,22 +107,30 @@ public sealed partial class MarketDataPoller
     }
 
     /// <summary>
-    /// Polls every due quote, then at most one due candle series (the one waiting longest), so catch-up paging or a
-    /// throttled candle request never holds quotes back for more than one poll. Returns the exchange requests made.
+    /// Polls the tickers when due, then every due order book (the active coins, and those the tickers leave out), then at
+    /// most one due candle series (the one waiting longest), so catch-up paging or a throttled candle request never holds
+    /// quotes back for more than one poll. Returns the exchange requests made.
     /// </summary>
     public async Task<int> PollOnceAsync(CancellationToken cancellationToken)
     {
         _requests = 0;
         var symbols = _symbols(); // one list per poll
+        if (symbols.Count == 0)
+            return 0; // nothing watched: nothing to ask
 
         // Every symbol's bid and ask in one request, when the exchange offers tickers: the fastest view of a falling price.
-        if (_tickers is not null && _options.TickerInterval is { } tickerInterval && DueSince(TickersKey, "tickers") is not null)
+        var tickers = _tickers is not null ? _options.TickerIntervalFor(_signedQuotes) : null;
+        if (tickers is { } tickerInterval && DueSince(TickersKey, "tickers") is not null)
             await RunAsync(TickersKey, "tickers", tickerInterval, () => PollTickersAsync(symbols, cancellationToken)).ConfigureAwait(false);
 
-        foreach (var symbol in symbols)
+        // Order books carry sizes: for the coins with a position or an order (paper fills, stop confirmations), and for the
+        // coins the tickers don't cover, which have no other price. Spread out when more are active than the budget fits.
+        var books = BookSymbols(symbols, tickers is not null);
+        var bookInterval = _options.BookInterval(symbols.Count, books.Count, _signedQuotes, tickers is not null);
+        foreach (var symbol in books)
         {
             if (DueSince(symbol, "quote") is not null)
-                await RunAsync(symbol, "quote", _options.QuoteInterval, () => PollQuoteAsync(symbol, cancellationToken)).ConfigureAwait(false);
+                await RunAsync(symbol, "quote", bookInterval, () => PollQuoteAsync(symbol, cancellationToken)).ConfigureAwait(false);
         }
 
         var next = symbols
@@ -124,6 +149,19 @@ public sealed partial class MarketDataPoller
 
         return _requests;
     }
+
+    /// <summary>Which of <paramref name="symbols"/> get an order book on the schedule.</summary>
+    private IReadOnlyList<string> BookSymbols(IReadOnlyList<string> symbols, bool tickers)
+    {
+        if (_active is null || !tickers)
+            return symbols; // without tickers the books are the only prices
+        var active = _active();
+        var missing = _tickersMissing;
+        return symbols.Where(s => active.Contains(s) || missing.Contains(s)).ToList();
+    }
+
+    /// <summary>The coins whose order books the next poll covers, for the status and tests.</summary>
+    public IReadOnlyList<string> BookSymbols() => BookSymbols(_symbols(), _tickers is not null && _options.TickerIntervalFor(_signedQuotes) is not null);
 
     /// <summary>When the task became due (MinValue if it never ran), or null if it isn't due yet.</summary>
     private DateTimeOffset? DueSince(string symbol, string kind)
@@ -223,11 +261,18 @@ public sealed partial class MarketDataPoller
             return null;
         }
 
-        // The state keeps the newer of this book and the latest ticker; listeners hear only what the state kept.
-        if (_state.Update(quote))
+        // The state keeps the newer of this book and the latest ticker for the risk gate. Listeners hear what the state kept,
+        // and also a book it kept out only because a size-less ticker carries a later stamp: the paper exchange fills against
+        // books alone, so without this an order priced a moment after a ticker poll would fill on an older book.
+        if (_state.Update(quote) || IsBookBehindATicker(symbol, quote))
             Notify(quote, symbol, except);
         return quote;
     }
+
+    private bool IsBookBehindATicker(string symbol, MarketQuote quote) =>
+        (quote.BidSize > 0 || quote.AskSize > 0)
+        && _state.Quote(symbol) is { BidSize: <= 0, AskSize: <= 0 } ticker
+        && ticker.AsOf > quote.AsOf;
 
     /// <summary>Fetches closed candles after the latest stored one (or the lookback on first run), catching up in pages.</summary>
     private async Task PollCandlesAsync(string symbol, int intervalMinutes, TimeSpan lookback, CancellationToken cancellationToken)

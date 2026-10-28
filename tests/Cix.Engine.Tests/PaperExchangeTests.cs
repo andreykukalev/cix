@@ -50,6 +50,21 @@ public sealed class PaperExchangeTests
     }
 
     [Fact]
+    public async Task ATickerWithoutSizes_IsIgnored_SoFillsComeOnlyFromOrderBooks()
+    {
+        var paper = Create();
+        var placed = await paper.PlaceLimitOrderAsync(Buy(0.001m, 59_000.00m), postOnly: true, CancellationToken.None);
+
+        _time.Advance(TimeSpan.FromSeconds(1));
+        paper.OnQuote(Quote(bid: 58_890.00m, bidSize: 0m, ask: 58_900.00m, askSize: 0m)); // a ticker: prices through the limit, no sizes
+        Assert.Equal(OrderStatus.New, (await OrderOf(paper, placed)).Status);
+
+        _time.Advance(TimeSpan.FromSeconds(1));
+        paper.OnQuote(Quote(bid: 58_890.00m, bidSize: 1m, ask: 58_900.00m, askSize: 0.005m)); // the book confirms it
+        Assert.Equal(OrderStatus.Filled, (await OrderOf(paper, placed)).Status);
+    }
+
+    [Fact]
     public async Task RestingBuy_FillsAtLimitWithMakerFee_OnlyWhenMarketTradesThrough()
     {
         var paper = Create();

@@ -63,7 +63,10 @@ public static class ExecutionRegistration
             sp.GetRequiredService<ILogger<ExecutionService>>(),
             safety: safety,
             journal: sp.GetService<Journal.IJournal>(),
-            lease: sp.GetService<Persistence.IEngineLease>()));
+            lease: sp.GetService<Persistence.IEngineLease>(),
+            refreshQuote: (symbol, ct) => sp.GetRequiredService<MarketDataPoller>().RefreshQuoteAsync(symbol, ct), // a fresh book before pricing
+            freshBookWithin: sp.GetRequiredService<MarketDataOptions>().QuoteInterval));
+        services.AddSingleton<IActiveSymbolSource>(sp => sp.GetRequiredService<ExecutionService>()); // whose order books the poller keeps
         services.AddSingleton<SafetyMonitor>();
         services.AddHostedService(sp => sp.GetRequiredService<SafetyMonitor>());
         return services;

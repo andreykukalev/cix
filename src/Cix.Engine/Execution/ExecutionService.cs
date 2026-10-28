@@ -75,9 +75,12 @@ public sealed record KillSwitchResult(bool NewlyEngaged, int Cancelled, IReadOnl
 /// then send what it approved. Placements run one at a time, so two orders can't both pass the gate against the same
 /// snapshot. An order whose outcome is unknown is looked up by client order ID, never resent.
 /// </summary>
-public sealed partial class ExecutionService
+public sealed partial class ExecutionService : IActiveSymbolSource
 {
     public const string RejectStreakBy = "execution";
+
+    /// <summary>How long after an order was sent its coin stays active (polled order books), until the next sample shows it held or working.</summary>
+    public static readonly TimeSpan RecentOrderWindow = TimeSpan.FromMinutes(10);
 
     /// <summary>How long a sent order counts as pending exposure while it may not show in open orders yet.</summary>
     public static readonly TimeSpan PendingWindow = TimeSpan.FromMinutes(2);
@@ -97,7 +100,12 @@ public sealed partial class ExecutionService
     private readonly TimeProvider _time;
     private readonly ILogger<ExecutionService> _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private readonly Func<string, CancellationToken, Task<MarketQuote?>>? _refreshQuote;
+    private readonly TimeSpan _freshBookWithin;
     private readonly SemaphoreSlim _lock = new(1, 1);
+
+    /// <summary>Coins an order was sent in lately, by symbol: active for the market data until a sample shows them held or working.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _recentOrders = new(StringComparer.Ordinal);
     /// <summary>Orders sent in the last minute, and which were protective exits: those don't use the trading rate (MaxOrdersPerMinute).</summary>
     private readonly Queue<(DateTimeOffset At, bool Protective)> _sent = new();
     private readonly Dictionary<string, PendingPlacement> _pending = new(StringComparer.Ordinal);
@@ -138,9 +146,13 @@ public sealed partial class ExecutionService
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         SafetyOptions? safety = null,
         IJournal? journal = null,
-        IEngineLease? lease = null)
+        IEngineLease? lease = null,
+        Func<string, CancellationToken, Task<MarketQuote?>>? refreshQuote = null,
+        TimeSpan? freshBookWithin = null)
     {
         _exchange = exchange;
+        _refreshQuote = refreshQuote;
+        _freshBookWithin = freshBookWithin ?? TimeSpan.FromSeconds(20);
         _gate = gate;
         _portfolio = portfolio;
         _market = market;
@@ -295,6 +307,9 @@ public sealed partial class ExecutionService
             if (pair is null)
                 return Reject("unknown-symbol", $"The exchange doesn't list {intent.Symbol}.");
 
+            // A protective exit was priced on the book the protection fetched to confirm the stop: no second fetch on that path.
+            if (!intent.IsProtectiveExit)
+                await RefreshBookIfNeededAsync(intent.Symbol, now, cancellationToken).ConfigureAwait(false);
             var rounded = RoundToSteps(intent, pair);
             PortfolioSnapshot portfolio;
             try
@@ -374,6 +389,36 @@ public sealed partial class ExecutionService
     /// no exchange call and changes nothing, so status reporting can use it freely.
     /// </summary>
     public PortfolioSample? LatestSample => Volatile.Read(ref _latestSample);
+
+    /// <summary>
+    /// The coins whose order books the market data keeps polling: those with a position or a working buy in the latest sample,
+    /// and those an order was sent in within <see cref="RecentOrderWindow"/> (the sample is a minute old at most, the order
+    /// may be seconds old). Everything else prices from the tickers.
+    /// </summary>
+    public IReadOnlySet<string> ActiveSymbols
+    {
+        get
+        {
+            var now = _time.GetUtcNow();
+            var active = new HashSet<string>(StringComparer.Ordinal);
+            if (LatestSample?.Snapshot is { } snapshot)
+            {
+                active.UnionWith(snapshot.PositionQuoteBySymbol.Where(p => p.Value > 0m).Select(p => p.Key));
+                if (snapshot.OpenBuyQuoteBySymbol is { } buys)
+                    active.UnionWith(buys.Where(b => b.Value > 0m).Select(b => b.Key));
+            }
+
+            foreach (var (symbol, at) in _recentOrders)
+            {
+                if (now - at <= RecentOrderWindow)
+                    active.Add(symbol);
+                else
+                    _recentOrders.TryRemove(new KeyValuePair<string, DateTimeOffset>(symbol, at)); // not an order sent meanwhile
+            }
+
+            return active;
+        }
+    }
 
     private (DateTimeOffset At, PortfolioSnapshot Snapshot)? _portfolioCache;
 
@@ -798,6 +843,7 @@ public sealed partial class ExecutionService
             _extraAllowanceSinceReconcile += order.NotionalQuote * _gate.Limits.EmergencySlippageFraction; // may fill that far below the mid
         var sentAt = _time.GetUtcNow();
         _sent.Enqueue((sentAt, order.Purpose == OrderPurpose.ProtectiveExit)); // counts toward the order rate even if it fails
+        _recentOrders[order.Symbol] = sentAt; // its order book is polled from now on
         lock (_pending)
         {
             _pending[order.ClientOrderId] = new PendingPlacement(order, sentAt, Uncertain: false);
@@ -919,6 +965,28 @@ public sealed partial class ExecutionService
         return null;
     }
 
+    /// <summary>
+    /// Fetches the coin's order book before an order is priced when the latest quote is a ticker (no sizes) or older than
+    /// <see cref="_freshBookWithin"/>: the gate's price band and a paper fill then rest on a book seconds old. A fetch that
+    /// fails leaves the latest quote in place, and the gate's own freshness rule decides.
+    /// </summary>
+    private async Task RefreshBookIfNeededAsync(string symbol, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        if (_refreshQuote is null)
+            return;
+        var latest = _market.Quote(symbol);
+        if (latest is not null && (latest.BidSize > 0m || latest.AskSize > 0m) && now - latest.AsOf <= _freshBookWithin)
+            return;
+        try
+        {
+            await _refreshQuote(symbol, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
+        {
+            LogBookRefreshFailed(_logger, symbol, ex.GetType().Name);
+        }
+    }
+
     private List<PendingPlacement> PendingSnapshot()
     {
         var now = _time.GetUtcNow();
@@ -996,4 +1064,7 @@ public sealed partial class ExecutionService
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Could not cancel {VenueOrderId}: {Detail}")]
     private static partial void LogCancelFailed(ILogger logger, string venueOrderId, string detail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Order book for {Symbol} could not be refreshed before pricing ({Error}); the latest quote is used")]
+    private static partial void LogBookRefreshFailed(ILogger logger, string symbol, string error);
 }

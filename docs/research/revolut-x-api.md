@@ -24,7 +24,7 @@ What the spike runs (`tools/spike/revx_spike.py`, issues #1 and #3) showed, as o
 - Numbers are strings; timestamps are epoch ms numbers.
 - Public order book: `{data:{bids:[{price,quantity,count}],asks:[...]},metadata:{region,timestamp}}`, best level first. Recorded in `tests/Cix.Exchange.RevolutX.Tests/Fixtures/order_book.json`.
 - **Signed order book (`/api/1.0/order-book/{symbol}`) names its levels differently**: `{aid, anm, s: SELL|BUYI, p, pc, pn, q, qc, qn, ve, no, ts, pdt}` (`p` price, `q` quantity, `no` order count, `pdt` publication ms), `metadata:{timestamp}` only. Confirmed on the live account on 2026-10-28, when the first signed-quotes build read `price` and failed. The parser reads both spellings; fixture `order_book_signed.json`.
-- Tickers give bid/ask/mid/24h stats for every pair in one call but no sizes, so quotes use the order book (the paper exchange fills against level sizes).
+- Tickers give bid/ask/mid/24h stats for every pair in one call but no sizes, so fills and stop confirmations use the order book (the paper exchange fills against level sizes). **Public tickers confirmed 2026-10-28** (`GET /api/1.0/public/tickers?region=EEA`, no credentials): `{data:[{symbol:"UNI/EUR", bid, ask, mid, index_price, last_price, low_24h, high_24h, price_change_24h, volume_24h, quote_volume_24h, region}], metadata:{timestamp}}`, 375 rows of which 61 EUR pairs, the same row shape as the signed endpoint; the engine's paper mode reads it every 5 s for every watched coin (ADR-0021).
 - Candles: `{data:[{start,open,high,low,close,volume}]}`, oldest first from `since`; the last candle is still open. How a long range is paged is not yet confirmed (the spike prints a 24h paging check).
 
 ## Orders

@@ -28,7 +28,8 @@ internal sealed class Rig
         MutableTime? time = null,
         InMemoryJournal? journal = null,
         Persistence.IEngineLease? lease = null,
-        TradableSymbols? tradable = null)
+        TradableSymbols? tradable = null,
+        Func<string, CancellationToken, Task<MarketQuote?>>? refreshQuote = null)
     {
         Tradable = tradable;
         var limits = tradable?.Limits ?? Limits;
@@ -53,7 +54,7 @@ internal sealed class Rig
         Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, limits, Time, tradable);
         Execution = new ExecutionService(
             Exchange, new RiskGate(limits, Time, tradable), Portfolio, State, pairs, KillSwitch, Store, Time,
-            NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety, Journal, lease);
+            NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety, Journal, lease, refreshQuote, freshBookWithin: TimeSpan.FromSeconds(20));
         Monitor = new SafetyMonitor(Execution, KillSwitch, State, limits, Safety, Time, NullLogger<SafetyMonitor>.Instance, tradable);
         Quote(60_000.00m, 60_010.00m);
     }
@@ -87,6 +88,9 @@ internal sealed class Rig
         State.Update(quote);
         Paper.OnQuote(quote);
     }
+
+    /// <summary>A ticker at the current time: prices without sizes, which only the market state takes.</summary>
+    public void Ticker(decimal bid, decimal ask) => State.Update(new MarketQuote(Btc, bid, 0m, ask, 0m, Time.GetUtcNow()));
 
     public Task<ExecutionResult> Buy(decimal size, decimal price, string id = "c-1") =>
         Execution.PlaceAsync(new OrderIntent(Btc, OrderSide.Buy, size, price, id), postOnly: false, CancellationToken.None);
