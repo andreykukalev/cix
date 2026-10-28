@@ -1464,6 +1464,7 @@ $vnetFake = @{
           "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-trader", "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-requests",
           "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-analyst", $vnetId) | ForEach-Object { "{`"id`":`"$_`"}" }) -join ',') + ']'
   'resource show' = "{`"properties`":{`"vnetConfiguration`":{`"infrastructureSubnetId`":`"$vnetId/subnets/snet-apps`",`"internal`":true}}}"
+  'lock list'     = '[]'
 }
 Check 'provision.ps1 agents apps rebuilds an environment on a VNet: apps, environment, then VNet, before the deployment' {
   $r = Invoke-AgentsProvision $vnetFake @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
@@ -1497,7 +1498,9 @@ Check 'provision.ps1 agents apps on a VNet refuses, changing nothing, when an ap
   $r = Invoke-AgentsProvision @{ 'resource list' = $extra; 'resource show' = $vnetFake['resource show'] } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
   if (-not $r.Error -or -not $r.Error.Contains('also holds someone-elses')) { throw "got: $($r.Error)" }
   if ($r.Calls -match '(?m)\b(resource delete|deployment)\b') { throw "changed something: $($r.Calls)" }
-  $r = Invoke-AgentsProvision ($vnetFake + @{ 'lock list' = '[{"name":"keep"}]' }) @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  $locked = @{}; foreach ($k in $vnetFake.Keys) { $locked[$k] = $vnetFake[$k] }
+  $locked['lock list'] = '[{"name":"keep"}]'
+  $r = Invoke-AgentsProvision $locked @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
   if (-not $r.Error -or -not $r.Error.Contains('has locks (keep)')) { throw "got: $($r.Error)" }
   if ($r.Calls -match '(?m)\b(resource delete|deployment)\b') { throw "changed something: $($r.Calls)" }
 }
@@ -1506,6 +1509,23 @@ Check 'provision.ps1 agents apps leaves an environment without a VNet as it is' 
   $r = Invoke-AgentsProvision @{ 'resource list' = $vnetFake['resource list']; 'resource show' = '{"properties":{"vnetConfiguration":null,"publicNetworkAccess":"Disabled"}}' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   if ($r.Calls.Contains('resource delete')) { throw "deleted something: $($r.Calls)" }
+  if (-not $r.Calls.Contains("resource show --ids $citestGroup/providers/Microsoft.App/managedEnvironments/cae-cix-citest")) { throw "didn't look at the environment: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents apps on a VNet keeps a VNet that isn''t its own, and deletes nothing if the dashboard''s settings can''t be read' {
+  $foreign = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/vnet-hub'
+  $fake = @{}; foreach ($k in $vnetFake.Keys) { $fake[$k] = $vnetFake[$k] }
+  $fake['resource show'] = "{`"properties`":{`"vnetConfiguration`":{`"infrastructureSubnetId`":`"$foreign/subnets/apps`"}}}"
+  $r = Invoke-AgentsProvision $fake @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if (-not $r.Calls.Contains('resource delete --ids ' + "$citestGroup/providers/Microsoft.App/managedEnvironments/cae-cix-citest")) { throw "the environment wasn't rebuilt: $($r.Calls)" }
+  if ($r.Calls.Contains("resource delete --ids $foreign")) { throw 'deleted a VNet the template never made' }
+  $fake = @{}; foreach ($k in $vnetFake.Keys) { $fake[$k] = $vnetFake[$k] }
+  $fake['staticwebapp show'] = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-citest/providers/Microsoft.Web/staticSites/stapp-cix-citest'
+  $fake['rest --method post'] = 'not json'
+  $r = Invoke-AgentsProvision $fake @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains("Couldn't read the dashboard's settings")) { throw "got: $($r.Error) -- $($r.Calls)" }
+  if ($r.Calls.Contains('resource delete')) { throw "deleted the apps before a check that failed: $($r.Calls)" }
 }
 
 Check 'provision.ps1 agents platform: no budget without an address that gets mail, and nothing for the apps' {

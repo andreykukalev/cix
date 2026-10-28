@@ -15,7 +15,7 @@ The research memo is [docs/research/azure-hosting.md](../research/azure-hosting.
 
 ## Decision
 
-Run the engine as a Container App and the agents as Container Apps Jobs. They share one environment with workload profiles, the Consumption profile and its own VNet.
+Run the engine as a Container App and the agents as Container Apps Jobs. They share one environment with workload profiles, the Consumption profile and its own VNet (amended below: no VNet).
 
 Amended 2026-10-28: **no VNet.** On its own VNet, a workload-profiles environment comes with a Standard Load Balancer and a static egress IP that Azure bills to the subscription (in the environment's `ME_` resource group): about $18 + $3.65 a month per environment, $44 for dev and prod, more than the rest of CIX. Nothing used the VNet: the engine is private because its ingress is limited to its environment and every call needs an Entra token, and Cosmos DB, Storage and Key Vault have no network rules. The environment now runs on the network Azure manages, with public network access disabled, and `provision.ps1` rebuilds an environment still on a VNet (after asking). A fixed outbound IP (a NAT gateway, about $33 a month more) would need a VNet again, and so another rebuild.
 
