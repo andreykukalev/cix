@@ -376,14 +376,14 @@ public sealed class SafetyMonitorTests
         Assert.True(rig.KillSwitch.IsEngaged);
 
         await rig.Execution.ReleaseKillSwitchAsync("owner");
-        await rig.Buy(0.0001m, 59_000m, "resting"); // refused by the gate's own drawdown rule while still down
+        await rig.Buy(0.0003m, 59_950m, "resting"); // refused by the gate's own drawdown rule while still down
         rig.Time.Advance(TimeSpan.FromMinutes(1));
         rig.Quote(60_000.00m, 60_010.00m);
         var stillDown = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
 
         Assert.False(rig.KillSwitch.IsEngaged); // the owner's Resume holds
         Assert.Null(stillDown.KillSwitchReason);
-        Assert.Equal("drawdown-halt", (await rig.Buy(0.0001m, 59_000m, "refused")).Rule);
+        Assert.Equal("drawdown-halt", (await rig.Buy(0.0003m, 59_950m, "refused")).Rule);
 
         rig.Store.Update(s => s with { PeakEquity = 270m }); // back within 15%: re-armed
         rig.Time.Advance(TimeSpan.FromMinutes(1));
@@ -414,7 +414,7 @@ public sealed class SafetyMonitorTests
         Assert.True(rig.Store.Current.DrawdownPaused);
         Assert.False(restarted.KillSwitch.IsEngaged);
         Assert.Null(check.KillSwitchReason);
-        Assert.Equal("drawdown-halt", (await restarted.Buy(0.0001m, 59_000m, "refused")).Rule);
+        Assert.Equal("drawdown-halt", (await restarted.Buy(0.0003m, 59_950m, "refused")).Rule);
     }
 
     [Fact]
