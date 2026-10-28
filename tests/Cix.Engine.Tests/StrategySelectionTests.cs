@@ -16,8 +16,8 @@ namespace Cix.Engine.Tests;
 /// <summary>The built-in strategies and the schema every strategy from the database is checked against (#105).</summary>
 public sealed class StrategySchemaTests
 {
-    // 200 allocation, 40 per order, 100 per coin, 15 daily loss; BTC and ETH, as config/risk-limits.json allows
-    internal static readonly RiskLimits Limits = Rig.Limits with { AllowedSymbols = new HashSet<string>(StringComparer.Ordinal) { "BTC-EUR", "ETH-EUR" } };
+    // 200 allocation, 40 per order, 100 per coin, 15 daily loss; any EUR pair, as config/risk-limits.json allows
+    internal static readonly RiskLimits Limits = Rig.Limits;
 
     internal static StrategySpec Load(string name, int version) =>
         FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", $"{name}.v{version}.json"), name, version, TradingMode.Paper);
@@ -119,7 +119,7 @@ public sealed class StrategySchemaTests
     [InlineData("timeframe", "\"5m\"", "timeframe must be \"1h\"")]
     [InlineData("scanner.riskPerTradeQuote", "11", "riskPerTradeQuote can't be more than orderQuote")]
     [InlineData("scanner.fastEmaPeriod", "50", "EMA periods must satisfy")]
-    [InlineData("symbols", "[\"DOGE-EUR\"]", "symbols must be a list of at most 20 symbols the mandatory limits permit")]
+    [InlineData("symbols", "[\"DOGE-USD\"]", "symbols must be a list of at most 20 symbols the mandatory limits permit")]
     public void OutOfRangeOrUnknownParameters_AreRefused_WithAReadableReason(string key, string json, string expected)
     {
         var spec = With(Load("balanced", 1), key, JsonNode.Parse(json));

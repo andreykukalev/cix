@@ -34,7 +34,7 @@ const EXIT_REASON_RU = {
 // The rule codes the risk gate (src/Cix.Domain/Risk/RiskGate.cs) and the execution service write, in words.
 const GATE_RULES = {
   'kill-switch': 'trading is halted (kill switch)',
-  'symbol-allowlist': 'the coin is not on the allowlist',
+  'symbol-allowlist': 'the coin is not among the watched pairs',
   'invalid-order': 'the order was malformed',
   'pair-inactive': 'the pair is not tradable on the exchange',
   step: "the size or price didn't fit the exchange's increments",
@@ -67,11 +67,12 @@ const GATE_RULES = {
   'strategy-order-size': "capped at the strategy's order size",
   'strategy-position-cap': "capped at the strategy's per-coin cap",
   'strategy-exposure-cap': "capped at the strategy's total exposure cap",
+  'strategy-filter': "the strategy's filters leave the coin out now",
 };
 
 const GATE_RULES_RU = {
   'kill-switch': 'торговля остановлена (аварийный выключатель)',
-  'symbol-allowlist': 'монеты нет среди торгуемых пар',
+  'symbol-allowlist': 'монеты нет среди отслеживаемых пар',
   'invalid-order': 'ордер составлен неверно',
   'pair-inactive': 'пара не торгуется на бирже',
   step: 'размер или цена не кратны шагу биржи',
@@ -104,6 +105,7 @@ const GATE_RULES_RU = {
   'strategy-order-size': 'ограничен размером ордера стратегии',
   'strategy-position-cap': 'ограничен лимитом стратегии на монету',
   'strategy-exposure-cap': 'ограничен общим лимитом вложений стратегии',
+  'strategy-filter': 'фильтры стратегии сейчас отсеивают монету',
 };
 
 // The limits the gate's sentences name by code, and the strategy's by phrase, in Russian (genitive: "в пределах ...").
@@ -125,6 +127,17 @@ function limitRu(what) {
 const REASONS_RU = [
   [/^The kill switch is engaged; no orders are allowed\.$/, () => 'Аварийный выключатель включён: ордера запрещены.'],
   [/^(\S+) is not in the allowed symbols\.$/, (m) => `${m[1]} нет среди торгуемых пар.`],
+  [/^(\S+) is not among the watched pairs\.$/, (m) => `${m[1]} нет среди отслеживаемых пар.`],
+  [/^(\S+) hasn't been scanned yet; the strategy's filters decide once it has\.$/, (m) => `${m[1]} ещё не проверена сканером; фильтры стратегии решат после проверки.`],
+  [/^(\S+) is filtered out by the strategy \(([a-z-]+)\): (.+)$/, (m) => {
+    const detail = require('./engineText').engineTextRu(m[3]); // the scanner's sentence; loaded here, as it loads this file
+    return detail ? `${m[1]} отсеяна фильтром стратегии: ${detail}` : null;
+  }],
+  [/^The latest scan is from (\S+ \S+), too old for the strategy's filters; buys wait for a fresh one\.$/,
+    (m) => `Последняя проверка сканера была ${m[1]}, это слишком давно для фильтров стратегии; покупки ждут новой.`],
+  [/^(\S+) is watched because the account holds it, but the owner hasn't added it; the strategy buys it once the owner adds it on the Coins tab\.$/,
+    (m) => `${m[1]} отслеживается, потому что есть на счёте, но владелец её не добавлял; стратегия будет её покупать, когда владелец добавит её на вкладке «Монеты».`],
+  [/^The market scanner isn't running, so no coin passes the strategy's filters\.$/, () => 'Сканер рынка не работает, поэтому ни одна монета не проходит фильтры стратегии.'],
   [/^Size and limit price must be positive and the client order ID set\.$/, () => 'Размер и лимитная цена должны быть больше нуля, а ID ордера задан.'],
   [/^(\S+) is not tradable on the exchange\.$/, (m) => `${m[1]} не торгуется на бирже.`],
   [/^Size must be a multiple of (\S+) and price of (\S+)\.$/, (m) => `Размер должен быть кратен ${m[1]}, а цена — ${m[2]}.`],

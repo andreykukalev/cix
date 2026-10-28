@@ -53,9 +53,22 @@ test('the view: tradable pairs, the ones to add, pending changes and the history
   assert.equal(view.cap, 4);
   assert.equal(view.full, false);
   assert.equal(view.openToAnyPair, true);
-  assert.deepEqual(view.tradable, [{ symbol: 'BTC-EUR', configured: true, pending: null }, { symbol: 'ETH-EUR', configured: true, pending: null }]);
+  assert.deepEqual(view.tradable, [{ symbol: 'BTC-EUR', configured: true, adopted: false, pending: null }, { symbol: 'ETH-EUR', configured: true, adopted: false, pending: null }]);
   assert.deepEqual(view.available, [{ symbol: 'SOL-EUR', base: 'SOL', pending: 'add' }, { symbol: 'XRP-EUR', base: 'XRP', pending: null }]);
   assert.deepEqual(view.requests.map((r) => [r.id, r.status, r.detail]), [['b', 'new', null], ['a', 'rejected', 'too thin']]);
+});
+
+test('since ADR-0021: any pair in the quote currency, an empty list, and the held coins the owner hasn\'t added', () => {
+  const current = { tradable: ['SOL-EUR'], cap: '50', quoteCurrency: 'EUR', adopted: ['SOL-EUR'], pairs: catalog.pairs, updatedAt: catalog.updatedAt };
+  const view = pairsView({ mode: 'paper', catalog: current, list: null, requests: [] }, NOW);
+  assert.equal(view.openToAnyPair, true);
+  assert.equal(view.configuredOnly, false);
+  assert.deepEqual(view.tradable, [{ symbol: 'SOL-EUR', configured: false, adopted: true, pending: null }]);
+  const V = require('../../app/view.js');
+  assert.match(V.pairsNote(view).note, /add any EUR pair the exchange lists; the strategy's filters decide whether it trades/);
+  const empty = pairsView({ mode: 'paper', catalog: { ...current, tradable: [], adopted: [] }, list: { symbols: [] }, requests: [] }, NOW);
+  assert.deepEqual(empty.tradable, []);
+  assert.equal(empty.openToAnyPair, true);
 });
 
 test('the saved list wins over the catalog\'s copy, and a full list says so', () => {

@@ -1,6 +1,6 @@
 # 0016. Tradable pairs added from the dashboard, within a rule in the risk limits
 
-- Status: proposed
+- Status: proposed; amended by ADR-0021 (no `AllowedSymbols`, no liquidity check at add, held coins adopted)
 - Date: 2026-10-27
 
 ## Context

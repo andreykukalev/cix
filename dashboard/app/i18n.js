@@ -381,8 +381,8 @@
     'changed {ago}': 'изменено {ago}',
     'The most pairs the safety limits allow are tradable: remove one to add another.':
       'Торгуется максимум пар, который допускают ограничения безопасности: уберите одну, чтобы добавить другую.',
-    'You can add any {quote} pair the exchange lists; the engine checks it has enough trading first.':
-      'Можно добавить любую пару в {quote}, которая есть на бирже; движок сначала проверит, что по ней достаточно торгов.',
+    'You can add any {quote} pair the exchange lists; the strategy\'s filters decide whether it trades.':
+      'Можно добавить любую пару в {quote}, которая есть на бирже; торгуется ли она, решают фильтры стратегии.',
     'No other pairs can be added yet: the safety limits permit only the pairs in {file}, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to {file}; once that is deployed, they can be added and removed here without another deploy.':
       'Другие пары пока добавить нельзя: ограничения безопасности разрешают только пары из {file}, и все они уже торгуются. Чтобы торговать другими монетами, владелец добавляет в {file} "AllowedQuoteCurrency": "EUR" (любая пара в EUR, которая есть на бирже) и "MaxTradableSymbols" (сколько пар одновременно, например 15); после развёртывания этого изменения пары можно добавлять и убирать здесь без нового развёртывания.',
     'You can turn the pairs in {file} off and on again here. Adding other coins needs that list widened first.':
@@ -404,8 +404,11 @@
     'Add {symbol} to live trading (real money)': 'Добавить {symbol} в реальную торговлю (реальные деньги)',
     'The engine stops trading {symbol}: no new orders, prices no longer polled. It refuses if you still hold {coin} or have an open order in it.':
       'Движок прекратит торговлю {symbol}: никаких новых ордеров, цены больше не запрашиваются. Он откажет, если у вас ещё есть {coin} или открытый ордер по этой паре.',
-    'The engine checks that the exchange lists {symbol} as active and that it traded enough over the last 24 hours, then starts loading its prices. The scanner can signal it once it has a day of hourly candles. Every order in it goes through the same safety limits.':
-      'Движок проверит, что {symbol} активна на бирже и по ней было достаточно торгов за последние 24 часа, и начнёт загружать её цены. Сканер сможет давать по ней сигналы, когда наберётся день часовых свечей. Каждый ордер по ней проходит те же ограничения безопасности.',
+    'The engine checks that the exchange lists {symbol} as active, then starts loading its prices. Whether it trades is the strategy\'s filters\' call at every scan. Every order in it goes through the same safety limits.':
+      'Движок проверит, что {symbol} активна на бирже, и начнёт загружать её цены. Торгуется ли она, при каждом сканировании решают фильтры стратегии. Каждый ордер по ней проходит те же ограничения безопасности.',
+    'On the account, not added by you: the strategy doesn\'t buy it until you add it': 'Есть на счёте, но вы её не добавляли: стратегия не покупает её, пока вы её не добавите',
+    'on the account': 'на счёте',
+    'Add': 'Добавить',
     'Remove pair': 'Убрать пару',
     'Add pair': 'Добавить пару',
     'Removing {symbol}': 'Удаление {symbol}',
@@ -805,6 +808,7 @@
     [/^Any pair in ([A-Z]{3,5}) that the exchange lists, up to (\d+) at once; the owner adds and removes them from the Coins tab\.$/,
       (m) => `Любая пара в ${m[1]}, которая есть на бирже, не больше ${m[2]} одновременно; владелец добавляет и убирает их на вкладке «Монеты».`],
     [/^(.+) and any ([A-Z]{3,5}) pair, at most (\d+)$/, (m) => `${m[1]} и любая пара в ${m[2]}, не больше ${m[3]}`],
+    [/^Any ([A-Z]{3,5}) pair, at most (\d+)$/, (m) => `Любая пара в ${m[1]}, не больше ${m[2]}`],
   ];
 
   /** Words that stay as they are in Russian: names, tickers, technical identifiers the journal filter sends as values. */

@@ -36,7 +36,6 @@ public sealed partial class ManualRequestService(
     IManualLedgerStore ledgerStore,
     ExecutionService execution,
     MarketState market,
-    RiskLimits limits,
     IJournal journal,
     IStrategySpecStore specs,
     ManualRequestOptions options,
@@ -234,7 +233,7 @@ public sealed partial class ManualRequestService(
             return;
         }
 
-        var (request, problem) = ManualRequestDocument.Parse(item.Document, tradable?.Current ?? limits.AllowedSymbols);
+        var (request, problem) = ManualRequestDocument.Parse(item.Document, tradable?.Current ?? TradableSymbols.None);
         if (request is null)
         {
             await RefuseAsync(item, null, ManualRequestStatus.Invalid, "invalid", problem!, slim: false, cancellationToken).ConfigureAwait(false);
@@ -377,7 +376,8 @@ public sealed partial class ManualRequestService(
         var result = await execution.PlaceAsync(
             new OrderIntent(request.Symbol, side, size, price, clientOrderId), postOnly: false, CancellationToken.None, // claimed: see it through
             countsTowardRejectStreak: !request.IsSell, // a sell never adds risk, as for the engine's protective sells
-            context: new OrderContext(source, stopLoss, takeProfit, runId, specs.Active?.Label)).ConfigureAwait(false);
+            context: new OrderContext(source, stopLoss, takeProfit, runId, specs.Active?.Label),
+            strategyFiltered: source == AgentSource).ConfigureAwait(false); // an agent-assisted buy follows the strategy's filters
 
         var status = result.Status switch
         {

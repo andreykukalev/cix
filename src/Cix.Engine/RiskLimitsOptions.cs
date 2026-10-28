@@ -12,11 +12,13 @@ public sealed class RiskLimitsOptions
     public decimal MaxDrawdownFraction { get; set; }
     public int MaxOrdersPerMinute { get; set; }
     public decimal MaxPriceDeviationFraction { get; set; }
-    public List<string> AllowedSymbols { get; set; } = [];
-
-    /// <summary>When set, the owner may add any pair in this quote currency from the dashboard, up to <see cref="MaxTradableSymbols"/>.</summary>
+    /// <summary>
+    /// Required: the owner may add any pair in this quote currency from the dashboard, up to <see cref="MaxTradableSymbols"/>
+    /// (ADR-0021). No pair list lives in the file.
+    /// </summary>
     public string? AllowedQuoteCurrency { get; set; }
 
+    /// <summary>Required: the most pairs watched at once, 1 to <see cref="RiskLimits.MaxTradableSymbolsLimit"/>.</summary>
     public int MaxTradableSymbols { get; set; }
 
     /// <summary>The price band for the engine's stop-loss sells; unset means <see cref="MaxPriceDeviationFraction"/>.</summary>
@@ -61,6 +63,8 @@ public sealed class RiskLimitsOptions
         if (other?.GetSection("Risk").Exists() == true)
             throw new InvalidOperationException("Risk settings come only from the owner's limits file (config/risk-limits.json, or risk-limits.live.json for live); remove them from the environment, the command line and appsettings.");
         var file = new ConfigurationBuilder().AddJsonFile(path, optional: false, reloadOnChange: false).Build();
+        if (file.GetSection("Risk:AllowedSymbols").Exists())
+            throw new InvalidOperationException($"{Path.GetFileName(path)} still has Risk:AllowedSymbols, which ADR-0021 removed: pairs are added from the dashboard. Remove the key and set AllowedQuoteCurrency and MaxTradableSymbols.");
         return file.GetSection("Risk").Get<RiskLimitsOptions>()?.ToRiskLimits()
             ?? throw new InvalidOperationException($"Missing 'Risk' section in {Path.GetFileName(path)}.");
     }
@@ -73,8 +77,7 @@ public sealed class RiskLimitsOptions
         MaxDrawdownFraction,
         MaxOrdersPerMinute,
         MaxPriceDeviationFraction,
-        AllowedSymbols.ToHashSet(StringComparer.Ordinal),
-        string.IsNullOrWhiteSpace(AllowedQuoteCurrency) ? null : AllowedQuoteCurrency,
+        AllowedQuoteCurrency ?? string.Empty, // Validate refuses an empty one
         MaxTradableSymbols,
         MaxEmergencySlippageFraction);
 }

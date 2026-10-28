@@ -248,7 +248,7 @@ public sealed partial class EngineStatusService(
         var view = views?.Current;
         var reconcile = execution.LastReconcile;
         var quoteTimes = market.QuoteTimes();
-        var symbols = (tradable?.Current ?? limits.AllowedSymbols).Select(MarketDataPoller.NormaliseSymbol).Order(StringComparer.Ordinal).ToList();
+        var symbols = (tradable?.Current ?? TradableSymbols.None).Select(MarketDataPoller.NormaliseSymbol).Order(StringComparer.Ordinal).ToList();
         var quoted = symbols.Where(quoteTimes.ContainsKey).ToList();
 
         return new EngineStatus(
@@ -308,7 +308,7 @@ public sealed partial class EngineStatusService(
                     plan?.Status, plan?.EntryPrice, plan?.StopLoss, plan?.TakeProfit);
             })
             .ToList();
-        var currency = limits.AllowedSymbols.Select(s => MarketDataPoller.NormaliseSymbol(s).Split('-').Last()).FirstOrDefault() ?? "EUR";
+        var currency = limits.AllowedQuoteCurrency;
         var positions = snapshot.PositionQuoteBySymbol.Values.Sum();
         return new PortfolioStatus(
             at, currency, Math.Round(snapshot.Equity, 2), Math.Round(snapshot.Equity - positions, 2), Math.Round(snapshot.PeakEquity, 2),

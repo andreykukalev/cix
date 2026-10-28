@@ -1,12 +1,11 @@
 namespace Cix.Domain.Risk;
 
 /// <summary>Configured risk limits. Validated against <see cref="HardCeilings"/> at startup.</summary>
-/// <param name="AllowedSymbols">Symbols that are always permitted, and tradable until the owner changes the list at run time.</param>
 /// <param name="AllowedQuoteCurrency">
-/// When set, the owner may also add any pair quoted in this currency at run time (see <see cref="TradableSymbols"/>), up to
-/// <paramref name="MaxTradableSymbols"/> pairs in all. When null, only <paramref name="AllowedSymbols"/> are permitted.
+/// The one rule for which pairs may ever be traded (ADR-0021): any pair quoted in this currency, for example <c>EUR</c>. The owner
+/// adds and removes pairs from the dashboard (see <see cref="TradableSymbols"/>); no pair list lives in configuration.
 /// </param>
-/// <param name="MaxTradableSymbols">The most pairs tradable at once when <paramref name="AllowedQuoteCurrency"/> is set; 0 otherwise.</param>
+/// <param name="MaxTradableSymbols">The most pairs on the watched list at once, 1 to <see cref="MaxTradableSymbolsLimit"/>.</param>
 /// <param name="MaxEmergencySlippageFraction">
 /// How far below the reference price an engine stop-loss sell may be priced (<see cref="OrderPurpose.ProtectiveExit"/>).
 /// Null means <paramref name="MaxPriceDeviationFraction"/>, the band every other order gets. Never above
@@ -20,31 +19,29 @@ public sealed partial record RiskLimits(
     decimal MaxDrawdownFraction,
     int MaxOrdersPerMinute,
     decimal MaxPriceDeviationFraction,
-    IReadOnlySet<string> AllowedSymbols,
-    string? AllowedQuoteCurrency = null,
-    int MaxTradableSymbols = 0,
+    string AllowedQuoteCurrency,
+    int MaxTradableSymbols,
     decimal? MaxEmergencySlippageFraction = null)
 {
     /// <summary>The price band for the engine's stop-loss sells: <see cref="MaxEmergencySlippageFraction"/>, or the normal band.</summary>
     public decimal EmergencySlippageFraction => MaxEmergencySlippageFraction ?? MaxPriceDeviationFraction;
 
-    /// <summary>The most pairs a run-time list may hold.</summary>
-    public const int MaxTradableSymbolsLimit = 20;
+    /// <summary>
+    /// The most pairs a watched list may hold (ADR-0021): what the market-data schedule fits in the public API's budget, with
+    /// tickers for every coin and order books only for the active ones.
+    /// </summary>
+    public const int MaxTradableSymbolsLimit = 50;
 
-    /// <summary>How many pairs may be tradable at once.</summary>
-    public int TradableCap => AllowedQuoteCurrency is null ? AllowedSymbols.Count : MaxTradableSymbols;
+    /// <summary>How many pairs may be watched at once.</summary>
+    public int TradableCap => MaxTradableSymbols;
 
     /// <summary>
-    /// Whether <paramref name="symbol"/> (upper-case <c>BASE-QUOTE</c>) may ever be traded under these limits: it is in
-    /// <see cref="AllowedSymbols"/>, or a pair in <see cref="AllowedQuoteCurrency"/> when that is set.
+    /// Whether <paramref name="symbol"/> (upper-case <c>BASE-QUOTE</c>) may ever be traded under these limits: a pair quoted in
+    /// <see cref="AllowedQuoteCurrency"/>.
     /// </summary>
     public bool Permits(string symbol)
     {
         ArgumentNullException.ThrowIfNull(symbol);
-        if (AllowedSymbols.Contains(symbol))
-            return true;
-        if (AllowedQuoteCurrency is null)
-            return false;
         var match = SymbolFormat().Match(symbol);
         return match.Success && string.Equals(match.Groups[2].Value, AllowedQuoteCurrency, StringComparison.Ordinal);
     }
@@ -73,22 +70,10 @@ public sealed partial record RiskLimits(
             errors.Add($"MaxPriceDeviationFraction must be in (0, {HardCeilings.MaxPriceDeviationFraction}].");
         if (MaxEmergencySlippageFraction is { } emergency && (emergency <= 0 || emergency > HardCeilings.MaxPriceDeviationFraction))
             errors.Add($"MaxEmergencySlippageFraction must be in (0, {HardCeilings.MaxPriceDeviationFraction}].");
-        if (AllowedSymbols.Count == 0)
-            errors.Add("AllowedSymbols must not be empty.");
-        if (AllowedQuoteCurrency is null)
-        {
-            if (MaxTradableSymbols != 0)
-                errors.Add("MaxTradableSymbols needs AllowedQuoteCurrency.");
-        }
-        else
-        {
-            if (!QuoteFormat().IsMatch(AllowedQuoteCurrency))
-                errors.Add("AllowedQuoteCurrency must be 3 to 5 upper-case letters, for example EUR.");
-            else if (AllowedSymbols.Any(s => !s.EndsWith("-" + AllowedQuoteCurrency, StringComparison.Ordinal)))
-                errors.Add("AllowedSymbols must all be quoted in AllowedQuoteCurrency.");
-            if (MaxTradableSymbols < AllowedSymbols.Count || MaxTradableSymbols > MaxTradableSymbolsLimit)
-                errors.Add($"MaxTradableSymbols must be in [the number of AllowedSymbols, {MaxTradableSymbolsLimit}].");
-        }
+        if (AllowedQuoteCurrency is null || !QuoteFormat().IsMatch(AllowedQuoteCurrency))
+            errors.Add("AllowedQuoteCurrency must be 3 to 5 upper-case letters, for example EUR.");
+        if (MaxTradableSymbols < 1 || MaxTradableSymbols > MaxTradableSymbolsLimit)
+            errors.Add($"MaxTradableSymbols must be in [1, {MaxTradableSymbolsLimit}].");
 
         return errors;
     }

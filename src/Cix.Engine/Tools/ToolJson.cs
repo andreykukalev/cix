@@ -16,7 +16,7 @@ internal static class ToolJson
 
     public static string Of<T>(T value) => JsonSerializer.Serialize(value, Options);
 
-    /// <summary>Normalises and checks a symbol argument against the risk gate's allowlist.</summary>
+    /// <summary>Normalises and checks a symbol argument against the watched pairs the risk gate reads.</summary>
     public static string Symbol(string? symbol, IReadOnlySet<string> allowed)
     {
         if (string.IsNullOrWhiteSpace(symbol) || symbol.Length > 20)

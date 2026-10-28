@@ -102,6 +102,9 @@ public sealed partial class ExecutionService : IActiveSymbolSource
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Func<string, CancellationToken, Task<MarketQuote?>>? _refreshQuote;
     private readonly TimeSpan _freshBookWithin;
+
+    /// <summary>Why the strategy's filters keep a buy out of a coin now (the latest scan excluded it), or null (ADR-0021).</summary>
+    private readonly Func<string, string?>? _strategyFilter;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
     /// <summary>Coins an order was sent in lately, by symbol: active for the market data until a sample shows them held or working.</summary>
@@ -148,9 +151,11 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         IJournal? journal = null,
         IEngineLease? lease = null,
         Func<string, CancellationToken, Task<MarketQuote?>>? refreshQuote = null,
-        TimeSpan? freshBookWithin = null)
+        TimeSpan? freshBookWithin = null,
+        Func<string, string?>? strategyFilter = null)
     {
         _exchange = exchange;
+        _strategyFilter = strategyFilter;
         _refreshQuote = refreshQuote;
         _freshBookWithin = freshBookWithin ?? TimeSpan.FromSeconds(20);
         _gate = gate;
@@ -253,9 +258,10 @@ public sealed partial class ExecutionService : IActiveSymbolSource
     /// </param>
     public async Task<ExecutionResult> PlaceAsync(
         OrderIntent intent, bool postOnly, CancellationToken cancellationToken, bool countsTowardRejectStreak = true, OrderContext? context = null,
-        StrategyLimits? strategy = null, Func<CancellationToken, Task>? beforeSend = null)
+        StrategyLimits? strategy = null, Func<CancellationToken, Task>? beforeSend = null, bool strategyFiltered = false)
     {
-        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, context, strategy, beforeSend, cancellationToken).ConfigureAwait(false);
+        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, context, strategy, strategyFiltered || strategy is not null,
+            beforeSend, cancellationToken).ConfigureAwait(false);
 
         // Engaging takes the placement lock, so it runs after the placement released it.
         // Only a gate rejection made by this call can trip the streak (engine-side rejects never count).
@@ -272,7 +278,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
 
     private async Task<ExecutionResult> PlaceLockedAsync(
         OrderIntent intent, bool postOnly, bool countsTowardRejectStreak, OrderContext? context, StrategyLimits? strategy,
-        Func<CancellationToken, Task>? beforeSend, CancellationToken cancellationToken)
+        bool strategyFiltered, Func<CancellationToken, Task>? beforeSend, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
         intent = intent with { Symbol = MarketDataPoller.NormaliseSymbol(intent.Symbol) };
@@ -292,6 +298,15 @@ public sealed partial class ExecutionService : IActiveSymbolSource
                     return Reject("placement-unresolved", "An earlier order with this client order ID has an unknown outcome; it must be reconciled first.");
                 if (_usedClientOrderIds.Contains(intent.ClientOrderId ?? string.Empty))
                     return Reject("duplicate-client-order-id", "This client order ID was already sent; use a new one for a new order.");
+            }
+
+            // A watched coin trades only while it passes the strategy's market filters (ADR-0021): for the agents' buys and
+            // the owner's agent-assisted ones. First, so a refused buy spends no request; the gate after it stays final. Never
+            // for sells, the owner's direct orders or the protective exits.
+            if (strategyFiltered && intent.Side == OrderSide.Buy && _strategyFilter?.Invoke(intent.Symbol) is { } filtered)
+            {
+                LogRejected(_logger, intent.ClientOrderId ?? string.Empty, "strategy-filter", filtered);
+                return Reject("strategy-filter", filtered); // the strategy's refusal, not the gate's: no reject streak
             }
 
             PairInfo? pair;
@@ -438,6 +453,12 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         _portfolioCache = (now, snapshot);
         return (snapshot, now);
     }
+
+    /// <summary>
+    /// The account's balances, read fresh: every currency, watched or not. For adopting held coins into the watched pairs
+    /// (ADR-0021); reads only.
+    /// </summary>
+    public Task<IReadOnlyList<Balance>> GetBalancesAsync(CancellationToken cancellationToken) => _exchange.GetBalancesAsync(cancellationToken);
 
     /// <summary>
     /// Runs <paramref name="work"/> while no order can be placed or cancelled, with an uncached view of the account: what holds

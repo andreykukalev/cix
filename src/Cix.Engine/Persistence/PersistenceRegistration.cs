@@ -194,9 +194,9 @@ public static class PersistenceRegistration
             var strategy = services.GetRequiredService<StrategyOptions>();
             await selection.InitializeAsync(strategy.Directory, cancellationToken).ConfigureAwait(false); // the saved selection runs from the first scan
         }
-        if (services.GetService<Pairs.TradablePairsService>() is { } tradablePairs)
-            await tradablePairs.InitializeAsync(cancellationToken).ConfigureAwait(false); // the owner's pairs are polled and tradable from the start
         if (services.GetService<PaperAccountSaver>() is { } saver)
-            await saver.RestoreAsync(cancellationToken).ConfigureAwait(false);
+            await saver.RestoreAsync(cancellationToken).ConfigureAwait(false); // first: the watched pairs adopt the coins it holds
+        if (services.GetService<Pairs.TradablePairsService>() is { } tradablePairs)
+            await tradablePairs.InitializeAsync(cancellationToken).ConfigureAwait(false); // the owner's pairs and held coins are polled from the start
     }
 }

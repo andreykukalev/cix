@@ -148,7 +148,7 @@ public sealed class StrategyV2Tests
         Assert.Equal(("", 0), (root.GetProperty("manualKey").GetString(), root.GetProperty("manualPending").GetInt32())); // no owner requests
         Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
         Assert.Contains("#1 BTC-EUR", description, StringComparison.Ordinal);
-        Assert.Contains("SOL-EUR not-allowed", description, StringComparison.Ordinal);
+        Assert.DoesNotContain("not-allowed", description, StringComparison.Ordinal); // the scan covers the watched coins only (ADR-0021)
         await app.StopAsync();
     }
 

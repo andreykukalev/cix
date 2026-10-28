@@ -16,13 +16,6 @@ public sealed class ScannerOptions
 {
     public const string SectionName = "Scanner";
 
-    /// <summary>Established, liquid EUR pairs to consider when configuration names none. No automatic discovery.</summary>
-    public static readonly IReadOnlyList<string> DefaultUniverse =
-        ["BTC-EUR", "ETH-EUR", "SOL-EUR", "LINK-EUR", "AVAX-EUR", "SUI-EUR", "NEAR-EUR"];
-
-    /// <summary>Candidate symbols. Null or empty means <see cref="DefaultUniverse"/> (a default list would be appended to by binding).</summary>
-    public List<string>? Universe { get; set; }
-
     /// <summary>How often the engine scans in the background and journals new signals.</summary>
     public TimeSpan Interval { get; set; } = TimeSpan.FromMinutes(5);
 
@@ -34,69 +27,71 @@ public sealed class ScannerOptions
     /// </summary>
     public bool ProtectiveExits { get; set; } = true;
 
-    public IReadOnlyList<string> EffectiveUniverse =>
-        MarketDataPoller.NormaliseSymbols(Universe is { Count: > 0 } ? Universe : DefaultUniverse);
+    /// <summary>
+    /// Refuses a <c>Scanner:Universe</c> list: ADR-0021 removed the curated universe, and no pair list may live in configuration.
+    /// The scan covers the watched coins the owner adds from the dashboard.
+    /// </summary>
+    public static void ThrowIfUniverseConfigured(IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (configuration.GetSection(SectionName + ":Universe").Exists())
+            throw new InvalidOperationException("Scanner:Universe was removed (ADR-0021): the scan covers the coins added on the dashboard's Coins tab. Remove the setting.");
+    }
 
     public void Validate()
     {
         if (Interval < TimeSpan.FromMinutes(1) || Interval > TimeSpan.FromHours(1))
             throw new InvalidOperationException("Scanner:Interval must be between 1 minute and 1 hour.");
-        if (EffectiveUniverse.Count > 20)
-            throw new InvalidOperationException("Scanner:Universe is limited to 20 symbols.");
         Parameters.Validate();
     }
 }
 
 /// <summary>
-/// What the scanner considers and what can be traded. Every symbol in the owner's risk allowlist is polled and tradable (the
-/// safety monitor expects fresh quotes for all of them); the scan covers the curated universe plus the allowlist, and universe
-/// symbols outside the allowlist show as not allowed. The exchange's active pairs are checked at every scan.
+/// What the engine watches, scans and may trade (ADR-0021): the watched list the owner edits on the Coins tab, plus the coins
+/// the account holds. There is no curated universe in configuration: the scan covers exactly the watched coins, and the
+/// strategy's filters decide which of them trade. The exchange's active pairs are checked at every scan.
 /// </summary>
 public sealed class MarketUniverse
 {
-    private readonly IReadOnlyList<string> _universe;
-    private readonly Func<IReadOnlySet<string>> _tradable;
+    private readonly Func<IReadOnlySet<string>> _watched;
     private Snapshot? _cache;
 
-    public MarketUniverse(IEnumerable<string> universe, IReadOnlySet<string> allowlist)
-        : this(universe, () => allowlist)
+    /// <summary>A fixed list, for tests.</summary>
+    public MarketUniverse(IReadOnlySet<string> watched)
+        : this(() => watched)
     {
-        ArgumentNullException.ThrowIfNull(allowlist);
+        ArgumentNullException.ThrowIfNull(watched);
     }
 
     /// <summary>With the run-time list the owner changes from the dashboard: <see cref="Tradable"/> follows it.</summary>
-    public MarketUniverse(IEnumerable<string> universe, Cix.Domain.Risk.TradableSymbols tradable)
-        : this(universe, () => tradable.Current)
+    public MarketUniverse(Cix.Domain.Risk.TradableSymbols tradable)
+        : this(() => tradable.Current)
     {
         ArgumentNullException.ThrowIfNull(tradable);
     }
 
-    private MarketUniverse(IEnumerable<string> universe, Func<IReadOnlySet<string>> tradable)
-    {
-        ArgumentNullException.ThrowIfNull(universe);
-        _universe = MarketDataPoller.NormaliseSymbols(universe);
-        _tradable = tradable;
-    }
+    private MarketUniverse(Func<IReadOnlySet<string>> watched) => _watched = watched;
 
-    public IReadOnlyList<string> Candidates => Lists().Candidates;
+    /// <summary>What the scan covers: the watched coins.</summary>
+    public IReadOnlyList<string> Candidates => Lists().Symbols;
 
-    public IReadOnlyList<string> Tradable => Lists().Tradable;
+    /// <summary>The watched coins, polled and valued; orders in them still pass the strategy's filters and the risk gate.</summary>
+    public IReadOnlyList<string> Tradable => Lists().Symbols;
 
     public bool IsTradable(string symbol) => Tradable.Contains(symbol, StringComparer.Ordinal);
 
-    /// <summary>Both lists from one read of the tradable set, recomputed only when it changes.</summary>
+    /// <summary>The list from one read of the watched set, recomputed only when it changes.</summary>
     private Snapshot Lists()
     {
-        var source = _tradable();
+        var source = _watched();
         if (Volatile.Read(ref _cache) is { } cached && ReferenceEquals(cached.Source, source))
             return cached;
-        var tradable = MarketDataPoller.NormaliseSymbols(source);
-        var lists = new Snapshot(source, tradable, MarketDataPoller.NormaliseSymbols(_universe.Concat(tradable)));
+        var lists = new Snapshot(source, MarketDataPoller.NormaliseSymbols(source));
         Volatile.Write(ref _cache, lists);
         return lists;
     }
 
-    private sealed record Snapshot(IReadOnlySet<string> Source, IReadOnlyList<string> Tradable, IReadOnlyList<string> Candidates);
+    private sealed record Snapshot(IReadOnlySet<string> Source, IReadOnlyList<string> Symbols);
 }
 
 /// <summary>
@@ -128,6 +123,29 @@ public sealed partial class MarketScanService(
 
     /// <summary>The most recent scan, or null before the first.</summary>
     public ScanResult? Latest { get; private set; }
+
+    /// <summary>A scan older than this no longer decides what can be bought: the scan loop has stalled.</summary>
+    public TimeSpan StaleScanAfter => 3 * options.Interval;
+
+    /// <summary>
+    /// Why a strategy buy in <paramref name="symbol"/> is refused now, or null when the latest scan let it pass every market
+    /// filter of the active strategy (ADR-0021): a watched coin trades only while it passes. A coin not scanned yet is refused
+    /// too, as its data is still loading.
+    /// </summary>
+    public string? BuyRefusal(string symbol)
+    {
+        ArgumentNullException.ThrowIfNull(symbol);
+        symbol = MarketDataPoller.NormaliseSymbol(symbol);
+        if (Latest is not { } scan)
+            return $"{symbol} hasn't been scanned yet; the strategy's filters decide once it has.";
+        if (time.GetUtcNow() - scan.AsOf > StaleScanAfter)
+            return $"The latest scan is from {scan.AsOf.ToString("u", CultureInfo.InvariantCulture)}, too old for the strategy's filters; buys wait for a fresh one.";
+        if (scan.Excluded.FirstOrDefault(e => string.Equals(e.Symbol, symbol, StringComparison.Ordinal)) is { } excluded)
+            return $"{symbol} is filtered out by the strategy ({excluded.Reason}): {excluded.Detail}";
+        return scan.Ranked.Any(r => string.Equals(r.Symbol, symbol, StringComparison.Ordinal))
+            ? null
+            : $"{symbol} hasn't been scanned yet; the strategy's filters decide once it has.";
+    }
 
     private TaskCompletionSource _scanned = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _scans;
@@ -789,7 +807,7 @@ public sealed partial class MarketScanBackgroundService(
 
 public static class ScannerRegistration
 {
-    /// <summary>Registers the universe (universe ∩ risk allowlist), the scanner and its background loop.</summary>
+    /// <summary>Registers the universe (the watched pairs), the scanner and its background loop.</summary>
     public static IServiceCollection AddCixScanner(this IServiceCollection services, ScannerOptions options, MarketUniverse universe)
     {
         ArgumentNullException.ThrowIfNull(services);

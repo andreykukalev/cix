@@ -479,9 +479,8 @@ public sealed class MarketDataPollerTests
         await rig.RunFor(TimeSpan.FromMinutes(6));
 
         var market = rig.State.Snapshot(Btc);
-        var gate = new RiskGate(
-            new RiskLimits(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, new HashSet<string> { Btc }),
-            rig.Time);
+        var limits = new RiskLimits(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, "EUR", 20);
+        var gate = new RiskGate(limits, rig.Time, new TradableSymbols(limits, [Btc]));
         var portfolio = new PortfolioSnapshot(200m, 200m, 0m, 0m, new Dictionary<string, decimal>(), 0, false);
         var verdict = gate.Evaluate(new OrderIntent(Btc, OrderSide.Buy, 0.1m, market.ReferencePrice, "c-1"), portfolio, market);
 

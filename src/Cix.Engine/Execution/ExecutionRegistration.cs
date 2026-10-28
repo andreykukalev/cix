@@ -65,11 +65,26 @@ public static class ExecutionRegistration
             journal: sp.GetService<Journal.IJournal>(),
             lease: sp.GetService<Persistence.IEngineLease>(),
             refreshQuote: (symbol, ct) => sp.GetRequiredService<MarketDataPoller>().RefreshQuoteAsync(symbol, ct), // a fresh book before pricing
-            freshBookWithin: sp.GetRequiredService<MarketDataOptions>().QuoteInterval));
+            freshBookWithin: sp.GetRequiredService<MarketDataOptions>().QuoteInterval,
+            strategyFilter: symbol => StrategyFilter(sp, symbol)));
         services.AddSingleton<IActiveSymbolSource>(sp => sp.GetRequiredService<ExecutionService>()); // whose order books the poller keeps
         services.AddSingleton<SafetyMonitor>();
         services.AddHostedService(sp => sp.GetRequiredService<SafetyMonitor>());
         return services;
+    }
+
+    /// <summary>
+    /// Why a strategy buy in <paramref name="symbol"/> is refused now (ADR-0021): a coin watched only because the account holds
+    /// it, or one the scanner's latest scan didn't pass. Resolved late, as both read execution. Without a scanner nothing passes:
+    /// the filter fails closed.
+    /// </summary>
+    internal static string? StrategyFilter(IServiceProvider services, string symbol)
+    {
+        if (services.GetService<Pairs.TradablePairsService>()?.IsAdopted(symbol) == true)
+            return $"{symbol} is watched because the account holds it, but the owner hasn't added it; the strategy buys it once the owner adds it on the Coins tab.";
+        return services.GetService<Scanning.MarketScanService>() is { } scanner
+            ? scanner.BuyRefusal(symbol)
+            : "The market scanner isn't running, so no coin passes the strategy's filters.";
     }
 
     /// <summary>

@@ -42,19 +42,21 @@ internal sealed class ToolRig
         ["get_analyst_brief", "record_market_view"],
         "test") { Hash = "fedcba654321" };
 
-    public ToolRig(StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m, StrategySpec? analyst = null, bool noAnalyst = false, bool protectiveExits = true)
+    public ToolRig(
+        StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m, StrategySpec? analyst = null, bool noAnalyst = false,
+        bool protectiveExits = true, Func<string, string?>? strategyFilter = null)
     {
-        Rig = new Rig(eur: eur, btc: btc);
+        Rig = new Rig(eur: eur, btc: btc, strategyFilter: strategyFilter);
         Http = new HttpContextAccessor { HttpContext = new DefaultHttpContext() };
         Specs = new FixedSpecs(noSpec ? null : spec ?? Observer);
         AnalystSpecs = new FixedAnalystSpec(noAnalyst ? null : analyst ?? AnalystSpec);
         Context = new ToolCallContext(
             Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time, NullLogger<ToolCallContext>.Instance, AnalystSpecs);
         Views = new MarketViewStore(Journal, Rig.Time, NullLogger<MarketViewStore>.Instance);
-        Universe = new MarketUniverse(ScannerOptions.DefaultUniverse, Rig.Limits.AllowedSymbols);
-        Orders = new OrderTools(Context, Rig.Execution, Rig.Limits, Views, Rig.Time);
+        Universe = new MarketUniverse(Rig.Tradable);
+        Orders = new OrderTools(Context, Rig.Execution, Rig.Limits, Views, Rig.Time, Rig.Tradable);
         Features = new FeatureService(Candles, Rig.State, new MarketDataOptions(), Rig.Time);
-        Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits, Rig.Journal);
+        Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits, Rig.Journal, Rig.Tradable);
         Scanner = new MarketScanService(
             Universe, Features, Candles, Rig.Pairs, Rig.Execution,
             Rig.KillSwitch, Journal, Specs, new ScannerOptions { ProtectiveExits = protectiveExits }, Rig.Time, NullLogger<MarketScanService>.Instance, Views);
@@ -304,6 +306,7 @@ public sealed class McpEndToEndTests
         builder.Services.AddSingleton(tools.Rig.Execution);
         builder.Services.AddSingleton(tools.Rig.KillSwitch);
         builder.Services.AddSingleton(Rig.Limits);
+        builder.Services.AddSingleton(tools.Rig.Tradable);
         builder.Services.AddSingleton(tools.Scanner);
         builder.Services.AddCixToolServer(new ToolServerOptions { OperatorKey = ToolRig.OperatorKey }, tools.Specs, tools.Journal);
         await using var app = builder.Build();

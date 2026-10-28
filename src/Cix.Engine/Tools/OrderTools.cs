@@ -45,7 +45,7 @@ public sealed class OrderTools(
         CancellationToken cancellationToken = default)
     {
         await context.RequireAllowedAsync("place_order", cancellationToken).ConfigureAwait(false);
-        var normalised = ToolJson.Symbol(symbol, tradable?.Current ?? limits.AllowedSymbols);
+        var normalised = ToolJson.Symbol(symbol, tradable?.Current ?? TradableSymbols.None);
         var orderSide = side?.Trim().ToLowerInvariant() switch
         {
             "buy" => OrderSide.Buy,

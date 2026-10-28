@@ -1,8 +1,12 @@
 using System.Text.Json;
 using Cix.Domain.Exchange;
+using Cix.Domain.Risk;
+using Cix.Engine.Execution;
 using Cix.Engine.Scanning;
 using Cix.Engine.Strategy;
 using Cix.Engine.Tools;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol;
 
@@ -34,28 +38,33 @@ public sealed class ScannerServiceTests
     }
 
     [Fact]
-    public void Universe_ScansCandidatesAndTheAllowlist_ButPollsAndTradesOnlyTheAllowlist()
+    public void Universe_IsTheWatchedList_AndFollowsIt()
     {
-        var universe = new MarketUniverse(["sol/eur", "BTC-EUR", "ETH-EUR"], new HashSet<string> { "BTC-EUR", "DOGE-EUR", "SOL-EUR" });
+        var limits = Rig.Limits;
+        var watched = new TradableSymbols(limits, ["SOL-EUR", "BTC-EUR"]);
+        var universe = new MarketUniverse(watched);
 
-        Assert.Equal(new[] { "BTC-EUR", "DOGE-EUR", "ETH-EUR", "SOL-EUR" }, universe.Candidates);
-        Assert.Equal(new[] { "BTC-EUR", "DOGE-EUR", "SOL-EUR" }, universe.Tradable); // the safety monitor expects quotes for all of them
-        Assert.False(universe.IsTradable("ETH-EUR"));
+        Assert.Equal(new[] { "BTC-EUR", "SOL-EUR" }, universe.Candidates); // nothing from configuration (ADR-0021)
+        Assert.Equal(universe.Candidates, universe.Tradable);
+        Assert.Empty(watched.TrySet(["BTC-EUR", "DOGE-EUR"], Rig.T0));
+        Assert.Equal(new[] { "BTC-EUR", "DOGE-EUR" }, universe.Candidates);
+        Assert.False(universe.IsTradable("SOL-EUR"));
     }
 
     [Fact]
-    public void Options_DefaultToTheCuratedSevenAndValidate()
+    public void Options_Validate_AndAConfiguredUniverseStopsStartup()
     {
-        var options = new ScannerOptions();
-        Assert.Equal(7, options.EffectiveUniverse.Count);
-        Assert.Contains("NEAR-EUR", options.EffectiveUniverse);
-        Assert.Equal(new[] { "ETH-EUR" }, new ScannerOptions { Universe = ["eth/eur"] }.EffectiveUniverse);
-        options.Validate();
+        new ScannerOptions().Validate();
         Assert.Throws<InvalidOperationException>(() => new ScannerOptions { Interval = TimeSpan.FromSeconds(10) }.Validate());
+
+        var withList = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Scanner:Universe:0"] = "BTC-EUR" }).Build();
+        var error = Assert.Throws<InvalidOperationException>(() => ScannerOptions.ThrowIfUniverseConfigured(withList));
+        Assert.Contains("Scanner:Universe was removed", error.Message, StringComparison.Ordinal);
+        ScannerOptions.ThrowIfUniverseConfigured(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Scanner:Interval"] = "00:05:00" }).Build());
     }
 
     [Fact]
-    public async Task Scan_SuggestsASizedEntry_ExcludesSymbolsOutsideTheAllowlist_AndJournalsTheSignalOnce()
+    public async Task Scan_SuggestsASizedEntry_ScansOnlyTheWatchedCoins_AndJournalsTheSignalOnce()
     {
         var tools = Uptrend();
 
@@ -64,7 +73,7 @@ public sealed class ScannerServiceTests
         var entry = Assert.Single(result.Entries);
         Assert.Equal((Rig.Btc, 60_010m, 59_110m, 61_810m), (entry.Symbol, entry.LimitPrice, entry.StopLoss, entry.TakeProfit));
         Assert.Equal(0.00008331m, entry.BaseSize); // the 5 EUR order cap, floored to the pair's step
-        Assert.Equal(6, result.Excluded.Count(e => e.Reason == "not-allowed"));
+        Assert.DoesNotContain(result.Excluded, e => e.Reason == "not-allowed"); // only watched coins are scanned
         Assert.DoesNotContain(result.Ranked, r => r.Symbol != Rig.Btc);
 
         await tools.Scanner.ScanAsync(CancellationToken.None); // same signal again: not journaled twice
@@ -110,6 +119,36 @@ public sealed class ScannerServiceTests
     }
 
     [Fact]
+    public async Task BuyRefusal_FollowsTheLatestScan_AndRefusesACoinNotScannedYet()
+    {
+        var stale = new ToolRig();
+        Assert.StartsWith("BTC-EUR hasn't been scanned yet", stale.Scanner.BuyRefusal(Rig.Btc), StringComparison.Ordinal);
+        await stale.Scanner.ScanAsync(CancellationToken.None);
+        Assert.Equal("BTC-EUR is filtered out by the strategy (stale): Market data is stale.", stale.Scanner.BuyRefusal("btc-eur"));
+
+        var passing = Uptrend();
+        await passing.Scanner.ScanAsync(CancellationToken.None);
+        Assert.Null(passing.Scanner.BuyRefusal(Rig.Btc)); // ranked: it passes every filter of the strategy
+        Assert.StartsWith("SOL-EUR hasn't been scanned yet", passing.Scanner.BuyRefusal("SOL-EUR"), StringComparison.Ordinal);
+
+        // A stalled scan loop no longer vouches for a coin: three intervals (15 minutes) without a scan refuse every buy.
+        Assert.Equal(TimeSpan.FromMinutes(15), passing.Scanner.StaleScanAfter);
+        passing.Rig.Time.Advance(TimeSpan.FromMinutes(15));
+        Assert.Null(passing.Scanner.BuyRefusal(Rig.Btc));
+        passing.Rig.Time.Advance(TimeSpan.FromSeconds(1));
+        Assert.StartsWith("The latest scan is from ", passing.Scanner.BuyRefusal(Rig.Btc), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StrategyFilter_WithoutAScanner_RefusesEveryBuy()
+    {
+        using var services = new ServiceCollection().BuildServiceProvider();
+
+        Assert.Equal("The market scanner isn't running, so no coin passes the strategy's filters.",
+            ExecutionRegistration.StrategyFilter(services, Rig.Btc)); // fails closed
+    }
+
+    [Fact]
     public async Task ScanMarketTool_ReturnsCompactJson_AndIsJournaled()
     {
         var tools = Uptrend();
@@ -121,7 +160,7 @@ public sealed class ScannerServiceTests
         Assert.False(root.GetProperty("halted").GetBoolean());
         Assert.Equal(Rig.Btc, root.GetProperty("entries")[0].GetProperty("symbol").GetString());
         Assert.Equal("up", root.GetProperty("ranked")[0].GetProperty("trend").GetString());
-        Assert.Equal(6, root.GetProperty("excluded").GetArrayLength());
+        Assert.Equal(0, root.GetProperty("excluded").GetArrayLength()); // only the watched coins are scanned, and BTC passes
         var call = Assert.Single(tools.Journal.Entries, e => e.Kind == "tool-call");
         Assert.Equal(("scan_market", "trader"), (call.Data!["tool"], call.Actor));
     }

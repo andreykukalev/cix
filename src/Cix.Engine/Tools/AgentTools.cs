@@ -24,7 +24,7 @@ public sealed class AgentTools(
     TradableSymbols? tradable = null)
 {
     /// <summary>The pairs tradable now (the owner can change them from the dashboard).</summary>
-    private IReadOnlySet<string> Tradable => tradable?.Current ?? limits.AllowedSymbols;
+    private IReadOnlySet<string> Tradable => tradable?.Current ?? TradableSymbols.None;
 
     /// <summary>How far back get_position_plans looks for the buy behind a position.</summary>
     public const int PlanLookbackDays = PositionPlans.LookbackDays;

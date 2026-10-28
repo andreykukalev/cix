@@ -8,18 +8,6 @@
     "MaxOrdersPerMinute": 4,
     "MaxPriceDeviationFraction": 0.01,
     "MaxTradableSymbols": 15,
-    "AllowedQuoteCurrency": "EUR",
-    "AllowedSymbols": [
-      "BTC-EUR",
-      "ETH-EUR",
-      "SOL-EUR",
-      "XRP-EUR",
-      "DOT-EUR",
-      "LINK-EUR",
-      "SUI-EUR",
-      "DOGE-EUR",
-      "UNI-EUR",
-      "AAVE-EUR"
-    ]
+    "AllowedQuoteCurrency": "EUR"
   }
 }

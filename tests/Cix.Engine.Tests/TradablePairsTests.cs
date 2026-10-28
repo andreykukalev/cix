@@ -7,6 +7,7 @@ using Cix.Engine.Journal;
 using Cix.Engine.Manual;
 using Cix.Engine.Pairs;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cix.Engine.Tests;
@@ -16,8 +17,8 @@ public sealed class TradablePairsTests
     private const string Btc = Rig.Btc;
     private const string Sol = "SOL-EUR";
 
-    /// <summary>BTC always permitted; any EUR pair may be added, three at most.</summary>
-    private static RiskLimits OpenLimits { get; } = Rig.Limits with { AllowedQuoteCurrency = "EUR", MaxTradableSymbols = 3 };
+    /// <summary>Any EUR pair may be watched, three at most.</summary>
+    private static RiskLimits OpenLimits { get; } = Rig.Limits with { MaxTradableSymbols = 3 };
 
     [Fact]
     public async Task Add_ActiveLiquidPair_JournalsSavesAndMakesItTradable()
@@ -42,10 +43,9 @@ public sealed class TradablePairsTests
     }
 
     [Theory]
-    [InlineData("ETH-USD", "Only EUR pairs")]
+    [InlineData("ETH-USD", "Only EUR pairs are permitted by config/risk-limits.json.")]
     [InlineData("DOGE-EUR", "doesn't list it as an active pair")]
     [InlineData("ZZZ-EUR", "doesn't list it as an active pair")]
-    [InlineData("XRP-EUR", "traded 24 EUR in the last 24 hours")]
     public async Task Add_PairTheChecksRefuse_ChangesNothing(string symbol, string why)
     {
         var setup = new Setup();
@@ -75,15 +75,16 @@ public sealed class TradablePairsTests
     }
 
     [Fact]
-    public async Task Add_ListOnlyLimits_AnotherPairIsRefused()
+    public async Task Add_AThinPair_IsWatched_AndTheStrategyDecidesWhetherItTrades()
     {
-        var setup = new Setup(Rig.Limits);
-        setup.Request("r-1", "add", Sol);
+        var setup = new Setup();
+        setup.Request("r-1", "add", "XRP-EUR"); // 24 EUR traded in a day: no check at add time (ADR-0021)
 
         await setup.Service.PollOnceAsync(CancellationToken.None);
 
-        Assert.Equal(ManualRequestStatus.Rejected, setup.RequestStatus("r-1"));
-        Assert.Contains("only the owner can widen", setup.RequestDetail("r-1"), StringComparison.Ordinal);
+        Assert.Equal("accepted", setup.RequestStatus("r-1"));
+        Assert.True(setup.Tradable.Contains("XRP-EUR"));
+        Assert.Equal(0, setup.Market.CandleRequests); // the add asks the exchange for its pairs only
     }
 
     [Fact]
@@ -106,13 +107,13 @@ public sealed class TradablePairsTests
     [Fact]
     public async Task Live_NamesItsOwnLimitsFile_WhenAPairIsntPermitted()
     {
-        var setup = new Setup(Rig.Limits, mode: TradingMode.Live);
-        setup.Request("r-1", "add", Sol);
+        var setup = new Setup(mode: TradingMode.Live);
+        setup.Request("r-1", "add", "ETH-USD");
 
         await setup.Service.PollOnceAsync(CancellationToken.None);
 
         Assert.Equal(ManualRequestStatus.Rejected, setup.RequestStatus("r-1"));
-        Assert.StartsWith("config/risk-limits.live.json doesn't permit it", setup.RequestDetail("r-1"), StringComparison.Ordinal);
+        Assert.Equal("Only EUR pairs are permitted by config/risk-limits.live.json.", setup.RequestDetail("r-1"));
     }
 
     [Fact]
@@ -176,15 +177,16 @@ public sealed class TradablePairsTests
     }
 
     [Fact]
-    public async Task Remove_LastPair_IsRefused()
+    public async Task Remove_LastPair_LeavesNothingWatched()
     {
         var setup = new Setup();
         setup.Request("r-1", "remove", Btc);
 
         await setup.Service.PollOnceAsync(CancellationToken.None);
 
-        Assert.Equal(ManualRequestStatus.Rejected, setup.RequestStatus("r-1"));
-        Assert.Equal(new[] { Btc }, setup.Tradable.Current);
+        Assert.Equal("accepted", setup.RequestStatus("r-1"));
+        Assert.Empty(setup.Tradable.Current);
+        Assert.Empty(setup.Repository.Saved[TradingMode.Paper].Symbols);
     }
 
     [Fact]
@@ -247,23 +249,166 @@ public sealed class TradablePairsTests
     }
 
     [Fact]
+    public async Task Initialize_NothingSaved_WatchesNothing_UntilTheOwnerAddsACoin()
+    {
+        var setup = new Setup(watched: []);
+
+        await setup.Service.InitializeAsync(CancellationToken.None);
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+
+        Assert.Empty(setup.Tradable.Current); // no list from configuration (ADR-0021)
+        Assert.Empty(setup.Changes);
+        Assert.Empty(setup.Repository.Catalog!.Tradable);
+        Assert.Equal(("EUR", 3), (setup.Repository.Catalog.QuoteCurrency, setup.Repository.Catalog.Cap));
+        Assert.False(setup.Rig.KillSwitch.IsEngaged);
+    }
+
+    [Fact]
+    public async Task Initialize_AddsTheCoinsTheAccountHolds_JournaledBeforeTheyAreWatched()
+    {
+        var setup = new Setup(btc: 0.001m, watched: []);
+        setup.Repository.Saved[TradingMode.Paper] = new TradablePairsDocument([Sol], Rig.T0.AddDays(-1), "owner");
+
+        await setup.Service.InitializeAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { Btc, Sol }, setup.Tradable.Current.Order(StringComparer.Ordinal)); // BTC is held: never outside equity
+        Assert.Equal(new[] { Btc, Sol }, setup.Repository.Saved[TradingMode.Paper].Symbols);
+        var adopted = Assert.Single(setup.Changes);
+        Assert.Equal((TradablePairsService.AdoptedAction, Btc, "engine", "SOL-EUR", "BTC-EUR,SOL-EUR"),
+            (adopted.Data!["action"], adopted.Data["symbol"], adopted.Data["requestedBy"], adopted.Data["from"], adopted.Data["to"]));
+        Assert.True((await setup.Rig.Execution.SampleAsync(CancellationToken.None))!.PositionQuoteBySymbol[Btc] > 0m);
+
+        // Watched, valued and protected, but the owner didn't choose it: the strategy doesn't buy it (Andrei, 2026-10-28).
+        Assert.True(setup.Service.IsAdopted("btc-eur"));
+        Assert.False(setup.Service.IsAdopted(Sol));
+        Assert.Equal(new[] { Btc }, setup.Repository.Saved[TradingMode.Paper].Adopted);
+        Assert.Equal(new[] { Btc }, setup.Repository.Catalog!.Adopted);
+        using var services = new ServiceCollection().AddSingleton(setup.Service).BuildServiceProvider();
+        Assert.Equal("BTC-EUR is watched because the account holds it, but the owner hasn't added it; the strategy buys it once the owner adds it on the Coins tab.",
+            ExecutionRegistration.StrategyFilter(services, Btc));
+    }
+
+    [Fact]
+    public async Task Add_ACoinTheEngineAdopted_LetsTheStrategyBuyIt_AndARestartKeepsWhichAreAdopted()
+    {
+        var setup = new Setup(btc: 0.001m, watched: []);
+        await setup.Service.InitializeAsync(CancellationToken.None);
+
+        var restarted = new Setup(watched: []);
+        restarted.Repository.Saved[TradingMode.Paper] = setup.Repository.Saved[TradingMode.Paper];
+        await restarted.Service.InitializeAsync(CancellationToken.None);
+        Assert.True(restarted.Service.IsAdopted(Btc)); // still not the owner's after a restart
+
+        setup.Request("r-1", "add", Btc);
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal("accepted", setup.RequestStatus("r-1"));
+        Assert.Equal("BTC-EUR added: it was watched because the account holds it, and now the strategy may buy it too.", setup.RequestDetail("r-1"));
+        Assert.False(setup.Service.IsAdopted(Btc));
+        Assert.Empty(setup.Repository.Saved[TradingMode.Paper].Adopted!);
+        Assert.Equal(new[] { Btc }, setup.Repository.Saved[TradingMode.Paper].Symbols);
+        var confirmed = setup.Changes[^1];
+        Assert.Equal((TradablePairsService.ConfirmedAction, Btc, "owner"), (confirmed.Data!["action"], confirmed.Data["symbol"], confirmed.Data["requestedBy"]));
+        using var services = new ServiceCollection().AddSingleton(setup.Service).BuildServiceProvider();
+        Assert.Equal("The market scanner isn't running, so no coin passes the strategy's filters.", ExecutionRegistration.StrategyFilter(services, Btc));
+    }
+
+    [Fact]
+    public async Task Initialize_ASavedListOverTheCap_IsJournaled_SoTheOwnerCanAddItAgain()
+    {
+        var setup = new Setup(watched: []);
+        setup.Repository.Saved[TradingMode.Paper] = new TradablePairsDocument([Btc, Sol, "ADA-EUR", "LINK-EUR"], Rig.T0.AddDays(-1), "owner"); // cap 3
+
+        await setup.Service.InitializeAsync(CancellationToken.None);
+
+        Assert.Empty(setup.Tradable.Current);
+        var lost = Assert.Single(setup.Changes);
+        Assert.Equal(("not-restored", "ADA-EUR,BTC-EUR,LINK-EUR,SOL-EUR", "ADA-EUR,BTC-EUR,LINK-EUR,SOL-EUR"),
+            (lost.Data!["action"], lost.Data["symbol"], lost.Data["from"]));
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+        Assert.True(setup.Rig.KillSwitch.IsEngaged); // until the owner has looked
+    }
+
+    [Fact]
+    public async Task Initialize_WhenTheBalancesCantBeRead_Throws_SoStartupRetries()
+    {
+        var setup = new Setup(btc: 0.001m, watched: []);
+        setup.Rig.Exchange.FailBalances = true;
+
+        var failed = await Assert.ThrowsAsync<IOException>(() => setup.Service.InitializeAsync(CancellationToken.None));
+        Assert.True(StartupRetry.IsTransient(failed, CancellationToken.None)); // startup waits and tries again, it doesn't stop
+
+        setup.Rig.Exchange.FailBalances = false;
+        await setup.Service.InitializeAsync(CancellationToken.None);
+        Assert.True(setup.Tradable.Contains(Btc));
+    }
+
+    [Fact]
+    public async Task Poll_AddsADeposit_AndSaysOnceWhyACoinItCantWatchIsLeftOut()
+    {
+        var setup = new Setup();
+        await setup.Service.InitializeAsync(CancellationToken.None);
+        setup.Rig.Exchange.ExtraBalances["SOL"] = 2m; // a deposit made outside the engine
+        setup.Rig.Exchange.ExtraBalances["DOGE"] = 100m; // its pair is suspended: nothing to price or sell it with
+        setup.Rig.Exchange.ExtraBalances["ETH"] = 0m; // nothing held
+
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { Btc, Sol }, setup.Tradable.Current.Order(StringComparer.Ordinal));
+        Assert.Equal(new[] { Btc, Sol }, setup.Repository.Catalog!.Tradable);
+        var notAdopted = Assert.Single(setup.Changes, e => e.Data!["action"] == "not-adopted"); // not every poll
+        Assert.Equal("DOGE-EUR", notAdopted.Data!["symbol"]);
+        Assert.Single(setup.Changes, e => e.Data!["action"] == TradablePairsService.AdoptedAction);
+
+        // With the cap reached, a held coin can't be added either: the journal says why, once.
+        Assert.Empty(setup.Tradable.TrySet([Btc, Sol, "ADA-EUR"], Rig.T0));
+        setup.Rig.Exchange.ExtraBalances["LINK"] = 1m;
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+        Assert.Contains("At most 3 pairs", Assert.Single(setup.Changes, e => e.Data!["symbol"] == "LINK-EUR").Data!["problem"], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RiskLimits_TheRepositorysFiles_FitTheRule()
+    {
+        // Both owner-only files as deployed: a quote currency and a cap, no pair list (ADR-0021). A stale file fails here,
+        // before an engine could be deployed with it.
+        foreach (var mode in new[] { TradingMode.Paper, TradingMode.Live })
+        {
+            var limits = RiskLimitsOptions.LoadFor(mode, AppContext.BaseDirectory);
+            Assert.Empty(limits.Validate());
+            Assert.Equal("EUR", limits.AllowedQuoteCurrency);
+            Assert.InRange(limits.MaxTradableSymbols, 1, RiskLimits.MaxTradableSymbolsLimit);
+        }
+    }
+
+    [Fact]
     public void RiskLimits_ComeOnlyFromTheOwnersFile()
     {
         var path = Path.Combine(Path.GetTempPath(), $"risk-limits-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, """
             { "Risk": { "AllocationQuote": 200, "MaxOrderQuote": 40, "MaxPositionQuotePerSymbol": 100, "MaxDailyLossQuote": 15,
-              "MaxDrawdownFraction": 0.15, "MaxOrdersPerMinute": 4, "MaxPriceDeviationFraction": 0.01, "AllowedSymbols": [ "BTC-EUR" ] } }
+              "MaxDrawdownFraction": 0.15, "MaxOrdersPerMinute": 4, "MaxPriceDeviationFraction": 0.01, "AllowedQuoteCurrency": "EUR", "MaxTradableSymbols": 5 } }
             """);
         try
         {
             var environment = new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string?> { ["Risk:AllowedQuoteCurrency"] = "EUR", ["Risk:MaxTradableSymbols"] = "20" })
+                .AddInMemoryCollection(new Dictionary<string, string?> { ["Risk:AllowedQuoteCurrency"] = "USD", ["Risk:MaxTradableSymbols"] = "50" })
                 .Build();
 
             Assert.Throws<InvalidOperationException>(() => RiskLimitsOptions.Load(path, environment));
             var limits = RiskLimitsOptions.Load(path, new ConfigurationBuilder().Build());
-            Assert.Null(limits.AllowedQuoteCurrency);
-            Assert.False(limits.Permits(Sol));
+            Assert.Equal(("EUR", 5), (limits.AllowedQuoteCurrency, limits.MaxTradableSymbols));
+            Assert.False(limits.Permits("ETH-USD"));
+
+            // A file that still lists pairs stops startup and names the key: no pair list lives in configuration.
+            File.WriteAllText(path, """
+                { "Risk": { "AllocationQuote": 200, "MaxOrderQuote": 40, "MaxPositionQuotePerSymbol": 100, "MaxDailyLossQuote": 15,
+                  "MaxDrawdownFraction": 0.15, "MaxOrdersPerMinute": 4, "MaxPriceDeviationFraction": 0.01, "AllowedQuoteCurrency": "EUR",
+                  "MaxTradableSymbols": 5, "AllowedSymbols": [ "BTC-EUR" ] } }
+                """);
+            var stale = Assert.Throws<InvalidOperationException>(() => RiskLimitsOptions.Load(path, new ConfigurationBuilder().Build()));
+            Assert.Contains("Risk:AllowedSymbols", stale.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -276,7 +421,7 @@ public sealed class TradablePairsTests
     {
         static string Limits(int allocation) => $$"""
             { "Risk": { "AllocationQuote": {{allocation}}, "MaxOrderQuote": 20, "MaxPositionQuotePerSymbol": 50, "MaxDailyLossQuote": 5,
-              "MaxDrawdownFraction": 0.15, "MaxOrdersPerMinute": 4, "MaxPriceDeviationFraction": 0.01, "AllowedSymbols": [ "BTC-EUR" ] } }
+              "MaxDrawdownFraction": 0.15, "MaxOrdersPerMinute": 4, "MaxPriceDeviationFraction": 0.01, "AllowedQuoteCurrency": "EUR", "MaxTradableSymbols": 5 } }
             """;
         var dir = Directory.CreateTempSubdirectory("cix-limits-").FullName;
         try
@@ -308,22 +453,71 @@ public sealed class TradablePairsTests
 
         Assert.Null((await setup.Rig.Monitor.CheckOnceAsync(CancellationToken.None)).KillSwitchReason);
 
+        // A quiet coin nobody holds no longer halts the others (ADR-0021): the gate and the scan leave it out by themselves.
         setup.Rig.Time.Advance(TimeSpan.FromMinutes(16));
         setup.Rig.Quote(60_000m, 60_010m);
+        Assert.Null((await setup.Rig.Monitor.CheckOnceAsync(CancellationToken.None)).KillSwitchReason);
+        Assert.False(setup.Rig.KillSwitch.IsEngaged);
+
+        // Every watched coin quiet: the feed is down, and that still halts.
+        setup.Rig.Time.Advance(TimeSpan.FromMinutes(16));
         var reason = (await setup.Rig.Monitor.CheckOnceAsync(CancellationToken.None)).KillSwitchReason;
-        Assert.Contains(Sol, reason, StringComparison.Ordinal);
+        Assert.Equal("No fresh market data for any watched coin for over 15 minutes.", reason);
+    }
+
+    [Fact]
+    public async Task SafetyMonitor_AHeldCoinWithoutFreshData_StillHalts()
+    {
+        var setup = new Setup(btc: 0.001m);
+        Assert.Empty(setup.Tradable.TrySet([Btc, Sol], Rig.T0));
+        Assert.NotNull(await setup.Rig.Execution.SampleAsync(CancellationToken.None)); // while fresh: the sample says BTC is held
+        setup.Rig.Time.Advance(TimeSpan.FromMinutes(16));
+        setup.Rig.State.Update(new MarketQuote(Sol, 150m, 1m, 150.1m, 1m, setup.Rig.Time.GetUtcNow())); // SOL fresh; held BTC not
+
+        var reason = (await setup.Rig.Monitor.CheckOnceAsync(CancellationToken.None)).KillSwitchReason;
+
+        Assert.Equal("No fresh market data for BTC-EUR for over 15 minutes.", reason); // its stop can't be watched
+        Assert.True(setup.Rig.KillSwitch.IsEngaged);
+    }
+
+    [Fact]
+    public async Task Portfolio_AWatchedPairTheExchangeNoLongerLists_BlocksNothing_WhileNothingIsInIt()
+    {
+        var setup = new Setup(btc: 0.001m, watched: [Btc, "ZZZ-EUR"]); // delisted after it was added; nobody holds it
+
+        var sample = await setup.Rig.Execution.SampleAsync(CancellationToken.None);
+
+        Assert.NotNull(sample); // valued without it, so orders and the stop-loss sells in BTC go on
+        Assert.True(sample!.PositionQuoteBySymbol[Btc] > 0m);
+        Assert.False(sample.PositionQuoteBySymbol.ContainsKey("ZZZ-EUR"));
+    }
+
+    [Fact]
+    public async Task SafetyMonitor_ACoinWithAWorkingBuy_CountsAsHeld()
+    {
+        var setup = new Setup();
+        Assert.Empty(setup.Tradable.TrySet([Btc, Sol], Rig.T0));
+        Assert.Equal(ExecutionStatus.Placed, (await setup.Rig.Buy(0.0005m, 59_950.00m)).Status); // below the ask: it rests
+        setup.Rig.Time.Advance(TimeSpan.FromMinutes(16));
+        setup.Rig.State.Update(new MarketQuote(Sol, 150m, 1m, 150.1m, 1m, setup.Rig.Time.GetUtcNow())); // SOL fresh; BTC not
+        Assert.NotNull(await setup.Rig.Execution.SampleAsync(CancellationToken.None)); // nothing held: valued without BTC's price
+
+        var reason = (await setup.Rig.Monitor.CheckOnceAsync(CancellationToken.None)).KillSwitchReason;
+
+        Assert.Equal("No fresh market data for BTC-EUR for over 15 minutes.", reason); // the buy may fill unwatched
     }
 
     private sealed class Setup
     {
-        public Setup(RiskLimits? limits = null, decimal btc = 0m, FixedLease? lease = null, TradingMode mode = TradingMode.Paper)
+        /// <param name="watched">The list before the test starts; BTC-EUR alone when not given.</param>
+        public Setup(RiskLimits? limits = null, decimal btc = 0m, FixedLease? lease = null, TradingMode mode = TradingMode.Paper, string[]? watched = null)
         {
             Mode = mode;
-            Tradable = new TradableSymbols(limits ?? OpenLimits);
+            Tradable = new TradableSymbols(limits ?? OpenLimits, watched ?? [Btc]);
             Rig = new Rig(btc: btc, pairSource: Market, journal: Journal, tradable: Tradable);
             Service = new TradablePairsService(
                 Tradable, Repository, Rig.Pairs, Market, Rig.Execution, Journal, new TradingContext(mode), Rig.Time,
-                NullLogger<TradablePairsService>.Instance, Requests, scanner: null, lease: lease, liquidityFloor: () => 100_000m);
+                NullLogger<TradablePairsService>.Instance, Requests, lease: lease);
         }
 
         public TradingMode Mode { get; }
@@ -369,8 +563,12 @@ public sealed class TradablePairsTests
             Task.FromResult<IReadOnlyList<PairInfo>>(
                 [Pair(Btc), Pair(Sol), Pair("ADA-EUR"), Pair("LINK-EUR"), Pair("XRP-EUR"), Pair("DOGE-EUR", active: false), Pair("ETH-USD")]);
 
+        /// <summary>How many candle requests were made: adding a pair makes none (ADR-0021).</summary>
+        public int CandleRequests { get; private set; }
+
         public Task<IReadOnlyList<Candle>> GetCandlesAsync(string symbol, int intervalMinutes, DateTimeOffset since, CancellationToken cancellationToken)
         {
+            CandleRequests++;
             var size = symbol == "XRP-EUR" ? 1m : 100m;
             // The 24 hourly candles closed by T0: 12:00 the day before up to 11:00.
             var candles = Enumerable.Range(1, 24)

@@ -8,28 +8,31 @@ using Cix.Engine.Journal;
 using Cix.Engine.Manual;
 using Cix.Engine.MarketData;
 using Cix.Engine.Persistence;
-using Cix.Engine.Scanning;
 
 namespace Cix.Engine.Pairs;
 
-/// <summary>The owner's list of tradable pairs, as saved in <c>tradable-pairs-&lt;mode&gt;</c>.</summary>
-public sealed record TradablePairsDocument(IReadOnlyList<string> Symbols, DateTimeOffset UpdatedAt, string? UpdatedBy = null);
+/// <summary>The watched pairs, as saved in <c>tradable-pairs-&lt;mode&gt;</c>.</summary>
+/// <param name="Adopted">
+/// Those the engine added because the account holds them and the owner hasn't added (ADR-0021): watched, valued and protected,
+/// but not bought by the strategy. Null in a list saved before ADR-0021: every pair in it is the owner's.
+/// </param>
+public sealed record TradablePairsDocument(IReadOnlyList<string> Symbols, DateTimeOffset UpdatedAt, string? UpdatedBy = null, IReadOnlyList<string>? Adopted = null);
 
 /// <summary>One pair the exchange lists in the permitted quote currency, for the dashboard's picker.</summary>
 /// <param name="Permitted">Whether the mode's limits file (<c>config/risk-limits.json</c> or <c>config/risk-limits.live.json</c>) lets the owner add it.</param>
 public sealed record CatalogPair(string Symbol, string Base, bool Tradable, bool Permitted);
 
 /// <summary>
-/// What the dashboard needs to add and remove pairs (<c>pair-catalog-&lt;mode&gt;</c>): the pairs tradable now, the most there
+/// What the dashboard needs to add and remove pairs (<c>pair-catalog-&lt;mode&gt;</c>): the pairs watched now, the most there
 /// may be, and the exchange's active pairs in the quote currency the limits permit.
 /// </summary>
 public sealed record PairCatalogDocument(
     IReadOnlyList<string> Tradable,
     int Cap,
-    string? QuoteCurrency,
-    IReadOnlyList<string> AlwaysPermitted,
+    string QuoteCurrency,
     IReadOnlyList<CatalogPair> Pairs,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    IReadOnlyList<string>? Adopted = null);
 
 /// <summary>Where the tradable list and the catalog live (the <c>state</c> container in Cosmos DB).</summary>
 public interface ITradablePairsRepository
@@ -85,7 +88,7 @@ public sealed class CosmosTradablePairsRepository(CosmosDb db) : ITradablePairsR
     public const string CatalogType = "pair-catalog";
 
     public const string ListAbout =
-        "The pairs the engine trades now: the owner adds and removes them from the dashboard (through requests), within the mode's limits file (config/risk-limits.json, or config/risk-limits.live.json for live). Written by the engine only.";
+        "The pairs the engine watches now: the owner adds and removes them from the dashboard (through requests), and the engine adds the coins the account holds, within the mode's limits file (config/risk-limits.json, or config/risk-limits.live.json for live). The strategy's filters decide which of them trade. Written by the engine only.";
     public const string CatalogAbout =
         "The exchange's active pairs in the permitted quote currency and which are tradable, written by the engine for the dashboard's pair picker.";
 
@@ -104,16 +107,16 @@ public sealed class CosmosTradablePairsRepository(CosmosDb db) : ITradablePairsR
 }
 
 /// <summary>
-/// Adds and removes tradable pairs at run time from the owner's dashboard requests (<see cref="RequestType"/> documents in the
-/// <c>requests</c> container), so a new coin needs no configuration change or redeploy. The limits in
-/// the mode's limits file (<c>config/risk-limits.json</c>, or <c>config/risk-limits.live.json</c> for live) still decide which
-/// pairs may ever be traded and how many at once, and every order still
-/// goes through the risk gate, which reads the same list. A pair is added only if the exchange lists it as active, in the
-/// account's quote currency, with the 24h traded value the running strategy's scanner asks for; it is removed only when
-/// nothing is held, reserved or working in it, not even a residual below the exchange minimum, so equity and exits never lose
-/// sight of a position. Each change is journaled (kind
-/// <see cref="Kind"/>) before it applies and saved as <c>tradable-pairs-&lt;mode&gt;</c>, which a restart restores.
-/// Paper and live alike (ADR-0015, ADR-0018): each mode keeps its own list, within its own limits.
+/// Adds and removes watched pairs at run time from the owner's dashboard requests (<see cref="RequestType"/> documents in the
+/// <c>requests</c> container), so a new coin needs no configuration change or redeploy (ADR-0016, ADR-0021). The mode's limits
+/// file (<c>config/risk-limits.json</c>, or <c>config/risk-limits.live.json</c> for live) still decides the one quote currency
+/// and how many pairs at once, and every order still goes through the risk gate, which reads the same list. A pair is added if
+/// the exchange lists it as active in that currency; whether it trades is the strategy's filters' call at every scan. It is
+/// removed only when nothing is held, reserved or working in it, not even a residual below the exchange minimum, so equity and
+/// exits never lose sight of a position. A coin the account holds is always watched: the engine adds it at startup and at every
+/// poll (<see cref="AdoptedAction"/>). Each change is journaled (kind <see cref="Kind"/>) before it applies and saved as
+/// <c>tradable-pairs-&lt;mode&gt;</c>, which a restart restores. Paper and live alike (ADR-0015, ADR-0018): each mode keeps
+/// its own list, within its own limits.
 /// </summary>
 public sealed partial class TradablePairsService(
     TradableSymbols tradable,
@@ -126,21 +129,22 @@ public sealed partial class TradablePairsService(
     TimeProvider time,
     ILogger<TradablePairsService> logger,
     IManualRequestStore? requests = null,
-    MarketScanService? scanner = null,
-    IEngineLease? lease = null,
-    Func<decimal>? liquidityFloor = null) : BackgroundService
+    IEngineLease? lease = null) : BackgroundService
 {
     /// <summary>The owner's limits file for this mode, as the dashboard and the owner know it.</summary>
     private string LimitsFile => trading.Mode == TradingMode.Live ? "config/risk-limits.live.json" : "config/risk-limits.json";
-
-    /// <summary>The least 24h traded value a pair needs to be added: the running strategy's scanner filter.</summary>
-    private decimal LiquidityFloor => liquidityFloor?.Invoke() ?? scanner?.Parameters.MinQuoteVolume24h ?? new Domain.Scanning.ScannerParameters().MinQuoteVolume24h;
 
     /// <summary>The <c>type</c> of a dashboard request to add or remove a pair, in the <c>requests</c> container.</summary>
     public const string RequestType = "tradable-pair";
 
     public const string Kind = "pairs";
     public const string Actor = "engine";
+
+    /// <summary>The journal action for a held coin the engine added to the watched list.</summary>
+    public const string AdoptedAction = "adopted";
+
+    /// <summary>The journal action for the owner adding a coin the engine had adopted: from then on the strategy may buy it.</summary>
+    public const string ConfirmedAction = "confirmed";
 
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
 
@@ -161,9 +165,25 @@ public sealed partial class TradablePairsService(
     /// <summary>Outcomes of requests already acted on, by id: a request whose status write failed is closed, never applied twice.</summary>
     private readonly Dictionary<string, (string Status, string Detail)> _decided = new(StringComparer.Ordinal);
 
+    /// <summary>Held coins that couldn't be adopted, and why, so the journal and the log say it once, not every poll.</summary>
+    private readonly Dictionary<string, string> _notAdopted = new(StringComparer.Ordinal);
+
+    /// <summary>Watched pairs the engine adopted and the owner hasn't added. Replaced whole; written by the poll loop only.</summary>
+    private volatile IReadOnlySet<string> _adopted = TradableSymbols.None;
+
+    /// <summary>The watched pairs the engine added because the account holds them, and the owner hasn't added.</summary>
+    public IReadOnlySet<string> Adopted => _adopted;
+
+    /// <summary>
+    /// Whether <paramref name="symbol"/> is watched only because the account holds it (ADR-0021): the strategy doesn't buy it
+    /// until the owner adds it. Sells, stops and valuation are unaffected.
+    /// </summary>
+    public bool IsAdopted(string symbol) => _adopted.Contains(MarketDataPoller.NormaliseSymbol(symbol));
+
     /// <summary>
     /// At startup, before the engine scans or serves tools: restores the saved list (dropping pairs the limits no longer
-    /// permit, or keeping the configured list if the saved one can't be used) and writes the catalog.
+    /// permit), adds the coins the account holds, and writes the catalog. Throws when the account's balances can't be read, so
+    /// startup retries: the engine never values the account without the coins it holds.
     /// </summary>
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
@@ -179,18 +199,30 @@ public sealed partial class TradablePairsService(
             var problems = tradable.TrySet(symbols, now);
             if (problems.Count > 0)
                 LogRestoreRefused(logger, string.Join(" ", problems));
+            _adopted = (saved.Adopted ?? []).Where(s => s is not null).Select(MarketDataPoller.NormaliseSymbol)
+                .Where(tradable.Current.Contains).ToHashSet(StringComparer.Ordinal);
 
-            // Save what is tradable now, so the dashboard shows it, not the list as it was saved.
+            // Save what is tradable now, so the dashboard shows it, not the list as it was saved. The journal keeps the list
+            // that couldn't be restored, so the owner can add those pairs again.
             if (!tradable.Current.SetEquals(saved.Symbols ?? []))
-                await repository.SaveAsync(trading.Mode, new TradablePairsDocument(tradable.Current.Order(StringComparer.Ordinal).ToList(), now, Actor), cancellationToken).ConfigureAwait(false);
+            {
+                var lost = symbols.Concat(dropped).Where(s => !tradable.Current.Contains(s)).Order(StringComparer.Ordinal).ToList();
+                if (lost.Count > 0 && !await AppendAsync("not-restored", $"Saved pairs not restored: {string.Join(", ", lost)}",
+                        new PairChange(false, string.Join(",", lost), saved.UpdatedAt, null), symbols.Concat(dropped).ToHashSet(StringComparer.Ordinal),
+                        tradable.Current, problems.Count > 0 ? problems[0] : $"Not permitted by {LimitsFile}.", Actor).ConfigureAwait(false))
+                    throw new IOException("The saved pairs that can't be restored couldn't be journaled; retried."); // never replaced unrecorded
+                await repository.SaveAsync(trading.Mode, Document(tradable.Current, _adopted, now, Actor), cancellationToken).ConfigureAwait(false);
+            }
 
             // A pair left out may still be held: it would drop out of equity and its exits would be refused. Halt until the owner looks.
             if (dropped.Count > 0 || problems.Count > 0)
                 _restoreProblem = problems.Count > 0
-                    ? $"The saved trading pairs couldn't be restored ({problems[0]}); only {string.Join(", ", tradable.Current.Order(StringComparer.Ordinal))} are tradable. Check for holdings in the others before resuming."
+                    ? $"The saved trading pairs couldn't be restored ({problems[0]}); only the coins the account holds are watched now. Add the others again, and check for holdings in them, before resuming."
                     : $"Saved trading pairs no longer permitted by {LimitsFile} were dropped: {string.Join(", ", dropped)}. Check for holdings in them before resuming.";
         }
 
+        if (!(await AdoptHeldAsync(now, cancellationToken).ConfigureAwait(false)).Read)
+            throw new IOException("The coins the account holds couldn't be added to the watched pairs at startup; retried."); // transient: startup waits and retries
         await WriteCatalogAsync(now, cancellationToken).ConfigureAwait(false);
     }
 
@@ -207,6 +239,7 @@ public sealed partial class TradablePairsService(
 
         var now = time.GetUtcNow();
         var changed = await TakeRequestsAsync(now, cancellationToken).ConfigureAwait(false);
+        changed |= (await AdoptHeldAsync(now, cancellationToken).ConfigureAwait(false)).Changed;
         if (changed || now - _catalogAt >= CatalogInterval)
             await WriteCatalogAsync(now, cancellationToken).ConfigureAwait(false);
     }
@@ -335,12 +368,14 @@ public sealed partial class TradablePairsService(
     {
         var current = tradable.Current;
         var symbol = change.Symbol;
+        if (change.Add && current.Contains(symbol) && _adopted.Contains(symbol))
+            return await ConfirmAsync(change, current, now, cancellationToken).ConfigureAwait(false);
         if (change.Add == current.Contains(symbol))
             return ("accepted", change.Add ? $"{symbol} is already tradable." : $"{symbol} is not tradable; nothing to remove.");
 
         var problem = change.Add
-            ? await AddProblemAsync(symbol, current, now, cancellationToken).ConfigureAwait(false)
-            : await RemoveProblemAsync(symbol, current, view!, cancellationToken).ConfigureAwait(false);
+            ? await AddProblemAsync(symbol, current, cancellationToken).ConfigureAwait(false)
+            : await RemoveProblemAsync(symbol, view!, cancellationToken).ConfigureAwait(false);
         var next = change.Add ? current.Append(symbol).ToHashSet(StringComparer.Ordinal) : current.Where(s => s != symbol).ToHashSet(StringComparer.Ordinal);
         if (problem is null && tradable.Problems(next) is { Count: > 0 } limits)
             problem = limits[0];
@@ -357,9 +392,10 @@ public sealed partial class TradablePairsService(
         // Journal first: a change the journal doesn't record doesn't happen. Then save it, so a restart keeps it, then apply.
         if (!await AppendAsync(change.Add ? "added" : "removed", $"Pair {symbol} {(change.Add ? "added" : "removed")}", change, current, next, null).ConfigureAwait(false))
             return null;
+        var adopted = _adopted.Where(next.Contains).ToHashSet(StringComparer.Ordinal);
         try
         {
-            await repository.SaveAsync(trading.Mode, new TradablePairsDocument(next.Order(StringComparer.Ordinal).ToList(), now, "owner"), cancellationToken).ConfigureAwait(false);
+            await repository.SaveAsync(trading.Mode, Document(next, adopted, now, "owner"), cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
@@ -367,32 +403,64 @@ public sealed partial class TradablePairsService(
             return null;
         }
 
+        var before = _adopted;
+        _adopted = adopted; // first: a coin is never watched before the strategy knows it is adopted
         if (tradable.TrySet(next, now) is { Count: > 0 } late)
+        {
+            _adopted = before;
             return (ManualRequestStatus.Rejected, late[0]); // can't happen after the check above; kept so a list is never half-applied
+        }
+
         LogApplied(logger, verb, symbol);
         return ("accepted", change.Add
             ? $"{symbol} added. Its prices load now; the scanner can signal it once it has a day of hourly candles, and every order still goes through the risk gate."
             : $"{symbol} removed: no new orders in it.");
     }
 
-    /// <summary>Why <paramref name="symbol"/> can't be added; null when it can.</summary>
-    private async Task<string?> AddProblemAsync(string symbol, IReadOnlySet<string> current, DateTimeOffset now, CancellationToken cancellationToken)
+    /// <summary>
+    /// The owner adds a coin the engine adopted: it is already watched, and from now on the strategy may buy it. Journaled and
+    /// saved first, like any change.
+    /// </summary>
+    private async Task<(string Status, string Detail)?> ConfirmAsync(PairChange change, IReadOnlySet<string> current, DateTimeOffset now, CancellationToken cancellationToken)
     {
+        var symbol = change.Symbol;
+        if (!await AppendAsync(ConfirmedAction, $"Pair {symbol} added by the owner (watched before as a held coin)", change, current, current, null).ConfigureAwait(false))
+            return null;
+        var adopted = _adopted.Where(s => s != symbol).ToHashSet(StringComparer.Ordinal);
+        try
+        {
+            await repository.SaveAsync(trading.Mode, Document(current, adopted, now, "owner"), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            LogSaveFailed(logger, ex.GetType().Name);
+            return null;
+        }
+
+        _adopted = adopted;
+        LogApplied(logger, "confirm", symbol);
+        return ("accepted", $"{symbol} added: it was watched because the account holds it, and now the strategy may buy it too.");
+    }
+
+    private static TradablePairsDocument Document(IReadOnlySet<string> symbols, IReadOnlySet<string> adopted, DateTimeOffset now, string by) =>
+        new(symbols.Order(StringComparer.Ordinal).ToList(), now, by, adopted.Where(symbols.Contains).Order(StringComparer.Ordinal).ToList());
+
+    /// <summary>
+    /// Why <paramref name="symbol"/> can't be added; null when it can. No liquidity check (ADR-0021): a thin coin is watched
+    /// and shown as filtered out by the strategy, which decides at every scan whether it trades.
+    /// </summary>
+    private async Task<string?> AddProblemAsync(string symbol, IReadOnlySet<string> current, CancellationToken cancellationToken)
+    {
+        var quote = tradable.Limits.AllowedQuoteCurrency;
         if (!tradable.Limits.Permits(symbol))
-            return tradable.Limits.AllowedQuoteCurrency is { } quote
-                ? $"Only {quote} pairs are permitted by {LimitsFile}."
-                : $"{LimitsFile} doesn't permit it; only the owner can widen that list.";
+            return $"Only {quote} pairs are permitted by {LimitsFile}.";
         if (current.Count >= tradable.Limits.TradableCap)
             return $"At most {tradable.Limits.TradableCap} pairs can be tradable at once; remove one first.";
 
         PairInfo? pair;
-        IReadOnlyList<Candle> candles;
         try
         {
             pair = await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false);
-            candles = pair is { Active: true }
-                ? await market.GetCandlesAsync(symbol, MarketDataPoller.HourInterval, now - TimeSpan.FromHours(25), cancellationToken).ConfigureAwait(false)
-                : [];
         }
         catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
         {
@@ -401,24 +469,111 @@ public sealed partial class TradablePairsService(
 
         if (pair is null || !pair.Active)
             return "Revolut X doesn't list it as an active pair.";
-        var quoteOf = current.Select(s => s.Split('-')[^1]).Distinct(StringComparer.Ordinal).ToList();
-        if (quoteOf.Count == 1 && !string.Equals(pair.Quote, quoteOf[0], StringComparison.OrdinalIgnoreCase))
-            return $"Every pair must be quoted in {quoteOf[0]}.";
-
-        // The same liquidity floor the running strategy's scanner applies: thin markets stay out.
-        var day = candles.Where(c => c.Start >= now - TimeSpan.FromHours(24) && c.Start + TimeSpan.FromHours(1) <= now).ToList();
-        var traded = day.Sum(c => c.Volume * c.Close);
-        var floor = LiquidityFloor;
-        if (traded < floor)
-            return string.Create(CultureInfo.InvariantCulture, $"It traded {traded:0} {pair.Quote} in the last 24 hours; the running strategy needs at least {floor:0}.");
+        if (!string.Equals(pair.Quote, quote, StringComparison.OrdinalIgnoreCase))
+            return $"Every pair must be quoted in {quote}.";
         return null;
     }
 
-    /// <summary>Why <paramref name="symbol"/> can't be removed; null when it can. Reads the account fresh, under the order lock.</summary>
-    private static async Task<string?> RemoveProblemAsync(string symbol, IReadOnlySet<string> current, ExclusiveView view, CancellationToken cancellationToken)
+    /// <summary>
+    /// Adds every coin the account holds in a permitted, listed pair that isn't watched yet, so a deposit or a residual never
+    /// sits outside equity, the risk numbers or the protection (ADR-0021). Each is journaled (<see cref="AdoptedAction"/>)
+    /// before the list is saved and changed, like an owner's add. Returns whether the balances could be read, and whether the
+    /// list changed. A held coin that can't be adopted (no listed pair, or no room under the cap) is journaled once, with why.
+    /// </summary>
+    private async Task<(bool Read, bool Changed)> AdoptHeldAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
-        if (current.Count <= 1)
-            return "At least one pair must stay tradable.";
+        var quote = tradable.Limits.AllowedQuoteCurrency;
+        IReadOnlyList<Balance> balances;
+        try
+        {
+            balances = await execution.GetBalancesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
+        {
+            LogBalancesFailed(logger, ex.GetType().Name);
+            return (false, false);
+        }
+
+        var held = balances
+            .Where(b => b.Total > 0m && !string.IsNullOrWhiteSpace(b.Currency) && !string.Equals(b.Currency, quote, StringComparison.OrdinalIgnoreCase))
+            .Select(b => MarketDataPoller.NormaliseSymbol($"{b.Currency.Trim()}-{quote}"))
+            .Where(s => !tradable.Current.Contains(s))
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        var changed = false;
+        foreach (var symbol in held)
+        {
+            var current = tradable.Current;
+            string? problem;
+            if (!tradable.Limits.Permits(symbol))
+            {
+                problem = $"Only {quote} pairs are permitted by {LimitsFile}.";
+            }
+            else
+            {
+                PairInfo? pair;
+                try
+                {
+                    pair = await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
+                {
+                    LogBalancesFailed(logger, ex.GetType().Name);
+                    return (false, changed); // the exchange's pairs aren't readable now: retried at the next poll
+                }
+
+                problem = pair is not { Active: true }
+                    ? "Revolut X doesn't list it as an active pair, so the engine can't price or sell it."
+                    : current.Count >= tradable.Limits.TradableCap
+                        ? $"At most {tradable.Limits.TradableCap} pairs can be tradable at once; remove one the account doesn't hold."
+                        : null;
+            }
+
+            var change = new PairChange(true, symbol, now, "held on the account");
+            if (problem is not null)
+            {
+                if (_notAdopted.TryGetValue(symbol, out var said) && said == problem)
+                    continue;
+                if (await AppendAsync("not-adopted", $"Held coin {symbol} not watched: {problem}", change, current, null, problem, Actor).ConfigureAwait(false))
+                    _notAdopted[symbol] = problem;
+                LogNotAdopted(logger, symbol, problem);
+                continue;
+            }
+
+            var next = current.Append(symbol).ToHashSet(StringComparer.Ordinal);
+            var adopted = _adopted.Append(symbol).ToHashSet(StringComparer.Ordinal); // not bought by the strategy until the owner adds it
+            if (!await AppendAsync(AdoptedAction, $"Held coin {symbol} added to the watched pairs", change, current, next, null, Actor).ConfigureAwait(false))
+                return (true, changed); // a change the journal doesn't record doesn't happen: tried again at the next poll
+            try
+            {
+                await repository.SaveAsync(trading.Mode, Document(next, adopted, now, Actor), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                LogSaveFailed(logger, ex.GetType().Name);
+                return (true, changed);
+            }
+
+            var before = _adopted;
+            _adopted = adopted; // first: a held coin is never watched before the strategy knows it is adopted
+            if (tradable.TrySet(next, now) is { Count: > 0 })
+            {
+                _adopted = before;
+                continue; // can't happen after the checks above; the list is never half-applied
+            }
+
+            _notAdopted.Remove(symbol);
+            changed = true;
+            LogAdopted(logger, symbol);
+        }
+
+        return (true, changed);
+    }
+
+    /// <summary>Why <paramref name="symbol"/> can't be removed; null when it can. Reads the account fresh, under the order lock.</summary>
+    private static async Task<string?> RemoveProblemAsync(string symbol, ExclusiveView view, CancellationToken cancellationToken)
+    {
         if (view.Pending.Any(p => MarketDataPoller.NormaliseSymbol(p.Order.Symbol) == symbol))
             return "An order in it was just sent and isn't settled yet; send the request again in a minute.";
         IReadOnlyList<ExchangeOrder> open;
@@ -458,7 +613,7 @@ public sealed partial class TradablePairsService(
     {
         var current = tradable.Current;
         var limits = tradable.Limits;
-        var quote = limits.AllowedQuoteCurrency ?? current.Select(s => s.Split('-')[^1]).FirstOrDefault();
+        var quote = limits.AllowedQuoteCurrency;
         try
         {
             var listed = await market.GetPairsAsync(cancellationToken).ConfigureAwait(false);
@@ -471,8 +626,8 @@ public sealed partial class TradablePairsService(
                 .Take(500)
                 .ToList();
             await repository.SaveCatalogAsync(trading.Mode, new PairCatalogDocument(
-                current.Order(StringComparer.Ordinal).ToList(), limits.TradableCap, quote,
-                limits.AllowedSymbols.Order(StringComparer.Ordinal).ToList(), items, now), cancellationToken).ConfigureAwait(false);
+                current.Order(StringComparer.Ordinal).ToList(), limits.TradableCap, quote, items, now,
+                _adopted.Where(current.Contains).Order(StringComparer.Ordinal).ToList()), cancellationToken).ConfigureAwait(false);
             _catalogAt = now;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
@@ -481,7 +636,7 @@ public sealed partial class TradablePairsService(
         }
     }
 
-    private async Task<bool> AppendAsync(string action, string summary, PairChange change, IReadOnlySet<string> from, IReadOnlySet<string>? to, string? problem)
+    private async Task<bool> AppendAsync(string action, string summary, PairChange change, IReadOnlySet<string> from, IReadOnlySet<string>? to, string? problem, string requestedBy = "owner")
     {
         var data = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -489,7 +644,7 @@ public sealed partial class TradablePairsService(
             ["mode"] = trading.Mode.ToString().ToLowerInvariant(),
             ["symbol"] = change.Symbol,
             ["requested"] = change.Add ? "add" : "remove",
-            ["requestedBy"] = "owner",
+            ["requestedBy"] = requestedBy,
             ["requestedAt"] = change.RequestedAt.ToString("O", CultureInfo.InvariantCulture),
             ["from"] = string.Join(",", from.Order(StringComparer.Ordinal)),
             ["note"] = change.Note ?? string.Empty,
@@ -520,7 +675,16 @@ public sealed partial class TradablePairsService(
     [LoggerMessage(Level = LogLevel.Warning, Message = "Saved tradable pairs no longer permitted by the risk limits, dropped: {Symbols}")]
     private static partial void LogDropped(ILogger logger, string symbols);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Saved tradable pairs not restored ({Problems}); the configured allowlist is tradable")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Tradable pairs: held coin {Symbol} added to the watched pairs")]
+    private static partial void LogAdopted(ILogger logger, string symbol);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Tradable pairs: held coin {Symbol} not watched: {Problem}")]
+    private static partial void LogNotAdopted(ILogger logger, string symbol, string problem);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Balances or pairs could not be read to add held coins ({Error}); retried at the next poll")]
+    private static partial void LogBalancesFailed(ILogger logger, string error);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Saved tradable pairs not restored ({Problems}); only held coins are watched")]
     private static partial void LogRestoreRefused(ILogger logger, string problems);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Pair requests could not be read or updated ({Error}); retried at the next poll")]

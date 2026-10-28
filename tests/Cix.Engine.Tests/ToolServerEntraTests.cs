@@ -74,6 +74,7 @@ public sealed class ToolServerEntraTests
         builder.Services.AddSingleton(tools.Rig.Execution);
         builder.Services.AddSingleton(tools.Rig.KillSwitch);
         builder.Services.AddSingleton(Rig.Limits);
+        builder.Services.AddSingleton(tools.Rig.Tradable);
         builder.Services.AddSingleton(tools.Scanner);
         builder.Services.AddSingleton(tools.Universe);
         builder.Services.AddSingleton(tools.Views);

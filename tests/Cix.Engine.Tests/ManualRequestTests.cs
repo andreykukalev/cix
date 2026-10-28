@@ -49,8 +49,8 @@ public sealed class ManualRequestTests
 
         /// <summary>Another engine process on the same database: the ledger and the documents survive, memory doesn't.</summary>
         public ManualRequestService NewService() => new(
-            Store, Ledger, Tools.Rig.Execution, Tools.Rig.State, Rig.Limits, Tools.Journal, Tools.Specs, Options,
-            new TradingContext(Mode), Tools.Rig.Time, NullLogger<ManualRequestService>.Instance, Tools.Views);
+            Store, Ledger, Tools.Rig.Execution, Tools.Rig.State, Tools.Journal, Tools.Specs, Options,
+            new TradingContext(Mode), Tools.Rig.Time, NullLogger<ManualRequestService>.Instance, Tools.Views, Tools.Rig.Tradable);
 
         public string Status(string id) => Store.Find(id)!.Status;
 
@@ -175,7 +175,7 @@ public sealed class ManualRequestTests
     [InlineData("buy", "direct", null, "5", "BTC-EUR", "agent-assisted only")]
     [InlineData("sell", "direct", "1.5", null, "BTC-EUR", "portion")]
     [InlineData("sell", "direct", "0", null, "BTC-EUR", "portion")]
-    [InlineData("sell", "direct", "0.5", null, "ETH-EUR", "allowlist")]
+    [InlineData("sell", "direct", "0.5", null, "ETH-EUR", "not among the watched pairs")]
     [InlineData("sell", "market", "0.5", null, "BTC-EUR", "mode")]
     [InlineData("buy", "agent", null, null, "BTC-EUR", "quoteAmount")]
     [InlineData("sell", "agent", "0.5", "5", "BTC-EUR", "quoteAmount is for buys")]
@@ -293,8 +293,8 @@ public sealed class ManualRequestTests
         var rig = new ManualRig(tools: tools);
         rig.Request("req-early-1", "sell", "direct", portion: 1m, symbol: "btc-eur");
         var empty = new Cix.Engine.MarketData.MarketState(rig.Time);
-        var service = new ManualRequestService(rig.Store, rig.Ledger, tools.Rig.Execution, empty, Rig.Limits, tools.Journal, tools.Specs,
-            new ManualRequestOptions(), new TradingContext(TradingMode.Paper), rig.Time, NullLogger<ManualRequestService>.Instance);
+        var service = new ManualRequestService(rig.Store, rig.Ledger, tools.Rig.Execution, empty, tools.Journal, tools.Specs,
+            new ManualRequestOptions(), new TradingContext(TradingMode.Paper), rig.Time, NullLogger<ManualRequestService>.Instance, tradable: tools.Rig.Tradable);
 
         await service.PollOnceAsync(CancellationToken.None);
         Assert.Equal(ManualRequestStatus.New, rig.Status("req-early-1"));
@@ -388,6 +388,21 @@ public sealed class ManualRequestTests
         Assert.Equal((60_010m, 0.00049991m), (Dec(order.Data!["requestedPrice"]), Dec(order.Data["requestedSize"]))); // 30 EUR at the ask
         var plan = rig.Tools.Rig.Execution.PositionPlanStates[Btc];
         Assert.Equal((59_000m, 62_000m), (plan.StopLoss, plan.TakeProfit));
+    }
+
+    [Fact]
+    public async Task AgentAssistedBuy_InACoinTheStrategyFiltersOut_IsRefused()
+    {
+        var rig = new ManualRig(btc: 0m, tools: new ToolRig(Trading, strategyFilter: symbol => $"{symbol} hasn't been scanned yet; the strategy's filters decide once it has."));
+        rig.Request("req-filt-1", "buy", "agent", quoteAmount: 30m);
+        await rig.Poll();
+
+        var answer = Parse(await rig.Manual.AnswerManualRequest("req-filt-1", "execute", Why, stopLoss: 59_000m));
+
+        Assert.Equal(ManualRequestStatus.Rejected, answer.GetProperty("status").GetString());
+        var order = Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "order");
+        Assert.Equal("strategy-filter", order.Data!["rule"]); // the owner's rule: a filtered coin doesn't enter trading
+        Assert.Empty(await rig.Tools.Rig.Exchange.GetOpenOrdersAsync(null, CancellationToken.None));
     }
 
     [Fact]

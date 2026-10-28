@@ -937,10 +937,15 @@ function renderPairs(view) {
   document.getElementById('pairs-tradable').replaceChildren(...(view.tradable.length ? view.tradable.map((p) => {
     const blocked = p.pending ? null : V.removeBlock(p.symbol, state.view?.mode === state.mode ? state.view : null);
     const remove = el('button', { type: 'button', class: 'ghost', title: blocked ?? t('Stop trading {symbol}', { symbol: p.symbol }), text: p.pending === 'remove' ? t('removing…') : t('Remove') });
-    remove.disabled = busy || !!p.pending || view.tradable.length <= 1 || !!blocked;
+    remove.disabled = busy || !!p.pending || !!blocked; // the list may be empty (ADR-0021)
     remove.addEventListener('click', () => openPair('remove', p.symbol));
     if (blocked) blockedPairs.push(el('li', {}, el('strong', { text: p.symbol }), `: ${blocked}`));
-    return el('li', {}, el('span', { text: p.symbol }), remove);
+    if (!p.adopted) return el('li', {}, el('span', { text: p.symbol }), remove);
+    // A held coin the engine watches but the owner didn't add: the strategy doesn't buy it until the owner adds it (ADR-0021).
+    const allow = el('button', { type: 'button', class: 'ghost', title: t('On the account, not added by you: the strategy doesn\'t buy it until you add it'), text: t('Add') });
+    allow.disabled = busy || !!p.pending;
+    allow.addEventListener('click', () => openPair('add', p.symbol));
+    return el('li', {}, el('span', { text: p.symbol }), el('span', { class: 'muted', text: t('on the account') }), allow, remove);
   }) : [el('li', { class: 'muted', text: t('No pairs listed yet.') })]));
   const blockedList = document.getElementById('pairs-blocked');
   blockedList.hidden = !blockedPairs.length;
@@ -977,7 +982,7 @@ function openPair(action, symbol) {
   document.getElementById('pair-live').hidden = !live;
   document.getElementById('pair-summary').textContent = action === 'remove'
     ? t('The engine stops trading {symbol}: no new orders, prices no longer polled. It refuses if you still hold {coin} or have an open order in it.', { symbol, coin: symbol.split('-')[0] })
-    : t('The engine checks that the exchange lists {symbol} as active and that it traded enough over the last 24 hours, then starts loading its prices. The scanner can signal it once it has a day of hourly candles. Every order in it goes through the same safety limits.', { symbol });
+    : t('The engine checks that the exchange lists {symbol} as active, then starts loading its prices. Whether it trades is the strategy\'s filters\' call at every scan. Every order in it goes through the same safety limits.', { symbol });
   document.getElementById('pair-send').textContent = action === 'remove' ? t('Remove pair') : t('Add pair');
   document.getElementById('pair-error').hidden = true;
   document.getElementById('pair-send').disabled = false;

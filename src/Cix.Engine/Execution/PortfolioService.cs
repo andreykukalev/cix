@@ -17,8 +17,8 @@ public sealed record PendingPlacement(ApprovedOrder Order, DateTimeOffset SentAt
 /// recovers the true state after any restart. Tracks peak equity and the equity at 00:00 UTC in the engine state store.
 /// </summary>
 /// <remarks>
-/// Assumes a dedicated account: equity is the quote balance plus the base balances of the allowed symbols, all of which
-/// must share one quote currency. Exposure is positions plus open and just-sent buy orders.
+/// Assumes a dedicated account: equity is the balance in the owner's quote currency plus the base balances of the watched
+/// pairs, all quoted in it. Exposure is positions plus open and just-sent buy orders.
 /// </remarks>
 public sealed class PortfolioService(
     IExchangeClient exchange,
@@ -31,7 +31,7 @@ public sealed class PortfolioService(
     TradableSymbols? tradable = null)
 {
     /// <summary>The pairs tradable now. Removing a pair is refused while it is held, so equity never drops a holding.</summary>
-    private IReadOnlySet<string> Tradable => tradable?.Current ?? limits.AllowedSymbols;
+    private IReadOnlySet<string> Tradable => tradable?.Current ?? TradableSymbols.None;
 
     /// <param name="skipUnpriced">
     /// For protective exits only: a held asset without a fresh price is left out instead of failing the valuation, so one
@@ -46,6 +46,7 @@ public sealed class PortfolioService(
     {
         ArgumentNullException.ThrowIfNull(pending);
         var symbolPairs = new List<PairInfo>();
+        var unlisted = new List<string>();
         foreach (var symbol in Tradable.Order(StringComparer.Ordinal))
         {
             PairInfo? pair;
@@ -58,15 +59,16 @@ public sealed class PortfolioService(
                 throw new PortfolioUnavailableException("The exchange's trading rules could not be loaded.", ex);
             }
 
-            symbolPairs.Add(pair ?? throw new PortfolioUnavailableException($"The exchange doesn't list {symbol}."));
+            if (pair is null)
+                unlisted.Add(symbol); // fails the valuation below only if something is held or working in it
+            else
+                symbolPairs.Add(pair);
         }
 
-        var quoteCurrency = symbolPairs.Select(p => p.Quote).Distinct(StringComparer.OrdinalIgnoreCase).ToList() switch
-        {
-            [var single] => single,
-            var several => throw new PortfolioUnavailableException(
-                $"Allowed symbols must share one quote currency; found {string.Join(", ", several)}."),
-        };
+        // The owner's quote currency, even with nothing watched yet: equity is then the cash alone.
+        var quoteCurrency = limits.AllowedQuoteCurrency;
+        if (symbolPairs.FirstOrDefault(p => !string.Equals(p.Quote, quoteCurrency, StringComparison.OrdinalIgnoreCase)) is { } other)
+            throw new PortfolioUnavailableException($"Every watched pair must be quoted in {quoteCurrency}; {other.Symbol} is quoted in {other.Quote}.");
 
         IReadOnlyList<Balance> balances;
         IReadOnlyList<ExchangeOrder> openOrders;
@@ -78,6 +80,16 @@ public sealed class PortfolioService(
         catch (ExchangeException ex)
         {
             throw new PortfolioUnavailableException("Balances or open orders could not be read from the exchange.", ex);
+        }
+
+        // A watched pair the exchange no longer lists can't be priced: that matters only if the account holds it or has an
+        // order in it. Otherwise one delisted coin nobody holds would block every order, the stop-loss sells included.
+        foreach (var symbol in unlisted)
+        {
+            if (TotalOf(balances, symbol.Split('-')[0]) > 0m
+                || openOrders.Any(o => o.IsOpen && MarketDataPoller.NormaliseSymbol(o.Symbol) == symbol)
+                || pending.Any(p => p.Order.Symbol == symbol))
+                throw new PortfolioUnavailableException($"The exchange doesn't list {symbol}.");
         }
 
         var now = time.GetUtcNow();

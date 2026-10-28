@@ -11,7 +11,7 @@ public sealed class EngineStatusTests
 {
     private static EngineStatusService Service(Rig rig, IEngineStatusStore store, DependencyHealth health) =>
         new(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper), store, health, rig.Time,
-            NullLogger<EngineStatusService>.Instance);
+            NullLogger<EngineStatusService>.Instance, tradable: rig.Tradable);
 
     [Fact]
     public async Task Status_ShowsThePortfolioWithPlans_AndTheLastSync_WithoutCallingTheExchange()
@@ -161,13 +161,13 @@ public sealed class EngineStatusTests
     {
         var rig = new Rig(eur: 200m);
         var manual = new Manual.ManualRequestService(
-            new Manual.InMemoryManualRequestStore("ok"), new Manual.InMemoryManualLedgerStore(), rig.Execution, rig.State, Rig.Limits, rig.Journal, new FixedSpecs(null),
-            new Manual.ManualRequestOptions(), new TradingContext(TradingMode.Paper), rig.Time, NullLogger<Manual.ManualRequestService>.Instance);
+            new Manual.InMemoryManualRequestStore("ok"), new Manual.InMemoryManualLedgerStore(), rig.Execution, rig.State, rig.Journal, new FixedSpecs(null),
+            new Manual.ManualRequestOptions(), new TradingContext(TradingMode.Paper), rig.Time, NullLogger<Manual.ManualRequestService>.Instance, tradable: rig.Tradable);
         await manual.PollOnceAsync(CancellationToken.None);
         var store = new InMemoryEngineStatusStore();
 
         await new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper), store, new DependencyHealth(), rig.Time,
-            NullLogger<EngineStatusService>.Instance, manual: manual).WriteOnceAsync(CancellationToken.None);
+            NullLogger<EngineStatusService>.Instance, manual: manual, tradable: rig.Tradable).WriteOnceAsync(CancellationToken.None);
 
         Assert.Equal(new ManualRequestsStatus("ok", 0, Rig.T0), store.Last!.ManualRequests);
         Assert.Null(store.Last.Filters); // no scanner in this rig
@@ -182,7 +182,7 @@ public sealed class EngineStatusTests
         await rig.Execution.ReconcileAsync(CancellationToken.None);
         var store = new InMemoryEngineStatusStore();
         EngineStatusService Engine() => new(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper), store,
-            new DependencyHealth(), rig.Time, NullLogger<EngineStatusService>.Instance, journal: rig.Journal);
+            new DependencyHealth(), rig.Time, NullLogger<EngineStatusService>.Instance, tradable: rig.Tradable, journal: rig.Journal);
         async Task Minute(EngineStatusService engine, TimeSpan later)
         {
             rig.Time.Advance(later);
@@ -221,7 +221,7 @@ public sealed class EngineStatusTests
         rig.Time.Advance(BalanceSnapshots.MaxAge + TimeSpan.FromMinutes(1)); // no valuation since: prices may be gone
         var snapshots = new BalanceSnapshots(rig.Journal, new TradingContext(TradingMode.Live), rig.Time, NullLogger.Instance);
         var portfolio = new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper),
-            new InMemoryEngineStatusStore(), new DependencyHealth(), rig.Time, NullLogger<EngineStatusService>.Instance).Build().Portfolio!;
+            new InMemoryEngineStatusStore(), new DependencyHealth(), rig.Time, NullLogger<EngineStatusService>.Instance, tradable: rig.Tradable).Build().Portfolio!;
 
         Assert.False(await snapshots.WriteIfDueAsync(portfolio, null, CancellationToken.None));
         Assert.False(await snapshots.WriteIfDueAsync(null, null, CancellationToken.None));
@@ -239,7 +239,7 @@ public sealed class EngineStatusTests
         var rig = new Rig(eur: 200m, lease: lease);
         await rig.Execution.SampleAsync(CancellationToken.None);
         var engine = new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper),
-            new InMemoryEngineStatusStore(), new DependencyHealth(), rig.Time, NullLogger<EngineStatusService>.Instance, journal: rig.Journal);
+            new InMemoryEngineStatusStore(), new DependencyHealth(), rig.Time, NullLogger<EngineStatusService>.Instance, tradable: rig.Tradable, journal: rig.Journal);
 
         Assert.True(await engine.WriteOnceAsync(CancellationToken.None)); // the status is still written
         Assert.DoesNotContain(rig.Journal.Entries, e => e.Kind == BalanceSnapshots.Kind);
@@ -258,7 +258,7 @@ public sealed class EngineStatusTests
         var health = new DependencyHealth();
         var status = new FailingStatusStore { Fail = false };
         var engine = new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper),
-            status, health, rig.Time, NullLogger<EngineStatusService>.Instance, journal: journal);
+            status, health, rig.Time, NullLogger<EngineStatusService>.Instance, tradable: rig.Tradable, journal: journal);
 
         Assert.True(await engine.WriteOnceAsync(CancellationToken.None));
         journal.FailQueries = false;
@@ -280,7 +280,7 @@ public sealed class EngineStatusTests
         var rig = new Rig(eur: 200m, time: time);
         await rig.Execution.SampleAsync(CancellationToken.None);
         var portfolio = new EngineStatusService(rig.Execution, rig.KillSwitch, rig.State, Rig.Limits, new TradingContext(TradingMode.Paper),
-            new InMemoryEngineStatusStore(), new DependencyHealth(), time, NullLogger<EngineStatusService>.Instance).Build().Portfolio!;
+            new InMemoryEngineStatusStore(), new DependencyHealth(), time, NullLogger<EngineStatusService>.Instance, tradable: rig.Tradable).Build().Portfolio!;
         var snapshots = new BalanceSnapshots(rig.Journal, new TradingContext(TradingMode.Paper), time, NullLogger.Instance);
         Assert.True(await snapshots.WriteIfDueAsync(portfolio, null, CancellationToken.None)); // 23:50
 

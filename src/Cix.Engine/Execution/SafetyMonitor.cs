@@ -85,22 +85,38 @@ public sealed partial class SafetyMonitor : BackgroundService
             }
         }
 
-        // Give the poller time to deliver first quotes after a start.
+        // Give the poller time to deliver first quotes after a start. Then stale data halts everything only where it protects
+        // something (ADR-0021): a coin the account holds, whose stop can't be watched, or every watched coin, when the feed is
+        // down. A quiet coin nobody holds is refused by the gate's own stale-data rule and filtered out by the scan by itself.
         if (reason is null && now - _startedAt >= _options.StaleDataKillAfter)
         {
-            foreach (var symbol in (_tradable?.Current ?? _limits.AllowedSymbols).Order(StringComparer.Ordinal))
+            // Held: positions, plus coins with a working buy or an order sent in the last minutes, which may have filled
+            // since the last sample that could be valued.
+            var held = (snapshot ?? _execution.LatestSample?.Snapshot)?.PositionQuoteBySymbol
+                .Where(p => p.Value > 0m).Select(p => p.Key).ToHashSet(StringComparer.Ordinal);
+            held?.UnionWith(_execution.ActiveSymbols);
+            var checkedCount = 0;
+            var stale = new List<string>();
+            foreach (var symbol in (_tradable?.Current ?? TradableSymbols.None).Order(StringComparer.Ordinal))
             {
                 // A pair the owner just added gets the same time as the engine's start to deliver its first quotes.
                 if (_tradable?.AddedAt(symbol) is { } added && now - added < _options.StaleDataKillAfter)
                     continue;
 
+                checkedCount++;
                 var quote = _market.Quote(symbol);
                 if (quote is null || now - quote.AsOf > _options.StaleDataKillAfter)
-                {
-                    reason = $"No fresh market data for {symbol} for over {_options.StaleDataKillAfter.TotalMinutes:0} minutes.";
-                    break;
-                }
+                    stale.Add(symbol);
             }
+
+            // Without a sample yet the engine can't tell what is held: every watched coin counts as held.
+            var heldStale = stale.FirstOrDefault(s => held is null || held.Contains(s));
+            if (heldStale is not null)
+                reason = $"No fresh market data for {heldStale} for over {_options.StaleDataKillAfter.TotalMinutes:0} minutes.";
+            else if (checkedCount > 0 && stale.Count == checkedCount)
+                reason = $"No fresh market data for any watched coin for over {_options.StaleDataKillAfter.TotalMinutes:0} minutes.";
+            else if (stale.Count > 0)
+                LogStaleNotHeld(_logger, string.Join(", ", stale), stale.Count);
         }
 
         // The critical state is recorded even over another halt (beside it), so Resume has to name it too; once recorded, it
@@ -134,6 +150,9 @@ public sealed partial class SafetyMonitor : BackgroundService
             }
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "No fresh market data for {Symbols} ({Count}); not held, so no halt: the gate and the scan leave them out")]
+    private static partial void LogStaleNotHeld(ILogger logger, string symbols, int count);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Drawdown {Drawdown} reached the limit: cancelled {Count} open buys; sells stay allowed")]
     private static partial void LogDrawdownBuysCancelled(ILogger logger, int count, decimal drawdown);

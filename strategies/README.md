@@ -62,7 +62,7 @@ Balanced v2 and Risky v3 start as drafts, which never run: the owner sets their 
 
 ## Trading strategies
 
-Both are signal-driven (ADR-0006), trade the same coins (`AllowedSymbols`) and have the same instructions, order size (`orderQuote` 5), risk per trade (1) and daily loss stop (5). The engine's scanner does the arithmetic: filters, ranking, risk-based size, stop and target, from `parameters.scanner`. The trader acts only on `scan_market` signals, and runs only when the signals change, plus a review every 4 hours.
+Both are signal-driven (ADR-0006), scan the coins the owner watches (the Coins tab, ADR-0021) and have the same instructions, order size (`orderQuote` 5), risk per trade (1) and daily loss stop (5). The engine's scanner does the arithmetic: filters, ranking, risk-based size, stop and target, from `parameters.scanner`. The trader acts only on `scan_market` signals, and runs only when the signals change, plus a review every 4 hours.
 
 `good.v1.json`: strict, for results close to real money.
 - Filters: 24h volume at least 20,000 EUR, spread at most 0.4%, hourly ATR at least 1× the round-trip cost (so BTC qualifies).

@@ -14,14 +14,14 @@ The engine runs on your PC with simulated money and live Revolut X prices. A Cla
    ```
 2. Remove any test connection you added by hand: `claude mcp remove cix-test`. The trader's connection is in `tools/trader/mcp.json` and is used only by the run script, so ordinary Claude Code sessions in this repo don't get trading tools.
 3. Hooks need Git Bash (Claude Code's default on Windows), not WSL.
-4. Persistence (recommended): run the Cosmos DB emulator so the paper account, journal and engine state survive restarts. With Docker Desktop:
+4. Persistence (needed to trade): run the Cosmos DB emulator. The watched coins live there and are added from the dashboard (ADR-0021), so without Cosmos the engine watches and trades nothing; it also keeps the paper account, journal and engine state across restarts. With Docker Desktop:
    ```powershell
    docker run --detach --name cosmos --restart unless-stopped -p 8081:8081 -p 1234:1234 mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest --protocol https
    dotnet user-secrets set Cosmos:Enabled true --project src/Cix.Engine
    ```
    The engine creates the `cix` database on start. Browse it at http://localhost:1234. `--restart unless-stopped` brings the emulator back after a reboot; its data lives in the container, so don't remove the container. Without Cosmos, paper balances reset whenever the engine stops.
 
-5. Choose what can be traded. The engine considers a curated universe (`Scanner:Universe` in `src/Cix.Engine/appsettings.json`: BTC, ETH, SOL, LINK, AVAX, SUI, NEAR against EUR) but trades only the symbols that are also in `config/risk-limits.json` → `AllowedSymbols`, which only you edit. To trade the whole universe, list all seven there. Or add `"AllowedQuoteCurrency": "EUR"` and `"MaxTradableSymbols": 15` to that file's `Risk` section: you can then add and remove any EUR pair from the dashboard's Coins tab without a redeploy (ADR-0016). Symbols the exchange doesn't list or has suspended are skipped at every scan.
+5. Choose what can be traded. No pair list lives in configuration (ADR-0021). `config/risk-limits.json`, which only you edit, holds one rule: `"AllowedQuoteCurrency": "EUR"` and `"MaxTradableSymbols"` (1 to 50). You add and remove coins on the dashboard's Coins tab: every added coin is watched (prices, candles, the scan), and it trades only while it passes the running strategy's filters. A thin or volatile coin is shown as filtered out, with the reason. Coins the account holds are always watched, and a held coin can't be removed. A new environment starts with nothing watched. Symbols the exchange doesn't list or has suspended are skipped at every scan.
 
 ## Every session
 
@@ -55,7 +55,7 @@ claude --mcp-config "$env:USERPROFILE\cix-owner.json" --strict-mcp-config
 ```
 Then ask things like "summarise today's journal" or "pause trading". Or read the journal files in `%LOCALAPPDATA%\cix\journal\paper\` (one JSON line per event: tool calls, orders with the agent's rationale, fills, kill-switch events).
 
-To pause everything: stop the run script, or call `pause_trading` with the owner key. The engine also halts on its own at the hard drawdown ceiling, after stale market data, after repeated risk-gate rejections, or when it finds an order it didn't place.
+To pause everything: stop the run script, or call `pause_trading` with the owner key. The engine also halts on its own at the hard drawdown ceiling, when a held coin, or every watched coin, has had no fresh market data for 15 minutes (a quiet coin nobody holds is only left out of trading), after repeated risk-gate rejections, or when it finds an order it didn't place.
 
 ## Changing the strategy
 
