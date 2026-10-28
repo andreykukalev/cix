@@ -2,7 +2,7 @@
   "Risk": {
     "AllocationQuote": 1000,
     "MaxOrderQuote": 50,
-    "MaxPositionQuotePerSymbol": 25,
+    "MaxPositionQuotePerSymbol": 100,
     "MaxDailyLossQuote": 50,
     "MaxDrawdownFraction": 0.10,
     "MaxOrdersPerMinute": 10,
