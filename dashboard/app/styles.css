@@ -98,6 +98,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   margin: 0; padding: 10px 14px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); border: 1px solid var(--line);
 }
 .banner.bad { background: var(--bad-bg); color: var(--bad); }
+.coins-change { margin-bottom: 10px; }
+.coins-change ul { margin: 6px 0; padding-left: 18px; }
+.badge.level { text-transform: none; letter-spacing: 0; white-space: nowrap; }
 
 .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 .health { display: grid; gap: 8px; }

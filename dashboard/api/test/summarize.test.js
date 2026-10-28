@@ -138,3 +138,18 @@ test('agent jobs: the latest run of each job and how it ended, with today\'s fai
   assert.deepEqual(jobs.trader, { last: { runId: 'run-2', purpose: 'signals', at: '2026-10-27T12:19:40Z', state: 'done' }, failedToday: 1, notRunToday: 0, cappedAt: null });
   assert.equal(jobs.analyst.last.state, 'running');
 });
+
+test('the last coin filter change reaches the page checked again, and the switch previews stay with the Strategy tab', () => {
+  const lastChange = {
+    at: '2026-10-25T12:31:00+00:00', fromSpec: 'balanced@v1#ab12', toSpec: '<b>@v1',
+    added: ['DOGE-EUR', 'DOGE-EUR', 'bad'], removed: ['ETH-EUR'], heldOutside: ['ETH-EUR', 5],
+  };
+  const withChange = { ...status, filters: { lastChange }, lastScan: { ...status.lastScan, previews: [{ name: 'safe', version: 1, passing: [], excluded: {} }] } };
+  const view = summarize({ mode: 'paper', status: withChange, journal: [], stateDocs: [] }, NOW);
+  assert.deepEqual(view.engine.filterChange, {
+    at: lastChange.at, fromSpec: 'balanced@v1#ab12', toSpec: null, added: ['DOGE-EUR'], removed: ['ETH-EUR'], heldOutside: ['ETH-EUR'],
+  });
+  assert.equal('previews' in view.cycle.lastScan, false);
+  assert.equal(summarize({ mode: 'paper', status, journal: [], stateDocs: [] }, NOW).engine.filterChange, null);
+  assert.equal(summarize({ mode: 'paper', status: { ...status, filters: { lastChange: { at: 'soon' } } }, journal: [], stateDocs: [] }, NOW).engine.filterChange, null);
+});

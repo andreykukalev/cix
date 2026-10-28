@@ -114,6 +114,35 @@ function strategyItem(spec, keys, active) {
   };
 }
 
+const PAIR = /^[A-Z0-9]{1,20}-[A-Z]{3,5}$/;
+const REASON = /^[a-z0-9-]{1,40}$/; // the scanner's reason codes, such as low-volume
+const pairs = (value) => (Array.isArray(value) ? [...new Set(value.filter((s) => typeof s === 'string' && PAIR.test(s)))] : []);
+
+/**
+ * What switching to a strategy would do to the watched coins, from the engine's preview at the latest scan (ADR-0021): the
+ * coins that would enter trading (pass its filters, and the running strategy's don't), those that would leave, with the
+ * scanner's reason, and which of them the account holds. The engine runs both strategies' filters on the same data; the
+ * page only compares the lists. Null for the running strategy, or until the engine has previewed this one.
+ */
+function coinPreview(item, scan, held) {
+  if (item.active) return null;
+  const p = (Array.isArray(scan?.previews) ? scan.previews : []).find((x) => x?.name === item.name && Number(x?.version) === item.version);
+  if (!p) return null;
+  const current = new Set((Array.isArray(scan.market) ? scan.market : [])
+    .filter((r) => typeof r?.symbol === 'string' && PAIR.test(r.symbol) && r.rank !== null && r.rank !== undefined).map((r) => r.symbol));
+  const passing = new Set(pairs(p.passing));
+  const excluded = p.excluded && typeof p.excluded === 'object' ? p.excluded : {};
+  return {
+    at: scan.at ?? null,
+    enter: [...passing].filter((s) => !current.has(s)).sort().map((symbol) => ({ symbol, held: held.has(symbol) })),
+    leave: [...current].filter((s) => !passing.has(s)).sort().map((symbol) => ({
+      symbol,
+      held: held.has(symbol),
+      reason: typeof excluded[symbol] === 'string' && REASON.test(excluded[symbol]) ? excluded[symbol] : null,
+    })),
+  };
+}
+
 function order(a, b) {
   const fa = FEATURED.indexOf(a.name);
   const fb = FEATURED.indexOf(b.name);
@@ -153,6 +182,8 @@ function strategiesView({ mode, schema, versions, status, requests }, now) {
     .filter((v) => mode !== 'live' || String(v.status ?? '').toLowerCase() === 'live')
     .map((v) => strategyItem(v, keys, active))
     .sort(order);
+  const held = new Set(pairs((status?.portfolio?.holdings ?? []).map((h) => h?.symbol)));
+  for (const s of strategies) s.preview = coinPreview(s, status?.lastScan ?? null, held);
   const selection = status?.strategySelection ?? null;
   return {
     generatedAt: new Date(now).toISOString(),

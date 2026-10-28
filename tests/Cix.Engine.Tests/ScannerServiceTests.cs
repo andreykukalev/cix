@@ -140,6 +140,26 @@ public sealed class ScannerServiceTests
     }
 
     [Fact]
+    public async Task EveryScan_PreviewsTheOtherStrategies_OnTheSameCoins()
+    {
+        var tools = Uptrend();
+        var thick = JsonDocument.Parse("{\"minQuoteVolume24h\": 1000000000000}").RootElement.Clone();
+        tools.Switchable.Set([
+            tools.Specs.Active!, // the running one: the scan itself, not a preview
+            ToolRig.Observer with { Name = "same", Version = 2 }, // no scanner settings: the same filters
+            ToolRig.Observer with { Name = "thick", Version = 3, Parameters = new Dictionary<string, JsonElement> { ["scanner"] = thick } },
+        ]);
+
+        await tools.Scanner.ScanAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "same", "thick" }, tools.Scanner.Previews.Select(p => p.Name));
+        Assert.Equal(new[] { Rig.Btc }, tools.Scanner.Previews[0].Passing);
+        Assert.Empty(tools.Scanner.Previews[1].Passing); // BTC would leave trading under the thick strategy
+        Assert.True(tools.Scanner.Previews[1].Excluded.ContainsKey(Rig.Btc));
+        Assert.Single(tools.Scanner.Latest!.Ranked); // the running strategy's scan is unchanged
+    }
+
+    [Fact]
     public void StrategyFilter_WithoutAScanner_RefusesEveryBuy()
     {
         using var services = new ServiceCollection().BuildServiceProvider();

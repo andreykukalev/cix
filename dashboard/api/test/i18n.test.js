@@ -59,7 +59,7 @@ test('every label the page looks up has its Russian: statuses, selections, profi
   const labels = [
     ...Object.values(V.STATUS).map((s) => s.label), ...Object.values(V.SELECTION).map((s) => s.label),
     ...Object.values(V.PROFILES).flatMap((p) => [p.title, p.profile]), ...Object.values(V.SELL_DESCRIPTIONS), ...Object.values(V.PORTIONS),
-    ...Object.values(V.BLOCK_DETAILS), ...Object.values(V.WHY_LABELS),
+    ...Object.values(V.BLOCK_DETAILS), ...Object.values(V.WHY_LABELS), ...Object.values(V.LEVELS).flatMap((l) => [l.label, l.detail]),
     'Custom', 'Manual', 'May (month)', 'strategy exposure cap reached', 'cooldown until 13:00 UTC',
     'at the stop-loss', 'at the take-profit', 'the trend turned down',
     'Done', 'Failed', "Didn't start", 'Running now', 'for new signals', 'position review', 'scheduled',

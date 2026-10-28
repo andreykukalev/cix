@@ -59,7 +59,8 @@ internal sealed class ToolRig
         Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits, Rig.Journal, Rig.Tradable);
         Scanner = new MarketScanService(
             Universe, Features, Candles, Rig.Pairs, Rig.Execution,
-            Rig.KillSwitch, Journal, Specs, new ScannerOptions { ProtectiveExits = protectiveExits }, Rig.Time, NullLogger<MarketScanService>.Instance, Views);
+            Rig.KillSwitch, Journal, Specs, new ScannerOptions { ProtectiveExits = protectiveExits }, Rig.Time, NullLogger<MarketScanService>.Instance, Views,
+            switchable: Switchable);
         Scan = new ScanTools(Context, Scanner);
         Analyst = new AnalystTools(Context, AnalystSpecs, Universe, Features, Scanner, Views, Rig.Time);
         Operator = new OperatorTools(Context, Journal, Rig.Execution);
@@ -72,6 +73,7 @@ internal sealed class ToolRig
     public ToolCallContext Context { get; }
     public OrderTools Orders { get; }
     public InMemoryCandleStore Candles { get; } = new();
+    public SwitchableSpecs Switchable { get; } = new();
     public FeatureService Features { get; }
     public AgentTools Agent { get; }
     public MarketScanService Scanner { get; }

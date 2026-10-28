@@ -185,7 +185,7 @@ function problems(entries, status, readErrors) {
   return list.sort(byTimeDesc);
 }
 
-function withoutMarket({ market, ...scan }) {
+function withoutMarket({ market, previews, ...scan }) { // the switch previews are the Strategy tab's
   return scan;
 }
 
@@ -226,6 +226,26 @@ function strategySelection(selection) {
   };
 }
 
+const PAIR = /^[A-Z0-9]{1,20}-[A-Z]{3,5}$/;
+const SPEC = /^[a-z0-9-]{1,40}@v\d{1,4}(?:#[0-9a-f]{1,64})?$/;
+const pairList = (value) => (Array.isArray(value) ? [...new Set(value.filter((s) => typeof s === 'string' && PAIR.test(s)))].sort().slice(0, 100) : []);
+
+/**
+ * The last change of the coin filters (a strategy switch, ADR-0021): which watched coins entered and left trading, and which
+ * of those the account holds. The Coins tab shows it until the owner dismisses it. Checked again: the page trusts no one.
+ */
+function filterChange(change) {
+  if (!change || typeof change !== 'object' || !Number.isFinite(Date.parse(change.at ?? ''))) return null;
+  return {
+    at: change.at,
+    fromSpec: SPEC.test(change.fromSpec ?? '') ? change.fromSpec : null,
+    toSpec: SPEC.test(change.toSpec ?? '') ? change.toSpec : null,
+    added: pairList(change.added),
+    removed: pairList(change.removed),
+    heldOutside: pairList(change.heldOutside),
+  };
+}
+
 /**
  * @param {{mode: string, status: object|null, engineState: object|null, paperAccount: object|null, journal: object[], marketViews?: object[], stateDocs: object[], readErrors?: string[]}} input
  *   Document values (the `value` of state documents, the `entry` of journal documents). `marketViews` are the latest
@@ -248,6 +268,7 @@ function summarize(input, now) {
       strategy: status?.strategy ?? null,
       // Where the engine stands on the owner's latest strategy switch: the header and the Active strategy tile show it.
       strategySelection: strategySelection(status?.strategySelection),
+      filterChange: filterChange(status?.filters?.lastChange),
       halted: status?.halted ?? kill?.engaged ?? null,
       haltedBy: status?.haltedBy ?? (kill?.engaged ? kill.by ?? null : null),
       haltCategory: status?.haltCategory ?? (kill?.engaged ? 'Halted (the reason is in the journal).' : null),

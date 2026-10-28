@@ -60,6 +60,7 @@
   function coins(view, pairs, lang) {
     const market = Array.isArray(view?.briefing?.market) ? view.briefing.market : [];
     const holdings = new Map((view?.portfolio?.holdings ?? []).filter((h) => SYMBOL.test(h?.symbol ?? '')).map((h) => [h.symbol, h]));
+    const watched = Array.isArray(pairs?.tradable) ? new Map(pairs.tradable.filter((p) => SYMBOL.test(p?.symbol ?? '')).map((p) => [p.symbol, p])) : null;
     const row = (symbol, rest) => ({
       symbol, quote: symbol.split('-')[1], rank: null, signal: null, note: null, why: null,
       hour: change(null, '1 hour'), day: change(null, '24 hours'), held: holdings.has(symbol), value: holdings.get(symbol)?.valueQuote ?? null, inScan: false, ...rest,
@@ -86,7 +87,30 @@
     for (const [symbol] of holdings) {
       if (!listed.has(symbol)) rows.push(row(symbol, { note: t('not in the latest scan') }));
     }
+    for (const r of rows) r.level = watched ? level(r, watched.get(r.symbol)) : null;
     return rows.sort((a, b) => (Number(b.held) - Number(a.held)) || ((a.rank ?? 1e9) - (b.rank ?? 1e9)) || a.symbol.localeCompare(b.symbol));
+  }
+
+  // Where a watched coin stands (ADR-0021): it trades only while it passes the strategy's filters at the latest scan.
+  const LEVELS = {
+    trading: { label: 'In trading', tone: 'ok', detail: 'Passes the strategy\'s filters at the latest scan: the strategy can buy it.' },
+    filtered: { label: 'Filtered out', tone: '', detail: 'Watched, but the strategy\'s filters exclude it at the latest scan: it isn\'t bought. The reason is under Why no buy.' },
+    waiting: { label: 'Waiting for data', tone: 'pending', detail: 'Not enough fresh prices or hourly candles yet: it isn\'t bought until the scan has them.' },
+    outside: { label: 'Held, outside the strategy', tone: 'warn', detail: 'You hold it, but the strategy\'s filters exclude it: it keeps its stop and target and the strategy buys no more. Keep it or sell it yourself.' },
+    new: { label: 'Just added', tone: 'pending', detail: 'Its prices are loading; the engine scans a new pair within a minute of adding it.' },
+    adopted: { label: 'On the account', tone: 'warn', detail: 'Held, but you didn\'t add it: the engine watches it and keeps its stop, and the strategy doesn\'t buy it until you add it.' },
+  };
+  const WAITING = new Set(['stale', 'insufficient-history']);
+
+  /** A coin row's level: null for a coin that isn't watched (only held, not yet on the list). */
+  function level(row, pair) {
+    if (!pair) return null;
+    const key = pair.adopted ? 'adopted'
+      : !row.inScan ? 'new'
+        : row.rank !== null && row.rank !== undefined ? 'trading'
+          : WAITING.has(row.note) ? 'waiting'
+            : row.held ? 'outside' : 'filtered';
+    return { key, label: t(LEVELS[key].label), tone: LEVELS[key].tone, detail: t(LEVELS[key].detail) };
   }
 
   /**
@@ -326,20 +350,65 @@
     unreadable: { label: 'Database unreadable', tone: 'warn' },
   };
 
+  /** A strategy label (name@vN or name@vN#hash) as the page names it; the label itself if it isn't one. */
+  function specName(label) {
+    const m = /^([a-z0-9-]{1,40})@v(\d{1,4})(?:#[0-9a-f]+)?$/.exec(label ?? '');
+    return m ? strategyName({ name: m[1], version: Number(m[2]) }) : label ?? null;
+  }
+
+  const list = (symbols) => symbols.join(', ');
+
   /**
-   * What the pairs panel says above the list, and what the empty add list shows, from /api/owner/pairs. When only
-   * config/risk-limits.json's own pairs are permitted and all are tradable, it says what the owner adds to widen it.
+   * The Coins tab's banner after a strategy switch (ADR-0021): which coins entered and left trading, and which of those the
+   * account holds. Null when there is nothing to say, or the owner dismissed this change (dismissedAt, the change's time).
+   */
+  function filterChange(change, dismissedAt) {
+    if (!change?.at || change.at === dismissedAt) return null;
+    const lines = [];
+    if (change.added.length) lines.push(t('Entered trading: {coins}.', { coins: list(change.added) }));
+    if (change.removed.length) lines.push(t('Left trading: {coins}.', { coins: list(change.removed) }));
+    if (change.heldOutside.length) {
+      lines.push(t('Held and outside the new strategy: {coins}. They keep their stop and target, and the strategy buys no more; keep or sell them yourself.', { coins: list(change.heldOutside) }));
+    }
+    if (!lines.length) lines.push(t('No coin entered or left trading.'));
+    const to = specName(change.toSpec);
+    const from = specName(change.fromSpec);
+    const title = to && from ? t('The coin filters changed from {from} to {to}', { from, to }) : t('The coin filters changed');
+    return { at: change.at, title, lines };
+  }
+
+  /**
+   * What the switch dialog says a strategy would do to the watched coins, from the engine's preview at the latest scan:
+   * the coins that would enter and leave trading, and of those the ones held. Lines of text; one line when there is no
+   * preview yet or nothing moves.
+   */
+  function strategyCoins(preview) {
+    if (!preview) return [t('The engine hasn\'t previewed this strategy on your coins yet; it does at every scan.')];
+    const lines = [];
+    const held = (c) => (c.held ? `${c.symbol} (${t('held')})` : c.symbol);
+    if (preview.enter.length) lines.push(t('Enter trading: {coins}.', { coins: list(preview.enter.map(held)) }));
+    if (preview.leave.length) {
+      lines.push(t('Leave trading: {coins}.', { coins: list(preview.leave.map((c) => `${held(c)}${c.reason ? `: ${t(c.reason)}` : ''}`)) }));
+    }
+    const kept = preview.leave.filter((c) => c.held).map((c) => c.symbol);
+    if (kept.length) lines.push(t('You hold {coins}: they keep their stop and target, and the new strategy buys no more.', { coins: list(kept) }));
+    if (!lines.length) lines.push(t('No coin enters or leaves trading.'));
+    return lines;
+  }
+
+  /**
+   * What the pairs panel says above the list, and what the empty add list shows, from /api/owner/pairs: what the limits
+   * allow (the currency, the cap, how many are watched) and that the strategy's filters decide what trades (ADR-0021).
    */
   function pairsNote(view) {
     const options = (view?.available ?? []).filter((p) => !p.pending);
-    const ownerMustWiden = !!view?.configuredOnly && !options.length;
-    const file = view?.mode === 'live' ? 'config/risk-limits.live.json' : 'config/risk-limits.json'; // each mode has its own limits
+    const n = view?.tradable?.length ?? 0;
+    const quote = view?.quoteCurrency ?? '';
     const note = view?.readOnlyReason ? t(view.readOnlyReason)
-      : ownerMustWiden ? t('No other pairs can be added yet: the safety limits permit only the pairs in {file}, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to {file}; once that is deployed, they can be added and removed here without another deploy.', { file })
-        : view?.full ? t('The most pairs the safety limits allow are tradable: remove one to add another.')
-          : view?.openToAnyPair ? t('You can add any {quote} pair the exchange lists; the strategy\'s filters decide whether it trades.', { quote: view.quoteCurrency ?? '' }).replace('  ', ' ')
-            : t('You can turn the pairs in {file} off and on again here. Adding other coins needs that list widened first.', { file });
-    const empty = view?.configuredOnly ? t('no other pairs permitted') : view?.full ? t('the limit is reached') : t('none available');
+      : view?.full ? t('The most pairs the safety limits allow are watched: remove one to add another.')
+        : view?.cap ? t('You can watch any {quote} pair the exchange lists, up to {cap} at once ({n} watched now). The strategy\'s filters decide at every scan which of them trade.', { quote, cap: view.cap, n })
+          : t('You can watch any {quote} pair the exchange lists ({n} watched now). The strategy\'s filters decide at every scan which of them trade.', { quote, n });
+    const empty = view?.full ? t('the limit is reached') : t('none available');
     return { note, empty, options };
   }
 
@@ -546,6 +615,7 @@
   return {
     change, coins, why, removeBlock, BLOCK_DETAILS, WHY_LABELS, stepDetail, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
     paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES, pairsNote, SELECTION, SELL_DESCRIPTIONS,
+    LEVELS, filterChange, strategyCoins, specName,
     contentLang, pick, months, signalItems, monitors, HEALTH,
   };
 }));

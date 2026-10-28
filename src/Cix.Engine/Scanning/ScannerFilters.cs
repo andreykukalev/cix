@@ -14,13 +14,28 @@ namespace Cix.Engine.Scanning;
 /// <param name="Passing">Coins that passed every filter, sorted.</param>
 /// <param name="Excluded">Coins that didn't, with the scanner's reason code (for example <c>low-volume</c>).</param>
 /// <param name="EligibilityAt">The scan that set <paramref name="Passing"/> and <paramref name="Excluded"/>.</param>
+/// <param name="LastChange">The last time the filters changed (a strategy switch), with the coins it moved; the Coins tab shows it.</param>
 public sealed record ScannerFilterState(
     string? Spec,
     ScannerParameters Filters,
     DateTimeOffset Since,
     IReadOnlyList<string> Passing,
     IReadOnlyDictionary<string, string> Excluded,
-    DateTimeOffset EligibilityAt);
+    DateTimeOffset EligibilityAt,
+    FilterChange? LastChange = null);
+
+/// <summary>
+/// What a change of filters (a strategy switch) did to the watched coins (ADR-0021): those that now pass and didn't, those that
+/// passed and don't, and of the coins that no longer pass, the ones the account holds. Those keep their stops and targets; the
+/// owner decides what to do with them.
+/// </summary>
+public sealed record FilterChange(
+    DateTimeOffset At,
+    string? FromSpec,
+    string? ToSpec,
+    IReadOnlyList<string> Added,
+    IReadOnlyList<string> Removed,
+    IReadOnlyList<string> HeldOutside);
 
 public interface IScannerFilterStore
 {
@@ -78,7 +93,9 @@ public sealed partial class ScannerFilterRecorder(IScannerFilterStore store, IJo
     public ScannerFilterState? Current => Volatile.Read(ref _state);
 
     /// <summary>Compares <paramref name="scan"/>, made with <paramref name="filters"/>, against the record and records any change.</summary>
-    public async Task RecordAsync(ScanResult scan, ScannerParameters filters, string? spec, CancellationToken cancellationToken)
+    /// <param name="held">The coins the account holds, so a filter change says which of them no longer pass.</param>
+    public async Task RecordAsync(
+        ScanResult scan, ScannerParameters filters, string? spec, CancellationToken cancellationToken, IReadOnlyCollection<string>? held = null)
     {
         ArgumentNullException.ThrowIfNull(scan);
         ArgumentNullException.ThrowIfNull(filters);
@@ -99,10 +116,23 @@ public sealed partial class ScannerFilterRecorder(IScannerFilterStore store, IJo
 
             if (previous is null || previous.Filters != filters)
             {
-                var next = new ScannerFilterState(spec, filters, scan.AsOf, passing, excluded, scan.AsOf);
+                var change = previous is null ? null : new FilterChange(
+                    scan.AsOf, previous.Spec, spec,
+                    passing.Except(previous.Passing, StringComparer.Ordinal).ToList(),
+                    previous.Passing.Except(passing, StringComparer.Ordinal).ToList(),
+                    (held ?? []).Where(s => !passing.Contains(s, StringComparer.Ordinal)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
+                var next = new ScannerFilterState(spec, filters, scan.AsOf, passing, excluded, scan.AsOf, change ?? previous?.LastChange);
                 _candidate = null;
                 Take(next); // the change is taken before it is journaled: a failed save never journals it twice
-                await AppendAsync(FiltersKind, FiltersSummary(previous, next), FiltersData(previous, next), spec, cancellationToken).ConfigureAwait(false);
+                var data = FiltersData(previous, next);
+                if (change is not null)
+                {
+                    data["added"] = string.Join(',', change.Added);
+                    data["removed"] = string.Join(',', change.Removed);
+                    data["heldOutside"] = string.Join(',', change.HeldOutside);
+                }
+
+                await AppendAsync(FiltersKind, FiltersSummary(previous, next), data, spec, cancellationToken).ConfigureAwait(false);
                 await SaveAsync(next, cancellationToken).ConfigureAwait(false);
                 return;
             }

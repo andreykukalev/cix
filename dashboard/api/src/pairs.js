@@ -1,8 +1,9 @@
 'use strict';
 // Trading pairs on the Coins tab: which pairs the engine trades now, which the owner can add (the exchange's active pairs in
 // the quote currency config/risk-limits.json permits), and the owner's add and remove requests. The engine writes the list
-// and the catalog (state container) and does every check again: an add needs an active pair with enough 24h trading, a
-// remove needs nothing held or working in the coin. A change is a request document the engine takes, because the
+// and the catalog (state container) and does every check again: an add needs an active pair in that currency within the
+// cap, a remove needs nothing held or working in the coin. Whether a watched coin trades is the strategy's filters' call at
+// every scan (ADR-0021). A change is a request document the engine takes, because the
 // dashboard's writer can only create documents in the requests container (ADR-0015, ADR-0016). Live changes its own list,
 // within its own limits file, only with confirmLive (ADR-0018). Pure functions: tested on their own.
 
@@ -77,10 +78,7 @@ function symbols(list) {
  */
 function pairsView({ mode, catalog, list, requests }, now) {
   const tradable = symbols(list?.symbols ?? catalog?.tradable);
-  const always = new Set(symbols(catalog?.alwaysPermitted));
-  // An engine before ADR-0021 lists the pairs config/risk-limits.json names; since then any pair in the quote currency is
-  // permitted, and the engine names the held coins it watches that the owner hasn't added.
-  const legacy = Array.isArray(catalog?.alwaysPermitted);
+  // Held coins the engine watches although the owner didn't add them: the strategy doesn't buy them until the owner does.
   const adopted = new Set(symbols(catalog?.adopted));
   const capValue = Number(catalog?.cap); // the engine writes numbers as strings
   const cap = Number.isInteger(capValue) && capValue > 0 ? capValue : null;
@@ -88,7 +86,8 @@ function pairsView({ mode, catalog, list, requests }, now) {
   const pendingFor = (symbol) => pending.find((r) => r.symbol === symbol) ?? null;
   const available = (Array.isArray(catalog?.pairs) ? catalog.pairs : [])
     .filter((p) => p && typeof p.symbol === 'string' && SYMBOL.test(p.symbol) && p.permitted && !tradable.includes(p.symbol))
-    .map((p) => ({ symbol: p.symbol, base: typeof p.base === 'string' ? p.base : p.symbol.split('-')[0] }));
+    .map((p) => ({ symbol: p.symbol, base: typeof p.base === 'string' ? p.base : p.symbol.split('-')[0] }))
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
   const editable = MODES.has(mode) && !!catalog;
   return {
     generatedAt: new Date(now).toISOString(),
@@ -98,14 +97,9 @@ function pairsView({ mode, catalog, list, requests }, now) {
     quoteCurrency: typeof catalog?.quoteCurrency === 'string' ? catalog.quoteCurrency : null,
     cap,
     full: cap !== null && tradable.length >= cap,
-    // Without a quote currency only the configured list is permitted: removed ones can be added back, nothing else.
-    openToAnyPair: legacy ? always.size > 0 && available.some((p) => !always.has(p.symbol)) : !!catalog,
-    // Nothing outside config/risk-limits.json's own list is permitted (the engine still names the list's quote currency,
-    // and caps it at the list's length): the owner widens the limits to trade other coins.
-    configuredOnly: legacy && !(Array.isArray(catalog.pairs) ? catalog.pairs : []).some((p) => p?.permitted && !always.has(p.symbol)),
     catalogAt: catalog?.updatedAt ?? null,
     changedAt: list?.updatedAt ?? null,
-    tradable: tradable.map((symbol) => ({ symbol, configured: always.has(symbol), adopted: adopted.has(symbol), pending: pendingFor(symbol)?.action ?? null })),
+    tradable: tradable.map((symbol) => ({ symbol, adopted: adopted.has(symbol), pending: pendingFor(symbol)?.action ?? null })),
     available: available.map((p) => ({ ...p, pending: pendingFor(p.symbol)?.action ?? null })),
     requests: (Array.isArray(requests) ? requests : []).map(pairRequestItem)
       .sort((a, b) => (Date.parse(b.createdAt ?? '') || 0) - (Date.parse(a.createdAt ?? '') || 0)),

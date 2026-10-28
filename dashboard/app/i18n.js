@@ -377,22 +377,52 @@
       'Смена стратегии на {label}: принята; движок применит её перед следующим запуском трейдера…',
     'Couldn\'t load the trading pairs: {error}': 'Не удалось загрузить торговые пары: {error}',
     '{n} of at most {cap}': '{n} из максимум {cap}',
-    '{n} tradable': 'торгуется: {n}',
     'changed {ago}': 'изменено {ago}',
-    'The most pairs the safety limits allow are tradable: remove one to add another.':
-      'Торгуется максимум пар, который допускают ограничения безопасности: уберите одну, чтобы добавить другую.',
-    'You can add any {quote} pair the exchange lists; the strategy\'s filters decide whether it trades.':
-      'Можно добавить любую пару в {quote}, которая есть на бирже; торгуется ли она, решают фильтры стратегии.',
-    'No other pairs can be added yet: the safety limits permit only the pairs in {file}, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to {file}; once that is deployed, they can be added and removed here without another deploy.':
-      'Другие пары пока добавить нельзя: ограничения безопасности разрешают только пары из {file}, и все они уже торгуются. Чтобы торговать другими монетами, владелец добавляет в {file} "AllowedQuoteCurrency": "EUR" (любая пара в EUR, которая есть на бирже) и "MaxTradableSymbols" (сколько пар одновременно, например 15); после развёртывания этого изменения пары можно добавлять и убирать здесь без нового развёртывания.',
-    'You can turn the pairs in {file} off and on again here. Adding other coins needs that list widened first.':
-      'Здесь можно отключать и снова включать пары из {file}. Чтобы добавить другие монеты, сначала нужно расширить этот список.',
+    'The most pairs the safety limits allow are watched: remove one to add another.':
+      'Отслеживается максимум пар, который допускают ограничения безопасности: уберите одну, чтобы добавить другую.',
+    'You can watch any {quote} pair the exchange lists, up to {cap} at once ({n} watched now). The strategy\'s filters decide at every scan which of them trade.':
+      'Можно отслеживать любую пару в {quote}, которая есть на бирже, до {cap} одновременно (сейчас {n}). Какие из них торгуются, решают фильтры стратегии при каждом сканировании.',
+    'You can watch any {quote} pair the exchange lists ({n} watched now). The strategy\'s filters decide at every scan which of them trade.':
+      'Можно отслеживать любую пару в {quote}, которая есть на бирже (сейчас {n}). Какие из них торгуются, решают фильтры стратегии при каждом сканировании.',
+    '{n} watched': 'отслеживается: {n}',
+    'In trading': 'Торгуется',
+    'Passes the strategy\'s filters at the latest scan: the strategy can buy it.':
+      'Проходит фильтры стратегии на последнем сканировании: стратегия может её купить.',
+    'Watched, but the strategy\'s filters exclude it at the latest scan: it isn\'t bought. The reason is under Why no buy.':
+      'Отслеживается, но фильтры стратегии исключили её на последнем сканировании: её не покупают. Причина в колонке «Почему нет покупки».',
+    'Waiting for data': 'Ждёт данных',
+    'Not enough fresh prices or hourly candles yet: it isn\'t bought until the scan has them.':
+      'Пока мало свежих цен или часовых свечей: её не покупают, пока у сканера их нет.',
+    'Held, outside the strategy': 'В портфеле, вне стратегии',
+    'You hold it, but the strategy\'s filters exclude it: it keeps its stop and target and the strategy buys no more. Keep it or sell it yourself.':
+      'Монета у вас есть, но фильтры стратегии её исключают: стоп-лосс и тейк-профит остаются, стратегия больше не докупает. Оставить или продать решаете вы.',
+    'Just added': 'Только что добавлена',
+    'Its prices are loading; the engine scans a new pair within a minute of adding it.':
+      'Цены загружаются; движок сканирует новую пару в течение минуты после добавления.',
+    'On the account': 'На счёте',
+    'Held, but you didn\'t add it: the engine watches it and keeps its stop, and the strategy doesn\'t buy it until you add it.':
+      'Монета есть на счёте, но вы её не добавляли: движок отслеживает её и держит стоп-лосс, а стратегия не покупает её, пока вы её не добавите.',
+    Dismiss: 'Скрыть',
+    'The coin filters changed from {from} to {to}': 'Фильтры монет сменились: {from} → {to}',
+    'The coin filters changed': 'Фильтры монет сменились',
+    'Entered trading: {coins}.': 'Начали торговаться: {coins}.',
+    'Left trading: {coins}.': 'Перестали торговаться: {coins}.',
+    'Held and outside the new strategy: {coins}. They keep their stop and target, and the strategy buys no more; keep or sell them yourself.':
+      'В портфеле и вне новой стратегии: {coins}. Стоп-лосс и тейк-профит остаются, стратегия больше не докупает; оставить или продать решаете вы.',
+    'No coin entered or left trading.': 'Ни одна монета не начала и не перестала торговаться.',
+    'Which coins trade': 'Какие монеты торгуются',
+    'The engine hasn\'t previewed this strategy on your coins yet; it does at every scan.':
+      'Движок ещё не проверил эту стратегию на ваших монетах; он делает это при каждом сканировании.',
+    'Enter trading: {coins}.': 'Начнут торговаться: {coins}.',
+    'Leave trading: {coins}.': 'Перестанут торговаться: {coins}.',
+    'You hold {coins}: they keep their stop and target, and the new strategy buys no more.':
+      'У вас есть {coins}: стоп-лосс и тейк-профит остаются, новая стратегия больше не докупает.',
+    'No coin enters or leaves trading.': 'Ни одна монета не начнёт и не перестанет торговаться.',
     'Stop trading {symbol}': 'Прекратить торговлю {symbol}',
     'removing…': 'убираем…',
     Remove: 'Убрать',
     'No pairs listed yet.': 'Пар пока нет.',
     'the limit is reached': 'лимит достигнут',
-    'no other pairs permitted': 'другие пары не разрешены',
     'none available': 'нет доступных',
     'Remove {symbol}': 'Убрать {symbol}',
     'Add {symbol}': 'Добавить {symbol}',
