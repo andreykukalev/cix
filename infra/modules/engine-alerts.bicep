@@ -79,7 +79,7 @@ resource events 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
     enabled: true
     scopes: [logs.id]
     evaluationFrequency: 'PT5M'
-    windowSize: 'PT5M'
+    windowSize: 'PT10M' // overlapping windows, so a line that arrives late is still seen; stateful, so no second email
     criteria: {
       allOf: [
         {
@@ -98,18 +98,16 @@ resource events 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
   }
 }
 
-// A row only when the engine's latest start was a running engine (not standby), at least 15 minutes ago, and it has logged
-// no heartbeat (HeartbeatService, every minute) for 15 minutes. Two days back at most: the limit for log search alerts.
+// A row only when the engine's latest start, heartbeat or standby line is from a running engine (not standby) and over 15
+// minutes old: HeartbeatService logs every minute. Two days back at most, the limit for log search alerts, so after two days
+// of total silence the alert resolves by itself (it fired long before).
 var heartbeatQuery = replace('''
-let engine = ContainerAppConsoleLogs_CL
-  | where TimeGenerated > ago(2d) and ContainerAppName_s == '{app}';
-let lastBeat = toscalar(engine | where Log_s contains 'Heartbeat (' | summarize max(TimeGenerated));
-engine
-| where Log_s contains 'CIX engine started in' or Log_s contains 'Standing by:'
+ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(2d) and ContainerAppName_s == '{app}'
+| where Log_s contains 'Heartbeat (' or Log_s contains 'CIX engine started in' or Log_s contains 'Standing by:'
 | summarize arg_max(TimeGenerated, Log_s)
-| where Log_s !contains 'Standing by:'
-| where TimeGenerated < ago(15m) and (isnull(lastBeat) or lastBeat < ago(15m))
-| project TimeGenerated, LastHeartbeat = lastBeat
+| where isnotnull(TimeGenerated) and Log_s !contains 'Standing by:' and TimeGenerated < ago(15m)
+| project TimeGenerated, LastLine = Log_s
 ''', '{app}', app)
 
 resource heartbeat 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (watchHeartbeat) {

@@ -203,14 +203,14 @@ public sealed class CosmosEngineStateStore : IEngineStateStore
         {
             try
             {
-                _etag = Save(document, _etag);
+                _etag = Save(document, _etag, state);
             }
             catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
             {
                 var (stored, etag) = Read();
                 if (stored is null || !IsOwn(stored, state))
                     throw new IOException("Engine state was changed by something else; restart the engine to reload it.", ex);
-                _etag = SameJson(stored, state) ? etag : Save(document, etag);
+                _etag = SameJson(stored, state) ? etag : Save(document, etag, state);
             }
 
             _unconfirmed = null;
@@ -222,17 +222,29 @@ public sealed class CosmosEngineStateStore : IEngineStateStore
         }
         catch (Exception ex) when (ex is not IOException)
         {
-            // Includes SDK timeouts (an OperationCanceledException): no caller token is involved here. The write may have
-            // reached the database all the same, so a later conflict with exactly this state is recognised as this store's own.
-            _unconfirmed = state;
+            // Includes SDK timeouts (an OperationCanceledException): no caller token is involved here.
             throw new IOException($"Engine state could not be saved ({ex.GetType().Name}).", ex);
         }
     }
 
-    private string? Save(CosmosDb.StateDocument<EngineState> document, string? etag) =>
-        (etag is null
-            ? _container.CreateItemAsync(document, new PartitionKey(_id)).GetAwaiter().GetResult()
-            : _container.ReplaceItemAsync(document, _id, new PartitionKey(_id), new ItemRequestOptions { IfMatchEtag = etag }).GetAwaiter().GetResult()).ETag;
+    /// <summary>
+    /// Sends one write. One that fails other than by a conflict may have reached the database all the same (a lost answer),
+    /// so a later conflict with exactly this state is recognised as this store's own.
+    /// </summary>
+    private string? Save(CosmosDb.StateDocument<EngineState> document, string? etag, EngineState state)
+    {
+        try
+        {
+            return (etag is null
+                ? _container.CreateItemAsync(document, new PartitionKey(_id)).GetAwaiter().GetResult()
+                : _container.ReplaceItemAsync(document, _id, new PartitionKey(_id), new ItemRequestOptions { IfMatchEtag = etag }).GetAwaiter().GetResult()).ETag;
+        }
+        catch (Exception ex) when (ex is not CosmosException { StatusCode: HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict })
+        {
+            _unconfirmed = state;
+            throw;
+        }
+    }
 
     /// <summary>
     /// Whether <paramref name="stored"/> is a state this store wrote or was writing: the one being written now, the one it

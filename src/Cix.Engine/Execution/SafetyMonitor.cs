@@ -27,9 +27,9 @@ public sealed partial class SafetyMonitor : BackgroundService
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
     /// <summary>
-    /// How long the running checks may go without starting or finishing a round before the engine counts as stalled: then
-    /// <c>/healthz</c> fails and the platform restarts it. Far above a slow round (each exchange call gives up within about a
-    /// minute), so an exchange or database outage alone never restarts it.
+    /// How long the running checks may go without progress (a round, or a step of one, starting or finishing) before the engine
+    /// counts as stalled: then <c>/healthz</c> fails and the platform restarts it. Far above a slow step (each exchange call gives
+    /// up within about a minute), so an exchange or database outage alone should not restart it.
     /// </summary>
     public static readonly TimeSpan StalledAfter = TimeSpan.FromMinutes(15);
 
@@ -137,6 +137,8 @@ public sealed partial class SafetyMonitor : BackgroundService
             LogCheckFailed(_logger, "valuation", ex.GetType().Name, ex.Message);
         }
 
+        MarkProgress(); // each step counts: a slow exchange makes a round long, not stalled
+
         // Give the poller time to deliver first quotes after a start. Then stale data halts everything only where it protects
         // something (ADR-0021): a coin the account holds, whose stop can't be watched, or every watched coin, when the feed is
         // down. A quiet coin nobody holds is refused by the gate's own stale-data rule and filtered out by the scan by itself.
@@ -184,6 +186,8 @@ public sealed partial class SafetyMonitor : BackgroundService
             {
                 LogCheckFailed(_logger, "kill switch", ex.GetType().Name, ex.Message);
             }
+
+            MarkProgress();
         }
 
         if (now - _lastReconcile >= _options.ReconcileInterval)

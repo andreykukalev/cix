@@ -204,12 +204,12 @@ Everything else the protection handles: partial fills (re-quoted every 2 s), ord
 
 You hear about trouble without opening the dashboard (`infra/modules/engine-alerts.bicep`). `provision.ps1` sends them to the address it uses for the budget (your sign-in, or `-BudgetEmail`), by email and as a push to the Azure mobile app signed in with that address:
 
-- **Engine needs attention**: a stop-loss exit blocked or failing, the kill switch engaged (by a safety rule, the reconciler or your own Pause), drawdown at the hard ceiling, the engine lease lost (once on every deploy too, when the new revision takes over), the safety checks failing, the engine state not saved, or the container restarting. The alert's `Event` says which.
-- **No heartbeat**: the engine runs (`startEngine`, and not standing by) but has logged nothing for 15 minutes: it stopped, hangs, or the workspace reached its 0.1 GB daily log cap.
+- **Engine needs attention**: a stop-loss exit blocked or failing, the kill switch engaged (by a safety rule, the reconciler or your own Pause), drawdown at the hard ceiling, the engine lease lost (once on every deploy too, when the new revision takes over), the safety checks failing, the engine state not saved, or the container restarting (also during a deploy, as the old revision stops and the new one starts). The alert's `Event` says which.
+- **No heartbeat**: the engine runs (`startEngine`, and not standing by) but has logged no heartbeat for 15 minutes: it stopped, hangs, or the workspace reached its 0.1 GB daily log cap. After two days of total silence it resolves by itself (log alerts look back two days at most).
 
 Each alert fires once and resolves by itself when the condition clears. They cost about 3 USD a month per environment. They and the engine's health probe change only when you run `provision.ps1` (CI deploys images, not templates).
 
-The engine's liveness probe asks `/healthz`, which answers 503 (`stalled`) when the safety checks have made no progress for 15 minutes: the platform then restarts the engine. An outage of the exchange or the database alone never does that.
+The engine's liveness probe asks `/healthz`, which answers 503 (`stalled`) when the safety checks have made no progress for 15 minutes (no step of a round started or finished): the platform then restarts the engine. Each exchange call gives up within about a minute, so an outage of the exchange or the database alone shouldn't do that.
 
 ### Back to standby, and stopping
 
