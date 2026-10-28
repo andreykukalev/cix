@@ -23,6 +23,12 @@ public sealed class RevolutXOptions
 
     public int RequestsPerMinute { get; set; } = 1_000;
 
+    /// <summary>
+    /// The share of the signed rate budget kept for urgent requests (the protective exits and the tickers the stops watch):
+    /// the others use at most the rest. 0 to 0.5.
+    /// </summary>
+    public decimal UrgentRequestShare { get; set; } = 0.2m;
+
     /// <summary>Attempts per request, including the first, for retryable failures.</summary>
     public int MaxAttempts { get; set; } = 4;
 

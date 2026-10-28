@@ -258,6 +258,39 @@ public sealed class MarketDataPollerTests
         Assert.DoesNotContain(listener.Quotes, q => q.Symbol == "XYZ-EUR");
     }
 
+    /// <summary>An order book request that never answers, until the test lets it fail.</summary>
+    private sealed class HungQuotes : IQuoteSource
+    {
+        public TaskCompletionSource<MarketQuote> Answer { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<MarketQuote> GetQuoteAsync(string symbol, CancellationToken cancellationToken) => Answer.Task;
+    }
+
+    [Fact]
+    public async Task AHungOrderBookRequest_NeverHoldsTheTickers_ThatTheStopsWatch()
+    {
+        var rig = new Rig(options: LiveSchedule());
+        var tickers = new SimulatedTickers(rig.Time);
+        var hung = new HungQuotes();
+        var poller = new MarketDataPoller(rig.Market, hung, rig.Store, rig.State, [], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers, signedQuotes: true);
+        Assert.True(poller.HasTickers); // so the service runs the two lanes in loops of their own
+
+        var books = poller.PollBooksAndCandlesOnceAsync(CancellationToken.None); // BTC's book request hangs
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Equal(1, await poller.PollTickersOnceAsync(CancellationToken.None));
+            Assert.Equal(rig.Time.GetUtcNow(), rig.State.Quote(Btc)!.AsOf); // a fresh price every 2 s all the same
+            rig.Time.Advance(TimeSpan.FromSeconds(2));
+        }
+
+        Assert.False(books.IsCompleted);
+        Assert.Equal(3, tickers.Requests.Count);
+
+        hung.Answer.SetException(new HttpRequestException("Simulated timeout."));
+        Assert.True(await books > 0); // the failure is logged and the lane carries on
+        Assert.Equal(0m, rig.State.Quote(Btc)!.BidSize); // still the latest ticker
+    }
+
     [Fact]
     public async Task Tickers_Failing_LeaveTheOrderBookQuotesRunning_AndALaggingTicker_NeverReplacesANewerBook()
     {

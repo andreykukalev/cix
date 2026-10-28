@@ -15,8 +15,10 @@ public interface IActiveSymbolSource
 /// Decides what is due and fetches it: every watched coin's bid and ask in one tickers request, order books for the active
 /// coins (<see cref="IActiveSymbolSource"/>) and for coins the tickers leave out, then new closed 1-hour candles (and 1-minute
 /// candles when enabled). Deterministic given the clock, so tests drive it with <see cref="PollOnceAsync"/>;
-/// <see cref="MarketDataService"/> calls it every second. Failures are logged and retried at the next interval; they never
-/// stop the loop. An empty watched list polls nothing.
+/// <see cref="MarketDataService"/> runs the tickers (<see cref="PollTickersOnceAsync"/>) and the rest
+/// (<see cref="PollBooksAndCandlesOnceAsync"/>) in two loops, every second each, so a slow order book or candle request never
+/// holds the prices the stops watch (pre-live assessment F-05). Failures are logged and retried at the next interval; they
+/// never stop the loop. An empty watched list polls nothing.
 /// </summary>
 public sealed partial class MarketDataPoller
 {
@@ -37,9 +39,15 @@ public sealed partial class MarketDataPoller
     private readonly bool _signedQuotes;
     private readonly TimeProvider _time;
     private readonly ILogger<MarketDataPoller> _logger;
+    private readonly Lock _dueGate = new(); // the two loops share the schedule
     private readonly Dictionary<(string Symbol, string Kind), DateTimeOffset> _nextDue = [];
-    private IReadOnlyList<string> _tickersMissing = [];
-    private int _requests;
+    private volatile IReadOnlyList<string> _tickersMissing = [];
+
+    /// <summary>The exchange requests one poll made, counted as each is sent (a failed one counts too).</summary>
+    private sealed class Tally
+    {
+        public int Requests;
+    }
 
     public MarketDataPoller(
         IMarketDataSource candles,
@@ -106,31 +114,55 @@ public sealed partial class MarketDataPoller
         return () => list;
     }
 
+    /// <summary>Whether this poller has tickers to poll, on their own loop (<see cref="PollTickersOnceAsync"/>).</summary>
+    public bool HasTickers => _tickers is not null && _options.TickerIntervalFor(_signedQuotes) is not null;
+
     /// <summary>
-    /// Polls the tickers when due, then every due order book (the active coins, and those the tickers leave out), then at
-    /// most one due candle series (the one waiting longest), so catch-up paging or a throttled candle request never holds
-    /// quotes back for more than one poll. Returns the exchange requests made.
+    /// The tickers when due, then every due order book and at most one due candle series, one after the other: one round of
+    /// both loops, for tests and for engines without tickers. Returns the exchange requests made.
     /// </summary>
-    public async Task<int> PollOnceAsync(CancellationToken cancellationToken)
+    public async Task<int> PollOnceAsync(CancellationToken cancellationToken) =>
+        await PollTickersOnceAsync(cancellationToken).ConfigureAwait(false)
+        + await PollBooksAndCandlesOnceAsync(cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Every symbol's bid and ask in one request, when the exchange offers tickers and they are due: the fastest view of a
+    /// falling price. Returns the exchange requests made.
+    /// </summary>
+    public async Task<int> PollTickersOnceAsync(CancellationToken cancellationToken)
     {
-        _requests = 0;
+        var tally = new Tally();
+        var symbols = _symbols(); // one list per poll
+        if (symbols.Count == 0 || !HasTickers || _options.TickerIntervalFor(_signedQuotes) is not { } tickerInterval)
+            return 0; // nothing watched, or no tickers: nothing to ask
+
+        using var urgent = ExchangePriority.BeginUrgent(); // the prices the stops watch: the budget kept for them (F-07)
+        if (DueSince(TickersKey, "tickers") is not null)
+            await RunAsync(TickersKey, "tickers", tickerInterval, () => PollTickersAsync(symbols, tally, cancellationToken)).ConfigureAwait(false);
+        return tally.Requests;
+    }
+
+    /// <summary>
+    /// Every due order book (the active coins, and those the tickers leave out), then at most one due candle series (the one
+    /// waiting longest), so catch-up paging or a throttled candle request never holds the books back for more than one poll.
+    /// Returns the exchange requests made.
+    /// </summary>
+    public async Task<int> PollBooksAndCandlesOnceAsync(CancellationToken cancellationToken)
+    {
+        var tally = new Tally();
         var symbols = _symbols(); // one list per poll
         if (symbols.Count == 0)
-            return 0; // nothing watched: nothing to ask
-
-        // Every symbol's bid and ask in one request, when the exchange offers tickers: the fastest view of a falling price.
-        var tickers = _tickers is not null ? _options.TickerIntervalFor(_signedQuotes) : null;
-        if (tickers is { } tickerInterval && DueSince(TickersKey, "tickers") is not null)
-            await RunAsync(TickersKey, "tickers", tickerInterval, () => PollTickersAsync(symbols, cancellationToken)).ConfigureAwait(false);
+            return 0;
 
         // Order books carry sizes: for the coins with a position or an order (paper fills, stop confirmations), and for the
         // coins the tickers don't cover, which have no other price. Spread out when more are active than the budget fits.
-        var books = BookSymbols(symbols, tickers is not null);
-        var bookInterval = _options.BookInterval(symbols.Count, books.Count, _signedQuotes, tickers is not null);
+        var tickers = HasTickers;
+        var books = BookSymbols(symbols, tickers);
+        var bookInterval = _options.BookInterval(symbols.Count, books.Count, _signedQuotes, tickers);
         foreach (var symbol in books)
         {
             if (DueSince(symbol, "quote") is not null)
-                await RunAsync(symbol, "quote", bookInterval, () => PollQuoteAsync(symbol, cancellationToken)).ConfigureAwait(false);
+                await RunAsync(symbol, "quote", bookInterval, () => PollQuoteAsync(symbol, tally, cancellationToken)).ConfigureAwait(false);
         }
 
         var next = symbols
@@ -143,11 +175,11 @@ public sealed partial class MarketDataPoller
             .FirstOrDefault();
 
         if (next.Kind == "1m" && _options.MinuteCandleInterval is { } minuteInterval)
-            await RunAsync(next.Symbol, "1m", minuteInterval, () => PollCandlesAsync(next.Symbol, MinuteInterval, _options.MinuteLookback, cancellationToken)).ConfigureAwait(false);
+            await RunAsync(next.Symbol, "1m", minuteInterval, () => PollCandlesAsync(next.Symbol, MinuteInterval, _options.MinuteLookback, tally, cancellationToken)).ConfigureAwait(false);
         else if (next.Kind == "1h")
-            await RunAsync(next.Symbol, "1h", _options.HourCandleInterval, () => PollCandlesAsync(next.Symbol, HourInterval, _options.HourLookback, cancellationToken)).ConfigureAwait(false);
+            await RunAsync(next.Symbol, "1h", _options.HourCandleInterval, () => PollCandlesAsync(next.Symbol, HourInterval, _options.HourLookback, tally, cancellationToken)).ConfigureAwait(false);
 
-        return _requests;
+        return tally.Requests;
     }
 
     /// <summary>Which of <paramref name="symbols"/> get an order book on the schedule.</summary>
@@ -161,20 +193,24 @@ public sealed partial class MarketDataPoller
     }
 
     /// <summary>The coins whose order books the next poll covers, for the status and tests.</summary>
-    public IReadOnlyList<string> BookSymbols() => BookSymbols(_symbols(), _tickers is not null && _options.TickerIntervalFor(_signedQuotes) is not null);
+    public IReadOnlyList<string> BookSymbols() => BookSymbols(_symbols(), HasTickers);
 
     /// <summary>When the task became due (MinValue if it never ran), or null if it isn't due yet.</summary>
     private DateTimeOffset? DueSince(string symbol, string kind)
     {
-        if (!_nextDue.TryGetValue((symbol, kind), out var due))
-            return DateTimeOffset.MinValue;
-        return _time.GetUtcNow() >= due ? due : null;
+        lock (_dueGate)
+        {
+            if (!_nextDue.TryGetValue((symbol, kind), out var due))
+                return DateTimeOffset.MinValue;
+            return _time.GetUtcNow() >= due ? due : null;
+        }
     }
 
     private async Task RunAsync(string symbol, string kind, TimeSpan interval, Func<Task> task)
     {
         // Schedule from the start time, so a slow request doesn't drift the cadence and a failure waits a full interval.
-        _nextDue[(symbol, kind)] = _time.GetUtcNow() + interval;
+        lock (_dueGate)
+            _nextDue[(symbol, kind)] = _time.GetUtcNow() + interval;
         try
         {
             await task().ConfigureAwait(false);
@@ -190,9 +226,9 @@ public sealed partial class MarketDataPoller
     /// (which fills against sizes) never runs on tickers: paper has no bulk source. The order-book quotes keep their own
     /// schedule, and the market state keeps whichever quote is newer.
     /// </summary>
-    private async Task PollTickersAsync(IReadOnlyList<string> symbols, CancellationToken cancellationToken)
+    private async Task PollTickersAsync(IReadOnlyList<string> symbols, Tally tally, CancellationToken cancellationToken)
     {
-        _requests++;
+        tally.Requests++;
         var quotes = await _tickers!.GetQuotesAsync(symbols, cancellationToken).ConfigureAwait(false);
         var wanted = symbols.ToHashSet(StringComparer.Ordinal);
         var covered = new HashSet<string>(StringComparer.Ordinal);
@@ -234,9 +270,9 @@ public sealed partial class MarketDataPoller
         }
     }
 
-    private async Task PollQuoteAsync(string symbol, CancellationToken cancellationToken)
+    private async Task PollQuoteAsync(string symbol, Tally tally, CancellationToken cancellationToken)
     {
-        _requests++;
+        tally.Requests++;
         await FetchQuoteAsync(symbol, cancellationToken).ConfigureAwait(false);
     }
 
@@ -275,7 +311,7 @@ public sealed partial class MarketDataPoller
         && ticker.AsOf > quote.AsOf;
 
     /// <summary>Fetches closed candles after the latest stored one (or the lookback on first run), catching up in pages.</summary>
-    private async Task PollCandlesAsync(string symbol, int intervalMinutes, TimeSpan lookback, CancellationToken cancellationToken)
+    private async Task PollCandlesAsync(string symbol, int intervalMinutes, TimeSpan lookback, Tally tally, CancellationToken cancellationToken)
     {
         var interval = TimeSpan.FromMinutes(intervalMinutes);
 
@@ -287,7 +323,7 @@ public sealed partial class MarketDataPoller
             if (since + interval > now)
                 break; // The next candle hasn't closed yet.
 
-            _requests++;
+            tally.Requests++;
             var fetched = await _candles.GetCandlesAsync(symbol, intervalMinutes, since, cancellationToken).ConfigureAwait(false);
 
             // Keep only closed candles at or after `since`; the open candle would change later.

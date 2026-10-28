@@ -39,7 +39,7 @@ public sealed class OrderTools(
         [Description("Limit price in the quote currency.")] decimal limitPrice,
         [Description("Why this order, in 10 to 1000 characters.")] string rationale,
         [Description("true to only add liquidity: if it would fill at once it is rejected instead.")] bool postOnly = false,
-        [Description("Buys only: the stop-loss price, at least 0.5% below the limit price. Recorded and returned by get_position_plans; the engine sells the position itself when the bid reaches it.")] decimal? stopLoss = null,
+        [Description("Required for buys, not allowed for sells: the stop-loss price, at least 0.5% below the limit price. Recorded and returned by get_position_plans; the engine sells the position itself when the bid reaches it.")] decimal? stopLoss = null,
         [Description("Buys only: the take-profit price, at least 0.5% above the limit price. The engine sells at it like at the stop.")] decimal? takeProfit = null,
         [Description(RationaleRuHelp)] string? rationaleRu = null,
         CancellationToken cancellationToken = default)
@@ -58,6 +58,9 @@ public sealed class OrderTools(
         var whyRu = RationaleRu(rationaleRu);
         if (orderSide == OrderSide.Sell && (stopLoss is not null || takeProfit is not null))
             throw new McpException("stopLoss and takeProfit apply to buys only.");
+        // Every agent buy carries a stop the engine sells at by itself (pre-live assessment F-02): no position is left unwatched.
+        if (orderSide == OrderSide.Buy && stopLoss is null)
+            throw new McpException("A buy needs a stopLoss: use the signal's, or stopAtr × the hourly ATR below the price, as the scanner does.");
         // The engine sells at these levels by itself (protective exits), so they must be a real distance from the entry.
         if (stopLoss is { } sl && (sl <= 0 || sl > limitPrice * (1 - MinExitDistance)))
             throw new McpException($"stopLoss must be positive and at least {MinExitDistance:P1} below limitPrice.");

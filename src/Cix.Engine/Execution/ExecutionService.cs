@@ -129,7 +129,16 @@ public sealed partial class ExecutionService : IActiveSymbolSource
 
     /// <summary>Why the strategy's filters keep a buy out of a coin now (the latest scan excluded it), or null (ADR-0021).</summary>
     private readonly Func<string, string?>? _strategyFilter;
-    private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly PriorityGate _lock = new(); // the protective exits go first (F-06)
+    private readonly bool _waitForFirstReconcile;
+    private readonly DateTimeOffset _startedAt;
+    private bool _firstReconcileLapseLogged;
+
+    /// <summary>
+    /// The longest orders wait for the first complete reconciliation after a start (<c>waitForFirstReconcile</c>). After it
+    /// they go on as before: a reconciliation that can't complete shows on the status, and must not stop trading for good.
+    /// </summary>
+    public static readonly TimeSpan FirstReconcileWait = TimeSpan.FromMinutes(5);
 
     /// <summary>Coins an order was sent in lately, by symbol: active for the market data until a sample shows them held or working.</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _recentOrders = new(StringComparer.Ordinal);
@@ -176,9 +185,12 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         IEngineLease? lease = null,
         Func<string, CancellationToken, Task<MarketQuote?>>? refreshQuote = null,
         TimeSpan? freshBookWithin = null,
-        Func<string, string?>? strategyFilter = null)
+        Func<string, string?>? strategyFilter = null,
+        bool waitForFirstReconcile = false)
     {
         _exchange = exchange;
+        _waitForFirstReconcile = waitForFirstReconcile;
+        _startedAt = time.GetUtcNow();
         _strategyFilter = strategyFilter;
         _refreshQuote = refreshQuote;
         _freshBookWithin = freshBookWithin ?? TimeSpan.FromSeconds(20);
@@ -256,6 +268,45 @@ public sealed partial class ExecutionService : IActiveSymbolSource
     /// <summary>Position plans (stop and target by symbol) from the engine state.</summary>
     public IReadOnlyDictionary<string, PositionPlanState> PositionPlanStates => _store.Current.Plans;
 
+    /// <summary>
+    /// Gives a held position without a stop the one the protection set for it (<see cref="EngineState.WithAdoptedStop"/>),
+    /// persisted like a buy's plan so a restart keeps it. Returns the stop now in the plan (the earlier one, if the plan got
+    /// a stop meanwhile), or null when the state couldn't be written: the caller keeps its stop armed and tries again.
+    /// </summary>
+    public decimal? AdoptStop(PositionPlan position, decimal stop, DateTimeOffset at, string? strategy)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        try
+        {
+            var plans = _store.Update(s => s.WithAdoptedStop(position, stop, at, strategy)).Plans;
+            return plans.TryGetValue(position.Symbol, out var plan) ? plan.StopLoss : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogStateWriteFailed(_logger, ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether the drawdown pause engaged (or a halt in place covered it) and the drawdown hasn't been back under the limit
+    /// since: the engine doesn't pause again for it after the owner resumes (pre-live assessment F-10).
+    /// </summary>
+    public bool DrawdownPaused => _store.Current.DrawdownPaused;
+
+    /// <summary>Saves <see cref="DrawdownPaused"/>; a write that fails is logged, and the caller tries again.</summary>
+    public void SaveDrawdownPaused(bool paused)
+    {
+        try
+        {
+            _store.Update(s => s with { DrawdownPaused = paused });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogStateWriteFailed(_logger, ex.Message);
+        }
+    }
+
     private static OrderIntent ToIntent(SentOrder o) =>
         new(o.Symbol, o.Side == "sell" ? OrderSide.Sell : OrderSide.Buy, o.Size, o.LimitPrice, o.ClientOrderId);
 
@@ -307,14 +358,29 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         ArgumentNullException.ThrowIfNull(intent);
         intent = intent with { Symbol = MarketDataPoller.NormaliseSymbol(intent.Symbol) };
 
-        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _lock.WaitAsync(cancellationToken, urgent: intent.IsProtectiveExit).ConfigureAwait(false);
         try
         {
-            // A halt stops new risk; the engine's stop-loss sells take risk off and go on (the gate checks the rest).
-            if (_killSwitch.IsEngaged && !intent.IsProtectiveExit)
+            using var stopsFirst = UrgentWhileAStopWaits();
+            // A halt stops new risk; the engine's stop-loss sells and the owner's own sells take risk off and go on (the gate
+            // checks the rest).
+            if (_killSwitch.IsEngaged && !intent.PassesHalt)
                 return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
+            // After a start the account is compared with the exchange before anything trades (F-12), so an order or a deposit
+            // from elsewhere while the engine was down halts it first. The stops and the owner's sells don't wait.
             var now = _time.GetUtcNow();
+            if (_waitForFirstReconcile && LastReconciledAt is null && !intent.PassesHalt)
+            {
+                if (now - _startedAt < FirstReconcileWait)
+                    return Reject("not-reconciled", "The engine is comparing the account with the exchange after its start; orders are refused until it is done, about a minute and at most five.");
+                if (!_firstReconcileLapseLogged)
+                {
+                    _firstReconcileLapseLogged = true; // under the lock
+                    LogFirstReconcileLapsed(_logger, FirstReconcileWait.TotalMinutes);
+                }
+            }
+
             PruneSent(now);
             lock (_pending)
             {
@@ -382,7 +448,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             if (verdict.Order is not { } order)
             {
                 if (countsTowardRejectStreak
-                    && verdict.Rule is not ("kill-switch" or "invalid-order")
+                    && verdict.Rule is not ("kill-switch" or "invalid-order" or "drawdown-halt") // a limit in force, not a broken loop
                     && Interlocked.Increment(ref _consecutiveRejects) >= _safety.MaxConsecutiveRejects)
                     Interlocked.Exchange(ref _streakTripped, 1);
                 LogRejected(_logger, intent.ClientOrderId ?? string.Empty, verdict.Rule, verdict.Reason);
@@ -494,6 +560,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            using var stopsFirst = UrgentWhileAStopWaits();
             return await work(new ExclusiveView(
                 ct => _exchange.GetOpenOrdersAsync(null, ct),
                 SampleAsync,
@@ -504,6 +571,10 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             _lock.Release();
         }
     }
+
+    // While a stop-loss sell waits for the lock, the holder's requests are urgent too, so the ordinary rate share never holds
+    // the holder, and the stop behind it, back (F-06, F-07). Checked per request; one booked before the stop came still waits.
+    private ExchangePriority.Scope UrgentWhileAStopWaits() => ExchangePriority.BeginUrgentWhen(() => _lock.UrgentWaiting);
 
     /// <summary>How long agents' views of open orders and the portfolio may be cached, so a looping agent can't use up the exchange's rate limit.</summary>
     public static readonly TimeSpan OpenOrdersCacheTtl = TimeSpan.FromSeconds(10);
@@ -692,6 +763,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            using var stopsFirst = UrgentWhileAStopWaits();
             var notCancelled = new List<string>();
             var cancelled = 0;
             IReadOnlyList<ExchangeOrder> open;
@@ -793,6 +865,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            using var stopsFirst = UrgentWhileAStopWaits();
             var open = await _exchange.GetOpenOrdersAsync(null, cancellationToken).ConfigureAwait(false);
             var targets = open.Where(o => o.IsOpen && o.Side == OrderSide.Buy).Select(o => o.VenueOrderId).ToHashSet(StringComparer.Ordinal);
             lock (_pending)
@@ -853,7 +926,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         Func<CancellationToken, Task>? beforeSend, CancellationToken cancellationToken)
     {
         // The kill switch may have engaged while the portfolio was being read; it flips before taking the lock.
-        if (_killSwitch.IsEngaged && order.Purpose != OrderPurpose.ProtectiveExit)
+        if (_killSwitch.IsEngaged && order.Purpose is not (OrderPurpose.ProtectiveExit or OrderPurpose.OwnerSell))
             return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
         // Another engine of this mode may be trading, or this one couldn't renew its lease: it must not act (ADR-0013).
@@ -1098,6 +1171,9 @@ public sealed partial class ExecutionService : IActiveSymbolSource
 
     [LoggerMessage(Level = LogLevel.Critical, Message = "Kill switch engaged by {By}: {Reason}")]
     private static partial void LogKillSwitch(ILogger logger, string by, string reason);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "No reconciliation completed in the {Minutes} minutes after the start; orders go on without it")]
+    private static partial void LogFirstReconcileLapsed(ILogger logger, double minutes);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Kill switch released by {By}")]
     private static partial void LogKillSwitchReleased(ILogger logger, string by);

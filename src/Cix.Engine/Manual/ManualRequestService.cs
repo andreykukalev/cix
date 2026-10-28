@@ -373,8 +373,10 @@ public sealed partial class ManualRequestService(
         extra["requestedPrice"] = price.ToString(Invariant);
 
         var side = request.IsSell ? OrderSide.Sell : OrderSide.Buy;
+        // The owner's direct sell goes through a halt (F-08): it only takes risk off. The trader's decisions on requests don't.
+        var purpose = request.IsSell && source == DirectSource ? OrderPurpose.OwnerSell : OrderPurpose.Normal;
         var result = await execution.PlaceAsync(
-            new OrderIntent(request.Symbol, side, size, price, clientOrderId), postOnly: false, CancellationToken.None, // claimed: see it through
+            new OrderIntent(request.Symbol, side, size, price, clientOrderId, purpose), postOnly: false, CancellationToken.None, // claimed: see it through
             countsTowardRejectStreak: !request.IsSell, // a sell never adds risk, as for the engine's protective sells
             context: new OrderContext(source, stopLoss, takeProfit, runId, specs.Active?.Label, request.IsSell ? ExitReasons.Manual : null),
             strategyFiltered: source == AgentSource).ConfigureAwait(false); // an agent-assisted buy follows the strategy's filters

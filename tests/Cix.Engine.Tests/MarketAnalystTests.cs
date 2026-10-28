@@ -201,7 +201,7 @@ public sealed class MarketAnalystTests
         tools.Header(ToolServerOptions.AgentHeader, "trader");
 
         var buy = await Assert.ThrowsAsync<McpException>(() => tools.Orders.PlaceOrder(
-            "BTC-EUR", "buy", 0.0001m, 60_010m, "signal entry BTC-EUR", cancellationToken: CancellationToken.None));
+            "BTC-EUR", "buy", 0.0001m, 60_010m, "signal entry BTC-EUR", stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         var sell = await tools.Orders.PlaceOrder("BTC-EUR", "sell", 0.001m, 60_000m, "signal exit BTC-EUR stop", cancellationToken: CancellationToken.None);
 
         Assert.Contains("paused by the market view (risk-off)", buy.Message, StringComparison.Ordinal);

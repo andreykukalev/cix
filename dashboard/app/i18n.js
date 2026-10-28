@@ -704,6 +704,7 @@
     'A safety limit was reached (drawdown, daily loss or stale market data).': 'Достигнут предел безопасности (просадка, дневной убыток или устаревшие рыночные данные).',
     'Too many orders in a row were rejected by the risk gate.': 'Риск-контроль отклонил слишком много ордеров подряд.',
     'Critical: drawdown reached the hard ceiling. Nothing new until you resume; stop-losses keep selling.': 'Критическое состояние: просадка достигла жёсткого потолка. Ничего нового до возобновления; стоп-лоссы продолжают продавать.',
+    'Drawdown reached the limit. Nothing new until you resume; stop-losses and your own sells go on.': 'Просадка достигла лимита. Ничего нового до возобновления; стоп-лоссы и ваши продажи работают.',
     'Exit blocked': 'Выход заблокирован',
     'exit blocked: {coins}': 'выход заблокирован: {coins}',
     'retried every minute': 'повтор раз в минуту',
@@ -821,8 +822,8 @@
     'Daily loss limit': 'Дневной лимит убытка',
     'Once today\'s loss reaches this, all new buys stop until tomorrow (UTC).': 'Когда сегодняшний убыток достигает этой суммы, все новые покупки останавливаются до завтра (UTC).',
     'Drawdown limit': 'Лимит просадки',
-    'A fall of this share from the highest equity stops new buys until the owner resumes trading.':
-      'Падение на эту долю от максимума капитала останавливает новые покупки, пока владелец не возобновит торговлю.',
+    'A fall of this share from the highest equity pauses trading until the owner resumes; buys stay refused while the fall is this deep.':
+      'Падение на эту долю от максимума капитала ставит торговлю на паузу до возобновления владельцем; пока падение не меньше этой доли, покупки отклоняются.',
     'Orders per minute': 'Ордеров в минуту',
     'The most orders of any kind in one minute.': 'Максимум ордеров любого вида за одну минуту.',
     'Price band': 'Ценовой коридор',
@@ -871,7 +872,7 @@
   const UNTRANSLATED = new Set([
     'CIX', 'RU', 'EN', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '–', '×', '↻',
     'order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request',
-    'scanner-filters', 'scan-eligibility', 'strategy', 'pairs', 'balance-snapshot',
+    'scanner-filters', 'scan-eligibility', 'strategy', 'pairs', 'balance-snapshot', 'stop-adopted',
   ]);
 
   let lang = 'en';

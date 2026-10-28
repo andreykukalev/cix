@@ -776,7 +776,7 @@ public sealed class StrategyLimitTests
     {
         var tools = Trader(Balanced); // orderQuote 10, so up to 11 passes as it is
 
-        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None)); // ~30 EUR
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None)); // ~30 EUR
 
         Assert.Equal(("placed", "strategy-order-size"), (result.GetProperty("status").GetString(), result.GetProperty("rule").GetString()));
         Assert.Equal(0.00016680m, result.GetProperty("approved").GetProperty("size").GetDecimal()); // 10 / 59,950, down to the step
@@ -787,7 +787,7 @@ public sealed class StrategyLimitTests
     {
         var tools = Trader(Balanced);
 
-        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 64_000m, Why, cancellationToken: CancellationToken.None));
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 64_000m, Why, stopLoss: 63_000m, cancellationToken: CancellationToken.None));
 
         Assert.Equal(("rejected", "price-band"), (result.GetProperty("status").GetString(), result.GetProperty("rule").GetString()));
         Assert.Null(tools.Rig.Execution.LastBuyAt); // nothing sent, so no cooldown starts
@@ -800,11 +800,11 @@ public sealed class StrategyLimitTests
         var tools = Trader(spec);
         tools.Header(ToolServerOptions.RunHeader, "run-1");
 
-        var first = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, cancellationToken: CancellationToken.None));
-        var second = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var first = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
+        var second = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         tools.Header(ToolServerOptions.RunHeader, "run-2");
         tools.Rig.Time.Advance(TimeSpan.FromMinutes(30));
-        var cooling = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var cooling = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
 
         Assert.Equal("placed", first.GetProperty("status").GetString());
         Assert.Equal(("rejected", "strategy-positions-per-run"), (second.GetProperty("status").GetString(), second.GetProperty("rule").GetString()));
@@ -813,7 +813,7 @@ public sealed class StrategyLimitTests
 
         tools.Rig.Time.Advance(TimeSpan.FromMinutes(30));
         tools.Rig.Quote(60_000.00m, 60_010.00m);
-        var later = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var later = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         Assert.Equal("placed", later.GetProperty("status").GetString());
     }
 
@@ -823,8 +823,8 @@ public sealed class StrategyLimitTests
         var spec = StrategySchemaTests.With(StrategySchemaTests.With(Balanced, "maxNewPositionsPerRun", JsonValue.Create(1)), "entryCooldownMinutes", JsonValue.Create(0));
         var tools = Trader(spec);
 
-        var first = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, cancellationToken: CancellationToken.None));
-        var second = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var first = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
+        var second = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
 
         Assert.Equal("placed", first.GetProperty("status").GetString());
         Assert.Equal("strategy-positions-per-run", second.GetProperty("rule").GetString());
@@ -839,7 +839,7 @@ public sealed class StrategyLimitTests
         Assert.Null(tools.Rig.Execution.LastBuyAt); // the owner's buy isn't governed by the strategy
 
         tools.Header(ToolServerOptions.RunHeader, "run-1");
-        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, cancellationToken: CancellationToken.None);
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None);
         var restarted = tools.Rig.Restart(() => tools.Rig.Store);
 
         Assert.Equal(new StrategyActivity(Rig.T0, 1), restarted.Execution.ActivityFor("run-1"));
@@ -851,7 +851,7 @@ public sealed class StrategyLimitTests
     {
         var tools = new ToolRig(ToolRig.Observer with { Name = "trader", AllowedTools = ["place_order"] }, btc: 0.001m);
 
-        var buy = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var buy = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         var sell = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "sell", 0.0005m, 60_000m, Why, cancellationToken: CancellationToken.None));
 
         Assert.Equal(("placed", "ok"), (buy.GetProperty("status").GetString(), buy.GetProperty("rule").GetString()));
@@ -866,7 +866,7 @@ public sealed class StrategyLimitTests
         var scanner = new MarketScanService(
             tools.Universe, tools.Features, tools.Candles, tools.Rig.Pairs, tools.Rig.Execution, tools.Rig.KillSwitch, tools.Journal, tools.Specs,
             new ScannerOptions(), tools.Rig.Time, NullLogger<MarketScanService>.Instance, tools.Views, riskLimits: Rig.Limits);
-        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, cancellationToken: CancellationToken.None);
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None);
 
         var result = await scanner.ScanAsync(CancellationToken.None);
 

@@ -24,6 +24,39 @@ public sealed class ReconciliationTests
     }
 
     [Fact]
+    public async Task AfterAStart_OrdersWaitForTheFirstReconciliation_WhichHaltsOnAForeignOrder_ButAStopLossSellNeverWaits()
+    {
+        var rig = new Rig(eur: 1_000m, btc: 0.001m, waitForFirstReconcile: true);
+        await rig.Paper.PlaceLimitOrderAsync(new OrderIntent(Btc, OrderSide.Buy, 0.0005m, 59_900m, "someone-else").Approved(), false, CancellationToken.None); // while the engine was down
+
+        var early = await rig.Buy(0.0005m, 59_950m, "early");
+        var stop = await rig.Execution.PlaceAsync(
+            new OrderIntent(Btc, OrderSide.Sell, 0.0005m, 59_900m, "stop", OrderPurpose.ProtectiveExit, TimeInForce.ImmediateOrCancel),
+            postOnly: false, CancellationToken.None, countsTowardRejectStreak: false);
+
+        Assert.Equal((ExecutionStatus.Rejected, "not-reconciled"), (early.Status, early.Rule));
+        Assert.Equal(ExecutionStatus.Placed, stop.Status);
+
+        await rig.Monitor.ReconcileAtStartAsync(CancellationToken.None);
+        Assert.True(rig.KillSwitch.IsEngaged); // the foreign order halts the engine before it trades (F-12)
+        Assert.Equal(ExecutionService.ReconcilerBy, rig.KillSwitch.State.By);
+    }
+
+    [Fact]
+    public async Task OrdersGo_OnceTheFirstReconciliationIsComplete_OrTheWaitForItIsOver()
+    {
+        var rig = new Rig(eur: 1_000m, waitForFirstReconcile: true);
+        await rig.Monitor.ReconcileAtStartAsync(CancellationToken.None);
+        Assert.NotNull(rig.Execution.LastReconciledAt);
+        Assert.Equal(ExecutionStatus.Placed, (await rig.Buy(0.0005m, 59_950m, "after")).Status);
+
+        var unreconciled = new Rig(eur: 1_000m, waitForFirstReconcile: true);
+        unreconciled.Time.Advance(ExecutionService.FirstReconcileWait);
+        unreconciled.Quote(60_000m, 60_010m);
+        Assert.NotEqual("not-reconciled", (await unreconciled.Buy(0.0005m, 59_950m, "late")).Rule);
+    }
+
+    [Fact]
     public async Task OwnOrders_AreRecognised_AndForgottenOnceFinished()
     {
         var rig = new Rig(eur: 1_000m);
@@ -312,7 +345,7 @@ public sealed class RestartTests : IDisposable
 public sealed class SafetyMonitorTests
 {
     [Fact]
-    public async Task DrawdownAtTheLimit_CancelsBuys_ButLeavesSells_AndTheHardCeilingHalts()
+    public async Task DrawdownAtTheLimit_PausesTrading_AndTheHardCeilingHaltsAsCritical()
     {
         var rig = new Rig(eur: 200m, btc: 0.001m); // equity 260.005
         await rig.Buy(0.0003m, 59_950m, "buy");
@@ -322,16 +355,102 @@ public sealed class SafetyMonitorTests
         var atLimit = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
         var stillOpen = await rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None);
 
+        Assert.Equal(ExecutionStatus.Placed, sell.Status);
+        Assert.StartsWith("Drawdown reached the ", atLimit.KillSwitchReason, StringComparison.Ordinal);
+        Assert.Equal((true, SafetyMonitor.DrawdownBy), (rig.KillSwitch.IsEngaged, rig.KillSwitch.State.By)); // latched (F-10)
+        Assert.Empty(stillOpen); // as a Pause: the open orders are cancelled
+
         rig.Store.Update(s => s with { PeakEquity = 400m }); // 35% down: over the 30% hard ceiling
         var atCeiling = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
 
-        Assert.Equal(ExecutionStatus.Placed, sell.Status);
-        Assert.Null(atLimit.KillSwitchReason);
-        Assert.Equal(1, atLimit.BuysCancelled);
-        Assert.Equal(OrderSide.Sell, Assert.Single(stillOpen).Side);
         Assert.StartsWith("Critical: drawdown", atCeiling.KillSwitchReason, StringComparison.Ordinal);
+        Assert.Equal(SafetyMonitor.CriticalBy, rig.KillSwitch.State.AlsoBy); // recorded beside the drawdown halt
+    }
+
+    [Fact]
+    public async Task AfterTheOwnerResumes_ADrawdownStillAtTheLimit_DoesntPauseAgain_UntilItHasRecovered()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m); // equity 260.005
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // 18.75% down
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
         Assert.True(rig.KillSwitch.IsEngaged);
+
+        await rig.Execution.ReleaseKillSwitchAsync("owner");
+        await rig.Buy(0.0003m, 59_950m, "resting"); // refused by the gate's own drawdown rule while still down
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        var stillDown = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.False(rig.KillSwitch.IsEngaged); // the owner's Resume holds
+        Assert.Null(stillDown.KillSwitchReason);
+        Assert.Equal("drawdown-halt", (await rig.Buy(0.0003m, 59_950m, "refused")).Rule);
+
+        rig.Store.Update(s => s with { PeakEquity = 270m }); // back within 15%: re-armed
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        Assert.False(rig.KillSwitch.IsEngaged);
+
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // a new fall to the limit pauses again
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        Assert.Equal((true, SafetyMonitor.DrawdownBy), (rig.KillSwitch.IsEngaged, rig.KillSwitch.State.By));
+    }
+
+    [Fact]
+    public async Task AResumedDrawdownPause_StaysResumed_AfterARestart()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m); // equity 260.005
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // 18.75% down
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        await rig.Execution.ReleaseKillSwitchAsync("owner");
+
+        var restarted = rig.Restart(() => rig.Store); // a deploy: a new engine on the same saved state
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        restarted.Quote(60_000.00m, 60_010.00m);
+        var check = await restarted.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.True(rig.Store.Current.DrawdownPaused);
+        Assert.False(restarted.KillSwitch.IsEngaged);
+        Assert.Null(check.KillSwitchReason);
+        Assert.Equal("drawdown-halt", (await restarted.Buy(0.0003m, 59_950m, "refused")).Rule);
+    }
+
+    [Fact]
+    public async Task ADrawdownReachedDuringAnotherHalt_IsRecordedBesideIt_Once()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m);
+        await rig.Execution.EngageKillSwitchAsync("Paused by the owner from the dashboard (request p-1).", "owner", CancellationToken.None);
+
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // 18.75% down while paused
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        var also = rig.KillSwitch.State.AlsoAt;
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.Equal(("owner", SafetyMonitor.DrawdownBy), (rig.KillSwitch.State.By, rig.KillSwitch.State.AlsoBy)); // Resume must name it
+        Assert.NotNull(also);
+        Assert.Equal(also, rig.KillSwitch.State.AlsoAt); // once, not every minute
+        Assert.True(rig.Store.Current.DrawdownPaused);
+    }
+
+    [Fact]
+    public async Task AfterTheOwnerResumesACriticalHalt_ADrawdownStillOverTheLimit_DoesntPauseAgain()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m);
+        rig.Store.Update(s => s with { PeakEquity = 400m }); // 35% down: the hard ceiling
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
         Assert.Equal(SafetyMonitor.CriticalBy, rig.KillSwitch.State.By);
+        await rig.Execution.ReleaseKillSwitchAsync("owner");
+
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // recovered to 18.75% down: still over the limit
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.False(rig.KillSwitch.IsEngaged); // one Resume is enough
     }
 
     [Fact]

@@ -71,6 +71,9 @@ public sealed record PositionPlanState(
 {
     public const string EntryPending = "entry-pending";
     public const string Open = "open";
+
+    /// <summary>The <see cref="EntryClientOrderId"/> of a plan the protection made for a position bought without one.</summary>
+    public const string AdoptedEntry = "adopted";
 }
 
 /// <summary>
@@ -90,7 +93,8 @@ public sealed record EngineState(
     IReadOnlyList<string>? KnownClientOrderIds = null,
     HoldingsBaseline? Holdings = null,
     IReadOnlyList<SentOrder>? Orders = null,
-    IReadOnlyDictionary<string, PositionPlanState>? Positions = null)
+    IReadOnlyDictionary<string, PositionPlanState>? Positions = null,
+    bool DrawdownPaused = false)
 {
     /// <summary>Client order IDs the engine sent and hasn't yet seen finish; recorded before each send.</summary>
     [JsonIgnore]
@@ -190,6 +194,23 @@ public sealed record EngineState(
             return this with { Positions = WithPlan(open.Symbol, open with { PendingClientOrderId = null, PendingStopLoss = null, PendingTakeProfit = null }) };
         var symbol = Plans.Values.FirstOrDefault(p => p.EntryClientOrderId == clientOrderId && p.Status == PositionPlanState.EntryPending)?.Symbol;
         return symbol is null ? this : WithoutPlans([symbol]);
+    }
+
+    /// <summary>
+    /// A stop for a held position that has none (a coin held before the engine traded it, the owner's own buy, an older buy
+    /// without a stop), set once by the protection from the active strategy's rule (pre-live assessment F-02). A plan that has
+    /// a stop keeps it; one without gets this stop and keeps its target; a position without a plan gets an open one, with the
+    /// entry and target the journal had for it.
+    /// </summary>
+    public EngineState WithAdoptedStop(PositionPlan position, decimal stop, DateTimeOffset at, string? strategy = null)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(stop);
+        if (Plans.TryGetValue(position.Symbol, out var plan))
+            return plan.StopLoss is > 0 ? this : this with { Positions = WithPlan(position.Symbol, plan with { StopLoss = stop }) };
+        var adopted = new PositionPlanState(position.Symbol, PositionPlanState.Open, PositionPlanState.AdoptedEntry, stop, position.TakeProfit, at,
+            EntryPrice: position.EntryPrice, FilledAt: position.FilledAt, Strategy: strategy);
+        return this with { Positions = WithPlan(position.Symbol, adopted) };
     }
 
     public EngineState WithoutPlans(IReadOnlyCollection<string> symbols)

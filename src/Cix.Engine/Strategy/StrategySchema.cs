@@ -176,7 +176,7 @@ public static partial class StrategySchema
             new("maxOrderQuote", "Largest order", "No single order may be worth more, whatever the strategy says.", Inv(limits.MaxOrderQuote), "risk-limits"),
             new("maxPositionQuotePerSymbol", "Most in one coin", "No coin may be held above this value.", Inv(limits.MaxPositionQuotePerSymbol), "risk-limits"),
             new("maxDailyLossQuote", "Daily loss limit", "Once today's loss reaches this, all new buys stop until tomorrow (UTC).", Inv(limits.MaxDailyLossQuote), "risk-limits"),
-            new("maxDrawdownFraction", "Drawdown limit", "A fall of this share from the highest equity stops new buys until the owner resumes trading.", Inv(limits.MaxDrawdownFraction), "risk-limits"),
+            new("maxDrawdownFraction", "Drawdown limit", "A fall of this share from the highest equity pauses trading until the owner resumes; buys stay refused while the fall is this deep.", Inv(limits.MaxDrawdownFraction), "risk-limits"),
             new("maxOrdersPerMinute", "Orders per minute", "The most orders of any kind in one minute.", Inv(limits.MaxOrdersPerMinute), "risk-limits"),
             new("maxPriceDeviationFraction", "Price band", "An order's limit price must be within this share of the current price.", Inv(limits.MaxPriceDeviationFraction), "risk-limits"),
             new MandatoryLimit("allowedSymbols", "Permitted coins", string.Create(CultureInfo.InvariantCulture, $"Any pair in {limits.AllowedQuoteCurrency} that the exchange lists, up to {limits.MaxTradableSymbols} at once; the owner adds and removes them from the Coins tab."), string.Create(CultureInfo.InvariantCulture, $"Any {limits.AllowedQuoteCurrency} pair, at most {limits.MaxTradableSymbols}"), "risk-limits"),

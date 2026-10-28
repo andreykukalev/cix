@@ -549,3 +549,54 @@ public sealed class EngineStateStoreTests : IDisposable
     public void RelativeStatePath_IsRefused() =>
         Assert.Throws<ArgumentException>(() => new FileEngineStateStore("state.json", TimeProvider.System));
 }
+
+public sealed class PriorityGateTests
+{
+    private static readonly TimeSpan Soon = TimeSpan.FromSeconds(5);
+
+    [Fact]
+    public async Task AnUrgentWaiter_GoesFirst_AndTheOthersInTheOrderTheyCame()
+    {
+        var gate = new PriorityGate();
+        await gate.WaitAsync(CancellationToken.None); // a reconciliation holds it
+        var agent1 = gate.WaitAsync(CancellationToken.None);
+        var agent2 = gate.WaitAsync(CancellationToken.None);
+        var stop = gate.WaitAsync(CancellationToken.None, urgent: true);
+        Assert.False(agent1.IsCompleted || agent2.IsCompleted || stop.IsCompleted);
+
+        Assert.True(gate.UrgentWaiting); // the holder's requests go urgent meanwhile
+        gate.Release();
+        await stop.WaitAsync(Soon); // the stop-loss sell came last and goes first
+        Assert.False(gate.UrgentWaiting);
+        Assert.False(agent1.IsCompleted);
+
+        gate.Release();
+        await agent1.WaitAsync(Soon);
+        Assert.False(agent2.IsCompleted);
+
+        gate.Release();
+        await agent2.WaitAsync(Soon);
+        gate.Release();
+        Assert.True(gate.WaitAsync(CancellationToken.None).IsCompletedSuccessfully); // free again
+    }
+
+    [Fact]
+    public async Task ACancelledWait_NeverTakesTheGate()
+    {
+        var gate = new PriorityGate();
+        await gate.WaitAsync(CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+        var cancelled = gate.WaitAsync(cts.Token, urgent: true);
+        var next = gate.WaitAsync(CancellationToken.None);
+
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+        Assert.False(gate.UrgentWaiting);
+        gate.Release();
+
+        await next.WaitAsync(Soon); // the gate passed over the cancelled wait
+        Assert.Throws<OperationCanceledException>(() => { _ = gate.WaitAsync(cts.Token); });
+        gate.Release();
+        Assert.Throws<SemaphoreFullException>(gate.Release);
+    }
+}
