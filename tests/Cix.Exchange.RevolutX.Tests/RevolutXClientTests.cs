@@ -160,10 +160,12 @@ public sealed class RevolutXClientTests
     }
 
     [Fact]
-    public async Task GetQuoteAsync_SignedOrderBook_UsesTheSignedPath_AndParsesTheTop()
+    public async Task GetQuoteAsync_SignedOrderBook_UsesTheSignedPath_AndParsesItsShortKeyedLevels()
     {
+        // The signed book names its levels {p, q, no, s, pdt, ...}, not {price, quantity, count} like the public one; the live
+        // account showed this on 2026-10-28, after the first version of this client read the public names and failed on it.
         var h = new ClientHarness();
-        h.Handler.RespondFixture("order_book.json");
+        h.Handler.RespondFixture("order_book_signed.json");
 
         var quote = await h.Create().GetQuoteAsync("btc/eur", CancellationToken.None);
 
@@ -171,8 +173,24 @@ public sealed class RevolutXClientTests
         Assert.Equal("https://revx.revolut.com/api/1.0/order-book/BTC-EUR?limit=5", request.Uri.ToString());
         Assert.Equal("1792677504427GET/api/1.0/order-book/BTC-EURlimit=5", Assert.Single(h.Signer.Messages));
         Assert.Equal("BTC-EUR", quote.Symbol);
-        Assert.True(quote.IsValid);
-        Assert.True(quote.BidSize > 0 && quote.AskSize > 0); // the order book carries sizes, unlike the tickers
+        Assert.Equal(72474.68m, quote.Bid);
+        Assert.Equal(0.06147541m, quote.BidSize);
+        Assert.Equal(72487.76m, quote.Ask);
+        Assert.Equal(0.03207415m, quote.AskSize);
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1792677504427), quote.AsOf); // the book's stamp is later than the harness clock, so the receipt time wins
+    }
+
+    [Fact]
+    public async Task GetQuoteAsync_SignedOrderBook_StillReadsThePublicShape()
+    {
+        var h = new ClientHarness();
+        h.Handler.RespondFixture("order_book.json");
+
+        var quote = await h.Create().GetQuoteAsync("BTC-EUR", CancellationToken.None);
+
+        Assert.Equal(72474.68m, quote.Bid);
+        Assert.Equal(72487.76m, quote.Ask);
+        Assert.True(quote.BidSize > 0 && quote.AskSize > 0);
     }
 
     [Fact]
