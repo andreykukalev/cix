@@ -30,7 +30,8 @@ internal sealed class Rig
         Persistence.IEngineLease? lease = null,
         TradableSymbols? tradable = null,
         Func<string, CancellationToken, Task<MarketQuote?>>? refreshQuote = null,
-        Func<string, string?>? strategyFilter = null)
+        Func<string, string?>? strategyFilter = null,
+        bool waitForFirstReconcile = false)
     {
         Tradable = tradable ?? new TradableSymbols(Limits, [Btc]);
         var limits = Tradable.Limits;
@@ -56,7 +57,7 @@ internal sealed class Rig
         Execution = new ExecutionService(
             Exchange, new RiskGate(limits, Time, Tradable), Portfolio, State, pairs, KillSwitch, Store, Time,
             NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety, Journal, lease, refreshQuote, freshBookWithin: TimeSpan.FromSeconds(20),
-            strategyFilter: strategyFilter);
+            strategyFilter: strategyFilter, waitForFirstReconcile: waitForFirstReconcile);
         Monitor = new SafetyMonitor(Execution, KillSwitch, State, limits, Safety, Time, NullLogger<SafetyMonitor>.Instance, Tradable);
         Quote(60_000.00m, 60_010.00m);
     }

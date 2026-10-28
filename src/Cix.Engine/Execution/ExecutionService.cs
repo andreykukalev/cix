@@ -130,6 +130,14 @@ public sealed partial class ExecutionService : IActiveSymbolSource
     /// <summary>Why the strategy's filters keep a buy out of a coin now (the latest scan excluded it), or null (ADR-0021).</summary>
     private readonly Func<string, string?>? _strategyFilter;
     private readonly PriorityGate _lock = new(); // the protective exits go first (F-06)
+    private readonly bool _waitForFirstReconcile;
+    private readonly DateTimeOffset _startedAt;
+
+    /// <summary>
+    /// The longest orders wait for the first complete reconciliation after a start (<c>waitForFirstReconcile</c>). After it
+    /// they go on as before: a reconciliation that can't complete shows on the status, and must not stop trading for good.
+    /// </summary>
+    public static readonly TimeSpan FirstReconcileWait = TimeSpan.FromMinutes(5);
 
     /// <summary>Coins an order was sent in lately, by symbol: active for the market data until a sample shows them held or working.</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _recentOrders = new(StringComparer.Ordinal);
@@ -176,9 +184,12 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         IEngineLease? lease = null,
         Func<string, CancellationToken, Task<MarketQuote?>>? refreshQuote = null,
         TimeSpan? freshBookWithin = null,
-        Func<string, string?>? strategyFilter = null)
+        Func<string, string?>? strategyFilter = null,
+        bool waitForFirstReconcile = false)
     {
         _exchange = exchange;
+        _waitForFirstReconcile = waitForFirstReconcile;
+        _startedAt = time.GetUtcNow();
         _strategyFilter = strategyFilter;
         _refreshQuote = refreshQuote;
         _freshBookWithin = freshBookWithin ?? TimeSpan.FromSeconds(20);
@@ -335,7 +346,12 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             if (_killSwitch.IsEngaged && !intent.PassesHalt)
                 return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
+            // After a start the account is compared with the exchange before anything trades (F-12), so an order or a deposit
+            // from elsewhere while the engine was down halts it first. The stops and the owner's sells don't wait.
             var now = _time.GetUtcNow();
+            if (_waitForFirstReconcile && LastReconciledAt is null && !intent.PassesHalt && now - _startedAt < FirstReconcileWait)
+                return Reject("not-reconciled", "The engine is comparing the account with the exchange after its start; orders wait for that, about a minute.");
+
             PruneSent(now);
             lock (_pending)
             {

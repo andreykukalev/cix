@@ -24,6 +24,39 @@ public sealed class ReconciliationTests
     }
 
     [Fact]
+    public async Task AfterAStart_OrdersWaitForTheFirstReconciliation_WhichHaltsOnAForeignOrder_ButAStopLossSellNeverWaits()
+    {
+        var rig = new Rig(eur: 1_000m, btc: 0.001m, waitForFirstReconcile: true);
+        await rig.Paper.PlaceLimitOrderAsync(new OrderIntent(Btc, OrderSide.Buy, 0.0005m, 59_900m, "someone-else").Approved(), false, CancellationToken.None); // while the engine was down
+
+        var early = await rig.Buy(0.0005m, 59_950m, "early");
+        var stop = await rig.Execution.PlaceAsync(
+            new OrderIntent(Btc, OrderSide.Sell, 0.0005m, 59_900m, "stop", OrderPurpose.ProtectiveExit, TimeInForce.ImmediateOrCancel),
+            postOnly: false, CancellationToken.None, countsTowardRejectStreak: false);
+
+        Assert.Equal((ExecutionStatus.Rejected, "not-reconciled"), (early.Status, early.Rule));
+        Assert.Equal(ExecutionStatus.Placed, stop.Status);
+
+        await rig.Monitor.ReconcileAtStartAsync(CancellationToken.None);
+        Assert.True(rig.KillSwitch.IsEngaged); // the foreign order halts the engine before it trades (F-12)
+        Assert.Equal(ExecutionService.ReconcilerBy, rig.KillSwitch.State.By);
+    }
+
+    [Fact]
+    public async Task OrdersGo_OnceTheFirstReconciliationIsComplete_OrTheWaitForItIsOver()
+    {
+        var rig = new Rig(eur: 1_000m, waitForFirstReconcile: true);
+        await rig.Monitor.ReconcileAtStartAsync(CancellationToken.None);
+        Assert.NotNull(rig.Execution.LastReconciledAt);
+        Assert.Equal(ExecutionStatus.Placed, (await rig.Buy(0.0005m, 59_950m, "after")).Status);
+
+        var unreconciled = new Rig(eur: 1_000m, waitForFirstReconcile: true);
+        unreconciled.Time.Advance(ExecutionService.FirstReconcileWait);
+        unreconciled.Quote(60_000m, 60_010m);
+        Assert.NotEqual("not-reconciled", (await unreconciled.Buy(0.0005m, 59_950m, "late")).Rule);
+    }
+
+    [Fact]
     public async Task OwnOrders_AreRecognised_AndForgottenOnceFinished()
     {
         var rig = new Rig(eur: 1_000m);

@@ -207,6 +207,27 @@ public sealed partial class SafetyMonitor : BackgroundService
         return new SafetyCheckResult(reason, buysCancelled);
     }
 
+    /// <summary>
+    /// Compares the account with the exchange as the engine starts, rather than a minute later, since orders wait for the
+    /// first complete reconciliation (F-12). One that can't complete yet (no prices for the holdings check) is done again in
+    /// the first round.
+    /// </summary>
+    public async Task ReconcileAtStartAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _execution.ReconcileAsync(cancellationToken).ConfigureAwait(false); // engages the kill switch on a finding
+            if (_execution.LastReconciledAt is not null)
+                _lastReconcile = _time.GetUtcNow();
+        }
+        catch (Exception ex) when (Failed(ex, cancellationToken))
+        {
+            LogCheckFailed(_logger, "reconciliation", ex.GetType().Name, ex.Message);
+        }
+
+        MarkProgress();
+    }
+
     /// <summary>A step's failure, not the engine stopping (an SDK timeout is an OperationCanceledException too).</summary>
     private static bool Failed(Exception ex, CancellationToken cancellationToken) =>
         ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested;
@@ -220,6 +241,7 @@ public sealed partial class SafetyMonitor : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await ReconcileAtStartAsync(stoppingToken).ConfigureAwait(false);
         using var timer = new PeriodicTimer(Interval, _time);
         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
         {
