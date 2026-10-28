@@ -136,12 +136,13 @@ public sealed class ExchangeRegistrationTests
     [Fact]
     public void Paper_FullEngine_ResolvesTheExecutionService_WithInMemoryState()
     {
-        var limits = new RiskLimits(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, new HashSet<string> { "BTC-EUR" });
+        var limits = new RiskLimits(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, "EUR", 20);
+        var tradable = new TradableSymbols(limits, ["BTC-EUR"]);
         var services = Services(TradingMode.Paper);
         services.AddLogging();
         services.AddSingleton(limits);
-        services.AddSingleton(new RiskGate(limits));
-        services.AddCixMarketData(new MarketDataOptions(), limits.AllowedSymbols);
+        services.AddSingleton(new RiskGate(limits, tradable: tradable));
+        services.AddCixMarketData(new MarketDataOptions(), tradable.Current);
         services.AddCixExecution(TradingMode.Paper, new ExecutionOptions());
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
 

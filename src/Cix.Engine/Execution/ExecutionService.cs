@@ -102,6 +102,9 @@ public sealed partial class ExecutionService : IActiveSymbolSource
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Func<string, CancellationToken, Task<MarketQuote?>>? _refreshQuote;
     private readonly TimeSpan _freshBookWithin;
+
+    /// <summary>Why the strategy's filters keep a buy out of a coin now (the latest scan excluded it), or null (ADR-0021).</summary>
+    private readonly Func<string, string?>? _strategyFilter;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
     /// <summary>Coins an order was sent in lately, by symbol: active for the market data until a sample shows them held or working.</summary>
@@ -148,9 +151,11 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         IJournal? journal = null,
         IEngineLease? lease = null,
         Func<string, CancellationToken, Task<MarketQuote?>>? refreshQuote = null,
-        TimeSpan? freshBookWithin = null)
+        TimeSpan? freshBookWithin = null,
+        Func<string, string?>? strategyFilter = null)
     {
         _exchange = exchange;
+        _strategyFilter = strategyFilter;
         _refreshQuote = refreshQuote;
         _freshBookWithin = freshBookWithin ?? TimeSpan.FromSeconds(20);
         _gate = gate;
@@ -328,6 +333,14 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             StrategyVerdict? strategyCheck = null;
             if (strategy is not null && rounded.Side == OrderSide.Buy)
             {
+                // A watched coin trades only while it passes the strategy's market filters (ADR-0021). Before the gate, which
+                // stays final; never for sells, the owner's direct orders or the protective exits.
+                if (_strategyFilter?.Invoke(rounded.Symbol) is { } filtered)
+                {
+                    LogRejected(_logger, intent.ClientOrderId ?? string.Empty, "strategy-filter", filtered);
+                    return Reject("strategy-filter", filtered); // the strategy's refusal, not the gate's: no reject streak
+                }
+
                 strategyCheck = StrategyGate.CheckBuy(rounded, portfolio, strategy, ActivityFor(context?.RunId), now, pair.BaseStep);
                 if (strategyCheck.Order is not { } allowed)
                 {
@@ -438,6 +451,12 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         _portfolioCache = (now, snapshot);
         return (snapshot, now);
     }
+
+    /// <summary>
+    /// The account's balances, read fresh: every currency, watched or not. For adopting held coins into the watched pairs
+    /// (ADR-0021); reads only.
+    /// </summary>
+    public Task<IReadOnlyList<Balance>> GetBalancesAsync(CancellationToken cancellationToken) => _exchange.GetBalancesAsync(cancellationToken);
 
     /// <summary>
     /// Runs <paramref name="work"/> while no order can be placed or cancelled, with an uncached view of the account: what holds

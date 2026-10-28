@@ -805,6 +805,7 @@
     [/^Any pair in ([A-Z]{3,5}) that the exchange lists, up to (\d+) at once; the owner adds and removes them from the Coins tab\.$/,
       (m) => `Любая пара в ${m[1]}, которая есть на бирже, не больше ${m[2]} одновременно; владелец добавляет и убирает их на вкладке «Монеты».`],
     [/^(.+) and any ([A-Z]{3,5}) pair, at most (\d+)$/, (m) => `${m[1]} и любая пара в ${m[2]}, не больше ${m[3]}`],
+    [/^Any ([A-Z]{3,5}) pair, at most (\d+)$/, (m) => `Любая пара в ${m[1]}, не больше ${m[2]}`],
   ];
 
   /** Words that stay as they are in Russian: names, tickers, technical identifiers the journal filter sends as values. */

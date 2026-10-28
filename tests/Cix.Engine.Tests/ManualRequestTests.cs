@@ -49,8 +49,8 @@ public sealed class ManualRequestTests
 
         /// <summary>Another engine process on the same database: the ledger and the documents survive, memory doesn't.</summary>
         public ManualRequestService NewService() => new(
-            Store, Ledger, Tools.Rig.Execution, Tools.Rig.State, Rig.Limits, Tools.Journal, Tools.Specs, Options,
-            new TradingContext(Mode), Tools.Rig.Time, NullLogger<ManualRequestService>.Instance, Tools.Views);
+            Store, Ledger, Tools.Rig.Execution, Tools.Rig.State, Tools.Journal, Tools.Specs, Options,
+            new TradingContext(Mode), Tools.Rig.Time, NullLogger<ManualRequestService>.Instance, Tools.Views, Tools.Rig.Tradable);
 
         public string Status(string id) => Store.Find(id)!.Status;
 
@@ -175,7 +175,7 @@ public sealed class ManualRequestTests
     [InlineData("buy", "direct", null, "5", "BTC-EUR", "agent-assisted only")]
     [InlineData("sell", "direct", "1.5", null, "BTC-EUR", "portion")]
     [InlineData("sell", "direct", "0", null, "BTC-EUR", "portion")]
-    [InlineData("sell", "direct", "0.5", null, "ETH-EUR", "allowlist")]
+    [InlineData("sell", "direct", "0.5", null, "ETH-EUR", "not among the watched pairs")]
     [InlineData("sell", "market", "0.5", null, "BTC-EUR", "mode")]
     [InlineData("buy", "agent", null, null, "BTC-EUR", "quoteAmount")]
     [InlineData("sell", "agent", "0.5", "5", "BTC-EUR", "quoteAmount is for buys")]
@@ -293,8 +293,8 @@ public sealed class ManualRequestTests
         var rig = new ManualRig(tools: tools);
         rig.Request("req-early-1", "sell", "direct", portion: 1m, symbol: "btc-eur");
         var empty = new Cix.Engine.MarketData.MarketState(rig.Time);
-        var service = new ManualRequestService(rig.Store, rig.Ledger, tools.Rig.Execution, empty, Rig.Limits, tools.Journal, tools.Specs,
-            new ManualRequestOptions(), new TradingContext(TradingMode.Paper), rig.Time, NullLogger<ManualRequestService>.Instance);
+        var service = new ManualRequestService(rig.Store, rig.Ledger, tools.Rig.Execution, empty, tools.Journal, tools.Specs,
+            new ManualRequestOptions(), new TradingContext(TradingMode.Paper), rig.Time, NullLogger<ManualRequestService>.Instance, tradable: tools.Rig.Tradable);
 
         await service.PollOnceAsync(CancellationToken.None);
         Assert.Equal(ManualRequestStatus.New, rig.Status("req-early-1"));

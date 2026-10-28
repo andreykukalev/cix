@@ -109,7 +109,7 @@ public sealed class ScannerFilterTests
         await scanner.ScanAsync(CancellationToken.None);
         var status = new EngineStatusService(
             tools.Rig.Execution, tools.Rig.KillSwitch, tools.Rig.State, Rig.Limits, new TradingContext(TradingMode.Paper), new InMemoryEngineStatusStore(),
-            new DependencyHealth(), tools.Rig.Time, NullLogger<EngineStatusService>.Instance, scanner, tools.Views, tools.Specs).Build();
+            new DependencyHealth(), tools.Rig.Time, NullLogger<EngineStatusService>.Instance, scanner, tools.Views, tools.Specs, tradable: tools.Rig.Tradable).Build();
 
         Assert.Single(tools.Journal.Entries, e => e.Kind == ScannerFilterRecorder.FiltersKind);
         Assert.Contains("BTC-EUR", store.Saved!.Passing);
@@ -125,7 +125,7 @@ public sealed class ScannerFilterTests
         ScannerServiceTests.SeedHourly(tools, 20m);
         var status = new EngineStatusService(
             tools.Rig.Execution, tools.Rig.KillSwitch, tools.Rig.State, Rig.Limits, new TradingContext(TradingMode.Paper), new InMemoryEngineStatusStore(),
-            new DependencyHealth(), tools.Rig.Time, NullLogger<EngineStatusService>.Instance, tools.Scanner, tools.Views, tools.Specs);
+            new DependencyHealth(), tools.Rig.Time, NullLogger<EngineStatusService>.Instance, tools.Scanner, tools.Views, tools.Specs, tradable: tools.Rig.Tradable);
         using var timer = new PeriodicTimer(TimeSpan.FromHours(1)); // the minute tick, far off
 
         var next = status.NextAsync(timer, CancellationToken.None);

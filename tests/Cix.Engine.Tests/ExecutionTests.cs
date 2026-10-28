@@ -30,8 +30,13 @@ internal sealed class FlakyExchange(IExchangeClient inner) : IExchangeClient
 
     public int OpenOrderLookups { get; private set; }
 
+    /// <summary>Balances can't be read (an outage).</summary>
+    public bool FailBalances { get; set; }
+
     public async Task<IReadOnlyList<Balance>> GetBalancesAsync(CancellationToken cancellationToken)
     {
+        if (FailBalances)
+            throw new ExchangeException("Simulated outage.", 503);
         var balances = (await inner.GetBalancesAsync(cancellationToken)).ToList();
         foreach (var (currency, extra) in ExtraBalances)
         {
@@ -167,6 +172,24 @@ public sealed class ExecutionTests
         Assert.NotNull(await rig.Execution.SampleAsync(CancellationToken.None));
 
         Assert.Equal(new[] { Rig.Btc }, rig.Execution.ActiveSymbols); // nothing held, but the working buy needs its book to fill
+    }
+
+    [Fact]
+    public async Task AStrategyBuy_InACoinTheStrategyFiltersOut_IsRefused_ButSellsAndTheOwnersOrdersAreNot()
+    {
+        var rig = new Rig(btc: 0.001m, strategyFilter: symbol => $"{symbol} is filtered out by the strategy (low-volume): 24h volume 10 is below the minimum 100,000.");
+
+        var buy = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 60_010m, "c-1"), postOnly: false, CancellationToken.None,
+            strategy: new StrategyLimits());
+        var sell = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Sell, 0.0005m, 60_000m, "c-2"), postOnly: false, CancellationToken.None,
+            strategy: new StrategyLimits());
+        var owners = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 60_010m, "c-3"), postOnly: false, CancellationToken.None);
+
+        Assert.Equal((ExecutionStatus.Rejected, "strategy-filter"), (buy.Status, buy.Rule));
+        Assert.StartsWith("BTC-EUR is filtered out by the strategy", buy.Reason, StringComparison.Ordinal);
+        Assert.Equal(ExecutionStatus.Placed, sell.Status); // a held coin outside the strategy can always be sold
+        Assert.Equal(ExecutionStatus.Placed, owners.Status); // the owner's direct orders aren't the strategy's
+        Assert.False(rig.KillSwitch.IsEngaged); // the strategy's refusal never counts towards the gate's reject streak
     }
 
     [Fact]

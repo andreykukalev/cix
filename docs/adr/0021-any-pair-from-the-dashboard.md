@@ -1,6 +1,6 @@
 # 0021. Any pair from the dashboard: watched coins, strategy-filtered trading, no pair lists in configuration
 
-- Status: proposed
+- Status: accepted (2026-10-28)
 - Date: 2026-10-28
 - Amends ADR-0006 (the curated universe) and ADR-0016 (pairs added within `AllowedSymbols`)
 

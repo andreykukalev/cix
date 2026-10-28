@@ -36,7 +36,6 @@ public sealed partial class ManualRequestService(
     IManualLedgerStore ledgerStore,
     ExecutionService execution,
     MarketState market,
-    RiskLimits limits,
     IJournal journal,
     IStrategySpecStore specs,
     ManualRequestOptions options,
@@ -234,7 +233,7 @@ public sealed partial class ManualRequestService(
             return;
         }
 
-        var (request, problem) = ManualRequestDocument.Parse(item.Document, tradable?.Current ?? limits.AllowedSymbols);
+        var (request, problem) = ManualRequestDocument.Parse(item.Document, tradable?.Current ?? TradableSymbols.None);
         if (request is null)
         {
             await RefuseAsync(item, null, ManualRequestStatus.Invalid, "invalid", problem!, slim: false, cancellationToken).ConfigureAwait(false);

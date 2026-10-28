@@ -144,7 +144,7 @@ public static partial class ManualRequestDocument
 
     public static string? Field(JsonObject document, string name) => Text(document, name);
 
-    /// <summary>The request, or why it can't be accepted. <paramref name="allowed"/> is the risk gate's symbol allowlist.</summary>
+    /// <summary>The request, or why it can't be accepted. <paramref name="allowed"/> is the watched pairs the risk gate reads.</summary>
     public static (ManualRequest? Request, string? Problem) Parse(JsonObject document, IReadOnlySet<string> allowed)
     {
         ArgumentNullException.ThrowIfNull(document);
@@ -171,7 +171,7 @@ public static partial class ManualRequestDocument
             return (null, "symbol is required, for example BTC-EUR.");
         var symbol = MarketDataPoller.NormaliseSymbol(rawSymbol);
         if (!allowed.Contains(symbol))
-            return (null, $"{symbol} is not in the risk allowlist.");
+            return (null, $"{symbol} is not among the watched pairs (add it on the Coins tab first).");
 
         if (document.ContainsKey("limitPrice"))
             return (null, "limitPrice isn't supported: sells go at the bid and buys at the ask, so a resting order can't hold a position past its stop.");

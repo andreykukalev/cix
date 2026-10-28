@@ -480,8 +480,8 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
         Assert.Equal("req-cosmos-1", Assert.Single(listed).Id); // the mode is filtered in the query
         var store = new CosmosManualRequestStore(_db);
         var service = new ManualRequestService(
-            store, new CosmosManualLedgerStore(_db, TradingMode.Paper), tools.Rig.Execution, tools.Rig.State, Rig.Limits, tools.Journal, tools.Specs, new ManualRequestOptions(),
-            new TradingContext(TradingMode.Paper), tools.Rig.Time, NullLogger<ManualRequestService>.Instance);
+            store, new CosmosManualLedgerStore(_db, TradingMode.Paper), tools.Rig.Execution, tools.Rig.State, tools.Journal, tools.Specs, new ManualRequestOptions(),
+            new TradingContext(TradingMode.Paper), tools.Rig.Time, NullLogger<ManualRequestService>.Instance, tradable: tools.Rig.Tradable);
 
         await service.PollOnceAsync(CancellationToken.None);
         await service.PollOnceAsync(CancellationToken.None);

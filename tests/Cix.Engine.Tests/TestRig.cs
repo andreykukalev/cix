@@ -29,10 +29,11 @@ internal sealed class Rig
         InMemoryJournal? journal = null,
         Persistence.IEngineLease? lease = null,
         TradableSymbols? tradable = null,
-        Func<string, CancellationToken, Task<MarketQuote?>>? refreshQuote = null)
+        Func<string, CancellationToken, Task<MarketQuote?>>? refreshQuote = null,
+        Func<string, string?>? strategyFilter = null)
     {
-        Tradable = tradable;
-        var limits = tradable?.Limits ?? Limits;
+        Tradable = tradable ?? new TradableSymbols(Limits, [Btc]);
+        var limits = Tradable.Limits;
         Journal = journal ?? new InMemoryJournal();
         Time = time ?? new MutableTime(T0);
         Safety = safety ?? new SafetyOptions();
@@ -51,18 +52,19 @@ internal sealed class Rig
         KillSwitch = new KillSwitch(Store, Time);
         Pairs = new PairCatalog(pairSource ?? new FakeMarketData(), Time);
         var pairs = Pairs;
-        Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, limits, Time, tradable);
+        Portfolio = new PortfolioService(Exchange, pairs, State, KillSwitch, Store, limits, Time, Tradable);
         Execution = new ExecutionService(
-            Exchange, new RiskGate(limits, Time, tradable), Portfolio, State, pairs, KillSwitch, Store, Time,
-            NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety, Journal, lease, refreshQuote, freshBookWithin: TimeSpan.FromSeconds(20));
-        Monitor = new SafetyMonitor(Execution, KillSwitch, State, limits, Safety, Time, NullLogger<SafetyMonitor>.Instance, tradable);
+            Exchange, new RiskGate(limits, Time, Tradable), Portfolio, State, pairs, KillSwitch, Store, Time,
+            NullLogger<ExecutionService>.Instance, (_, _) => Task.CompletedTask, Safety, Journal, lease, refreshQuote, freshBookWithin: TimeSpan.FromSeconds(20),
+            strategyFilter: strategyFilter);
+        Monitor = new SafetyMonitor(Execution, KillSwitch, State, limits, Safety, Time, NullLogger<SafetyMonitor>.Instance, Tradable);
         Quote(60_000.00m, 60_010.00m);
     }
 
-    public static RiskLimits Limits { get; } = new(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, new HashSet<string> { Btc });
+    public static RiskLimits Limits { get; } = new(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, "EUR", 20);
 
-    /// <summary>The run-time pair list, when the test gives one; otherwise <see cref="Limits"/>' allowlist is tradable.</summary>
-    public TradableSymbols? Tradable { get; }
+    /// <summary>The watched pairs: the test's list, or BTC-EUR alone.</summary>
+    public TradableSymbols Tradable { get; }
 
     public MutableTime Time { get; }
     public InMemoryJournal Journal { get; }

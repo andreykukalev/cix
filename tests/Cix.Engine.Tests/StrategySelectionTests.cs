@@ -16,8 +16,8 @@ namespace Cix.Engine.Tests;
 /// <summary>The built-in strategies and the schema every strategy from the database is checked against (#105).</summary>
 public sealed class StrategySchemaTests
 {
-    // 200 allocation, 40 per order, 100 per coin, 15 daily loss; BTC and ETH, as config/risk-limits.json allows
-    internal static readonly RiskLimits Limits = Rig.Limits with { AllowedSymbols = new HashSet<string>(StringComparer.Ordinal) { "BTC-EUR", "ETH-EUR" } };
+    // 200 allocation, 40 per order, 100 per coin, 15 daily loss; any EUR pair, as config/risk-limits.json allows
+    internal static readonly RiskLimits Limits = Rig.Limits;
 
     internal static StrategySpec Load(string name, int version) =>
         FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", $"{name}.v{version}.json"), name, version, TradingMode.Paper);

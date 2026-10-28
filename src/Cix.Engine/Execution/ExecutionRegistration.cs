@@ -65,7 +65,8 @@ public static class ExecutionRegistration
             journal: sp.GetService<Journal.IJournal>(),
             lease: sp.GetService<Persistence.IEngineLease>(),
             refreshQuote: (symbol, ct) => sp.GetRequiredService<MarketDataPoller>().RefreshQuoteAsync(symbol, ct), // a fresh book before pricing
-            freshBookWithin: sp.GetRequiredService<MarketDataOptions>().QuoteInterval));
+            freshBookWithin: sp.GetRequiredService<MarketDataOptions>().QuoteInterval,
+            strategyFilter: symbol => sp.GetService<Scanning.MarketScanService>()?.BuyRefusal(symbol))); // resolved late: the scanner reads execution
         services.AddSingleton<IActiveSymbolSource>(sp => sp.GetRequiredService<ExecutionService>()); // whose order books the poller keeps
         services.AddSingleton<SafetyMonitor>();
         services.AddHostedService(sp => sp.GetRequiredService<SafetyMonitor>());

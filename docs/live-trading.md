@@ -20,14 +20,15 @@ A proposal for the first run, 100 EUR on the fixed Safe strategy. Safe's own lim
     "MaxDrawdownFraction": 0.10,
     "MaxOrdersPerMinute": 4,
     "MaxPriceDeviationFraction": 0.01,
-    "AllowedSymbols": [ "BTC-EUR", "ETH-EUR", "SOL-EUR", "XRP-EUR" ]
+    "AllowedQuoteCurrency": "EUR",
+    "MaxTradableSymbols": 10
   }
 }
 ```
 
 - **Drawdown 10%**, not paper's 15%: new buys stop after a 10% fall from peak equity (10 EUR from 100 EUR) until you resume. Sells, stops and targets carry on.
 - **Daily loss 5 EUR**, half the ceiling (10% of the allocation).
-- **Four of the most liquid pairs.** There is no `AllowedQuoteCurrency`, so the Live view's Coins tab can turn these four off and on again but add no others; widening the list is your edit to `config/risk-limits.live.json`. Revolut X's smallest order on these pairs is 0.1 EUR (its public pairs list, 27 Oct), well under Safe's 5 EUR.
+- **Coins: any EUR pair, at most `MaxTradableSymbols`.** No pair list lives in the file (ADR-0021). You add coins on the Live view's Coins tab (with its confirmation); each is watched, and trades only while it passes the live strategy's filters. Coins the sub-account holds are added by the engine and can't be removed while held. The live engine starts watching only what it holds and what you add. Revolut X's smallest order on the liquid pairs is 0.1 EUR (its public pairs list, 27 Oct), well under Safe's 5 EUR.
 - **Emergency slippage** (`MaxEmergencySlippageFraction`, optional): how far below mid a stop-loss sell may go. The protection sells with immediate-or-cancel limits at the bid, and refuses to quote when the bid is further below mid than this; without the setting it uses `MaxPriceDeviationFraction`, which on thin pairs leaves many stops unfilled in a fast fall. `0.03` is the agreed start; the hard ceiling (5%) caps it. Add it to `config/risk-limits.live.json` yourself: `"MaxEmergencySlippageFraction": 0.03`. The `Protection` section of `appsettings.json` holds the engine side (quote age, retry delay, five quick tries, then a retry every minute) with conservative defaults that need no change.
 
 ## The strategy

@@ -1,9 +1,10 @@
 namespace Cix.Domain.Risk;
 
 /// <summary>
-/// The pairs that can be traded now: <see cref="RiskLimits.AllowedSymbols"/> at start, then the list the owner sets from the
-/// dashboard at run time. Every list must be one the limits permit (<see cref="Problems"/>), so the owner can narrow or widen
-/// trading only within <c>config/risk-limits.json</c>. The risk gate reads it on every order; one read is one consistent list.
+/// The watched pairs (ADR-0021): the list the owner sets from the dashboard at run time, plus the coins the account holds, which
+/// the engine adopts. Every list must be one the limits permit (<see cref="Problems"/>): pairs in the owner's quote currency, at
+/// most <see cref="RiskLimits.MaxTradableSymbols"/>. It may be empty. The risk gate reads it on every order; one read is one
+/// consistent list.
 /// </summary>
 public sealed class TradableSymbols
 {
@@ -11,17 +12,24 @@ public sealed class TradableSymbols
     private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _version;
 
-    public TradableSymbols(RiskLimits limits, DateTimeOffset? since = null)
+    /// <param name="limits">The owner's limits, which every list must fit.</param>
+    /// <param name="initial">The list to start with (tests, mostly); the engine starts empty and restores the saved list.</param>
+    /// <param name="since">When the initial pairs count as added.</param>
+    public TradableSymbols(RiskLimits limits, IEnumerable<string>? initial = null, DateTimeOffset? since = null)
     {
         ArgumentNullException.ThrowIfNull(limits);
         Limits = limits;
         var at = since ?? DateTimeOffset.MinValue;
-        _current = new Snapshot(
-            limits.AllowedSymbols.ToHashSet(StringComparer.Ordinal),
-            limits.AllowedSymbols.ToDictionary(s => s, _ => at, StringComparer.Ordinal));
+        var symbols = (initial ?? []).ToHashSet(StringComparer.Ordinal);
+        if (Problems(symbols) is { Count: > 0 } problems)
+            throw new ArgumentException(string.Join(" ", problems), nameof(initial));
+        _current = new Snapshot(symbols, symbols.ToDictionary(s => s, _ => at, StringComparer.Ordinal));
     }
 
     public RiskLimits Limits { get; }
+
+    /// <summary>No pairs: what a service without the watched list sees, so it never falls back to a wider list.</summary>
+    public static IReadOnlySet<string> None { get; } = new HashSet<string>(StringComparer.Ordinal);
 
     /// <summary>The pairs tradable now.</summary>
     public IReadOnlySet<string> Current => Volatile.Read(ref _current).Symbols;
@@ -50,8 +58,6 @@ public sealed class TradableSymbols
     {
         ArgumentNullException.ThrowIfNull(symbols);
         var problems = new List<string>();
-        if (symbols.Count == 0)
-            problems.Add("At least one pair must stay tradable.");
         if (symbols.Count > Limits.TradableCap)
             problems.Add($"At most {Limits.TradableCap} pairs can be tradable at once (the owner's limits file).");
         var refused = symbols.Where(s => !Limits.Permits(s)).Order(StringComparer.Ordinal).ToList();

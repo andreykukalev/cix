@@ -13,10 +13,11 @@ public sealed class ScanTools(ToolCallContext context, MarketScanService scanner
 {
     [McpServerTool(Name = "scan_market", ReadOnly = true)]
     [Description(
-        "Scans the curated universe now. Returns entries (suggested buys with limitPrice, baseSize, stopLoss and takeProfit already "
+        "Scans the watched coins now. Returns entries (suggested buys with limitPrice, baseSize, stopLoss and takeProfit already "
         + "sized for the risk per trade), exits (held positions at their stop, target or in a downtrend, with the size to sell), "
         + "ranked (symbols passing the liquidity, spread, volatility and cost filters, best first, with noEntryReason and noEntryDetail: the figure and threshold behind it) and "
-        + "excluded (symbols filtered out, with the reason). Signals are suggestions: the risk gate still decides.")]
+        + "excluded (symbols filtered out, with the reason). Only ranked coins can be bought: a buy in an excluded one is refused (strategy-filter). "
+        + "Signals are suggestions: the risk gate still decides.")]
     public async Task<string> ScanMarket(CancellationToken cancellationToken)
     {
         await context.RequireAllowedAsync("scan_market", cancellationToken).ConfigureAwait(false);

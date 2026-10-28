@@ -176,7 +176,7 @@ public sealed class ProtectionTests
     public async Task TheSellIsPricedAtTheEmergencyBandBelowTheMid_NotAtTheBid()
     {
         var limits = Rig.Limits with { MaxEmergencySlippageFraction = 0.03m };
-        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m, tradable: new TradableSymbols(limits)));
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m, tradable: new TradableSymbols(limits, [Btc])));
 
         await p.ExitAsync(Btc, stop: 61_000m);
 
@@ -549,7 +549,7 @@ public sealed class ProtectionTests
     public async Task AnotherCoinsStaleQuote_DoesNotBlockThisCoinsStopLoss()
     {
         var symbols = new[] { "AAA-EUR", "BBB-EUR" };
-        var limits = new RiskLimits(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, symbols.ToHashSet(StringComparer.Ordinal));
+        var limits = new RiskLimits(200m, 40m, 100m, 15m, 0.15m, 4, 0.01m, "EUR", 20);
         var (rig, p) = MultiRig(symbols, limits, baseEach: 0.001m);
         p.Plan("AAA-EUR", stop: 61_000m);
         p.Plan("BBB-EUR", stop: 50_000m);
@@ -583,7 +583,7 @@ public sealed class ProtectionTests
     public async Task FifteenStopsAtOnce_AreAllSold_PacedUnderTheExchangesLimit_AndNotAgainstTheTradingRate()
     {
         var symbols = Enumerable.Range(1, 15).Select(i => $"C{i:00}-EUR").ToArray();
-        var limits = new RiskLimits(500m, 100m, 100m, 50m, 0.15m, 4, 0.01m, symbols.ToHashSet(StringComparer.Ordinal));
+        var limits = new RiskLimits(500m, 100m, 100m, 50m, 0.15m, 4, 0.01m, "EUR", 20);
         var (rig, p) = MultiRig(symbols, limits, baseEach: 0.0005m);
         foreach (var symbol in symbols)
             p.Plan(symbol, stop: 61_000m);
@@ -644,7 +644,7 @@ public sealed class ProtectionTests
         await p.Service.RefreshAsync(CancellationToken.None);
         var status = new EngineStatusService(
             p.Rig.Execution, p.Rig.KillSwitch, p.Rig.State, Rig.Limits, new TradingContext(TradingMode.Paper), new InMemoryEngineStatusStore(),
-            new DependencyHealth(), p.Rig.Time, NullLogger<EngineStatusService>.Instance, protection: p.Service).Build();
+            new DependencyHealth(), p.Rig.Time, NullLogger<EngineStatusService>.Instance, tradable: p.Rig.Tradable, protection: p.Service).Build();
 
         Assert.Equal((1, (DateTimeOffset?)p.Rig.Time.GetUtcNow(), 0, 0), (status.Protection!.Armed, status.Protection.ArmedAt, status.Protection.Exiting.Count, status.Protection.Blocked.Count));
         Assert.Equal("Critical: drawdown reached the hard ceiling. Nothing new until you resume; stop-losses keep selling.", EngineStatusService.HaltCategoryFor(SafetyMonitor.CriticalBy));
@@ -688,7 +688,7 @@ public sealed class ProtectionTests
         options.InitialBalances["EUR"] = 100m;
         foreach (var symbol in symbols)
             options.InitialBalances[symbol.Split('-')[0]] = baseEach;
-        var rig = new Rig(pairSource: market, paper: new PaperExchange(market, options, time), time: time, tradable: new TradableSymbols(limits));
+        var rig = new Rig(pairSource: market, paper: new PaperExchange(market, options, time), time: time, tradable: new TradableSymbols(limits, symbols));
         var p = new ProtectionRig(rig);
         foreach (var symbol in symbols)
             p.Feed(p.Normal(symbol));

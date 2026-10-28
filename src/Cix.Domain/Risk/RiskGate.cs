@@ -35,8 +35,8 @@ public sealed class RiskGate
     private readonly TradableSymbols? _tradable;
 
     /// <param name="tradable">
-    /// The pairs tradable now, which the owner may change at run time within <paramref name="limits"/>. Without it, only
-    /// <see cref="RiskLimits.AllowedSymbols"/> can be traded.
+    /// The watched pairs, which the owner changes at run time within <paramref name="limits"/>. Without it, nothing can be
+    /// traded: a gate never falls back to a wider list than the engine watches.
     /// </param>
     public RiskGate(RiskLimits limits, TimeProvider? time = null, TradableSymbols? tradable = null)
     {
@@ -78,9 +78,9 @@ public sealed class RiskGate
         if (portfolio.KillSwitchEngaged && !intent.IsProtectiveExit)
             return RiskVerdict.Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
-        // Both: on the list of the moment, and permitted by the configured limits (a list can never widen them).
-        if (!(_tradable?.Current ?? _limits.AllowedSymbols).Contains(intent.Symbol) || !_limits.Permits(intent.Symbol))
-            return RiskVerdict.Reject("symbol-allowlist", $"{intent.Symbol} is not in the allowed symbols.");
+        // Both: on the watched list of the moment, and permitted by the owner's limits file (a list can never widen it).
+        if (_tradable?.Contains(intent.Symbol) != true || !_limits.Permits(intent.Symbol))
+            return RiskVerdict.Reject("symbol-allowlist", $"{intent.Symbol} is not among the watched pairs.");
 
         if (intent.BaseSize <= 0 || intent.LimitPrice <= 0 || string.IsNullOrWhiteSpace(intent.ClientOrderId))
             return RiskVerdict.Reject("invalid-order", "Size and limit price must be positive and the client order ID set.");

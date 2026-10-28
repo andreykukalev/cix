@@ -19,9 +19,15 @@ public sealed class RiskGateTests
         MaxDrawdownFraction: 0.15m,
         MaxOrdersPerMinute: 4,
         MaxPriceDeviationFraction: 0.01m,
-        AllowedSymbols: new HashSet<string> { Btc });
+        AllowedQuoteCurrency: "EUR",
+        MaxTradableSymbols: 3);
 
-    private static RiskGate Gate(RiskLimits? limits = null) => new(limits ?? Limits(), new FixedTime(Now));
+    /// <summary>A gate whose watched list is BTC-EUR alone.</summary>
+    private static RiskGate Gate(RiskLimits? limits = null)
+    {
+        var l = limits ?? Limits();
+        return new(l, new FixedTime(Now), new TradableSymbols(l, [Btc]));
+    }
 
     private static PortfolioSnapshot Portfolio(
         decimal equity = 200m,
@@ -349,15 +355,21 @@ public sealed class RiskGateTests
 
     private const string Sol = "SOL-EUR";
 
-    /// <summary>BTC always permitted; any EUR pair may be added at run time, three at most.</summary>
-    private static RiskLimits OpenLimits() => Limits() with { AllowedQuoteCurrency = "EUR", MaxTradableSymbols = 3 };
-
     private static OrderIntent BuySol(decimal size = 0.2m, decimal price = 150m) => new(Sol, OrderSide.Buy, size, price, "c-3");
+
+    [Fact]
+    public void Constructor_WithoutAWatchedList_TradesNothing()
+    {
+        var gate = new RiskGate(Limits(), new FixedTime(Now)); // never a fallback to a wider list
+
+        Assert.Equal("symbol-allowlist", gate.Evaluate(Buy(0.0006m), Portfolio(), Market()).Rule);
+        Assert.Equal("symbol-allowlist", gate.Evaluate(StopSell(0.0001m), Portfolio(btcPosition: 50m), Market()).Rule);
+    }
 
     [Fact]
     public void Evaluate_PairAddedAtRunTime_Accepts()
     {
-        var limits = OpenLimits();
+        var limits = Limits();
         var tradable = new TradableSymbols(limits);
         var gate = new RiskGate(limits, new FixedTime(Now), tradable);
         Assert.Equal("symbol-allowlist", gate.Evaluate(BuySol(), Portfolio(), new MarketSnapshot(Sol, 150m, Now)).Rule); // not added yet
@@ -369,10 +381,10 @@ public sealed class RiskGateTests
     }
 
     [Fact]
-    public void Evaluate_PairRemovedAtRunTime_RejectsEvenAnAllowlistedOne()
+    public void Evaluate_PairRemovedAtRunTime_Rejects()
     {
-        var limits = OpenLimits();
-        var tradable = new TradableSymbols(limits);
+        var limits = Limits();
+        var tradable = new TradableSymbols(limits, [Btc]);
         Assert.Empty(tradable.TrySet([Sol], Now));
         var gate = new RiskGate(limits, new FixedTime(Now), tradable);
 
@@ -383,26 +395,26 @@ public sealed class RiskGateTests
     }
 
     [Fact]
-    public void Evaluate_ListOnlyLimits_NeverTradeAnotherPair()
+    public void Evaluate_APairInAnotherQuoteCurrency_IsNeverTraded()
     {
-        var limits = Limits(); // no AllowedQuoteCurrency: only the allowlist is permitted
-        var tradable = new TradableSymbols(limits);
+        var limits = Limits();
+        var tradable = new TradableSymbols(limits, [Btc]);
 
-        Assert.NotEmpty(tradable.TrySet([Btc, Sol], Now));
-        Assert.Equal(new[] { Btc }, tradable.Current.Order(StringComparer.Ordinal));
-        Assert.Equal("symbol-allowlist", new RiskGate(limits, new FixedTime(Now), tradable).Evaluate(BuySol(), Portfolio(), new MarketSnapshot(Sol, 150m, Now)).Rule);
+        Assert.NotEmpty(tradable.TrySet([Btc, "ETH-USD"], Now));
+        Assert.Equal("symbol-allowlist", new RiskGate(limits, new FixedTime(Now), tradable)
+            .Evaluate(new OrderIntent("ETH-USD", OrderSide.Buy, 0.01m, 3_000m, "c-u"), Portfolio(), new MarketSnapshot("ETH-USD", 3_000m, Now)).Rule);
     }
 
     [Fact]
     public async Task TradableSymbols_SignalAChange_OnlyWhenTheListChanges()
     {
-        var tradable = new TradableSymbols(OpenLimits());
+        var tradable = new TradableSymbols(Limits(), [Btc]);
         var wait = tradable.WaitForChangeAsync(tradable.Version, CancellationToken.None);
         Assert.False(wait.IsCompleted);
 
         Assert.Empty(tradable.TrySet([Btc], Now)); // the same list: nothing to rescan
         Assert.False(wait.IsCompleted);
-        Assert.NotEmpty(tradable.TrySet([], Now)); // refused: nothing changed
+        Assert.NotEmpty(tradable.TrySet([Btc, "ETH-USD"], Now)); // refused: nothing changed
         Assert.False(wait.IsCompleted);
 
         Assert.Empty(tradable.TrySet([Btc, Sol], Now));
@@ -414,9 +426,9 @@ public sealed class RiskGateTests
     [Fact]
     public void Constructor_ListForOtherLimits_Throws()
     {
-        var tradable = new TradableSymbols(OpenLimits());
+        var tradable = new TradableSymbols(Limits());
 
-        Assert.Throws<ArgumentException>(() => new RiskGate(Limits(), new FixedTime(Now), tradable));
+        Assert.Throws<ArgumentException>(() => new RiskGate(Limits() with { MaxTradableSymbols = 4 }, new FixedTime(Now), tradable));
     }
 
     [Theory]
@@ -427,40 +439,44 @@ public sealed class RiskGateTests
     [InlineData("SOL-EUR-X", false)]
     [InlineData("SOLEUR", false)]
     [InlineData("-EUR", false)]
-    public void Permits_WithQuoteCurrency_AnyPairInIt(string symbol, bool permitted)
+    public void Permits_AnyPairInTheQuoteCurrency_AndNothingElse(string symbol, bool permitted)
     {
-        Assert.Equal(permitted, OpenLimits().Permits(symbol));
-        Assert.Equal(symbol == Btc, Limits().Permits(symbol));
+        Assert.Equal(permitted, Limits().Permits(symbol));
     }
 
     [Fact]
-    public void Validate_RunTimePairSettings_AreChecked()
+    public void Validate_TheQuoteCurrencyAndTheCap_AreRequired()
     {
-        Assert.Empty(OpenLimits().Validate());
-        Assert.Contains("MaxTradableSymbols needs AllowedQuoteCurrency.", (Limits() with { MaxTradableSymbols = 3 }).Validate());
-        Assert.NotEmpty((OpenLimits() with { AllowedQuoteCurrency = "eur" }).Validate());
-        Assert.NotEmpty((OpenLimits() with { MaxTradableSymbols = 0 }).Validate()); // fewer than the allowlist
-        Assert.NotEmpty((OpenLimits() with { MaxTradableSymbols = RiskLimits.MaxTradableSymbolsLimit + 1 }).Validate());
-        Assert.NotEmpty((OpenLimits() with { AllowedQuoteCurrency = "USD" }).Validate()); // the allowlist is in EUR
+        Assert.Empty(Limits().Validate());
+        Assert.Empty((Limits() with { MaxTradableSymbols = RiskLimits.MaxTradableSymbolsLimit }).Validate());
+        Assert.Equal(50, RiskLimits.MaxTradableSymbolsLimit); // the owner's cap (2026-10-28): what the market-data budget fits
+        Assert.NotEmpty((Limits() with { AllowedQuoteCurrency = "eur" }).Validate());
+        Assert.NotEmpty((Limits() with { AllowedQuoteCurrency = "" }).Validate());
+        Assert.NotEmpty((Limits() with { AllowedQuoteCurrency = null! }).Validate());
+        Assert.NotEmpty((Limits() with { MaxTradableSymbols = 0 }).Validate());
+        Assert.NotEmpty((Limits() with { MaxTradableSymbols = RiskLimits.MaxTradableSymbolsLimit + 1 }).Validate());
     }
 
     [Fact]
-    public void TradableSymbols_OnlyListsTheLimitsPermit()
+    public void TradableSymbols_OnlyListsTheLimitsPermit_AndMayBeEmpty()
     {
-        var tradable = new TradableSymbols(OpenLimits());
-        Assert.Equal(new[] { Btc }, tradable.Current.Order(StringComparer.Ordinal));
-        Assert.Equal(DateTimeOffset.MinValue, tradable.AddedAt(Btc));
+        var tradable = new TradableSymbols(Limits());
+        Assert.Empty(tradable.Current); // a new environment watches nothing until the owner adds a coin
 
-        Assert.NotEmpty(tradable.TrySet([], Now)); // never empty
         Assert.Contains("At most 3 pairs can be tradable at once (the owner's limits file).", tradable.TrySet([Btc, Sol, "XRP-EUR", "ADA-EUR"], Now));
         // Paper's and live's limits files differ, so the reason names neither.
         Assert.Contains("Not permitted by the owner's limits file: ETH-USD.", tradable.TrySet([Btc, "ETH-USD"], Now));
-        Assert.Equal(new[] { Btc }, tradable.Current.Order(StringComparer.Ordinal)); // a refused list changes nothing
+        Assert.Empty(tradable.Current); // a refused list changes nothing
 
+        Assert.Empty(tradable.TrySet([Btc], Now.AddMinutes(-1)));
         Assert.Empty(tradable.TrySet([Btc, Sol], Now));
         Assert.Equal(Now, tradable.AddedAt(Sol));
-        Assert.Equal(DateTimeOffset.MinValue, tradable.AddedAt(Btc)); // kept for a pair already there
+        Assert.Equal(Now.AddMinutes(-1), tradable.AddedAt(Btc)); // kept for a pair already there
         Assert.Null(tradable.AddedAt("XRP-EUR"));
+
+        Assert.Empty(tradable.TrySet([], Now)); // the last coin can go too
+        Assert.Empty(tradable.Current);
+        Assert.Throws<ArgumentException>(() => new TradableSymbols(Limits(), ["ETH-USD"])); // nor can a list start outside the limits
     }
 
     private sealed class FixedTime(DateTimeOffset now) : TimeProvider

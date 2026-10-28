@@ -25,7 +25,7 @@ cosmos  (emulator, data in a Docker volume)  ◄── engine (paper exchange, r
    - It creates `secrets\operator_key` (random) and `secrets\claude_token` (you paste the token; nothing is shown).
    - It writes the token's expiry date to `.env`.
    - All three files are git-ignored. The two secret files are readable only by you; `.env` holds no secret.
-5. Choose what can be traded by editing `config\risk-limits.json` → `AllowedSymbols`. Only you edit this file (see paper-trading.md).
+5. Choose what can be traded on the dashboard's Coins tab once the engine runs. `config\risk-limits.json`, which only you edit, sets the quote currency and the most coins at once; it lists no pairs (see paper-trading.md).
 
 ## Start and stop
 
@@ -101,7 +101,7 @@ You can ask the engine to sell (or the trader to consider a buy or a sell) witho
 
 ## Strategies: good and risky
 
-There are two strategies, both on the same coins (`AllowedSymbols`):
+There are two strategies, both on the coins you watch (the Coins tab), each with its own filters:
 - **good** (the default): strict rules, for results close to what real money would get. It buys only uptrend pullbacks, so it can stay in cash for days in a falling market.
 - **risky**: loose rules, for testing the order mechanics (buys, stops, targets, protective sells). It buys whatever passes the filters, even in a downtrend, so expect small losses. Risk per trade and the daily loss stop are the same as good, and the risk gate still applies.
 

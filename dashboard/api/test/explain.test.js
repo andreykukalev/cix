@@ -126,7 +126,10 @@ test('every reason the gate, the strategy and the execution service write has it
   const { reasonRu } = require('../src/explain');
   const reasons = [ // one of each format in RiskGate.cs, StrategyGate.cs and ExecutionService.cs
     'The kill switch is engaged; no orders are allowed.',
-    'SOL-EUR is not in the allowed symbols.',
+    'SOL-EUR is not in the allowed symbols.', // before ADR-0021, still in the journal
+    'SOL-EUR is not among the watched pairs.',
+    "SOL-EUR hasn't been scanned yet; the strategy's filters decide once it has.",
+    'SOL-EUR is filtered out by the strategy (low-volume): 24h volume 1,200 is below the minimum 100,000.',
     'Size and limit price must be positive and the client order ID set.',
     'SOL-EUR is not tradable on the exchange.',
     'Size must be a multiple of 0.0001 and price of 0.01.',

@@ -37,7 +37,8 @@ builder.Configuration.AddCixSecretFiles(secretsDirectory, mode);
 // for live. Read on its own: no environment variable, command line or other settings file can add to the limits or loosen them.
 var limits = RiskLimitsOptions.LoadFor(mode, AppContext.BaseDirectory, builder.Configuration);
 
-// The pairs tradable now: the allowlist at start, then the owner's list from the dashboard, always within the limits.
+// The watched pairs: empty at start, then the saved list from the dashboard plus the coins the account holds (ADR-0021), always
+// within the limits file's one rule (a quote currency and a cap). No pair list lives in configuration.
 var tradable = new TradableSymbols(limits);
 
 // Fails fast if configured limits exceed the hard ceilings.
@@ -58,9 +59,10 @@ builder.Services.AddCixExchange(
     builder.Configuration.GetSection(RevolutXOptions.SectionName).Get<RevolutXOptions>() ?? new RevolutXOptions(),
     builder.Configuration.GetSection(PaperOptions.SectionName).Get<PaperOptions>() ?? new PaperOptions());
 
-// The curated universe (ADR-0006): the scan covers it plus the tradable pairs; only tradable pairs are polled and traded.
+// The scan covers the watched pairs and nothing else (ADR-0021 removed the curated universe of ADR-0006).
+ScannerOptions.ThrowIfUniverseConfigured(builder.Configuration);
 var scanner = builder.Configuration.GetSection(ScannerOptions.SectionName).Get<ScannerOptions>() ?? new ScannerOptions();
-var universe = new MarketUniverse(scanner.EffectiveUniverse, tradable);
+var universe = new MarketUniverse(tradable);
 
 // Tickers for every watched pair, order books for the active ones, candles for all; fails startup if the schedule for the most
 // there may be exceeds the rate limit (ADR-0021).
@@ -73,6 +75,11 @@ builder.Services.AddCixMarketData(
 // The only order path: every placement goes through the risk gate (ApprovedOrder makes skipping it a compile error). Its state
 // (the kill switch, loss baselines) goes to Cosmos DB when that is on (AddCixCosmos, below), else to a file in Live.
 var cosmos = builder.Configuration.GetSection(CosmosOptions.SectionName).Get<CosmosOptions>() ?? new CosmosOptions();
+
+// The watched pairs and the coins the account holds are restored and adopted from Cosmos DB (ADR-0021). Without it a live engine
+// would watch nothing, so the stops of what it holds would go unwatched: it refuses to start instead.
+if (mode == TradingMode.Live && !cosmos.Enabled)
+    throw new InvalidOperationException("Live trading needs Cosmos DB (Cosmos:Enabled): the watched pairs and the coins the account holds are restored from it (ADR-0021).");
 builder.Services.AddCixExecution(
     mode,
     builder.Configuration.GetSection(ExecutionOptions.SectionName).Get<ExecutionOptions>() ?? new ExecutionOptions(),
