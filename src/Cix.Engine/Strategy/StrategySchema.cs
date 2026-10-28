@@ -206,12 +206,13 @@ public static partial class StrategySchema
             errors.Add("name must be 1 to 40 lowercase letters, digits or dashes.");
         if (spec.Version is < 1 or > 9999)
             errors.Add("version must be between 1 and 9999.");
-        // Status is the owner's to set, in the repository's files: a database document can't promote itself (#105). Paper
-        // switches between paper specs; live only to the spec files the owner marked live (ADR-0018).
+        // Status is the owner's to set, in the repository's files: a database document can't promote itself (#105). Live
+        // switches only to the spec files the owner marked live (ADR-0018); paper to paper specs and to those same live ones,
+        // so both modes can run the same presets side by side (ADR-0022). Drafts never run.
         if (mode == TradingMode.Live && spec.Status != SpecStatus.Live)
             errors.Add($"status must be live: live trading switches only to spec files the owner marked live (this one is {spec.Status.ToString().ToLowerInvariant()}).");
-        else if (mode != TradingMode.Live && spec.Status != SpecStatus.Paper)
-            errors.Add($"status must be paper (a {spec.Status.ToString().ToLowerInvariant()} spec can't be activated from the database).");
+        else if (mode != TradingMode.Live && spec.Status is not (SpecStatus.Paper or SpecStatus.Live))
+            errors.Add($"status must be paper or live (a {spec.Status.ToString().ToLowerInvariant()} spec can't be activated from the database).");
         if (string.IsNullOrWhiteSpace(spec.Instructions) || spec.Instructions.Length > MaxInstructions)
             errors.Add($"instructions are required, at most {MaxInstructions} characters.");
         if (spec.AllowedTools is null || spec.AllowedTools.Count == 0)

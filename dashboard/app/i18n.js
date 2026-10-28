@@ -837,6 +837,8 @@
       'Движок сам продаёт, когда позиция доходит до стопа или цели, в том числе между запусками агентов.',
     'Live trading switches only between the strategies you marked live in strategies/; every switch asks you to confirm it.':
       'Реальная торговля переключается только между стратегиями, которые вы отметили как live в strategies/; каждое переключение нужно подтвердить.',
+    'Paper offers the same strategies as live, the ones you marked live in strategies/, so you can run different ones side by side.':
+      'Paper предлагает те же стратегии, что и live (отмеченные как live в strategies/), чтобы можно было запустить разные и сравнить.',
     'The engine hasn\'t listed the exchange\'s pairs yet; it does when it starts.': 'Движок ещё не получил список пар биржи; он делает это при запуске.',
 
     // What the engine says about a strategy switch (StrategySelection.cs)

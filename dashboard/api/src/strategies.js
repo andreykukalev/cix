@@ -1,10 +1,10 @@
 'use strict';
-// The Strategy tab (#108): Safe, Balanced, Risky and the other strategy versions, every parameter explained with its value,
-// range and whether it is the strategy's own or a mandatory safety limit, and the owner's switch requests. The engine
-// writes the schema and the versions (state container) and does every check again; a switch is a request document the
-// engine takes (ADR-0015), because the dashboard's writer can only create documents in the requests container. Live switches
-// too, only between the spec files the owner marked live and only with confirmLive, which the page sends once the owner has
-// ticked the box that names real money (ADR-0018). Pure functions: tested on their own.
+// The Strategy tab (#108): Safe, Balanced and Risky, the same presets in paper and live (ADR-0022), every parameter explained
+// with its value, range and whether it is the strategy's own or a mandatory safety limit, and the owner's switch requests.
+// The engine writes the schema and the versions (state container) and does every check again; a switch is a request
+// document the engine takes (ADR-0015), because the dashboard's writer can only create documents in the requests container.
+// Live switches only between the spec files the owner marked live and only with confirmLive, which the page sends once the
+// owner has ticked the box that names real money (ADR-0018). Pure functions: tested on their own.
 
 const { cleanNote, RequestError } = require('./requests');
 
@@ -151,6 +151,27 @@ function order(a, b) {
 }
 
 /**
+ * The versions the tab offers, the same in both modes (ADR-0022): the newest version of each strategy the owner marked live,
+ * so paper and live list the same presets and can run different ones side by side, plus the one running, whatever it is.
+ * Older and paper-only versions stay in the database and the journal, unlisted. The engine checks every switch again: live
+ * takes only the spec files marked live, and a document added by hand isn't offered.
+ */
+function offered(versions, active) {
+  const valid = (Array.isArray(versions) ? versions : [])
+    .filter((v) => v && typeof v === 'object' && NAME.test(String(v.name ?? '')) && Number.isInteger(Number(v.version)));
+  const newest = new Map();
+  for (const v of valid) {
+    if (String(v.status ?? '').toLowerCase() !== 'live') continue;
+    const seen = newest.get(v.name);
+    if (!seen || Number(v.version) > Number(seen.version)) newest.set(v.name, v);
+  }
+  const list = [...newest.values()];
+  const running = active && valid.find((v) => v.name === active.name && Number(v.version) === active.version);
+  if (running && !list.includes(running)) list.push(running);
+  return list;
+}
+
+/**
  * Everything the tab shows for one mode.
  * @param {{mode: string, schema: object|null, versions: object[], status: object|null, requests: object[]}} input
  *   schema: the engine's strategy-schema value; versions: strategy-version values; status: engine-status value.
@@ -176,10 +197,7 @@ function strategiesView({ mode, schema, versions, status, requests }, now) {
       boundBy: p.boundBy ?? null,
     });
   }
-  const strategies = (Array.isArray(versions) ? versions : [])
-    .filter((v) => v && typeof v === 'object' && NAME.test(String(v.name ?? '')) && Number.isInteger(Number(v.version)))
-    // Live offers only specs marked live; the engine refuses any other, and a document added by hand isn't offered.
-    .filter((v) => mode !== 'live' || String(v.status ?? '').toLowerCase() === 'live')
+  const strategies = offered(versions, active)
     .map((v) => strategyItem(v, keys, active))
     .sort(order);
   const held = new Set(pairs((status?.portfolio?.holdings ?? []).map((h) => h?.symbol)));
@@ -191,7 +209,9 @@ function strategiesView({ mode, schema, versions, status, requests }, now) {
     editable: MODES.has(mode),
     readOnlyReason: null,
     // Live lists only what its engine seeded: the spec files the owner marked live, exactly as reviewed.
-    note: mode === 'live' ? 'Live trading switches only between the strategies you marked live in strategies/; every switch asks you to confirm it.' : null,
+    note: mode === 'live'
+      ? 'Live trading switches only between the strategies you marked live in strategies/; every switch asks you to confirm it.'
+      : 'Paper offers the same strategies as live, the ones you marked live in strategies/, so you can run different ones side by side.',
     active: active ? { ...active, since: selection?.activatedAt ?? status?.startedAt ?? null } : null,
     selection: selection ? {
       state: selection.state ?? null,
