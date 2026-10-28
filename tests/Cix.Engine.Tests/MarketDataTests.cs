@@ -289,18 +289,26 @@ public sealed class MarketDataPollerTests
         var rig = new Rig(options: LiveSchedule());
         var tickers = new SimulatedTickers(rig.Time);
         var listener = new RecordingListener();
-        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [listener], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers, signedQuotes: true);
+        var paper = new RecordingListener();
+        var poller = new MarketDataPoller(rig.Market, rig.Market, rig.Store, rig.State, [listener, paper], rig.Options, [Btc], rig.Time, NullLogger<MarketDataPoller>.Instance, tickers, signedQuotes: true);
         rig.Market.QuoteLag = TimeSpan.FromMilliseconds(500); // the exchange stamps the book snapshot a little before the ticker capture
 
         await poller.PollOnceAsync(CancellationToken.None); // ticker at T, then the scheduled book at T - 0.5 s
         var heard = listener.Quotes.Count;
+        var paperHeard = paper.Quotes.Count;
         var book = await poller.RefreshQuoteAsync(Btc, CancellationToken.None, except: listener);
 
         Assert.NotNull(book); // the protection gets the book it asked for, whatever the two endpoints' stamps say
         Assert.Equal(1m, book.BidSize);
         Assert.Equal(Start - TimeSpan.FromMilliseconds(500), book.AsOf);
         Assert.Equal(0m, rig.State.Quote(Btc)!.BidSize); // the state keeps the later-stamped ticker for the risk gate
-        Assert.Equal(1, heard); // listeners heard the ticker only: a book the state kept out isn't handed on
+        Assert.Equal(heard, listener.Quotes.Count); // the protection that asked reads the result itself and isn't told again
+
+        // The other listeners (the paper exchange) still get the book: it fills against books only, so it must never be left
+        // on an older one because a size-less ticker carries a later stamp.
+        Assert.Equal(paperHeard + 1, paper.Quotes.Count);
+        Assert.Equal(1m, paper.Quotes[^1].BidSize);
+        Assert.Equal(book.AsOf, paper.Quotes[^1].AsOf);
     }
 
     [Fact]
@@ -531,7 +539,8 @@ public sealed class MarketDataPollerTests
         config.GetSection(MarketDataOptions.SectionName).Bind(options);
 
         Assert.Equal(TimeSpan.FromSeconds(20), options.QuoteInterval);
-        Assert.Equal((TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5)), (options.TickerInterval, options.PublicTickerInterval));
+        Assert.Equal(TimeSpan.FromSeconds(2), options.TickerInterval);
+        Assert.Equal(TimeSpan.FromSeconds(5), options.PublicTickerInterval);
         Assert.Equal(25m, options.PlannedPublicRequestsPerMinute(50, books: 1, signedQuotes: false)); // 10 candles + 12 tickers + 3
         options.Validate(50);
         options.Validate(50, signedQuotes: true);

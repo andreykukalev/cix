@@ -134,6 +134,42 @@ public sealed class ExecutionTests
     }
 
     [Fact]
+    public async Task AFailedBookRefresh_LeavesTheOrderToTheGate_OnTheLatestQuote_AndACancellationPropagates()
+    {
+        var attempts = 0;
+        Exception failure = new ExchangeException("Simulated 429.", 429);
+        var rig = new Rig(refreshQuote: (_, _) =>
+        {
+            attempts++;
+            throw failure;
+        });
+
+        rig.Time.Advance(TimeSpan.FromSeconds(5));
+        rig.Ticker(59_990.00m, 60_000.00m);
+        var result = await rig.Buy(0.0005m, 60_010.00m); // the gate prices it on the 5-second-old ticker, which it checks for age
+
+        Assert.Equal(1, attempts);
+        Assert.Equal(ExecutionStatus.Placed, result.Status);
+
+        failure = new OperationCanceledException();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => rig.Buy(0.0005m, 60_010.00m, "c-2"));
+        Assert.Equal(2, attempts); // the caller's cancellation isn't swallowed as a refresh failure
+    }
+
+    [Fact]
+    public async Task ActiveSymbols_IncludeACoinWithAWorkingBuy_AndNoPosition()
+    {
+        var rig = new Rig();
+        Assert.Equal(ExecutionStatus.Placed, (await rig.Buy(0.0005m, 59_950.00m)).Status); // below the ask: it rests
+
+        rig.Time.Advance(ExecutionService.RecentOrderWindow + TimeSpan.FromSeconds(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        Assert.NotNull(await rig.Execution.SampleAsync(CancellationToken.None));
+
+        Assert.Equal(new[] { Rig.Btc }, rig.Execution.ActiveSymbols); // nothing held, but the working buy needs its book to fill
+    }
+
+    [Fact]
     public async Task ActiveSymbols_AreTheHeldCoins_AndThoseWithARecentOrder()
     {
         var rig = new Rig();

@@ -261,11 +261,18 @@ public sealed partial class MarketDataPoller
             return null;
         }
 
-        // The state keeps the newer of this book and the latest ticker; listeners hear only what the state kept.
-        if (_state.Update(quote))
+        // The state keeps the newer of this book and the latest ticker for the risk gate. Listeners hear what the state kept,
+        // and also a book it kept out only because a size-less ticker carries a later stamp: the paper exchange fills against
+        // books alone, so without this an order priced a moment after a ticker poll would fill on an older book.
+        if (_state.Update(quote) || IsBookBehindATicker(symbol, quote))
             Notify(quote, symbol, except);
         return quote;
     }
+
+    private bool IsBookBehindATicker(string symbol, MarketQuote quote) =>
+        (quote.BidSize > 0 || quote.AskSize > 0)
+        && _state.Quote(symbol) is { BidSize: <= 0, AskSize: <= 0 } ticker
+        && ticker.AsOf > quote.AsOf;
 
     /// <summary>Fetches closed candles after the latest stored one (or the lookback on first run), catching up in pages.</summary>
     private async Task PollCandlesAsync(string symbol, int intervalMinutes, TimeSpan lookback, CancellationToken cancellationToken)

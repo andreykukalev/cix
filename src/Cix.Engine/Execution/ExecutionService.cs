@@ -307,7 +307,9 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             if (pair is null)
                 return Reject("unknown-symbol", $"The exchange doesn't list {intent.Symbol}.");
 
-            await RefreshBookIfNeededAsync(intent.Symbol, now, cancellationToken).ConfigureAwait(false);
+            // A protective exit was priced on the book the protection fetched to confirm the stop: no second fetch on that path.
+            if (!intent.IsProtectiveExit)
+                await RefreshBookIfNeededAsync(intent.Symbol, now, cancellationToken).ConfigureAwait(false);
             var rounded = RoundToSteps(intent, pair);
             PortfolioSnapshot portfolio;
             try
@@ -411,7 +413,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
                 if (now - at <= RecentOrderWindow)
                     active.Add(symbol);
                 else
-                    _recentOrders.TryRemove(symbol, out _);
+                    _recentOrders.TryRemove(new KeyValuePair<string, DateTimeOffset>(symbol, at)); // not an order sent meanwhile
             }
 
             return active;
