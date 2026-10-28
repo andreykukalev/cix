@@ -7,6 +7,7 @@
     "MaxDrawdownFraction": 0.10,
     "MaxOrdersPerMinute": 5,
     "MaxPriceDeviationFraction": 0.01,
+    "MaxEmergencySlippageFraction": 0.03,
     "AllowedSymbols": [ "BTC-EUR", "ETH-EUR", "XRP-EUR", "SOL-EUR", "AAVE-EUR", "HYPE-EUR", "ENA-EUR", "INJ-EUR", "HBAR-EUR", "DOT-EUR" ]
   }
 }
