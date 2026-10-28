@@ -57,6 +57,10 @@ Then ask things like "summarise today's journal" or "pause trading". Or read the
 
 To pause everything: stop the run script, or call `pause_trading` with the owner key. The engine also halts on its own at the hard drawdown ceiling, when a held coin, or every watched coin, has had no fresh market data for 15 minutes (a quiet coin nobody holds is only left out of trading), after repeated risk-gate rejections, or when it finds an order it didn't place.
 
+## The paper balance
+
+A new paper account starts with `Paper:InitialBalances` in `src/Cix.Engine/appsettings.json` (1000 EUR, to match `AllocationQuote` in `config/risk-limits.json`). The account is saved, so a change there applies only to a new one: reset paper's state to start over (`docs/azure.md`, "Resetting the database"). A reset also clears the open paper positions and the watched coins.
+
 ## Changing the strategy
 
 The presets are Safe, Balanced and Risky (see `strategies/README.md`); the engine starts with the one named by `Strategy:Name` and `Strategy:Version` in `src/Cix.Engine/appsettings.json`. To change one, copy it to the next version (for example `balanced.v4.json`), edit the copy (raise the version inside too), and set `Strategy:Version`. Never edit a version that has already run.

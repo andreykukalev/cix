@@ -189,7 +189,7 @@ docker compose -f docker-compose.yml -f docker-compose.azure.yml up -d --build
 docker compose ps        # the engine shows (healthy) once it has loaded its state from Azure
 ```
 
-- Azure starts empty, so the engine starts a **fresh paper account** (200 EUR). The emulator's data stays in its Docker volume, untouched.
+- Azure starts empty, so the engine starts a **fresh paper account** (1000 EUR, `Paper:InitialBalances`). The emulator's data stays in its Docker volume, untouched.
 - Every later Compose command needs both `-f` files, for example `docker compose -f docker-compose.yml -f docker-compose.azure.yml logs -f engine`. To avoid typing them, add `COMPOSE_FILE=docker-compose.yml;docker-compose.azure.yml` to `.env`. On Windows the separator is `;`.
 - To go back to the emulator, run `docker compose -f docker-compose.yml -f docker-compose.azure.yml stop`, then `docker compose up -d`.
 
