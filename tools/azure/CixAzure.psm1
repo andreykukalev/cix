@@ -593,25 +593,43 @@ function Get-CixLiveDeployerGrants {
   <#
     The role assignments the live deploy's identity (ADR-0019) is expected to hold, as 'principal id|role|scope' keys in lower
     case: AcrPush and "CIX agents deployer (<environment>)" on a registry in the group, and that role on the engine and the
-    three jobs. None while its service principal (cix-agents-deploy-<environment>) isn't the only one of that name, or its
-    role is missing or grants more than deploying images (Get-CixAgentsDeployerActions) within the group.
+    three jobs. None, so that all of them are listed, unless its service principal (cix-agents-deploy-<environment>) is the
+    only one of that name and can sign in only as setup-ci-deploy.ps1 made it (no secret or certificate, no owner but you,
+    no API permission or directory role, one trust: the GitHub environment of that name), and its role grants no more than
+    deploying images (Get-CixAgentsDeployerActions) within the group.
   #>
-  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$Group)
+  param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$Group, [Parameter(Mandatory)][string]$OwnerId)
   $roleName = "CIX agents deployer ($($Settings.environmentName))"
+  $field = { param($o, $n) if ($o -and $o.PSObject.Properties[$n]) { @($o.$n) } else { @() } }
   # Quotes inside native arguments don't survive Windows PowerShell 5.1, but these single quotes are OData's, inside one argument.
   $principals = @(Invoke-CixAz @('ad', 'sp', 'list', '--filter', "displayName eq 'cix-agents-deploy-$($Settings.environmentName)'", '--only-show-errors', '-o', 'json') |
-      ConvertFrom-CixJson | Where-Object { $_ -and $_.PSObject.Properties['id'] -and $_.id })
+      ConvertFrom-CixJson | Where-Object { $_ -and $_.PSObject.Properties['id'] -and $_.id -and $_.PSObject.Properties['appId'] -and $_.appId })
   if ($principals.Count -ne 1) { return @() }
+  $sp = $principals[0]
+  foreach ($object in @((Invoke-CixAz @('ad', 'sp', 'show', '--id', "$($sp.id)", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson),
+      (Invoke-CixAz @('ad', 'app', 'show', '--id', "$($sp.appId)", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson))) {
+    if (-not $object -or @(& $field $object 'passwordCredentials').Count -gt 0 -or @(& $field $object 'keyCredentials').Count -gt 0) { return @() }
+  }
+  $owners = @(Invoke-CixAz @('ad', 'app', 'owner', 'list', '--id', "$($sp.appId)", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson) +
+    @(Invoke-CixAz @('ad', 'sp', 'owner', 'list', '--id', "$($sp.id)", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+  if (@($owners | Where-Object { $_ -and "$($_.id)" -ne $OwnerId }).Count -gt 0) { return @() }
+  foreach ($relation in 'appRoleAssignments', 'memberOf') {
+    $held = Invoke-CixAz @('rest', '--method', 'get', '--url', "https://graph.microsoft.com/v1.0/servicePrincipals/$($sp.id)/$relation", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+    if (-not $held -or -not $held.PSObject.Properties['value'] -or @(& $field $held 'value').Count -gt 0) { return @() }
+  }
+  $trusts = @(Invoke-CixAz @('ad', 'app', 'federated-credential', 'list', '--id', "$($sp.appId)", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+  $subject = '^repo:[A-Za-z0-9_.-]+@\d+/[A-Za-z0-9_.-]+@\d+:environment:' + [regex]::Escape($Settings.environmentName) + '$'
+  if ($trusts.Count -ne 1 -or "$(@(& $field $trusts[0] 'subject'))" -cnotmatch $subject -or "$(@(& $field $trusts[0] 'issuer'))" -ne 'https://token.actions.githubusercontent.com' -or
+    (@(& $field $trusts[0] 'audiences') -join ',') -ne 'api://AzureADTokenExchange') { return @() }
   $roles = @(Invoke-CixAz @('role', 'definition', 'list', '--name', $roleName, '--custom-role-only', 'true', '--scope', $Group, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
   if ($roles.Count -ne 1) { return @() }
-  $field = { param($o, $n) if ($o -and $o.PSObject.Properties[$n]) { @($o.$n) } else { @() } }
   $permissions = @(& $field $roles[0] 'permissions')
   $actions = @($permissions | ForEach-Object { & $field $_ 'actions' } | Where-Object { $_ })
   $extra = @($permissions | ForEach-Object { @(& $field $_ 'notActions') + @(& $field $_ 'dataActions') + @(& $field $_ 'notDataActions') } | Where-Object { $_ })
   $allowed = @(Get-CixAgentsDeployerActions)
   if ($extra.Count -gt 0 -or @($actions | Where-Object { $allowed -cnotcontains $_ }).Count -gt 0 -or
     ((& $field $roles[0] 'assignableScopes') -join ',') -ne $Group) { return @() }
-  $id = "$($principals[0].id)".ToLowerInvariant()
+  $id = "$($sp.id)".ToLowerInvariant()
   $registries = @(Invoke-CixAz @('acr', 'list', '--resource-group', $Settings.resourceGroup, '-o', 'json') | ConvertFrom-CixJson |
       Where-Object { $_ -and $_.PSObject.Properties['name'] } | ForEach-Object { "$Group/providers/Microsoft.ContainerRegistry/registries/$($_.name)" })
   $grants = @()
@@ -640,7 +658,7 @@ function Get-CixOutsideAccess {
       if ($identity -and $identity.PSObject.Properties['name'] -and $identity.PSObject.Properties['principalId'] -and
           "$($identity.name)".StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { $own["$($identity.principalId)".ToLowerInvariant()] = $true }
     }
-    $expected = @(Get-CixLiveDeployerGrants -Settings $Settings -Group $group)
+    $expected = @(Get-CixLiveDeployerGrants -Settings $Settings -Group $group -OwnerId $OwnerId)
   }
   # --all lists the subscription's assignments at every scope (az's --resource-group leaves out those on resources inside the
   # group); --include-inherited on the subscription adds those above it, such as a management group's.

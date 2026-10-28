@@ -568,14 +568,38 @@ jobs:
           SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" ROLLBACK_FILE="$RUNNER_TEMP/agents-rollback.json" \
             bash tools/ci/deploy-agents.sh --roll-back
 
+  live-changes:
+    # What deploy-live would change, on the run's summary page where the owner approves it (ADR-0019): the commits and files
+    # since the commit live got last, with those touching risk, limits, strategies, orders, tools or the deploy flagged.
+    needs: deploy-agents
+    if: >-
+      !cancelled() && needs.deploy-agents.result == 'success' && needs.deploy-agents.outputs.deployed == 'true'
+      && vars.LIVE_AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: read
+      actions: read # whether an earlier deploy-live job really deployed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Summarise the changes since live's last deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIVE_ENVIRONMENT: prod
+        run: bash tools/ci/live-changes.sh
+
   deploy-live:
     # The live engine and its jobs (ADR-0019): the images paper now runs, once the owner approves. The job is in the GitHub
-    # environment prod, whose rules (the owner as required reviewer, main only) hold it until the owner presses Approve, and
-    # the live deploy identity trusts only jobs in that environment. tools/ci/live-approved.sh checks the approval again,
-    # so an environment created without its rules fails closed. Only the images change: the live engine keeps the mode,
-    # environment and strategy the owner switched it to. Infrastructure, settings and keys stay with provision.ps1.
-    # Set up once with tools/azure/setup-ci-deploy.ps1 -Environment prod -For agents (docs/live-trading.md).
-    needs: [agents-images, deploy-agents]
+    # environment prod, whose rules (the owner as its only required reviewer, main only, no admin bypass) hold it until the
+    # owner presses Approve, and the live deploy identity trusts only jobs in that environment. tools/ci/live-approved.sh
+    # checks the approval again, so this workflow fails closed if the environment lost its rules. Only the images change:
+    # the live engine keeps the mode, environment and strategy the owner switched it to. Infrastructure, settings and keys
+    # stay with provision.ps1. Set up once with tools/azure/setup-ci-deploy.ps1 -Environment prod -For agents
+    # (docs/live-trading.md). Agents never approve it (CLAUDE.md rule 8).
+    needs: [agents-images, deploy-agents, live-changes]
     if: >-
       !cancelled() && needs.deploy-agents.result == 'success' && needs.deploy-agents.outputs.deployed == 'true'
       && vars.LIVE_AZURE_CLIENT_ID != ''
@@ -587,7 +611,8 @@ jobs:
       actions: read # this run's approvals
       id-token: write # for the Azure sign-in
     concurrency:
-      # One at a time; a newer run waiting for approval replaces an older one still waiting.
+      # One at a time. A run waiting for approval holds the group: a newer one waits behind it (only the newest of those is
+      # kept), so reject a run you won't approve rather than leave it waiting.
       group: deploy-live
       cancel-in-progress: false
     env:
@@ -598,6 +623,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Is the live deploy set up?
+        env:
+          LIVE_AZURE_CLIENT_ID: ${{ vars.LIVE_AZURE_CLIENT_ID }}
+          LIVE_TENANT_ID: ${{ vars.LIVE_TENANT_ID }}
+        run: |
+          for v in LIVE_AZURE_CLIENT_ID LIVE_TENANT_ID LIVE_SUBSCRIPTION_ID LIVE_REGISTRY; do
+            [[ -n "${!v}" ]] || { echo "::error::The repository variable $v isn't set: run tools/azure/setup-ci-deploy.ps1 -Environment prod -For agents -SetGitHubVariables."; exit 1; }
+          done
 
       - name: Approved by the owner, on main?
         env:

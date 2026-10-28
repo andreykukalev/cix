@@ -24,8 +24,9 @@
          Vault, storage or the database directly; the live engine gets a resource group
          of its own (docs/research/azure-hosting.md). With agents.deploy platform, run this again after deploying apps.
   Then prints the repository variables CI needs (IDs, not secrets), and sets them with the GitHub CLI if you pass
-  -SetGitHubVariables and gh is installed and signed in. For a protected environment those are LIVE_*, and
-  -SetGitHubVariables also gives the GitHub environment its rules: you as its required reviewer, main only.
+  -SetGitHubVariables and gh is installed and signed in. For a protected environment those are LIVE_*, and first,
+  before Azure trusts it, the GitHub environment gets its rules and they are read back: you as its only required
+  reviewer, main only, no admin bypass (this needs gh, signed in as you).
 
   Each change is shown and confirmed first. Running it again changes nothing that is already in place.
   Needs rights to create app registrations and role assignments (Owner on the subscription is enough).
@@ -107,11 +108,15 @@ $settings = Read-CixEnvironment -Name $Environment
 if ($For -eq 'dashboard' -and $settings.protected) { throw "$Environment is protected (live money): it has no dashboard of its own." }
 $live = $For -eq 'agents' -and $settings.protected
 if ($live) {
+  # The GitHub environment's rules are the live deploy's control: this script sets and checks them before Azure trusts it.
+  Assert-CixCommand -Name 'gh' -Hint 'Install the GitHub CLI (winget install GitHub.cli) and run gh auth login: the live deploy needs its GitHub environment set up.'
+  $trusted = "jobs of $Repository in its GitHub environment $Environment (owner-approved, main only)"
   # Only jobs in the GitHub environment of this name, which the owner approves each time (ADR-0019); no name-only trust ever existed.
   $subject = "repo:$repoOwner@$ownerId/$repoName@${repoId}:environment:$Environment"
   $legacySubject = $subject
 }
 else {
+  $trusted = "GitHub Actions on main of $Repository"
   $subject = "repo:$repoOwner@$ownerId/$repoName@${repoId}:ref:refs/heads/main"
   $legacySubject = "repo:${Repository}:ref:refs/heads/main" # what an earlier version of this script trusted
 }
@@ -217,7 +222,7 @@ if ($app) {
       ($_.subject -cne $subject -and $_.subject -cne $legacySubject) -or $_.issuer -ne 'https://token.actions.githubusercontent.com' -or
       (@(& $field $_ 'audiences') -join ',') -ne 'api://AzureADTokenExchange' })
   if ($others.Count -gt 0) {
-    throw "$identityName also trusts $(($others | ForEach-Object { "$($_.subject) (issuer $($_.issuer))" }) -join ', '). Remove those in the Azure portal (App registrations, Certificates & secrets) first: only main of $Repository may deploy."
+    throw "$identityName also trusts $(($others | ForEach-Object { "$($_.subject) (issuer $($_.issuer))" }) -join ', '). Remove those in the Azure portal (App registrations, Certificates & secrets) first: only $trusted may deploy."
   }
 }
 
@@ -300,7 +305,50 @@ foreach ($assignment in $assignments) {
   Write-CixInfo "Assigned $($assignment.Role) on $($assignment.Label)."
 }
 
-$trusted = if ($live) { "jobs of $Repository in its GitHub environment $Environment (owner-approved, main only)" } else { "GitHub Actions on main of $Repository" }
+if ($live) {
+  # Before Azure trusts the environment: GitHub creates a missing one bare, and a bare one would let any branch's job in.
+  # Admins can't skip the review, and you may approve runs you started yourself.
+  Write-CixStep "GitHub environment $Environment"
+  Confirm-Step "Make you ($repoOwner) the only required reviewer of the GitHub environment $Environment, for main only?"
+  $file = Write-CixTempJson ([ordered]@{
+      wait_timer               = 0
+      prevent_self_review      = $false
+      reviewers                = @([ordered]@{ type = 'User'; id = [long]$ownerId })
+      can_admins_bypass        = $false
+      deployment_branch_policy = [ordered]@{ protected_branches = $false; custom_branch_policies = $true }
+    })
+  try { Invoke-CixNative { & gh api --method PUT "repos/$Repository/environments/$Environment" --input $file } | Out-Null }
+  finally { Remove-Item $file -ErrorAction SilentlyContinue }
+  if ($LASTEXITCODE -ne 0) { throw "Couldn't set the rules of the GitHub environment $Environment (the repository must belong to you, a user). Azure doesn't trust it yet." }
+  $readBranches = {
+    $listed = Invoke-CixNative { & gh api "repos/$Repository/environments/$Environment/deployment-branch-policies" --jq .branch_policies 2>$null }
+    if ($LASTEXITCODE -ne 0) { throw "Couldn't read the branches the GitHub environment $Environment allows. Azure doesn't trust it yet." }
+    @("$listed" | ConvertFrom-CixJson | ForEach-Object { "$($_.type):$($_.name)" })
+  }
+  $branches = @(& $readBranches)
+  $others = @($branches | Where-Object { $_ -cne 'branch:main' })
+  if ($others.Count -gt 0) { throw "The GitHub environment $Environment also allows $($others -join ', '). Remove those under Settings, Environments, $Environment first: only main may deploy." }
+  if ($branches -cnotcontains 'branch:main') {
+    Invoke-CixNative { & gh api --method POST "repos/$Repository/environments/$Environment/deployment-branch-policies" -f name=main -f type=branch } | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Couldn't limit the GitHub environment $Environment to main. Azure doesn't trust it yet." }
+  }
+  # Read back: exactly you as reviewer, no admin bypass, main alone.
+  $rules = Invoke-CixNative { & gh api "repos/$Repository/environments/$Environment" 2>$null }
+  if ($LASTEXITCODE -ne 0) { throw "Couldn't read the GitHub environment $Environment back. Azure doesn't trust it yet." }
+  $rules = "$rules" | ConvertFrom-CixJson
+  $reviewers = @(& $field $rules 'protection_rules' | Where-Object { $_.type -eq 'required_reviewers' } | ForEach-Object { & $field $_ 'reviewers' } |
+      ForEach-Object { "$($_.type):$(if ($_.PSObject.Properties['reviewer']) { $_.reviewer.id })" })
+  $policy = @(& $field $rules 'deployment_branch_policy')
+  $wrong = @()
+  if (($reviewers -join ',') -ne "User:$ownerId") { $wrong += "its required reviewers are $(if ($reviewers) { $reviewers -join ', ' } else { 'none' }), not you alone" }
+  if ((@(& $field $rules 'can_admins_bypass') -join '') -ne 'False') { $wrong += 'admins can skip its review' }
+  if ($policy.Count -ne 1 -or "$(@(& $field $policy[0] 'custom_branch_policies'))" -ne 'True' -or "$(@(& $field $policy[0] 'protected_branches'))" -ne 'False') { $wrong += "it isn't limited to chosen branches" }
+  $branches = @(& $readBranches)
+  if (($branches -join ',') -cne 'branch:main') { $wrong += "it allows $(if ($branches) { $branches -join ', ' } else { 'no branch' }), not main alone" }
+  if ($wrong.Count -gt 0) { throw "The GitHub environment $Environment isn't as it should be: $($wrong -join '; '). Fix it under Settings, Environments, $Environment, then run this again. Azure doesn't trust it yet." }
+  Write-CixInfo "The GitHub environment $Environment waits for your approval, and only runs from main."
+}
+
 Write-CixStep $(if ($live) { "Federated credential (GitHub environment $Environment only)" } else { 'Federated credential (GitHub Actions, main only)' })
 if (@($credentials | Where-Object { $_.subject -ceq $subject }).Count -eq 1) { Write-CixInfo "Already trusts $subject." }
 else {
@@ -337,32 +385,6 @@ else {
 }
 if ($SetGitHubVariables) {
   Assert-CixCommand -Name 'gh' -Hint 'Install the GitHub CLI (winget install GitHub.cli) and run gh auth login, or set the variables by hand.'
-  if ($live) {
-    # Before the variables, which switch the live deploy on: the environment holds every job until you approve it, and only
-    # from main. Admins can't skip the review, and you may approve runs you started yourself.
-    Write-CixStep "GitHub environment $Environment"
-    Confirm-Step "Make you ($repoOwner) the required reviewer of the GitHub environment $Environment, for main only?"
-    $file = Write-CixTempJson ([ordered]@{
-        wait_timer               = 0
-        prevent_self_review      = $false
-        reviewers                = @([ordered]@{ type = 'User'; id = [long]$ownerId })
-        can_admins_bypass        = $false
-        deployment_branch_policy = [ordered]@{ protected_branches = $false; custom_branch_policies = $true }
-      })
-    try { Invoke-CixNative { & gh api --method PUT "repos/$Repository/environments/$Environment" --input $file } | Out-Null }
-    finally { Remove-Item $file -ErrorAction SilentlyContinue }
-    if ($LASTEXITCODE -ne 0) { throw "Couldn't set the rules of the GitHub environment $Environment (the repository must belong to you, a user)." }
-    $listed = Invoke-CixNative { & gh api "repos/$Repository/environments/$Environment/deployment-branch-policies" --jq .branch_policies 2>$null }
-    if ($LASTEXITCODE -ne 0) { throw "Couldn't read the branches the GitHub environment $Environment allows." }
-    $branches = @("$listed" | ConvertFrom-CixJson | ForEach-Object { "$($_.type):$($_.name)" })
-    $others = @($branches | Where-Object { $_ -cne 'branch:main' })
-    if ($others.Count -gt 0) { throw "The GitHub environment $Environment also allows $($others -join ', '). Remove those under Settings, Environments, $Environment first: only main may deploy." }
-    if ($branches -cnotcontains 'branch:main') {
-      Invoke-CixNative { & gh api --method POST "repos/$Repository/environments/$Environment/deployment-branch-policies" -f name=main -f type=branch } | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw "Couldn't limit the GitHub environment $Environment to main." }
-    }
-    Write-CixInfo "The GitHub environment $Environment waits for your approval, and only runs from main."
-  }
   foreach ($k in $variables.Keys) {
     Invoke-CixNative { & gh variable set $k --repo $Repository --body $variables[$k] } | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "gh variable set $k failed." }
@@ -373,9 +395,6 @@ else {
   Write-CixInfo "Set these in GitHub: $Repository, Settings, Secrets and variables, Actions, Variables:"
   foreach ($k in $variables.Keys) { Write-CixInfo ("  {0} = {1}" -f $k, $variables[$k]) }
   Write-CixInfo 'Or run this script again with -SetGitHubVariables (needs the GitHub CLI, signed in).'
-  if ($live) {
-    Write-CixWarn "Before you set them: in GitHub, Settings, Environments, create $Environment with you as its required reviewer, deployment branches main only, and leave 'Prevent self-review' off (docs/live-trading.md, Deploys from main)."
-  }
 }
 if ($For -eq 'agents' -and $settings.agents.deploy -ne 'apps') {
   Write-CixInfo 'CI can push images now. After provision.ps1 deploys agents.deploy apps, run this again.'

@@ -46,6 +46,15 @@
         ]
       },
       {
+        "matcher": "Bash|mcp__.*github.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-live-deploy.sh\""
+          }
+        ]
+      },
+      {
         "matcher": "mcp__cix__place_order",
         "hooks": [
           {

@@ -148,17 +148,19 @@ Once set up, each change on `main` that paper deploys waits in CI for your appro
 .\tools\azure\setup-ci-deploy.ps1 -Environment prod -For agents -SetGitHubVariables
 ```
 
-It asks before each change. It creates the identity `cix-agents-deploy-prod`, trusted only for jobs in the GitHub environment `prod`, with the paper deploy's two roles on live's registry, engine and jobs. It gives the GitHub environment `prod` its rules: you as the required reviewer, `main` only, no admin bypass, and you may approve runs you started. Then it sets the repository variables `LIVE_AZURE_CLIENT_ID`, `LIVE_REGISTRY`, `LIVE_TENANT_ID` and `LIVE_SUBSCRIPTION_ID`, which switch the job on. Without `-SetGitHubVariables` it prints them instead: create the environment by hand first (Settings, Environments, New environment, `prod`: Required reviewers, you; Deployment branches, Selected branches, `main`; leave *Prevent self-review* off), then add the variables.
+It asks before each change. It creates the identity `cix-agents-deploy-prod` with the paper deploy's two roles on live's registry, engine and jobs. It gives the GitHub environment `prod` its rules (you as its only required reviewer, `main` only, no admin bypass, and you may approve runs you started) and reads them back, and only then lets Azure trust jobs in that environment. Then it sets the repository variables `LIVE_AZURE_CLIENT_ID`, `LIVE_REGISTRY`, `LIVE_TENANT_ID` and `LIVE_SUBSCRIPTION_ID`, which switch the job on (without `-SetGitHubVariables` it prints them for you to add). Run it from your own terminal: Claude sessions are blocked from it.
 
 **Each deploy:**
 
 1. A change merges to `main`. CI deploys it to paper as before.
-2. The run's `deploy-live` job then waits, and GitHub notifies you. Open the run (Actions, CI), check the commit is the one you expect, and press **Review deployments**, tick `prod`, **Approve and deploy**. Approving runs that commit's workflow with the live deploy's rights, so approve only commits you recognise.
+2. The run's `deploy-live` job then waits, and GitHub notifies you. Open the run (Actions, CI). Its summary, *What this live deploy changes*, lists the commits and files since live's last deploy, with changes to risk, limits, strategies, orders, tools or the deploy flagged. Then press **Review deployments**, tick `prod`, **Approve and deploy**. Approving runs that commit's workflow with the live deploy's rights, so approve only changes you recognise.
 3. The job checks your approval again, pushes the images to live's registry, stops the old engine revision, waits for the new one to be healthy, then updates the jobs. If the new engine fails, it puts the old images back. The engine is down for the new one's startup, usually under a minute.
 
 - Approve within a day: the images are kept that long. After that the job fails; run CI on `main` by hand (Run workflow) and approve that run.
 - If a newer commit changed the images meanwhile, approving the older run deploys nothing: its own run deploys live.
-- Reject, or ignore, a run to keep live where it is. An engine you stopped by hand (its revision deactivated) is left alone.
+- To keep live where it is, **reject** the run (Review deployments, Reject): a run left waiting holds back every later one. After a rejection, that run can't deploy again; run CI on `main` by hand for a new one.
+- An engine you stopped by hand (stopped, or its revision deactivated) is left alone, and settings you change while a deploy runs are never sent back: the deploy stops and rolls back instead.
+- Claude sessions use your GitHub account, so GitHub can't tell their approval from yours. They are told never to approve (CLAUDE.md rule 8) and a hook blocks the calls, but that is a tripwire: approve only in the GitHub app or site yourself, and if a live deploy ever runs that you didn't approve, delete `LIVE_AZURE_CLIENT_ID` and look (ADR-0019, "The risk that remains").
 - Changes to `infra/`, the apps' settings or the keys still need `provision.ps1` and then the switch.
 - To turn it off, delete the repository variable `LIVE_AZURE_CLIENT_ID`. If you suspect misuse, also delete the identity's role assignments on `rg-cix-live`.
 
