@@ -72,6 +72,25 @@ test('every engine status has words, and only final ones end the wait', () => {
   assert.equal(V.what({ side: 'buy', quoteAmount: '20', symbol: 'UNI-EUR' }), 'Buy UNI-EUR for 20 EUR');
 });
 
+test('a long price shows at 9 significant digits with the exact value on hover; a short one as written', () => {
+  assert.deepEqual(V.price('72243.89539084'), { text: '72243.8954', title: '72243.89539084' });
+  assert.deepEqual(V.price('-123.4567890123'), { text: '-123.456789', title: '-123.4567890123' });
+  assert.deepEqual(V.price('0.0000123456789012'), { text: '0.0000123456789', title: '0.0000123456789012' });
+  assert.deepEqual(V.price('0.000012345678'), { text: '0.000012345678', title: null }, 'leading zeros are not significant');
+  assert.deepEqual(V.price('1.500000000'), { text: '1.500000000', title: null }, 'nor are trailing zeros');
+  assert.deepEqual(V.price('71795.72'), { text: '71795.72', title: null });
+  assert.deepEqual(V.price('1e-7'), { text: '1e-7', title: null }, 'not a plain decimal: as written');
+  assert.deepEqual(V.price(''), { text: '–', title: null });
+  assert.deepEqual(V.price(null), { text: '–', title: null });
+});
+
+test('order sources and actions in words, the engine\'s name on hover; an unknown name as it is', () => {
+  assert.deepEqual(V.orderSource('protective-exit'), { text: 'stop or target', title: 'protective-exit' });
+  assert.deepEqual(V.toolAction('place_order'), { text: 'place an order', title: 'place_order' });
+  assert.deepEqual(V.orderSource('something-new'), { text: 'something-new', title: null });
+  assert.deepEqual(V.toolAction(null), { text: '–', title: null });
+});
+
 test('the chart stacks sells on buys, scaled to the busiest period', () => {
   const g = V.chart([
     { label: 'a', from: '2026-10-13', trades: 2, buyVolume: '30.00', sellVolume: '10.00', turnover: '40.00' },
@@ -85,6 +104,8 @@ test('the chart stacks sells on buys, scaled to the busiest period', () => {
   assert.deepEqual(g.bars[2].sell, { y: 50, height: 50 });
   assert.equal(g.bars[2].x, 200);
   assert.equal(g.bars[0].title, 'a: 2 trades, bought 30.00, sold 10.00');
+  assert.deepEqual(V.chart([{ from: '2026-10-13' }, { from: '2026-10-14' }, { from: '2026-10-15' }, { from: '2026-10-16' }], { labelEvery: 2 }).bars.map((b) => b.label),
+    ['', '14 Oct', '', '16 Oct'], 'every other label, counted from the latest: no two labels side by side');
   assert.equal(V.chart([]).bars.length, 0);
   assert.equal(V.tick('2026-10-19', 'week'), '19 Oct');
   assert.equal(V.tick('2026-10-01', 'month'), 'Oct');
@@ -313,6 +334,10 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   overdue.jobs.analyst.last.at = at(14 * 60);
   assert.deepEqual([V.monitors(overdue, now, ago).analyst.tone, V.monitors(overdue, now, ago).analyst.value], ['bad', 'Overdue']);
   assert.equal(V.monitors({}, now, ago).trader.value, 'No runs yet');
+  // Live takes no buy or sell requests by design: its tile says so without a warning; paper's switched off still warns.
+  const off = (mode) => V.monitors({ ...structuredClone(healthy), mode, engine: { ...structuredClone(healthy.engine), manualRequests: { state: 'off' } } }, now, ago).requests;
+  assert.deepEqual([off('live').tone, off('live').value], [null, 'Paper only']);
+  assert.deepEqual([off('paper').tone, off('paper').value], ['warn', 'Off']);
 });
 
 test('each watched coin shows its level: trading, filtered out, waiting for data, held outside the strategy, just added, on the account', () => {

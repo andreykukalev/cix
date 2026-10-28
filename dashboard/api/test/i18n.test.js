@@ -59,13 +59,22 @@ test('every label the page looks up has its Russian: statuses, selections, profi
   const labels = [
     ...Object.values(V.STATUS).map((s) => s.label), ...Object.values(V.SELECTION).map((s) => s.label),
     ...Object.values(V.PROFILES).flatMap((p) => [p.title, p.profile]), ...Object.values(V.SELL_DESCRIPTIONS), ...Object.values(V.PORTIONS),
-    ...Object.values(V.BLOCK_DETAILS), ...Object.values(V.WHY_LABELS), ...Object.values(V.LEVELS).flatMap((l) => [l.label, l.detail]),
+    ...Object.values(V.BLOCK_DETAILS), ...Object.values(V.WHY_LABELS), ...Object.values(V.ORDER_SOURCES), ...Object.values(V.TOOL_ACTIONS), ...Object.values(V.LEVELS).flatMap((l) => [l.label, l.detail]),
     'Custom', 'Manual', 'May (month)', 'strategy exposure cap reached', 'cooldown until 13:00 UTC',
     'at the stop-loss', 'at the take-profit', 'the trend turned down',
     'Done', 'Failed', "Didn't start", 'Running now', 'for new signals', 'position review', 'scheduled',
     'for your requests', 'market check', 'Off', 'Unavailable', 'Not used',
   ];
   assert.deepEqual(labels.filter((k) => !I.has(k)), []);
+});
+
+test('every strategy file\'s purpose and risk profile has its Russian: the Strategy tab shows them', () => {
+  const dir = path.join(__dirname, '../../../strategies');
+  const texts = fs.readdirSync(dir).filter((f) => f.endsWith('.json'))
+    .flatMap((f) => { const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); return [s.purpose, s.riskProfile]; })
+    .filter(Boolean);
+  assert.ok(texts.length > 5, 'the scan found the strategy files');
+  assert.deepEqual(texts.filter((x) => !I.has(x)), []);
 });
 
 test('every word on the page itself has its Russian, or is a name or identifier that stays', () => {
