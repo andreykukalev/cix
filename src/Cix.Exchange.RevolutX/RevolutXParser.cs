@@ -74,6 +74,56 @@ internal static class RevolutXParser
         var bestBid = bids.EnumerateArray().OrderByDescending(l => Dec(l, "price")).First();
         var bestAsk = asks.EnumerateArray().OrderBy(l => Dec(l, "price")).First();
 
+        var quote = new MarketQuote(
+            NormaliseSymbol(symbol),
+            Dec(bestBid, "price"),
+            Dec(bestBid, "quantity"),
+            Dec(bestAsk, "price"),
+            Dec(bestAsk, "quantity"),
+            MetadataAsOf(root, receivedAt));
+        if (!quote.IsValid)
+            throw new FormatException("Order book top is invalid: prices must be positive, sizes non-negative and bid <= ask.");
+        return quote;
+    }
+
+    /// <summary>
+    /// Tickers: <c>{ data: [{symbol, bid, ask, mid, ...}], metadata: { timestamp } }</c>, one quote per pair, without sizes
+    /// (the tickers carry none). A pair whose bid or ask is missing, zero or crossed is left out rather than failing the
+    /// batch: an untraded pair must not take the others' quotes with it.
+    /// </summary>
+    public static IReadOnlyList<MarketQuote> ParseTickers(JsonElement root, DateTimeOffset receivedAt)
+    {
+        var asOf = MetadataAsOf(root, receivedAt);
+        var quotes = new List<MarketQuote>();
+        foreach (var row in Rows(root))
+        {
+            var symbol = OptStr(row, "symbol");
+            if (string.IsNullOrWhiteSpace(symbol))
+                continue;
+            decimal? bid, ask;
+            try
+            {
+                bid = DecOrNull(row, "bid");
+                ask = DecOrNull(row, "ask");
+            }
+            catch (FormatException)
+            {
+                continue;
+            }
+
+            if (bid is not { } b || ask is not { } a)
+                continue;
+            var quote = new MarketQuote(NormaliseSymbol(symbol), b, 0m, a, 0m, asOf);
+            if (quote.IsValid)
+                quotes.Add(quote);
+        }
+
+        return quotes;
+    }
+
+    /// <summary>The exchange's <c>metadata.timestamp</c> when present and not later than <paramref name="receivedAt"/>, otherwise the receipt time.</summary>
+    private static DateTimeOffset MetadataAsOf(JsonElement root, DateTimeOffset receivedAt)
+    {
         var asOf = receivedAt;
         if (root.ValueKind == JsonValueKind.Object
             && root.TryGetProperty("metadata", out var meta)
@@ -92,16 +142,7 @@ internal static class RevolutXParser
             }
         }
 
-        var quote = new MarketQuote(
-            NormaliseSymbol(symbol),
-            Dec(bestBid, "price"),
-            Dec(bestBid, "quantity"),
-            Dec(bestAsk, "price"),
-            Dec(bestAsk, "quantity"),
-            asOf);
-        if (!quote.IsValid)
-            throw new FormatException("Order book top is invalid: prices must be positive, sizes non-negative and bid <= ask.");
-        return quote;
+        return asOf;
     }
 
     public static PlacedOrder ParsePlaced(JsonElement root)

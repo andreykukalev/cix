@@ -1,0 +1,85 @@
+{
+  "data": [
+    {
+      "symbol": "BTC/EUR",
+      "bid": "58390.10",
+      "ask": "58404.50",
+      "mid": "58397.30",
+      "index_price": "58399.00",
+      "last_price": "58395.00",
+      "low_24h": "57100.00",
+      "high_24h": "59200.00",
+      "price_change_24h": "480.00",
+      "volume_24h": "135.42000000",
+      "quote_volume_24h": "7905400.00"
+    },
+    {
+      "symbol": "ETH/EUR",
+      "bid": "3998.00",
+      "ask": "4002.00",
+      "mid": "4000.00",
+      "index_price": "4001.50",
+      "last_price": "4001.00",
+      "low_24h": "3850.00",
+      "high_24h": "4120.00",
+      "price_change_24h": "151.00",
+      "volume_24h": "4250.00000000",
+      "quote_volume_24h": "17000000.00"
+    },
+    {
+      "symbol": "NEW/EUR",
+      "bid": "0",
+      "ask": "0.5",
+      "mid": "0.25",
+      "index_price": "0.25",
+      "last_price": "0.25",
+      "low_24h": "0",
+      "high_24h": "0",
+      "price_change_24h": "0",
+      "volume_24h": "0",
+      "quote_volume_24h": "0"
+    },
+    {
+      "symbol": "ODD/EUR",
+      "bid": "2.10",
+      "ask": "2.00",
+      "mid": "2.05",
+      "index_price": "2.05",
+      "last_price": "2.05",
+      "low_24h": "1.90",
+      "high_24h": "2.20",
+      "price_change_24h": "0.01",
+      "volume_24h": "10.00000000",
+      "quote_volume_24h": "20.00"
+    },
+    {
+      "symbol": "BAD/EUR",
+      "bid": "n/a",
+      "ask": "1.00",
+      "mid": "1.00",
+      "index_price": "1.00",
+      "last_price": "1.00",
+      "low_24h": "1.00",
+      "high_24h": "1.00",
+      "price_change_24h": "0",
+      "volume_24h": "0",
+      "quote_volume_24h": "0"
+    },
+    {
+      "symbol": "SOL/EUR",
+      "bid": "150.10",
+      "ask": "150.20",
+      "mid": "150.15",
+      "index_price": "150.15",
+      "last_price": "150.12",
+      "low_24h": "145.00",
+      "high_24h": "155.00",
+      "price_change_24h": "2.00",
+      "volume_24h": "1000.00000000",
+      "quote_volume_24h": "150000.00"
+    }
+  ],
+  "metadata": {
+    "timestamp": 1792677504000
+  }
+}

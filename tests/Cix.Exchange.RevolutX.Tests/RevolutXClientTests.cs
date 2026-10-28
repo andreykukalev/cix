@@ -129,6 +129,53 @@ public sealed class RevolutXClientTests
     }
 
     [Fact]
+    public async Task GetQuotesAsync_SignedTickers_OneRequestForAllSymbols_SkipsUntradedPairs_AndIsStampedByTheExchange()
+    {
+        var h = new ClientHarness();
+        h.Handler.RespondFixture("tickers.json");
+
+        var quotes = await h.Create().GetQuotesAsync(["eth/eur", "BTC-EUR", "NEW-EUR", "SOL-EUR", "ETH-EUR", "ODD-EUR", "BAD-EUR"], CancellationToken.None);
+
+        var request = Assert.Single(h.Handler.Requests);
+        Assert.Equal("https://revx.revolut.com/api/1.0/tickers?symbols=BAD-EUR,BTC-EUR,ETH-EUR,NEW-EUR,ODD-EUR,SOL-EUR", request.Uri.ToString()); // the documented literal comma
+        Assert.Equal("test-api-key-not-real", request.Headers[RevolutXAuth.ApiKeyHeader]);
+        Assert.Equal("1792677504427GET/api/1.0/tickerssymbols=BAD-EUR,BTC-EUR,ETH-EUR,NEW-EUR,ODD-EUR,SOL-EUR", Assert.Single(h.Signer.Messages));
+        // NEW/EUR has a zero bid, ODD/EUR a crossed book and BAD/EUR an unreadable price: each left out on its own, the rest kept
+        Assert.Equal(new[] { "BTC-EUR", "ETH-EUR", "SOL-EUR" }, quotes.Select(q => q.Symbol).ToArray());
+        var btc = quotes[0];
+        Assert.Equal((58390.10m, 58404.50m, 0m, 0m), (btc.Bid, btc.Ask, btc.BidSize, btc.AskSize)); // tickers carry no sizes
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1792677504000), btc.AsOf); // the exchange's metadata timestamp, before receipt
+        Assert.True(btc.IsValid);
+    }
+
+    [Fact]
+    public async Task GetQuotesAsync_NoSymbols_SendsNothing()
+    {
+        var h = new ClientHarness();
+
+        var quotes = await h.Create().GetQuotesAsync([], CancellationToken.None);
+
+        Assert.Empty(quotes);
+        Assert.Empty(h.Handler.Requests);
+    }
+
+    [Fact]
+    public async Task GetQuoteAsync_SignedOrderBook_UsesTheSignedPath_AndParsesTheTop()
+    {
+        var h = new ClientHarness();
+        h.Handler.RespondFixture("order_book.json");
+
+        var quote = await h.Create().GetQuoteAsync("btc/eur", CancellationToken.None);
+
+        var request = Assert.Single(h.Handler.Requests);
+        Assert.Equal("https://revx.revolut.com/api/1.0/order-book/BTC-EUR?limit=5", request.Uri.ToString());
+        Assert.Equal("1792677504427GET/api/1.0/order-book/BTC-EURlimit=5", Assert.Single(h.Signer.Messages));
+        Assert.Equal("BTC-EUR", quote.Symbol);
+        Assert.True(quote.IsValid);
+        Assert.True(quote.BidSize > 0 && quote.AskSize > 0); // the order book carries sizes, unlike the tickers
+    }
+
+    [Fact]
     public async Task GetOpenOrdersAsync_FollowsCursor_AndFiltersSymbol()
     {
         var h = new ClientHarness();

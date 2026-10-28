@@ -12,8 +12,11 @@ public sealed partial class MarketDataPoller
     public const int MinuteInterval = 1;
     public const int HourInterval = 60;
 
+    private const string TickersKey = "*";
+
     private readonly IMarketDataSource _candles;
     private readonly IQuoteSource _quotes;
+    private readonly IBulkQuoteSource? _tickers;
     private readonly ICandleStore _store;
     private readonly MarketState _state;
     private readonly IReadOnlyList<IQuoteListener> _listeners;
@@ -22,6 +25,7 @@ public sealed partial class MarketDataPoller
     private readonly TimeProvider _time;
     private readonly ILogger<MarketDataPoller> _logger;
     private readonly Dictionary<(string Symbol, string Kind), DateTimeOffset> _nextDue = [];
+    private IReadOnlyList<string> _tickersMissing = [];
     private int _requests;
 
     public MarketDataPoller(
@@ -33,8 +37,9 @@ public sealed partial class MarketDataPoller
         MarketDataOptions options,
         IEnumerable<string> symbols,
         TimeProvider time,
-        ILogger<MarketDataPoller> logger)
-        : this(candles, quotes, store, state, listeners, options, Fixed(symbols), maxSymbols: null, time, logger)
+        ILogger<MarketDataPoller> logger,
+        IBulkQuoteSource? tickers = null)
+        : this(candles, quotes, store, state, listeners, options, Fixed(symbols), maxSymbols: null, time, logger, tickers)
     {
     }
 
@@ -52,12 +57,14 @@ public sealed partial class MarketDataPoller
         Func<IReadOnlyList<string>> symbols,
         int? maxSymbols,
         TimeProvider time,
-        ILogger<MarketDataPoller> logger)
+        ILogger<MarketDataPoller> logger,
+        IBulkQuoteSource? tickers = null)
     {
         ArgumentNullException.ThrowIfNull(symbols);
         ArgumentNullException.ThrowIfNull(options);
         _candles = candles;
         _quotes = quotes;
+        _tickers = tickers;
         _store = store;
         _state = state;
         _listeners = listeners.ToList();
@@ -69,7 +76,7 @@ public sealed partial class MarketDataPoller
         var count = symbols().Count;
         if (count == 0)
             throw new InvalidOperationException("Market data needs at least one symbol.");
-        options.Validate(Math.Max(count, maxSymbols ?? 0));
+        options.Validate(Math.Max(count, maxSymbols ?? 0), signedQuotes: tickers is not null); // tickers exist only where quotes are signed (live)
     }
 
     /// <summary>The symbols the next poll covers.</summary>
@@ -90,6 +97,11 @@ public sealed partial class MarketDataPoller
     {
         _requests = 0;
         var symbols = _symbols(); // one list per poll
+
+        // Every symbol's bid and ask in one request, when the exchange offers tickers: the fastest view of a falling price.
+        if (_tickers is not null && _options.TickerInterval is { } tickerInterval && DueSince(TickersKey, "tickers") is not null)
+            await RunAsync(TickersKey, "tickers", tickerInterval, () => PollTickersAsync(symbols, cancellationToken)).ConfigureAwait(false);
+
         foreach (var symbol in symbols)
         {
             if (DueSince(symbol, "quote") is not null)
@@ -135,31 +147,40 @@ public sealed partial class MarketDataPoller
         }
     }
 
-    private async Task PollQuoteAsync(string symbol, CancellationToken cancellationToken)
+    /// <summary>
+    /// One tickers request for all the symbols, handed on like polled quotes. A ticker carries no sizes, so the paper exchange
+    /// (which fills against sizes) never runs on tickers: paper has no bulk source. The order-book quotes keep their own
+    /// schedule, and the market state keeps whichever quote is newer.
+    /// </summary>
+    private async Task PollTickersAsync(IReadOnlyList<string> symbols, CancellationToken cancellationToken)
     {
         _requests++;
-        await FetchQuoteAsync(symbol, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Fetches <paramref name="symbol"/>'s quote now, outside the schedule, and hands it on like a polled one (the market
-    /// state, then the listeners, such as the paper exchange). For the protective exits, which confirm a stop on a fresh book
-    /// before selling. Returns the quote, or null if it was invalid or out of order; exchange errors propagate.
-    /// <paramref name="except"/> is a listener that asked for the quote and reads the result itself, so it isn't told again:
-    /// otherwise the protection's own confirming fetch would raise the stop it is already selling.
-    /// </summary>
-    public async Task<MarketQuote?> RefreshQuoteAsync(string symbol, CancellationToken cancellationToken, IQuoteListener? except = null) =>
-        await FetchQuoteAsync(NormaliseSymbol(symbol), cancellationToken, except).ConfigureAwait(false);
-
-    private async Task<MarketQuote?> FetchQuoteAsync(string symbol, CancellationToken cancellationToken, IQuoteListener? except = null)
-    {
-        var quote = await _quotes.GetQuoteAsync(symbol, cancellationToken).ConfigureAwait(false);
-        if (!_state.Update(quote))
+        var quotes = await _tickers!.GetQuotesAsync(symbols, cancellationToken).ConfigureAwait(false);
+        var wanted = symbols.ToHashSet(StringComparer.Ordinal);
+        var covered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var quote in quotes)
         {
-            LogQuoteRejected(_logger, symbol);
-            return null;
+            var symbol = NormaliseSymbol(quote.Symbol);
+            if (!wanted.Contains(symbol))
+                continue;
+            covered.Add(symbol);
+            // Not newer than the book polled a moment ago: expected now and then, and nothing to log.
+            if (_state.Update(quote))
+                Notify(quote with { Symbol = symbol }, symbol, except: null);
         }
 
+        // Say which symbols the exchange's tickers leave out, once per change, not every 2 seconds.
+        var missing = wanted.Where(s => !covered.Contains(s)).Order(StringComparer.Ordinal).ToList();
+        if (!missing.SequenceEqual(_tickersMissing, StringComparer.Ordinal))
+        {
+            _tickersMissing = missing;
+            if (missing.Count > 0)
+                LogTickersMissing(_logger, string.Join(", ", missing), wanted.Count);
+        }
+    }
+
+    private void Notify(MarketQuote quote, string symbol, IQuoteListener? except)
+    {
         foreach (var listener in _listeners)
         {
             if (ReferenceEquals(listener, except))
@@ -173,7 +194,38 @@ public sealed partial class MarketDataPoller
                 LogListenerFailed(_logger, listener.GetType().Name, symbol, ex.Message);
             }
         }
+    }
 
+    private async Task PollQuoteAsync(string symbol, CancellationToken cancellationToken)
+    {
+        _requests++;
+        await FetchQuoteAsync(symbol, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Fetches <paramref name="symbol"/>'s quote now, outside the schedule, and hands it on like a polled one (the market
+    /// state, then the listeners, such as the paper exchange). For the protective exits, which confirm a stop on a fresh book
+    /// before selling. Returns the quote, or null if it was invalid or from the future; exchange errors propagate. A book the
+    /// state keeps out only because a ticker carries a later exchange timestamp is still returned: the caller asked for the
+    /// book as it is now, and whether the two endpoints stamp alike is the exchange's business, never a reason to leave a stop
+    /// unsold. <paramref name="except"/> is a listener that asked for the quote and reads the result itself, so it isn't told
+    /// again: otherwise the protection's own confirming fetch would raise the stop it is already selling.
+    /// </summary>
+    public async Task<MarketQuote?> RefreshQuoteAsync(string symbol, CancellationToken cancellationToken, IQuoteListener? except = null) =>
+        await FetchQuoteAsync(NormaliseSymbol(symbol), cancellationToken, except).ConfigureAwait(false);
+
+    private async Task<MarketQuote?> FetchQuoteAsync(string symbol, CancellationToken cancellationToken, IQuoteListener? except = null)
+    {
+        var quote = await _quotes.GetQuoteAsync(symbol, cancellationToken).ConfigureAwait(false);
+        if (!quote.IsValid || quote.AsOf > _time.GetUtcNow())
+        {
+            LogQuoteRejected(_logger, symbol);
+            return null;
+        }
+
+        // The state keeps the newer of this book and the latest ticker; listeners hear only what the state kept.
+        if (_state.Update(quote))
+            Notify(quote, symbol, except);
         return quote;
     }
 
@@ -221,7 +273,10 @@ public sealed partial class MarketDataPoller
     [LoggerMessage(Level = LogLevel.Information, Message = "No {Interval}m candles for {Symbol} from {Since} until {First}")]
     private static partial void LogCandleGap(ILogger logger, int interval, string symbol, DateTimeOffset since, DateTimeOffset first);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Rejected an invalid, future or out-of-order quote for {Symbol}")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "The tickers leave out {Missing} (of {Wanted} symbols); those keep their order-book quotes")]
+    private static partial void LogTickersMissing(ILogger logger, string missing, int wanted);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Rejected an invalid or future-dated quote for {Symbol}")]
     private static partial void LogQuoteRejected(ILogger logger, string symbol);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Quote listener {Listener} failed for {Symbol}: {Detail}")]

@@ -37,17 +37,23 @@ public static class ExchangeRegistration
 
         services.AddSingleton(revolutX);
 
-        // Market data never needs credentials, in either mode: public endpoints only.
+        // Candles and pairs never need credentials, in either mode: public endpoints only.
         services.AddSingleton(sp => new RevolutXPublicMarketData(new HttpClient(), revolutX, sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<IMarketDataSource>(sp => sp.GetRequiredService<RevolutXPublicMarketData>());
-        services.AddSingleton<IQuoteSource>(sp => sp.GetRequiredService<RevolutXPublicMarketData>());
 
         if (mode == TradingMode.Live)
         {
             services.AddSingleton(sp => new RevolutXClient(new HttpClient(), revolutX, time: sp.GetRequiredService<TimeProvider>()));
             services.AddSingleton<IExchangeClient>(sp => sp.GetRequiredService<RevolutXClient>());
+            // Live quotes go over the signed endpoints (100 a second, 1,000 a minute): every coin's ticker every few seconds, and
+            // an order book on demand for the stop-loss protection, instead of queueing behind the public 1 request a second.
+            services.AddSingleton<IQuoteSource>(sp => sp.GetRequiredService<RevolutXClient>());
+            services.AddSingleton<IBulkQuoteSource>(sp => sp.GetRequiredService<RevolutXClient>());
             return services;
         }
+
+        // Paper quotes stay public: the paper exchange fills against the order book's sizes, which tickers don't carry.
+        services.AddSingleton<IQuoteSource>(sp => sp.GetRequiredService<RevolutXPublicMarketData>());
 
         services.AddSingleton(paper);
         services.AddSingleton(sp => new PaperExchange(

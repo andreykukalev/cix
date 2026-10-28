@@ -71,7 +71,8 @@ public static class MarketDataRegistration
             symbols,
             maxSymbols,
             sp.GetRequiredService<TimeProvider>(),
-            sp.GetRequiredService<ILogger<MarketDataPoller>>()));
+            sp.GetRequiredService<ILogger<MarketDataPoller>>(),
+            tickers: sp.GetService<IBulkQuoteSource>())); // live only: the signed tickers endpoint
         services.AddHostedService<MarketDataService>();
         return services;
     }
