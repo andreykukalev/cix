@@ -41,7 +41,7 @@ GitHub Actions ─OIDC─► ACR (images) ─► Container Apps environment: wor
    - Its only ingress is internal: apps and jobs in the same environment can reach it, and the internet can't.
    - A health probe uses the existing `/healthz`.
    - The app sets `ASPNETCORE_ENVIRONMENT=Azure` and `Trading__Mode=Paper` explicitly. .NET treats a missing environment name as Production, which would remove the guard in `TradingMode.cs` that refuses Live outside Production.
-2. **The environment uses workload profiles, the Consumption profile, and its own VNet** from the start. It costs the same as a plain Consumption environment. A fixed outbound IP for the live engine (decided with the live engine) later needs a NAT gateway on that VNet, and a VNet can't be added to an existing environment.
+2. **The environment uses workload profiles, the Consumption profile, and its own VNet** from the start. It costs the same as a plain Consumption environment. (Corrected 2026-10-28: it doesn't. On a VNet, Azure adds a Standard Load Balancer and a static egress IP, about $22 a month per environment, so the environment no longer has a VNet; ADR-0013, amended.) A fixed outbound IP for the live engine (decided with the live engine) later needs a NAT gateway on that VNet, and a VNet can't be added to an existing environment.
 3. **Each agent is a Container Apps Job with its own managed identity**, billed only while it runs.
    - The three jobs are `cix-trader` (strategy runs), `cix-trader-requests` (runs that answer owner requests) and `cix-analyst`.
    - Each job watches its own queue, with `maxExecutions: 1` so runs happen one at a time.
@@ -96,7 +96,7 @@ Consumption prices (USD, East US, Oct 2026; Poland Central may differ slightly a
 | Container Registry | Basic | ≈ $5 | ≈ $5 |
 | Storage account (queues), Key Vault | a few thousand operations a day | < $1 | < $1 |
 | Log Analytics | under the free 5 GB with a daily cap | $0 | $0 |
-| VNet | no NAT gateway | $0 | $0 |
+| VNet | none since 2026-10-28 (with one: a load balancer and an IP, ≈ $22) | $0 | $0 |
 | Cosmos DB, Static Web App | free tier, Free plan | $0 | $0 |
 | **Total** | | **≈ $23 a month** | **≈ $35 a month** |
 

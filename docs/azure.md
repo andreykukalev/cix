@@ -112,7 +112,7 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
 
 - **`platform`** (`infra/modules/agents-platform.bicep`). This adds the pieces the engine and the jobs run on, in `agents.location`:
   - a Log Analytics workspace, capped at 0.1 GB a day;
-  - a VNet with an internal Container Apps environment (workload profiles, Consumption);
+  - a Container Apps environment (workload profiles, Consumption) with public network access disabled, and no VNet of its own: a VNet would bring a billed load balancer and IP (about $22 a month). An environment deployed before 2026-10-28 is still on one: `provision.ps1` says so, and after you confirm it deletes the engine, the jobs, the environment and the VNet, then recreates them without it (10 to 20 minutes). Then run `setup-ci-deploy.ps1 -For agents` again: CI's roles on the engine and the jobs go with them;
   - the container registry (Basic, about $5 a month);
   - a storage account with the four run queues, with shared keys off;
   - Key Vault, for `claude-token`. It holds no Cosmos DB key: the engine signs in to the database with its managed identity;

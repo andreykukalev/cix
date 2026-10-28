@@ -53,7 +53,7 @@ openssl genpkey -algorithm ed25519 -out revx_private.pem
 openssl pkey -in revx_private.pem -pubout -out revx_public.pem
 ```
 
-In the Revolut X web app, open the sub-account's API settings and add a key with the contents of `revx_public.pem`. Revolut X then shows the 64-character API key. If Revolut X offers permission choices, choose trading only, never withdrawals or transfers. If Revolut X offers an IP allowlist, leave it for now: the live engine has no fixed outbound IP yet, and that is decided together with its deployment (owner decision 3).
+In the Revolut X web app, open the sub-account's API settings and add a key with the contents of `revx_public.pem`. Revolut X then shows the 64-character API key. If Revolut X offers permission choices, choose trading only, never withdrawals or transfers. If Revolut X offers an IP allowlist, leave it for now: the live engine has no fixed outbound IP (owner decision 3). Since 2026-10-28 its environment has no VNet, so one would need the environment rebuilt on a VNet with a NAT gateway (about $55 a month with the load balancer and IPs; ADR-0013, amended).
 
 Keep `revx_private.pem` outside the repository (`.gitignore` excludes `*.pem` anyway). Never paste either key into a chat, an issue or a pull request.
 
@@ -140,6 +140,8 @@ az containerapp update --name ca-cix-prod-engine --resource-group rg-cix-live --
 It starts a new revision, which reads the keys, checks them against the live limits and the strategy, keeps its state (the kill switch, loss baselines, the lease) in `cix-live`, syncs the sub-account's balances, and then trades. Watch its first minutes with the `logs show` command above. If it refuses to start (no limits file, a spec that isn't `live`, a key missing), the log says why without showing any key, and the revision stays unhealthy while the standby one keeps running: fix the cause, or put it back on standby.
 
 **Every `provision.ps1` deployment of the live environment puts the engine back on standby**, because the template pins it to paper. After promoting a new image (step 2 again, without the key files) or uploading new keys, run the switch command again. CI's deploys (below) don't: they change only the images.
+
+The first `provision.ps1` run after 2026-10-28 also rebuilds the live environment without its VNet (ADR-0013, amended), after you confirm it, and refuses `-Yes` for it. The engine is gone for 10 to 20 minutes, with no stop-loss checks, so do it with no open positions. Then run `setup-ci-deploy.ps1 -Environment prod -For agents` again (CI's roles on the engine and the jobs go with them), and switch the engine on.
 
 ### Deploys from main
 
