@@ -51,7 +51,7 @@ Three paper strategies to choose from. Each states its purpose and risk profile 
 | Trend exits | yes | yes | yes |
 | 24h volume, spread, hourly ATR (max; min as × cost) | ≥ 50,000 EUR, ≤ 0.3%, ≤ 3%; 1.5× | ≥ 20,000 EUR, ≤ 0.4%, ≤ 5%; 1× | ≥ 20,000 EUR, ≤ 0.5%, ≤ 7%; 0.8× |
 
-The engine enforces each strategy's own limits before the risk gate: a buy larger than the order size, or beyond the per-coin, exposure, daily loss, per-run or cooldown limits, is reduced or refused. They can only be tighter than the mandatory limits in `config/risk-limits.json`, which the risk gate enforces whatever the strategy says, and which only the owner edits. The order-size hook in the trader container still reads the configured spec's `orderQuote`, so with `balanced` v3 configured it blocks agent buys above 5.5 EUR.
+The engine enforces each strategy's own limits before the risk gate: a buy larger than the order size, or beyond the per-coin, exposure, daily loss, per-run or cooldown limits, is reduced or refused. They can only be tighter than the mandatory limits in `config/risk-limits.json`, which the risk gate enforces whatever the strategy says, and which change only on the owner's request. The order-size hook in the trader container still reads the configured spec's `orderQuote`, so with `balanced` v3 configured it blocks agent buys above 5.5 EUR.
 
 ### Switching (paper)
 
