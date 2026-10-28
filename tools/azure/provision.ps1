@@ -278,6 +278,10 @@ if (-not $SkipInfrastructure) {
   Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"
   if ($rebuild) {
     Confirm-Step "Delete $what now, and recreate the environment and the apps without a VNet?"
+    if ($agentValues.ContainsKey('engineImageDigest')) {
+      $again = if ($settings.protected) { "-PromoteFrom <paper environment> -ImageTag <the commit SHA paper runs>" } else { '-ImageTag <a tag CI pushed>' }
+      Write-CixWarn "If the deployment fails after this, nothing runs to keep images from: run this again with $again. The images now are cix-engine@$($agentValues.engineImageDigest) and cix-trader@$($agentValues.agentImageDigest)."
+    }
     Remove-CixVnetEnvironment -Rebuild $rebuild
   }
   # The deployment sets the dashboard's settings to exactly what infra/ says, which would drop the writer identity's and the

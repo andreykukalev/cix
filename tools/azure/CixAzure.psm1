@@ -612,6 +612,12 @@ function Get-CixVnetRebuild {
   $groupPrefix = $envId[0].Substring(0, $envId[0].IndexOf('/providers/'))
   $apps = @(Get-CixAgentsDeployTargets -Settings $Settings | ForEach-Object { "$groupPrefix/providers/$_" } |
       Where-Object { $inGroup -contains $_ })
+  # Checked before anything is deleted: an app the template doesn't recreate, or a lock, would stop the environment's deletion
+  # after the engine had gone, and leave it gone.
+  $others = @($inGroup | Where-Object { $_ -match '(?i)/providers/Microsoft\.App/(containerApps|jobs)/' -and $apps -notcontains $_ })
+  if ($others.Count -gt 0) { throw "The Container Apps environment is on a VNet and has to be rebuilt, but $($Settings.resourceGroup) also holds $(($others | ForEach-Object { $_.Split('/')[-1] }) -join ', '), which the template doesn't recreate. Move or delete them first; nothing was changed." }
+  $locks = @(Invoke-CixAz @('lock', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+  if ($locks.Count -gt 0) { throw "The Container Apps environment is on a VNet and has to be rebuilt, but $($Settings.resourceGroup) has locks ($(($locks | ForEach-Object { "$($_.name)" }) -join ', ')) that would stop it halfway. Remove them for the rebuild; nothing was changed." }
   # Only the VNet the template made (vnet-<prefix>-<environment>, in this group) is deleted; any other is left alone.
   $ownVnet = "$groupPrefix/providers/Microsoft.Network/virtualNetworks/vnet-$p"
   $vnetId = $subnet -replace '(?i)/subnets/[^/]+$', ''

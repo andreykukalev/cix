@@ -199,6 +199,10 @@ Check 'the Container Apps environment has no VNet, takes no public traffic, and 
   $apps = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-apps.bicep'))
   if ($apps -notmatch '(?m)^\s*external: false\b') { throw 'the engine''s ingress reaches outside its environment' }
   if ($apps -match '(?m)^\s*external: true\b') { throw 'an app''s ingress reaches outside its environment' }
+  # Either would let traffic from outside the environment reach an app with internal ingress.
+  foreach ($name in Get-ChildItem (Join-CixPath $repo 'infra') -Recurse -Filter *.bicep) {
+    if ([IO.File]::ReadAllText($name.FullName) -match '(?i)httpRouteConfigs|privateEndpoints') { throw "$($name.Name) routes outside traffic into the environment" }
+  }
 }
 
 # The engine in Azure signs in to Cosmos DB with its identity: no account key anywhere in the agents' templates, and its
@@ -1472,6 +1476,7 @@ Check 'provision.ps1 agents apps rebuilds an environment on a VNet: apps, enviro
   for ($i = 1; $i -lt $positions.Count; $i++) { if ($positions[$i] -lt $positions[$i - 1]) { throw "deleted out of order: $($r.Calls)" } }
   if ($positions[-1] -gt $calls.IndexOf('deployment sub create')) { throw 'deployed before the old environment was gone' }
   if (-not $r.Output.Contains('setup-ci-deploy.ps1 -Environment citest -For agents again')) { throw "no reminder about CI's roles in: $($r.Output)" }
+  if (-not $r.Output.Contains("The images now are cix-engine@$digest5")) { throw "the images to redeploy weren't shown before deleting: $($r.Output)" }
 }
 
 Check 'provision.ps1 agents apps on a VNet: a preview deletes nothing, and -Yes never rebuilds the protected environment' {
@@ -1485,6 +1490,16 @@ Check 'provision.ps1 agents apps on a VNet: a preview deletes nothing, and -Yes 
   $r = Invoke-AgentsProvision $vnetFake @{ Yes = $true; SkipEngineConfig = $true } 'platform'
   if (-not $r.Error -or -not $r.Error.Contains('set it to apps, so the rebuild recreates them')) { throw "got: $($r.Error)" }
   if ($r.Calls.Contains('resource delete')) { throw "deleted apps platform wouldn't recreate: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents apps on a VNet refuses, changing nothing, when an app it wouldn''t recreate or a lock is in the group' {
+  $extra = $vnetFake['resource list'].Replace(']', ",{`"id`":`"$citestGroup/providers/Microsoft.App/containerApps/someone-elses`"}]")
+  $r = Invoke-AgentsProvision @{ 'resource list' = $extra; 'resource show' = $vnetFake['resource show'] } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains('also holds someone-elses')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match '(?m)\b(resource delete|deployment)\b') { throw "changed something: $($r.Calls)" }
+  $r = Invoke-AgentsProvision ($vnetFake + @{ 'lock list' = '[{"name":"keep"}]' }) @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains('has locks (keep)')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match '(?m)\b(resource delete|deployment)\b') { throw "changed something: $($r.Calls)" }
 }
 
 Check 'provision.ps1 agents apps leaves an environment without a VNet as it is' {
