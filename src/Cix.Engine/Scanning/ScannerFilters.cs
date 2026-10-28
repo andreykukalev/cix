@@ -117,25 +117,25 @@ public sealed partial class ScannerFilterRecorder(IScannerFilterStore store, IJo
 
             if (previous is null || previous.Filters != filters)
             {
-                var removed = previous?.Passing.Except(passing, StringComparer.Ordinal).ToList() ?? [];
+                var left = previous?.Passing.Except(passing, StringComparer.Ordinal).ToList() ?? [];
                 var change = previous is null ? null : new FilterChange(
                     scan.AsOf, previous.Spec, spec,
                     passing.Except(previous.Passing, StringComparer.Ordinal).ToList(),
-                    removed,
+                    left,
                     // Only coins the switch moved out: a balance the strategy never traded (dust, an adopted coin) isn't news.
-                    removed.Intersect(held ?? [], StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
+                    left.Intersect(held ?? [], StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
                 var next = new ScannerFilterState(spec, filters, scan.AsOf, passing, excluded, scan.AsOf, change ?? previous?.LastChange);
                 _candidate = null;
                 Take(next); // the change is taken before it is journaled: a failed save never journals it twice
-                var data = FiltersData(previous, next);
+                var switched = FiltersData(previous, next);
                 if (change is not null)
                 {
-                    data["added"] = string.Join(',', change.Added);
-                    data["removed"] = string.Join(',', change.Removed);
-                    data["heldOutside"] = string.Join(',', change.HeldOutside);
+                    switched["added"] = string.Join(',', change.Added);
+                    switched["removed"] = string.Join(',', change.Removed);
+                    switched["heldOutside"] = string.Join(',', change.HeldOutside);
                 }
 
-                await AppendAsync(FiltersKind, FiltersSummary(previous, next), data, spec, cancellationToken).ConfigureAwait(false);
+                await AppendAsync(FiltersKind, FiltersSummary(previous, next), switched, spec, cancellationToken).ConfigureAwait(false);
                 await SaveAsync(next, cancellationToken).ConfigureAwait(false);
                 return;
             }
