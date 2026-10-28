@@ -186,6 +186,16 @@ The Live view switches strategy and coins the same way, each with the real-money
 
 Pause is not the emergency stop: it needs the engine running and the dashboard reachable. For that, use the steps below and [Stopping live trading at once](#stopping-live-trading-at-once).
 
+### Where a stop-loss sale is not guaranteed (ADR-0020)
+
+The engine's protection sells a coin that falls through its stop within seconds, through Pause and the critical halt, with an immediate-or-cancel limit no lower than `MaxEmergencySlippageFraction` under the mid. Three cases are outside what it can promise. None of them is fixed by Resume or by a setting; each is shown on the dashboard and in the journal as it happens.
+
+1. **Revolut X or its API is unreachable.** Without a quote and an order there is no sale. The exit keeps trying every 2 seconds, then every minute, and completes by itself when the API answers again; the position stays exposed meanwhile. Only a stop order held by the exchange would act while the engine is down, and nothing acts while the exchange is. What you can do: nothing from the engine's side; the Revolut X app, if it works, is the fallback.
+2. **A gap, or no bids within the band.** When the price jumps past the stop between two quotes (a few seconds apart in live), the sale happens at the new level: the band bounds the slippage against the mid at the time of the sale, not the distance from the stop, so the loss beyond the stop is the gap. When the book holds no bids at all within the band, the exit is reported blocked ("Выход заблокирован" on the dashboard, a critical log line) after five tries and retried every minute; it sells when bids return, at that price. The band is yours: the engine never widens it by itself.
+3. **The restart window.** While the engine is down and until its stops reload after a start (a deploy or a crash: usually a minute or two, longer if the image can't start), no stop is watched. A stop crossed meanwhile is sold on the first fresh quote after the restart, at that price. Deploys from `main` replace the engine in place and hold the live revision until the new one is healthy, so this window is short, but it exists.
+
+Everything else the protection handles: partial fills (re-quoted every 2 s), orders the exchange left open (cancelled before the next try), uncertain placements (the balance is read before any retry), stale or invalid quotes (never a sale), a crash right after a sell was sent (nothing to resell), and a Pause or critical halt (stops keep selling, buys stop).
+
 ### Back to standby, and stopping
 
 - **Stop at once**: deactivate the active revision. Nothing runs until you switch it on again (or run `provision.ps1`):
