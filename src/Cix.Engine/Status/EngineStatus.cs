@@ -62,6 +62,7 @@ public sealed record ProtectionStatus(int Armed, DateTimeOffset? ArmedAt, IReadO
 /// fractions (0.004 = 0.4%), volume in the quote currency.
 /// </summary>
 /// <param name="Since">When these filters were first applied, from the database record; null until the first scan records them.</param>
+/// <param name="LastChange">The last strategy switch's effect on the watched coins (ADR-0021), from the same record.</param>
 public sealed record FiltersStatus(
     string? Spec,
     DateTimeOffset? Since,
@@ -73,15 +74,18 @@ public sealed record FiltersStatus(
     bool RequireUptrendPullback,
     bool TrendExits,
     int MaxEntrySignals,
-    decimal OrderQuote);
+    decimal OrderQuote,
+    Scanning.FilterChange? LastChange = null);
 
 /// <param name="State"><c>ok</c>, <c>off</c>, <c>unavailable</c> (no requests container yet) or <c>not-used</c> (no database).</param>
 /// <param name="AwaitingAgent">Agent-assisted requests waiting for the trader.</param>
 public sealed record ManualRequestsStatus(string State, int AwaitingAgent, DateTimeOffset? LastPollAt);
 
 /// <param name="Market">Every scanned symbol from the latest scan, for the owner's market overview.</param>
+/// <param name="Previews">What each other strategy the owner could switch to would make of the same coins (ADR-0021).</param>
 public sealed record ScanStatus(
-    DateTimeOffset At, int Ranked, int Excluded, int EntrySignals, int ExitSignals, string SignalKey, IReadOnlyList<MarketRow> Market);
+    DateTimeOffset At, int Ranked, int Excluded, int EntrySignals, int ExitSignals, string SignalKey, IReadOnlyList<MarketRow> Market,
+    IReadOnlyList<Scanning.StrategyPreview>? Previews = null);
 
 /// <summary>
 /// One symbol in the latest scan: how it moved and what the scanner made of it. Moves and volatility are fractions
@@ -263,7 +267,7 @@ public sealed partial class EngineStatusService(
             reconcile?.ReconciledAt,
             reconcile?.AttemptedAt,
             reconcile?.Problem,
-            scan is null ? null : new ScanStatus(scan.AsOf, scan.Ranked.Count, scan.Excluded.Count, scan.Entries.Count, scan.Exits.Count, scanner!.SignalKey, MarketRows(scan)),
+            scan is null ? null : new ScanStatus(scan.AsOf, scan.Ranked.Count, scan.Excluded.Count, scan.Entries.Count, scan.Exits.Count, scanner!.SignalKey, MarketRows(scan), scanner.Previews),
             view is null
                 ? null
                 : new MarketViewStatus(view.Regime.ToString(), view.RecordedAt, view.ValidUntil, view.IsActive(now), view.Flags.Select(f => f.Symbol).ToList()),
@@ -287,7 +291,7 @@ public sealed partial class EngineStatusService(
         return new FiltersStatus(
             specs?.Active?.Label, recorded is not null && recorded.Filters == p ? recorded.Since : null,
             p.MinQuoteVolume24h, p.MaxSpreadFraction, p.MaxAtrFraction, p.MinAtrToCostRatio, p.MinHourlyCandles24h,
-            p.RequireUptrendPullback, p.TrendExits, p.MaxEntrySignals, p.OrderQuote);
+            p.RequireUptrendPullback, p.TrendExits, p.MaxEntrySignals, p.OrderQuote, recorded?.LastChange);
     }
 
     private PortfolioStatus? Portfolio()

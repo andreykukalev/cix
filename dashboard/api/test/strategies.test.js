@@ -85,3 +85,38 @@ test('live switches too, saying only specs marked live are listed, and the view 
   assert.equal(view.active, null);
   assert.deepEqual([view.groups, view.strategies, view.mandatory], [[], [], []]);
 });
+
+test('the switch preview: which watched coins would enter and leave trading, with the reason, and which are held (ADR-0021)', () => {
+  const status = {
+    strategy: 'balanced@v1#abc',
+    lastScan: {
+      at: '2026-10-27T09:25:00Z',
+      market: [{ symbol: 'BTC-EUR', rank: 1 }, { symbol: 'ETH-EUR', rank: 2 }, { symbol: 'DOGE-EUR', rank: null }, { symbol: 'SOL-EUR', rank: null }],
+      previews: [
+        { name: 'safe', version: 1, passing: ['BTC-EUR'], excluded: { 'ETH-EUR': 'low-volume', 'DOGE-EUR': 'too-volatile', 'SOL-EUR': '<b>' } },
+        { name: 'risky', version: 2, passing: ['BTC-EUR', 'ETH-EUR', 'DOGE-EUR', 'SOL-EUR', '../x'], excluded: {} },
+      ],
+    },
+    portfolio: { holdings: [{ symbol: 'ETH-EUR', valueQuote: '12.5' }, { symbol: 'SOL-EUR', valueQuote: '3' }] },
+  };
+  const view = strategiesView({ mode: 'paper', schema: SCHEMA, versions: VERSIONS, status, requests: [] }, NOW);
+  const preview = (name) => view.strategies.find((s) => s.name === name).preview;
+  assert.deepEqual(preview('safe'), {
+    at: '2026-10-27T09:25:00Z',
+    enter: [],
+    leave: [{ symbol: 'ETH-EUR', held: true, reason: 'low-volume' }],
+  });
+  assert.deepEqual(preview('risky').enter, [{ symbol: 'DOGE-EUR', held: false }, { symbol: 'SOL-EUR', held: true }], 'a malformed symbol is left out');
+  assert.deepEqual(preview('risky').leave, []);
+  assert.equal(preview('balanced'), null, 'the running strategy');
+  assert.equal(preview('good'), null, 'not previewed yet');
+
+  const V = require('../../app/view.js');
+  assert.deepEqual(V.strategyCoins(preview('safe')), [
+    'Leave trading: ETH-EUR (held): low-volume.',
+    'You hold ETH-EUR: they keep their stop and target, and the new strategy buys no more.',
+  ]);
+  assert.deepEqual(V.strategyCoins(preview('risky')), ['Enter trading: DOGE-EUR, SOL-EUR (held).']);
+  assert.deepEqual(V.strategyCoins({ enter: [], leave: [] }), ['No coin enters or leaves trading.']);
+  assert.match(V.strategyCoins(null)[0], /^No preview for this strategy yet/);
+});

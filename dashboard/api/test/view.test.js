@@ -314,3 +314,41 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   assert.deepEqual([V.monitors(overdue, now, ago).analyst.tone, V.monitors(overdue, now, ago).analyst.value], ['bad', 'Overdue']);
   assert.equal(V.monitors({}, now, ago).trader.value, 'No runs yet');
 });
+
+test('each watched coin shows its level: trading, filtered out, waiting for data, held outside the strategy, just added, on the account', () => {
+  const view = {
+    briefing: { market: [
+      { symbol: 'BTC-EUR', rank: 1, note: 'already held' },
+      { symbol: 'DOGE-EUR', rank: null, note: 'low-volume' },
+      { symbol: 'ETH-EUR', rank: null, note: 'too-volatile' },
+      { symbol: 'ADA-EUR', rank: null, note: 'insufficient-history' },
+      { symbol: 'SOL-EUR', rank: 2 },
+      { symbol: 'XRP-EUR', rank: null, note: 'news' },
+    ] },
+    portfolio: { holdings: [{ symbol: 'BTC-EUR', valueQuote: '20' }, { symbol: 'ETH-EUR', valueQuote: '9' }, { symbol: 'SOL-EUR', valueQuote: '4' }, { symbol: 'UNI-EUR', valueQuote: '1' }] },
+  };
+  const pairs = { tradable: ['BTC-EUR', 'DOGE-EUR', 'ETH-EUR', 'ADA-EUR', 'XRP-EUR', 'LTC-EUR'].map((symbol) => ({ symbol, adopted: false })).concat([{ symbol: 'SOL-EUR', adopted: true }]) };
+  const levels = Object.fromEntries(V.coins(view, pairs, 'en').map((r) => [r.symbol, r.level?.key ?? null]));
+  assert.deepEqual(levels, {
+    'BTC-EUR': 'trading', 'DOGE-EUR': 'filtered', 'ETH-EUR': 'outside', 'ADA-EUR': 'waiting', 'XRP-EUR': 'flagged', 'LTC-EUR': 'new', 'SOL-EUR': 'adopted', 'UNI-EUR': null,
+  });
+  assert.equal(V.coins(view, pairs, 'en').find((r) => r.symbol === 'ETH-EUR').level.label, 'Held, outside the strategy');
+  assert.ok(V.coins(view, null, 'en').every((r) => r.level === null), 'no levels before the pairs are loaded');
+});
+
+test('after a strategy switch the Coins tab says which coins entered and left trading, until dismissed', () => {
+  const change = { at: '2026-10-27T10:00:00Z', fromSpec: 'balanced@v1#ab', toSpec: 'safe@v1#cd', added: ['DOGE-EUR'], removed: ['ETH-EUR', 'SOL-EUR'], heldOutside: ['ETH-EUR'] };
+  assert.deepEqual(V.filterChange(change, null), {
+    at: change.at,
+    title: 'The coin filters changed from Balanced v1 to Safe v1',
+    lines: [
+      'Entered trading: DOGE-EUR.',
+      'Left trading: ETH-EUR, SOL-EUR.',
+      'Held and outside the new strategy: ETH-EUR. They keep their stop and target, and the strategy buys no more; keep or sell them yourself.',
+    ],
+  });
+  assert.equal(V.filterChange(change, change.at), null, 'dismissed');
+  assert.equal(V.filterChange(null, null), null);
+  assert.deepEqual(V.filterChange({ ...change, fromSpec: null, added: [], removed: [], heldOutside: [] }, '2026-10-26T10:00:00Z'),
+    { at: change.at, title: 'The coin filters changed', lines: ['No coin entered or left trading.'] });
+});

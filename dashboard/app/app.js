@@ -354,7 +354,7 @@ function renderCoins(view) {
   rows('coins', V.coins(view, state.pairs?.mode === state.mode ? state.pairs : null, state.lang), (c) => {
     const r = scan.get(c.symbol) ?? {};
     const cells = [
-      el('span', { class: 'chip', text: c.symbol }),
+      [el('span', { class: 'chip', text: c.symbol }), c.level ? [' ', el('span', { class: `badge level ${c.level.tone}`, title: c.level.detail, text: c.level.label })] : null],
       c.held ? el('span', { class: 'badge ok', text: t('held') }) : el('span', { class: 'muted', text: '–' }),
       td(move(c.hour), 'num'), td(move(c.day), 'num'),
       td(c.rank === null ? '–' : String(c.rank), 'num'), r.trend ? t(r.trend) : '–',
@@ -366,6 +366,30 @@ function renderCoins(view) {
     if (trading) cells.push(td(tradeButtons(c), 'actions'));
     return cells;
   }, t('No scan yet.'));
+  renderFilterChange(view.engine?.filterChange ?? null);
+}
+
+const dismissedChanges = {}; // per mode, for when the browser keeps no storage
+
+/** The banner after a strategy switch (ADR-0021): which coins entered and left trading, until the owner dismisses it. */
+function renderFilterChange(change) {
+  const key = `cix-filter-change-${state.mode}`;
+  let dismissed = dismissedChanges[state.mode] ?? null;
+  try { dismissed = localStorage.getItem(key) ?? dismissed; } catch { /* storage may be unavailable: this page's memory stands in */ }
+  const shown = V.filterChange(change, dismissed);
+  const node = document.getElementById('coins-change');
+  node.hidden = !shown;
+  if (!shown) { node.replaceChildren(); return; }
+  const close = el('button', { type: 'button', class: 'ghost', text: t('Dismiss') });
+  close.addEventListener('click', () => {
+    dismissedChanges[state.mode] = shown.at;
+    try { localStorage.setItem(key, shown.at); } catch { /* storage may be unavailable */ }
+    node.hidden = true;
+  });
+  node.replaceChildren(
+    el('strong', { text: `${shown.title} (${when(shown.at)})` }),
+    el('ul', {}, shown.lines.map((line) => el('li', { text: line }))),
+    close);
 }
 
 /** Why there is no buy: the kind (filtered out, a strategy rule, held back, a new pair), the reason, and the figures behind it. */
@@ -816,6 +840,7 @@ function openStrategy(target) {
   document.getElementById('strategy-changes').replaceChildren(...(changes.length
     ? changes.map((c) => el('li', { class: c.openPositions ? 'open' : '' }, `${c.label}: ${c.from} → ${c.to}`, c.openPositions ? el('strong', { text: ` (${t('open positions too')})` }) : null))
     : [el('li', { text: t('No parameter differs from the running strategy.') })]));
+  document.getElementById('strategy-coins').replaceChildren(...V.strategyCoins(target.preview).map((line) => el('li', { text: line })));
   document.getElementById('strategy-error').hidden = true;
   document.getElementById('strategy-send').disabled = false;
   document.getElementById('strategy-send').textContent = t('Switch strategy');
@@ -929,7 +954,7 @@ function renderPairs(view) {
   const busy = !view.editable || state.pairPending;
   const { note, empty, options } = V.pairsNote(view);
   document.getElementById('pairs-meta').textContent = [
-    view.cap ? t('{n} of at most {cap}', { n: view.tradable.length, cap: view.cap }) : t('{n} tradable', { n: view.tradable.length }),
+    view.cap ? t('{n} of at most {cap}', { n: view.tradable.length, cap: view.cap }) : t('{n} watched', { n: view.tradable.length }),
     view.changedAt ? t('changed {ago}', { ago: ago(view.changedAt) }) : null,
   ].filter(Boolean).join(' · ');
   document.getElementById('pairs-note').textContent = note;

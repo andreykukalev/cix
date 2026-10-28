@@ -113,7 +113,8 @@ public sealed partial class MarketScanService(
     Analysis.MarketViewStore? views = null,
     ScannerFilterRecorder? filters = null,
     Cix.Domain.Risk.RiskLimits? riskLimits = null,
-    ProtectionOptions? protection = null)
+    ProtectionOptions? protection = null,
+    SwitchableSpecs? switchable = null)
 {
     public const string SignalKind = "scan-signal";
     public const string Actor = "scanner";
@@ -123,6 +124,12 @@ public sealed partial class MarketScanService(
 
     /// <summary>The most recent scan, or null before the first.</summary>
     public ScanResult? Latest { get; private set; }
+
+    /// <summary>
+    /// At the latest scan, what the market filters of each other strategy the owner could switch to make of the watched coins,
+    /// on the same data (ADR-0021): the switch dialog shows which coins would enter and leave trading.
+    /// </summary>
+    public IReadOnlyList<StrategyPreview> Previews { get; private set; } = [];
 
     /// <summary>A scan older than this no longer decides what can be bought: the scan loop has stalled.</summary>
     public TimeSpan StaleScanAfter => 3 * options.Interval;
@@ -267,12 +274,13 @@ public sealed partial class MarketScanService(
             // One read of the spec per scan: it can switch between scans (#105), never within one.
             var spec = specs.Active;
             var parameters = ParametersFor(spec);
-            var result = await RunAsync(spec, parameters, cancellationToken).ConfigureAwait(false);
+            var (result, previews, held) = await RunAsync(spec, parameters, cancellationToken).ConfigureAwait(false);
             await RecordNewSignalsAsync(result, spec).ConfigureAwait(false);
             Latest = result;
+            Previews = previews;
             Interlocked.Increment(ref _scans);
             Interlocked.Exchange(ref _scanned, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
-            await RecordFiltersAsync(result, parameters, spec).ConfigureAwait(false);
+            await RecordFiltersAsync(result, parameters, spec, held).ConfigureAwait(false);
             return result;
         }
         finally
@@ -285,13 +293,13 @@ public sealed partial class MarketScanService(
     public ScannerFilterState? RecordedFilters => filters?.Current;
 
     /// <summary>Records filter and eligibility changes; a failure is logged and retried at the next scan, never fails the scan.</summary>
-    private async Task RecordFiltersAsync(ScanResult result, ScannerParameters parameters, StrategySpec? spec)
+    private async Task RecordFiltersAsync(ScanResult result, ScannerParameters parameters, StrategySpec? spec, IReadOnlyCollection<string> held)
     {
         if (filters is null)
             return;
         try
         {
-            await filters.RecordAsync(result, parameters, spec?.Label, CancellationToken.None).ConfigureAwait(false);
+            await filters.RecordAsync(result, parameters, spec?.Label, CancellationToken.None, held).ConfigureAwait(false);
         }
 #pragma warning disable CA1031 // anything, timeouts included: a record that failed must never stop the scan or the protective exits after it
         catch (Exception ex)
@@ -304,7 +312,8 @@ public sealed partial class MarketScanService(
     [LoggerMessage(Level = LogLevel.Warning, Message = "Coin filter record not updated ({Error}): {Detail}; retried at the next scan")]
     private static partial void LogFiltersFailed(ILogger logger, string error, string detail);
 
-    private async Task<ScanResult> RunAsync(StrategySpec? spec, ScannerParameters parameters, CancellationToken cancellationToken)
+    private async Task<(ScanResult Result, IReadOnlyList<StrategyPreview> Previews, IReadOnlyList<string> Held)> RunAsync(
+        StrategySpec? spec, ScannerParameters parameters, CancellationToken cancellationToken)
     {
         var plans = await PositionPlans.LoadAsync(execution, journal, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The portfolio can't be valued right now.");
@@ -324,8 +333,45 @@ public sealed partial class MarketScanService(
         }
 
         var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit)).ToList();
-        return MarketScanner.Scan(inputs, held, parameters, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: EntriesPausedReason(spec, now));
+        var result = MarketScanner.Scan(inputs, held, parameters, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: EntriesPausedReason(spec, now));
+        return (result, Preview(spec, inputs, held, now), held.Select(h => h.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
     }
+
+    /// <summary>
+    /// Runs the market filters of every other strategy the owner could switch to on the same inputs: one implementation of
+    /// the filters serves the scan and the preview. A spec whose preview fails for any reason is left out and logged; it never fails the scan.
+    /// </summary>
+    private IReadOnlyList<StrategyPreview> Preview(StrategySpec? active, IReadOnlyList<ScanInput> inputs, IReadOnlyList<HeldPosition> held, DateTimeOffset now)
+    {
+        var previews = new List<StrategyPreview>();
+        foreach (var other in switchable?.Current ?? [])
+        {
+            if (other.Name == active?.Name && other.Version == active?.Version)
+                continue; // the scan itself
+            ScanResult scan;
+            try
+            {
+                scan = MarketScanner.Scan(inputs, held, FromSpec(other, options.Parameters), now, allowEntries: false, view: views?.Current); // a news flag holds whatever the strategy
+            }
+#pragma warning disable CA1031 // anything: a spec that isn't running must never stop the scan or the protective exits after it
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                LogPreviewSkipped(logger, other.Label, ex.Message);
+                continue;
+            }
+
+            previews.Add(new StrategyPreview(
+                other.Name, other.Version,
+                scan.Ranked.Select(r => r.Symbol).Order(StringComparer.Ordinal).ToList(),
+                new SortedDictionary<string, string>(scan.Excluded.GroupBy(x => x.Symbol, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First().Reason, StringComparer.Ordinal), StringComparer.Ordinal)));
+        }
+
+        return previews;
+    }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Strategy {Spec} left out of the switch preview: {Problem}")]
+    private static partial void LogPreviewSkipped(ILogger logger, string spec, string problem);
 
     /// <summary>
     /// Why the strategy's own limits allow no buy now, so the scanner suggests none the engine would refuse: its cooldown
@@ -817,8 +863,15 @@ public static class ScannerRegistration
         services.AddSingleton(universe);
         services.AddSingleton<IScannerFilterStore, InMemoryScannerFilterStore>();
         services.AddSingleton<ScannerFilterRecorder>();
+        services.AddSingleton<SwitchableSpecs>(); // filled by the strategy selection's seed, read for the switch preview
         services.AddSingleton<MarketScanService>();
         services.AddHostedService<MarketScanBackgroundService>();
         return services;
     }
 }
+
+/// <summary>
+/// What a strategy the owner could switch to would make of the watched coins at the latest scan (ADR-0021): the coins that
+/// pass its market filters, and the scanner's reason code for each that doesn't (for example <c>low-volume</c>).
+/// </summary>
+public sealed record StrategyPreview(string Name, int Version, IReadOnlyList<string> Passing, IReadOnlyDictionary<string, string> Excluded);

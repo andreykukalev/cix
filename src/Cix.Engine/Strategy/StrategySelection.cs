@@ -152,7 +152,8 @@ public sealed partial class StrategySelectionService(
     ILogger<StrategySelectionService> logger,
     IEngineLease? lease = null,
     AgentRunScheduler? runs = null,
-    IManualRequestStore? requests = null) : BackgroundService
+    IManualRequestStore? requests = null,
+    SwitchableSpecs? switchable = null) : BackgroundService
 {
     /// <summary>The <c>type</c> of a dashboard request to switch strategy, in the <c>requests</c> container.</summary>
     public const string RequestType = "strategy-selection";
@@ -205,6 +206,7 @@ public sealed partial class StrategySelectionService(
         if (!Directory.Exists(folder))
             return 0;
         var added = 0;
+        var seeded = new List<StrategySpec>();
         foreach (var path in Directory.EnumerateFiles(folder, "*.json").Order(StringComparer.Ordinal))
         {
             var match = SpecFileName().Match(Path.GetFileName(path));
@@ -231,6 +233,7 @@ public sealed partial class StrategySelectionService(
                 continue;
             }
 
+            seeded.Add(spec);
             var key = string.Create(CultureInfo.InvariantCulture, $"{spec.Name}@v{spec.Version}");
             lock (_fileHashes)
             {
@@ -244,6 +247,7 @@ public sealed partial class StrategySelectionService(
                 await WarnIfDifferentAsync(spec, key, cancellationToken).ConfigureAwait(false);
         }
 
+        switchable?.Set(seeded); // the scanner previews which coins each would trade
         return added;
     }
 

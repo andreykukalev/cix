@@ -132,6 +132,7 @@
           <h2 id="h-coins">Coins</h2>
           <span id="coins-meta" class="muted small"></span>
         </div>
+        <div id="coins-change" class="banner coins-change" role="status" hidden></div>
         <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Why no buy</th><th class="paper-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
         <p class="muted small coins-legend"><span class="why-kind filtered">Filtered out</span> the market filters dropped it before ranking (trading volume, spread, volatility, costs, too few prices, or not a tradable pair), with the figure and the limit. <span class="why-kind rule">Strategy rule</span> ranked, but the strategy's entry rules turned it down (trend, pullback, last hour). <span class="why-kind blocked">Held back</span> not the rules: a limit or a block stopped it, such as the strategy's buy signals per scan already taken by higher-ranked coins, a pause between buys, a news flag from the market analyst, a holding or an open order.</p>
         <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan.</p>
@@ -275,6 +276,8 @@
       <p id="strategy-purpose" class="muted"></p>
       <h3>What changes</h3>
       <ul id="strategy-changes" class="changes"></ul>
+      <h3>Which coins trade</h3>
+      <ul id="strategy-coins" class="changes"></ul>
       <p class="summary">Applies to new trades from the next scan and trader run, after any run in progress ends. Open positions keep their stop and target; changes marked <strong>open positions too</strong> reach the coins you already hold from the next scan. The engine then scans at once and sells only the part of any coin held above the new strategy's per-coin or total cap, through the risk gate. Nothing is cancelled. The engine checks the strategy again and records the switch in the journal.</p>
       <label class="field">Why <span class="muted small">(optional, kept in the journal)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
       <label id="strategy-live" class="confirm" hidden><input type="checkbox" name="confirmLive"> <span>I understand this changes real-money trading on Revolut X.</span></label>
