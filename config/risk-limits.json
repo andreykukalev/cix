@@ -1,6 +1,6 @@
 {
   "Risk": {
-    "AllocationQuote": 1500,
+    "AllocationQuote": 1000,
     "MaxOrderQuote": 50,
     "MaxPositionQuotePerSymbol": 25,
     "MaxDailyLossQuote": 50,
