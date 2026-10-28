@@ -91,7 +91,8 @@ public sealed class CosmosDb : IDisposable
     private readonly string _database;
 
     /// <param name="credential">For tests: replaces the managed identity when <see cref="CosmosOptions.ManagedIdentityClientId"/> is set.</param>
-    public CosmosDb(CosmosOptions options, TokenCredential? credential = null)
+    /// <param name="handlers">For tests: request handlers in the client's pipeline, to simulate a lost answer.</param>
+    public CosmosDb(CosmosOptions options, TokenCredential? credential = null, IEnumerable<RequestHandler>? handlers = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
@@ -105,6 +106,8 @@ public sealed class CosmosDb : IDisposable
             MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromSeconds(2),
             Serializer = new SystemTextJsonCosmosSerializer(Json),
         };
+        foreach (var handler in handlers ?? [])
+            clientOptions.CustomHandlers.Add(handler);
         // Gateway mode: HTTPS on port 443 only, which works from a home network to Azure as well as to the emulator (direct
         // mode would also need ports 10250-10256). It adds a few milliseconds per call, which doesn't matter at this volume.
         clientOptions.ConnectionMode = ConnectionMode.Gateway;

@@ -176,6 +176,21 @@ internal static class TestExtensions
     }
 }
 
+public sealed class EngineStateContentTests
+{
+    [Fact]
+    public void SameJson_ComparesWhatIsStored_NotListReferences()
+    {
+        var a = EngineState.Initial with { PeakEquity = 1.10m, KnownClientOrderIds = ["a", "b"] };
+        var b = EngineState.Initial with { PeakEquity = 1.10m, KnownClientOrderIds = new List<string> { "a", "b" } };
+
+        Assert.NotEqual(a, b); // record equality compares the lists by reference
+        Assert.True(CosmosEngineStateStore.SameJson(a, b));
+        Assert.False(CosmosEngineStateStore.SameJson(a, b with { PeakEquity = 1.11m }));
+        Assert.False(CosmosEngineStateStore.SameJson(a, b with { KnownClientOrderIds = ["a"] }));
+    }
+}
+
 /// <summary>
 /// Against a real Cosmos DB (the emulator in CI, <c>CIX_COSMOS_EMULATOR</c>). Without that variable each test returns at
 /// once, so a machine without the emulator still runs the rest of the suite.
@@ -183,13 +198,14 @@ internal static class TestExtensions
 public sealed class CosmosPersistenceTests : IAsyncLifetime
 {
     private static readonly string? Endpoint = Environment.GetEnvironmentVariable("CIX_COSMOS_EMULATOR");
+    private readonly string _database = "cix-test-" + Guid.NewGuid().ToString("N")[..8];
     private CosmosDb? _db;
 
     public async Task InitializeAsync()
     {
         if (string.IsNullOrEmpty(Endpoint))
             return;
-        _db = new CosmosDb(new CosmosOptions { Enabled = true, Emulator = true, Endpoint = Endpoint, Database = "cix-test-" + Guid.NewGuid().ToString("N")[..8] });
+        _db = new CosmosDb(new CosmosOptions { Enabled = true, Emulator = true, Endpoint = Endpoint, Database = _database });
         await _db.InitializeAsync(CancellationToken.None);
     }
 
@@ -364,6 +380,77 @@ public sealed class CosmosPersistenceTests : IAsyncLifetime
         await first.ReleaseAsync(CancellationToken.None);
         Assert.True(await second.TryAcquireAsync(CancellationToken.None));
         Assert.Equal("b", (await store.ReadAsync(CancellationToken.None))!.Record.Holder);
+    }
+
+    /// <summary>Lets the next replace through to the database, then loses its answer, as a timeout would.</summary>
+    private sealed class LoseNextReplaceAnswer : RequestHandler
+    {
+        public bool Armed { get; set; }
+
+        public override async Task<ResponseMessage> SendAsync(RequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = await base.SendAsync(request, cancellationToken);
+            if (Armed && request.Method == HttpMethod.Put && response.IsSuccessStatusCode)
+            {
+                Armed = false;
+                throw new TimeoutException("The answer was lost after the write was applied.");
+            }
+
+            return response;
+        }
+    }
+
+    [Fact]
+    public void EngineState_AWriteWhoseAnswerWasLost_DoesNotBlockLaterWrites()
+    {
+        if (_db is null)
+            return;
+        var lose = new LoseNextReplaceAnswer();
+        using var db = new CosmosDb(new CosmosOptions { Enabled = true, Emulator = true, Endpoint = Endpoint!, Database = _database }, handlers: [lose]);
+        var time = new MutableTime(new DateTimeOffset(2026, 10, 28, 12, 0, 0, TimeSpan.Zero));
+        var store = new CosmosEngineStateStore(db, TradingMode.Paper, time);
+        store.Update(s => s with { PeakEquity = 100m });
+
+        lose.Armed = true;
+        Assert.Throws<IOException>(() => store.Update(s => s with { PeakEquity = 110m })); // stored, but the store can't know
+        var next = store.Update(s => s with { PeakEquity = 120m, Day = new DateOnly(2026, 10, 28) });
+
+        Assert.Equal(120m, next.PeakEquity);
+        Assert.Equal(120m, new CosmosEngineStateStore(db, TradingMode.Paper, time).Current.PeakEquity);
+    }
+
+    [Fact]
+    public void EngineState_AChangeBySomethingElse_StillStopsWrites_AndIsKept()
+    {
+        if (_db is null)
+            return;
+        var time = new MutableTime(new DateTimeOffset(2026, 10, 28, 12, 0, 0, TimeSpan.Zero));
+        var store = new CosmosEngineStateStore(_db, TradingMode.Paper, time);
+        store.Update(s => s with { PeakEquity = 100m });
+        var other = new CosmosEngineStateStore(_db, TradingMode.Paper, time);
+        other.Update(s => s with { KillSwitch = new KillSwitchState(true, "drill", "owner", time.GetUtcNow()) });
+
+        Assert.Throws<IOException>(() => store.Update(s => s with { PeakEquity = 130m }));
+
+        var reloaded = new CosmosEngineStateStore(_db, TradingMode.Paper, time).Current;
+        Assert.Equal((true, 100m), (reloaded.KillSwitch.Engaged, reloaded.PeakEquity)); // the other writer's halt survives
+    }
+
+    [Fact]
+    public async Task EngineState_TheSameContentRewritten_IsNotAConflict()
+    {
+        if (_db is null)
+            return;
+        var time = new MutableTime(new DateTimeOffset(2026, 10, 28, 12, 0, 0, TimeSpan.Zero));
+        var store = new CosmosEngineStateStore(_db, TradingMode.Paper, time);
+        store.Update(s => s with { PeakEquity = 100m, KnownClientOrderIds = ["a"] });
+        var current = await _db.State.ReadItemAsync<JsonObject>("engine-state-paper", new PartitionKey("engine-state-paper"));
+        await _db.State.ReplaceItemAsync(current.Resource, "engine-state-paper", new PartitionKey("engine-state-paper")); // a new ETag, the same state
+
+        var next = store.Update(s => s with { PeakEquity = 140m });
+
+        Assert.Equal(140m, new CosmosEngineStateStore(_db, TradingMode.Paper, time).Current.PeakEquity);
+        Assert.Equal(new[] { "a" }, next.Known);
     }
 
     [Fact]

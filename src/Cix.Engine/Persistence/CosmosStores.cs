@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using Cix.Engine.Execution;
 using Cix.Engine.Journal;
 using Cix.Engine.Paper;
@@ -132,6 +133,9 @@ public sealed class CosmosEngineStateStore : IEngineStateStore
     private readonly Lock _gate = new();
     private string? _etag;
 
+    /// <summary>The last state whose write failed without an answer (a timeout): it may still have reached the database.</summary>
+    private EngineState? _unconfirmed;
+
     public CosmosEngineStateStore(CosmosDb db, TradingMode mode, TimeProvider time)
     {
         ArgumentNullException.ThrowIfNull(db);
@@ -187,29 +191,60 @@ public sealed class CosmosEngineStateStore : IEngineStateStore
 
     /// <summary>
     /// Creates the document, or replaces it only if nobody else changed it since this store last read or wrote it, so a
-    /// second engine instance (or a stray edit) can't silently overwrite an engaged kill switch. Any failure surfaces as
-    /// IOException, which callers already handle.
+    /// second engine instance (or a stray edit) can't silently overwrite an engaged kill switch. A conflict is this store's
+    /// own only when the document holds exactly a state this store wrote or was writing: a write whose answer was lost (a
+    /// timeout) still went through, under an ETag this store never saw. It then carries on from that ETag instead of failing
+    /// every later write until a restart. Any failure surfaces as IOException, which callers already handle.
     /// </summary>
     private void Write(EngineState state)
     {
         var document = new CosmosDb.StateDocument<EngineState>(_id, state, DocumentId, About, _time.GetUtcNow());
         try
         {
-            var response = _etag is null
-                ? _container.CreateItemAsync(document, new PartitionKey(_id)).GetAwaiter().GetResult()
-                : _container.ReplaceItemAsync(document, _id, new PartitionKey(_id), new ItemRequestOptions { IfMatchEtag = _etag }).GetAwaiter().GetResult();
-            _etag = response.ETag;
+            try
+            {
+                _etag = Save(document, _etag);
+            }
+            catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
+            {
+                var (stored, etag) = Read();
+                if (stored is null || !IsOwn(stored, state))
+                    throw new IOException("Engine state was changed by something else; restart the engine to reload it.", ex);
+                _etag = SameJson(stored, state) ? etag : Save(document, etag);
+            }
+
+            _unconfirmed = null;
         }
         catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
         {
+            // The second try lost a race as well: something else is writing.
             throw new IOException("Engine state was changed by something else; restart the engine to reload it.", ex);
         }
         catch (Exception ex) when (ex is not IOException)
         {
-            // Includes SDK timeouts (an OperationCanceledException): no caller token is involved here.
+            // Includes SDK timeouts (an OperationCanceledException): no caller token is involved here. The write may have
+            // reached the database all the same, so a later conflict with exactly this state is recognised as this store's own.
+            _unconfirmed = state;
             throw new IOException($"Engine state could not be saved ({ex.GetType().Name}).", ex);
         }
     }
+
+    private string? Save(CosmosDb.StateDocument<EngineState> document, string? etag) =>
+        (etag is null
+            ? _container.CreateItemAsync(document, new PartitionKey(_id)).GetAwaiter().GetResult()
+            : _container.ReplaceItemAsync(document, _id, new PartitionKey(_id), new ItemRequestOptions { IfMatchEtag = etag }).GetAwaiter().GetResult()).ETag;
+
+    /// <summary>
+    /// Whether <paramref name="stored"/> is a state this store wrote or was writing: the one being written now, the one it
+    /// holds (written, or engaged in memory before a failed write), or the last one whose write went unanswered.
+    /// </summary>
+    private bool IsOwn(EngineState stored, EngineState writing) =>
+        SameJson(stored, writing) || SameJson(stored, Current) || (_unconfirmed is { } unconfirmed && SameJson(stored, unconfirmed));
+
+    /// <summary>The same document content: records holding lists compare by reference, so compare what is stored.</summary>
+    internal static bool SameJson(EngineState a, EngineState b) =>
+        ReferenceEquals(a, b)
+        || string.Equals(JsonSerializer.Serialize(a, CosmosDb.Json), JsonSerializer.Serialize(b, CosmosDb.Json), StringComparison.Ordinal);
 }
 
 /// <summary>Where the paper account is saved between restarts.</summary>
