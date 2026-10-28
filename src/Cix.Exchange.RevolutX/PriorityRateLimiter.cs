@@ -31,6 +31,6 @@ internal sealed class PriorityRateLimiter
         if (urgent || _ordinary is null)
             return _all.Reserve(now);
         var own = _ordinary.Reserve(now);
-        return own + _all.Reserve(now + own);
+        return _all.Reserve(now, notBefore: now + own);
     }
 }
