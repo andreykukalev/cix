@@ -426,7 +426,8 @@ public sealed partial class MarketScanService(
             var clientOrderId = Guid.NewGuid().ToString();
             var result = await execution.PlaceAsync(
                 new OrderIntent(exit.Symbol, OrderSide.Sell, exit.BaseSize, exit.LimitPrice, clientOrderId), postOnly: false, cancellationToken,
-                countsTowardRejectStreak: false, context: new OrderContext("protective-exit", Strategy: specs.Active?.Label)).ConfigureAwait(false);
+                countsTowardRejectStreak: false,
+                context: new OrderContext("protective-exit", Strategy: specs.Active?.Label, ExitReason: exit.Reason == "stop" ? ExitReasons.Stop : ExitReasons.Target)).ConfigureAwait(false);
             if (result.Status == ExecutionStatus.Rejected)
             {
                 lock (_protectiveBackoff)
@@ -531,7 +532,7 @@ public sealed partial class MarketScanService(
             var clientOrderId = Guid.NewGuid().ToString();
             var result = await execution.PlaceAsync(
                 new OrderIntent(sell.Symbol, OrderSide.Sell, sell.BaseSize, sell.LimitPrice, clientOrderId), postOnly: false, cancellationToken,
-                countsTowardRejectStreak: false, context: new OrderContext(TrimSource, Strategy: spec.Label)).ConfigureAwait(false);
+                countsTowardRejectStreak: false, context: new OrderContext(TrimSource, Strategy: spec.Label, ExitReason: ExitReasons.Trim)).ConfigureAwait(false);
             if (result.Status != ExecutionStatus.Rejected)
             {
                 lock (_protectiveOrderIds)

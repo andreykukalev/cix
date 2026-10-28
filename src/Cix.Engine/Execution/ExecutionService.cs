@@ -54,7 +54,31 @@ public enum CancelOutcome
 /// <c>place_order</c>, <c>protective-exit</c>, <c>manual-direct</c> (an owner's direct sell), <c>manual-agent</c> (an owner's
 /// request the trader agreed to) or <c>engine</c>.
 /// </param>
-public sealed record OrderContext(string Source, decimal? StopLoss = null, decimal? TakeProfit = null, string? RunId = null, string? Strategy = null);
+/// <param name="ExitReason">For a sell, why it exits (<see cref="ExitReasons"/>); journaled with its fill as <c>exitReason</c>.</param>
+public sealed record OrderContext(
+    string Source, decimal? StopLoss = null, decimal? TakeProfit = null, string? RunId = null, string? Strategy = null, string? ExitReason = null);
+
+/// <summary>
+/// Why a sell was placed, as one field of its fill in the journal (<c>exitReason</c>), so a report tells a stop from a target,
+/// a trim, the agent's own exit or the owner's sell without reading free text (pre-live assessment F-14).
+/// </summary>
+public static class ExitReasons
+{
+    /// <summary>The engine's stop-loss sell (<see cref="ProtectionService"/>, or the scan's when stops aren't watched per quote).</summary>
+    public const string Stop = "stop";
+
+    /// <summary>The scan's take-profit sell at the position's target.</summary>
+    public const string Target = "target";
+
+    /// <summary>The strategy trimming positions over its exposure cap.</summary>
+    public const string Trim = "trim";
+
+    /// <summary>The trader agent's own sell (<c>place_order</c>): a trend exit or its judgement.</summary>
+    public const string Agent = "agent";
+
+    /// <summary>The owner's sell from the dashboard, direct or agreed by the trader.</summary>
+    public const string Manual = "manual";
+}
 
 /// <summary>A portfolio valuation and when it was taken.</summary>
 public sealed record PortfolioSample(PortfolioSnapshot Snapshot, DateTimeOffset At);
@@ -845,7 +869,8 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         // after a restart, and the position it opens still has its stop and target.
         var sent = new SentOrder(
             order.ClientOrderId, order.Symbol, SideName(order.Side), order.BaseSize, order.LimitPrice, _time.GetUtcNow(),
-            context?.Source ?? "engine", StopLoss: context?.StopLoss, TakeProfit: context?.TakeProfit, RunId: context?.RunId, Strategy: context?.Strategy);
+            context?.Source ?? "engine", StopLoss: context?.StopLoss, TakeProfit: context?.TakeProfit, RunId: context?.RunId, Strategy: context?.Strategy,
+            ExitReason: order.Side == OrderSide.Sell ? context?.ExitReason : null);
         try
         {
             _store.Update(s => s.WithSent(sent, holdsPosition));

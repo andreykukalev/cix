@@ -1,3 +1,4 @@
+using Cix.Engine.Execution;
 using Cix.Engine.Journal;
 using Cix.Engine.Scanning;
 
@@ -40,6 +41,7 @@ public sealed class ProtectiveExitTests
         Assert.Equal(1, placed);
         var order = Assert.Single(tools.Journal.Entries, e => e.Kind == "order" && e.Data!["tool"] == "protective-exit");
         Assert.Equal(("engine", "sell", "stop", "placed"), (order.Actor, order.Data!["side"], order.Data["rationale"].Split(' ')[3].TrimEnd(':'), order.Data["status"]));
+        Assert.Equal(ExitReasons.Stop, Assert.Single(tools.Rig.Store.Current.SentOrders, o => o.Side == "sell").ExitReason);
         var snapshot = await tools.Rig.Snapshot();
         Assert.Equal(0m, snapshot.PositionQuoteBySymbol.GetValueOrDefault(Btc)); // sold at the bid
     }
@@ -49,6 +51,9 @@ public sealed class ProtectiveExitTests
     {
         var atTarget = await Holding(btc: 0.001m, stop: 50_000m, target: 59_000m);
         Assert.Equal(1, await atTarget.Scanner.ApplyProtectiveExitsAsync(await atTarget.Scanner.ScanAsync(CancellationToken.None), CancellationToken.None));
+        await atTarget.Rig.Execution.ReconcileAsync(CancellationToken.None); // journals the fill
+        var fill = Assert.Single(atTarget.Journal.Entries, e => e.Kind == "fill" && e.Data!["side"] == "sell");
+        Assert.Equal(("protective-exit", ExitReasons.Target), (fill.Data!["source"], fill.Data["exitReason"]));
 
         var trendOnly = new ToolRig(ToolRig.Observer with { AllowedTools = ["scan_market"] }, btc: 0.001m);
         ScannerServiceTests.SeedHourly(trendOnly, -20m); // downtrend, no plan: a trend exit signal only

@@ -41,7 +41,8 @@ public sealed record SentOrder(
     decimal? StopLoss = null,
     decimal? TakeProfit = null,
     string? RunId = null,
-    string? Strategy = null);
+    string? Strategy = null,
+    string? ExitReason = null);
 
 /// <summary>
 /// The plan for a position: the stop and target given with the buy that opened it. Written before that buy is sent, so a
