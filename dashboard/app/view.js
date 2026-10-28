@@ -613,7 +613,7 @@
   // Who sent an order (an order's source) and what a decision did (the journal's tool), in words; the engine's name stays a
   // hover away. A name the page doesn't know shows as it is.
   const ORDER_SOURCES = {
-    place_order: 'trader', cancel_order: 'trader', 'protective-exit': 'stop or target', 'manual-direct': 'you, direct',
+    place_order: 'trader', 'protective-exit': 'stop or target', 'manual-direct': 'you, direct',
     'manual-agent': 'you, via the trader', 'strategy-trim': 'strategy cap',
   };
   const TOOL_ACTIONS = {
@@ -629,6 +629,20 @@
   const orderSource = (name) => named(ORDER_SOURCES, name);
   const toolAction = (name) => named(TOOL_ACTIONS, name);
 
+  /**
+   * A price or level as the engine wrote it (an exact decimal string), or a dash: { text, title }. A long one (an average
+   * entry price can carry a dozen digits) shows at 9 significant digits, with the exact value as the title. Trailing zeros
+   * don't count, so equal values look alike whatever scale the engine wrote them with.
+   */
+  function price(value) {
+    if (value === null || value === undefined || value === '') return { text: '–', title: null };
+    const exact = String(value);
+    const n = Number(exact);
+    const digits = exact.replace(/^[-+]/, '').replace(/(\.\d*?)0+$/, '$1').replace('.', '').replace(/^0+/, '');
+    if (!Number.isFinite(n) || !/^[-+]?\d+(\.\d+)?$/.test(exact) || digits.length <= 9) return { text: exact, title: null };
+    return { text: n.toLocaleString('en-US', { maximumSignificantDigits: 9, useGrouping: false }), title: exact };
+  }
+
   /** Who is signed in, from /.auth/me, for the header. Who may see what is decided by the platform and the API, not here. */
   function viewer(me) {
     const p = me?.clientPrincipal ?? null;
@@ -638,7 +652,7 @@
   return {
     change, coins, why, removeBlock, BLOCK_DETAILS, WHY_LABELS, stepDetail, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
     paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES, pairsNote, SELECTION, SELL_DESCRIPTIONS,
-    LEVELS, filterChange, strategyCoins, specName, orderSource, toolAction, ORDER_SOURCES, TOOL_ACTIONS,
+    LEVELS, filterChange, strategyCoins, specName, orderSource, toolAction, ORDER_SOURCES, TOOL_ACTIONS, price,
     contentLang, pick, months, signalItems, monitors, HEALTH,
   };
 }));

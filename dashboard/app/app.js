@@ -80,16 +80,10 @@ function amount(value, digits = 2) {
   return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: Math.max(digits, 8) });
 }
 
-/**
- * A price or level as the engine wrote it (exact decimal string), or a dash. A long one (an average entry price can carry a
- * dozen digits) shows at 9 significant digits, with the exact value a hover away.
- */
+/** A price or level as the engine wrote it, a long one shortened (view.js), the exact value a hover away. */
 function price(value) {
-  if (value === null || value === undefined || value === '') return '–';
-  const exact = String(value);
-  const n = Number(exact);
-  if (!Number.isFinite(n) || exact.replace(/^[-+]?0*\.?0*/, '').replace('.', '').length <= 9) return exact;
-  return el('span', { title: exact, text: n.toLocaleString('en-US', { maximumSignificantDigits: 9, useGrouping: false }) });
+  const p = V.price(value);
+  return p.title ? el('span', { title: p.title, text: p.text }) : p.text;
 }
 
 /** An engine name in words (view.js), the name itself on hover. */
@@ -556,7 +550,7 @@ function renderVolume(a) {
   );
   const chartNode = document.getElementById('volume-chart');
   // As wide as it shows, so the labels aren't stretched: the chart scales its height only.
-  const width = Math.max(320, Math.round(chartNode.getBoundingClientRect().width) || 640);
+  const width = Math.round(chartNode.getBoundingClientRect().width) || 640; // 0 while its tab is hidden: redrawn when it opens
   chartNode.setAttribute('viewBox', `0 0 ${width} 190`);
   const labelEvery = Math.max(1, Math.ceil(48 / (width / Math.max(1, a.periods.length)))); // a label is about 48px wide
   const g = V.chart(a.periods, { width, height: 160, labelEvery, period: a.period });
