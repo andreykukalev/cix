@@ -348,8 +348,8 @@ public sealed class MarketDataPollerTests
         Assert.NotNull(rig.State.Quote("ETH-EUR"));
 
         active.Add("ETH-EUR"); // bought: its book is wanted from the next poll
-        await poller.PollOnceAsync(CancellationToken.None);
-        Assert.Equal(3, rig.Market.Requests.Count(r => r.Kind == "quote"));
+        await poller.PollOnceAsync(CancellationToken.None); // at 40 s: BTC's book is due again, and ETH's first one
+        Assert.Equal(4, rig.Market.Requests.Count(r => r.Kind == "quote"));
         Assert.Equal(1m, rig.State.Quote("ETH-EUR")!.BidSize);
     }
 
