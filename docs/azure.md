@@ -345,11 +345,13 @@ Safeguards:
 ### Live too: only with an all-cash account
 
 The protected environment (`prod`, real money) is reset only with `-LiveWhenFlat`, and only its live state, journal and requests. A reset forgets every position's entry price, stop and target, so it is refused unless the account has nothing to protect:
-- the live engine must be stopped (no `-IgnoreRunningEngine`), and its last status must list no holding worth `-DustQuote` or more (1 in the quote currency by default; a smaller residual can't be sold anyway) and no order in flight, from a valuation at most 10 minutes older than that status;
+- the live engine must be stopped (no `-IgnoreRunningEngine`); its last status must list no holding worth `-DustQuote` or more (1 in the quote currency by default, at most 5; a smaller residual can't be sold anyway), from a valuation at most 10 minutes older than that status; and its state must hold no order in flight and no position plan (the engine drops a plan once less than the exchange's minimum is held). Both checks run again after you type the confirmation, just before anything is deleted;
 - `-IncludeSpecArchive` is refused (the archive holds the specs you reviewed for live), and the group must be tagged `cix-protected=true`;
 - the confirmation to type is `reset prod real money live state`.
 
 Afterwards the live engine starts halted with a fresh state and peak equity until you press Resume on the dashboard's Live view. Add the coins again on the Coins tab: the watched list is part of the state.
+
+`-Target Journal` or `All` deletes the real-money journal for good, every buy and sell in it. Look through it or copy what you need first (Data Explorer in the portal), or keep the older days with `-JournalBefore`.
 
 To reset both databases in one go, sell the live coins first, stop both engines (as in step 2, for `ca-cix-dev-engine` in `rg-cix-dev` and `ca-cix-prod-engine` in `rg-cix-live`), then:
 
