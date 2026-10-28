@@ -129,7 +129,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
 
     /// <summary>Why the strategy's filters keep a buy out of a coin now (the latest scan excluded it), or null (ADR-0021).</summary>
     private readonly Func<string, string?>? _strategyFilter;
-    private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly PriorityGate _lock = new(); // the protective exits go first (F-06)
 
     /// <summary>Coins an order was sent in lately, by symbol: active for the market data until a sample shows them held or working.</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _recentOrders = new(StringComparer.Ordinal);
@@ -327,7 +327,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         ArgumentNullException.ThrowIfNull(intent);
         intent = intent with { Symbol = MarketDataPoller.NormaliseSymbol(intent.Symbol) };
 
-        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _lock.WaitAsync(cancellationToken, urgent: intent.IsProtectiveExit).ConfigureAwait(false);
         try
         {
             // A halt stops new risk; the engine's stop-loss sells take risk off and go on (the gate checks the rest).

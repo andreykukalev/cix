@@ -136,6 +136,7 @@ public sealed partial class MarketDataPoller
         if (symbols.Count == 0 || !HasTickers || _options.TickerIntervalFor(_signedQuotes) is not { } tickerInterval)
             return 0; // nothing watched, or no tickers: nothing to ask
 
+        using var urgent = ExchangePriority.BeginUrgent(); // the prices the stops watch: the budget kept for them (F-07)
         if (DueSince(TickersKey, "tickers") is not null)
             await RunAsync(TickersKey, "tickers", tickerInterval, () => PollTickersAsync(symbols, tally, cancellationToken)).ConfigureAwait(false);
         return tally.Requests;

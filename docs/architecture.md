@@ -104,7 +104,7 @@ The state is written only if nobody wrote it since this engine read it (an ETag 
 
 - REST only: `https://revx.revolut.com/api/1.0/...`; no WebSocket in the docs, so the engine polls.
 - Auth: `X-Revx-API-Key`, `X-Revx-Timestamp` (ms) and `X-Revx-Signature`, a base64 Ed25519 signature of `timestamp + METHOD + path + query + minified body`.
-- Rate limits: 100 requests a second and 1,000 a minute on most private endpoints.
+- Rate limits: 100 requests a second and 1,000 a minute on most private endpoints. The engine's signed client keeps 20% of each window (`RevolutX:UrgentRequestShare`) for the protective exits and the tickers the stops watch; other requests use at most the rest. Placements share one lock, and a protective exit waiting for it goes before the other orders, the reconciliation and the kill switch's cancels.
 - Fees: 0% maker, 0.09% taker.
 - Sub-accounts have isolated funds and their own rate limits.
 - No testnet: paper trading is simulated inside the engine.

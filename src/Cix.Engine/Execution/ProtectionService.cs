@@ -444,6 +444,7 @@ public sealed partial class ProtectionService : BackgroundService
     public async Task<ExitOutcome> RunExitAsync(StopHit hit, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(hit);
+        using var urgent = ExchangePriority.BeginUrgent(); // its requests use the budget kept for the stops (F-07)
         var symbol = hit.Symbol;
         var started = _time.GetUtcNow();
         var tries = 0;
