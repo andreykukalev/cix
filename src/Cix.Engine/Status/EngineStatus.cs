@@ -219,6 +219,7 @@ public sealed partial class EngineStatusService(
         ExecutionService.ReconcilerBy => "Reconciliation found the account changed outside the engine.",
         SafetyMonitor.By => "A safety limit was reached (drawdown, daily loss or stale market data).",
         SafetyMonitor.CriticalBy => "Critical: drawdown reached the hard ceiling. Nothing new until you resume; stop-losses keep selling.",
+        SafetyMonitor.DrawdownBy => "Drawdown reached the limit. Nothing new until you resume; stop-losses and your own sells go on.",
         ExecutionService.RejectStreakBy => "Too many orders in a row were rejected by the risk gate.",
         "engine" => "Waiting for the owner to confirm before trading starts.",
         Pairs.TradablePairsService.By => "The saved trading pairs couldn't all be restored; check holdings before resuming.",

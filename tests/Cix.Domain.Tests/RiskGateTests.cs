@@ -218,6 +218,7 @@ public sealed class RiskGateTests
         var verdict = Gate().Evaluate(Buy(0.0002m), Portfolio(equity: 170m, peak: 200m), Market()); // 15%
 
         Assert.Equal("drawdown-halt", verdict.Rule);
+        Assert.EndsWith("new buys are refused while it stays at or above the limit.", verdict.Reason, StringComparison.Ordinal); // not "until resumed" (F-10)
     }
 
     [Fact]

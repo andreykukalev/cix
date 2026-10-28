@@ -345,7 +345,7 @@ public sealed class RestartTests : IDisposable
 public sealed class SafetyMonitorTests
 {
     [Fact]
-    public async Task DrawdownAtTheLimit_CancelsBuys_ButLeavesSells_AndTheHardCeilingHalts()
+    public async Task DrawdownAtTheLimit_PausesTrading_AndTheHardCeilingHaltsAsCritical()
     {
         var rig = new Rig(eur: 200m, btc: 0.001m); // equity 260.005
         await rig.Buy(0.0003m, 59_950m, "buy");
@@ -355,16 +355,47 @@ public sealed class SafetyMonitorTests
         var atLimit = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
         var stillOpen = await rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None);
 
+        Assert.Equal(ExecutionStatus.Placed, sell.Status);
+        Assert.StartsWith("Drawdown reached the ", atLimit.KillSwitchReason, StringComparison.Ordinal);
+        Assert.Equal((true, SafetyMonitor.DrawdownBy), (rig.KillSwitch.IsEngaged, rig.KillSwitch.State.By)); // latched (F-10)
+        Assert.Empty(stillOpen); // as a Pause: the open orders are cancelled
+
         rig.Store.Update(s => s with { PeakEquity = 400m }); // 35% down: over the 30% hard ceiling
         var atCeiling = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
 
-        Assert.Equal(ExecutionStatus.Placed, sell.Status);
-        Assert.Null(atLimit.KillSwitchReason);
-        Assert.Equal(1, atLimit.BuysCancelled);
-        Assert.Equal(OrderSide.Sell, Assert.Single(stillOpen).Side);
         Assert.StartsWith("Critical: drawdown", atCeiling.KillSwitchReason, StringComparison.Ordinal);
+        Assert.Equal(SafetyMonitor.CriticalBy, rig.KillSwitch.State.AlsoBy); // recorded beside the drawdown halt
+    }
+
+    [Fact]
+    public async Task AfterTheOwnerResumes_ADrawdownStillAtTheLimit_DoesntPauseAgain_UntilItHasRecovered()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m); // equity 260.005
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // 18.75% down
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
         Assert.True(rig.KillSwitch.IsEngaged);
-        Assert.Equal(SafetyMonitor.CriticalBy, rig.KillSwitch.State.By);
+
+        await rig.Execution.ReleaseKillSwitchAsync("owner");
+        await rig.Buy(0.0001m, 59_000m, "resting"); // refused by the gate's own drawdown rule while still down
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        var stillDown = await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.False(rig.KillSwitch.IsEngaged); // the owner's Resume holds
+        Assert.Null(stillDown.KillSwitchReason);
+        Assert.Equal("drawdown-halt", (await rig.Buy(0.0001m, 59_000m, "refused")).Rule);
+
+        rig.Store.Update(s => s with { PeakEquity = 270m }); // back within 15%: re-armed
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        Assert.False(rig.KillSwitch.IsEngaged);
+
+        rig.Store.Update(s => s with { PeakEquity = 320m }); // a new fall to the limit pauses again
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        rig.Quote(60_000.00m, 60_010.00m);
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        Assert.Equal((true, SafetyMonitor.DrawdownBy), (rig.KillSwitch.IsEngaged, rig.KillSwitch.State.By));
     }
 
     [Fact]

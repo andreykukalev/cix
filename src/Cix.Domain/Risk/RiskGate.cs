@@ -180,7 +180,7 @@ public sealed class RiskGate
         {
             var drawdown = (portfolio.PeakEquity - portfolio.Equity) / portfolio.PeakEquity;
             if (drawdown >= _limits.MaxDrawdownFraction)
-                return Sizing.No("drawdown-halt", $"Drawdown is {drawdown:P2}; new buys are halted until the owner resumes trading.");
+                return Sizing.No("drawdown-halt", $"Drawdown is {drawdown:P2}; new buys are refused while it stays at or above the limit.");
         }
 
         if (-portfolio.PnlToday >= _limits.MaxDailyLossQuote)

@@ -68,6 +68,7 @@ const GATE_RULES = {
   'strategy-position-cap': "capped at the strategy's per-coin cap",
   'strategy-exposure-cap': "capped at the strategy's total exposure cap",
   'strategy-filter': "the strategy's filters leave the coin out now",
+  'not-reconciled': 'the engine was still comparing the account with the exchange after its start',
 };
 
 const GATE_RULES_RU = {
@@ -90,6 +91,7 @@ const GATE_RULES_RU = {
   'position-cap': 'ограничен лимитом позиции на монету',
   'allocation-cap': 'ограничен общим лимитом средств',
   'placement-unresolved': 'предыдущий ордер ещё сверяется',
+  'not-reconciled': 'после запуска движок ещё сверял счёт с биржей',
   'duplicate-client-order-id': 'этот ордер уже был отправлен',
   'pairs-unavailable': 'не удалось прочитать список пар биржи',
   'unknown-symbol': 'на бирже нет этой монеты',
@@ -152,7 +154,11 @@ const REASONS_RU = [
   [/^Spot only: there is no position to sell\.$/, () => 'Только спот: позиции для продажи нет.'],
   [/^The position is too small to sell at this price\.$/, () => 'Позиция слишком мала, чтобы продать её по этой цене.'],
   [/^Sell reduced to the current position size\.$/, () => 'Продажа уменьшена до текущего размера позиции.'],
-  [/^Drawdown is ([\d.,-]+ ?%); new buys are halted until the owner resumes trading\.$/, (m) => `Просадка ${m[1]}: новые покупки остановлены, пока владелец не возобновит торговлю.`],
+  [/^Drawdown is ([\d.,-]+ ?%); new buys are halted until the owner resumes trading\.$/, (m) => `Просадка ${m[1]}: новые покупки остановлены, пока владелец не возобновит торговлю.`], // before F-10
+  [/^Drawdown is ([\d.,-]+ ?%); new buys are refused while it stays at or above the limit\.$/, (m) => `Просадка ${m[1]}: новые покупки отклоняются, пока она не меньше лимита.`],
+  [/^An owner's sell must be a sell\.$/, () => 'Продажа владельца должна быть продажей.'],
+  [/^The engine is comparing the account with the exchange after its start; orders wait for that, about a minute\.$/,
+    () => 'После запуска движок сверяет счёт с биржей; ордера ждут окончания сверки, около минуты.'],
   [/^The daily loss limit is reached; new buys are halted until tomorrow \(UTC\)\.$/, () => 'Достигнут дневной лимит убытка: новые покупки остановлены до завтра (UTC).'],
   [/^No room left under (.+)\.$/, (m) => (limitRu(m[1]) ? `Не осталось места в пределах ${limitRu(m[1])}.` : null)],
   [/^(?:Remaining room|The room left) under (.+) is too small for one unit\.$/, (m) => (limitRu(m[1]) ? `Оставшегося места в пределах ${limitRu(m[1])} не хватает даже на минимальный размер.` : null)],
