@@ -189,8 +189,8 @@ public static class ToolServerRegistration
     /// drop the message), then reports <c>{"outcome": "done" | "failed" | "not-run"}</c>, and for a not-run the reason
     /// (<see cref="RunOutcomeBody"/>). The job is known by its token's role, so it can claim and report only its own kind of
     /// run. 503 while this engine can't answer (it doesn't hold the engine lease, a look is in progress for more than 10
-    /// seconds, or another engine saved the state): the job should try again shortly. 404 without the scheduler (Compose). A change is saved whether or not the caller is still
-    /// waiting, so a dropped connection can't leave a claim half made.
+    /// seconds, or another engine saved the state): the job should try again shortly. 404 without the scheduler (Compose). A
+    /// change is saved whether or not the caller is still waiting, so a dropped connection can't leave a claim half made.
     /// </summary>
     private static void MapAgentRuns(WebApplication app)
     {
@@ -211,8 +211,7 @@ public static class ToolServerRegistration
                 return Results.NotFound();
             if (AgentRuns.AgentRunKinds.ParseOutcome(body.Outcome) is not { } outcome)
                 return Results.BadRequest();
-            var reason = AgentRuns.AgentRunKinds.ParseNotRunReason(body.Reason);
-            return await scheduler.CompleteAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, outcome, reason, CancellationToken.None).ConfigureAwait(false) switch
+            return await scheduler.CompleteAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, outcome, body.Reason, CancellationToken.None).ConfigureAwait(false) switch
             {
                 AgentRuns.AgentRunAnswer.Yes => Results.NoContent(),
                 AgentRuns.AgentRunAnswer.Unavailable => Results.StatusCode(StatusCodes.Status503ServiceUnavailable),

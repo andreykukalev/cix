@@ -514,7 +514,7 @@
     '{n} failed today': 'сегодня с ошибкой: {n}',
     "{n} didn't start today (credentials or queue)": 'сегодня не запустились: {n} (учётные данные или очередь)',
     '{n} stopped by the Claude limit today': 'сегодня упёрлись в лимит Claude: {n}',
-    'Claude usage limit reached: retried automatically': 'исчерпан лимит Claude: повтор будет автоматически',
+    'Claude usage or rate limit: runs again later': 'исчерпан лимит Claude: запуск повторится позже',
     'Not written': 'Не записана',
     'Written': 'Записана',
     'last write {ago}': 'последняя запись {ago}',

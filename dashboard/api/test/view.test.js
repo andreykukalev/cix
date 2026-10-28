@@ -335,7 +335,7 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   limited.jobs.analyst = { last: { runId: 'analyst-3', purpose: 'analyst', state: 'limit', at: at(30) }, failedToday: 0, notRunToday: 0, limitedToday: 2, cappedAt: null };
   const l = V.monitors(limited, now, ago).analyst;
   assert.deepEqual([l.tone, l.value, ...l.sub],
-    ['warn', 'Claude limit', 'last run 30 min ago · market check', 'Claude usage limit reached: retried automatically', '2 stopped by the Claude limit today']);
+    ['warn', 'Claude limit', 'last run 30 min ago · market check', 'Claude usage or rate limit: runs again later', '2 stopped by the Claude limit today']);
 
   const overdue = structuredClone(healthy);
   overdue.jobs.analyst.last.at = at(14 * 60);

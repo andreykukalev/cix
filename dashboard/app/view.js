@@ -498,14 +498,14 @@
   function jobMonitor(job, ago, extra) {
     if (!job?.last) return { tone: 'warn', value: t('No runs yet'), sub: [t('none in the last 2 days')] };
     const l = job.last;
-    // Claude's usage limit isn't a fault: the engine retries the run by itself once it resets, so it only warns.
+    // Claude's usage or rate limit isn't a fault: the engine runs it again later by itself, so it only warns.
     const tone = l.state === 'failed' ? 'bad' : l.state === 'not-run' || l.state === 'limit' || job.failedToday > 0 ? 'warn' : 'ok';
     return {
       tone,
       value: t(JOB_STATES[l.state] ?? 'Running now'),
       sub: [
         `${t('last run {ago}', { ago: ago(l.at) })}${PURPOSES[l.purpose] ? ` · ${t(PURPOSES[l.purpose])}` : ''}`,
-        l.state === 'limit' ? t('Claude usage limit reached: retried automatically') : null,
+        l.state === 'limit' ? t('Claude usage or rate limit: runs again later') : null,
         job.failedToday > 0 ? t('{n} failed today', { n: job.failedToday }) : null,
         job.limitedToday > 0 ? t('{n} stopped by the Claude limit today', { n: job.limitedToday }) : null,
         job.notRunToday > 0 ? t("{n} didn't start today (credentials or queue)", { n: job.notRunToday }) : null,

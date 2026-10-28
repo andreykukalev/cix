@@ -74,13 +74,14 @@ function agentRuns(entries) {
   return [...runs.values()].sort((a, b) => (time(b.lastAt) ?? 0) - (time(a.lastAt) ?? 0));
 }
 
+const NOT_RUN_REASONS = new Set(['usage-limit', 'credentials']);
+
 /**
  * The engine's agent jobs (trader, trader-requests, analyst) from its agent-run journal entries, for the health monitors:
  * the latest run and how it ended, and today's failed and not-run counts. A run that didn't start because of Claude's usage
  * limit is its own state (`limit`) and count, apart from failures and other not-runs: limits run out now and then, and the
- * engine retries those runs by itself. Entries come newest first.
+ * engine runs them again later by itself. Entries come newest first.
  */
-const NOT_RUN_REASONS = new Set(['usage-limit', 'credentials']);
 function agentJobs(entries, now) {
   const dayStart = new Date(now);
   dayStart.setUTCHours(0, 0, 0, 0);
