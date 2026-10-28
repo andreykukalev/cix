@@ -92,7 +92,8 @@ public sealed partial class ExecutionService
     private readonly ILogger<ExecutionService> _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly SemaphoreSlim _lock = new(1, 1);
-    private readonly Queue<DateTimeOffset> _sent = new();
+    /// <summary>Orders sent in the last minute, and which were protective exits: those don't use the trading rate (MaxOrdersPerMinute).</summary>
+    private readonly Queue<(DateTimeOffset At, bool Protective)> _sent = new();
     private readonly Dictionary<string, PendingPlacement> _pending = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedClientOrderIds = new(StringComparer.Ordinal);
 
@@ -260,7 +261,8 @@ public sealed partial class ExecutionService
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_killSwitch.IsEngaged)
+            // A halt stops new risk; the engine's stop-loss sells take risk off and go on (the gate checks the rest).
+            if (_killSwitch.IsEngaged && !intent.IsProtectiveExit)
                 return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
             var now = _time.GetUtcNow();
@@ -290,7 +292,10 @@ public sealed partial class ExecutionService
             PortfolioSnapshot portfolio;
             try
             {
-                portfolio = await _portfolio.GetSnapshotAsync(_sent.Count, PendingSnapshot(), cancellationToken).ConfigureAwait(false);
+                // Trading orders are rated against each other; a protective exit against everything (its own backstop in the gate).
+                var inLastMinute = intent.IsProtectiveExit ? _sent.Count : _sent.Count(o => !o.Protective);
+                portfolio = await _portfolio.GetSnapshotAsync(inLastMinute, PendingSnapshot(), cancellationToken, skipUnpriced: intent.IsProtectiveExit)
+                    .ConfigureAwait(false);
             }
             catch (PortfolioUnavailableException ex)
             {
@@ -420,6 +425,39 @@ public sealed partial class ExecutionService
         return orders;
     }
 
+    /// <summary>One order as the exchange reports it now (uncached), or null if it doesn't know it (yet).</summary>
+    public Task<ExchangeOrder?> GetOrderAsync(string venueOrderId, CancellationToken cancellationToken) =>
+        _exchange.GetOrderAsync(venueOrderId, cancellationToken);
+
+    /// <summary>
+    /// The portfolio valued now, leaving out held coins without a fresh price instead of failing (see
+    /// <see cref="PortfolioService.GetSnapshotAsync"/>). For the protective exits only; null if balances can't be read.
+    /// </summary>
+    public async Task<(PortfolioSnapshot Snapshot, DateTimeOffset At)?> GetPortfolioSkippingUnpricedAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var snapshot = await _portfolio.GetSnapshotAsync(0, PendingSnapshot(), cancellationToken, skipUnpriced: true).ConfigureAwait(false);
+            return (snapshot, _time.GetUtcNow());
+        }
+        catch (PortfolioUnavailableException ex)
+        {
+            LogSampleFailed(_logger, ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// What can be sold of <paramref name="symbol"/> now, read fresh from the exchange (free balance, at least the exchange
+    /// minimum; 0 when nothing is), the way a protective exit sees it: other coins without a fresh price don't stop it.
+    /// </summary>
+    /// <exception cref="PortfolioUnavailableException">Balances or the pair rules can't be read.</exception>
+    public async Task<decimal> SellableNowAsync(string symbol, CancellationToken cancellationToken)
+    {
+        var snapshot = await _portfolio.GetSnapshotAsync(0, PendingSnapshot(), cancellationToken, skipUnpriced: true).ConfigureAwait(false);
+        return snapshot.SellableBaseBySymbol?.GetValueOrDefault(MarketDataPoller.NormaliseSymbol(symbol)) ?? 0m;
+    }
+
     /// <summary>
     /// Cancels one open order the engine placed. Cancelling never adds risk, so it needs no gate, but orders the engine
     /// didn't place are left alone (reconciliation treats them as a reason to halt).
@@ -460,6 +498,40 @@ public sealed partial class ExecutionService
         {
             return (CancelOutcome.Failed, order.ClientOrderId);
         }
+    }
+
+    /// <summary>
+    /// Cancels every open order the engine placed on <paramref name="symbol"/>, read fresh from the exchange: before a protective
+    /// exit, so a resting sell (a target, a trim, an agent's) frees the coins it holds, and a resting buy doesn't add to a
+    /// falling position. Orders the engine didn't place are left alone. Returns how many were cancelled.
+    /// </summary>
+    /// <exception cref="ExchangeException">Open orders couldn't be listed.</exception>
+    public async Task<int> CancelOwnOrdersOnAsync(string symbol, CancellationToken cancellationToken)
+    {
+        symbol = MarketDataPoller.NormaliseSymbol(symbol);
+        var open = await _exchange.GetOpenOrdersAsync(symbol, cancellationToken).ConfigureAwait(false);
+        var cancelled = 0;
+        foreach (var order in open.Where(o => o.IsOpen && MarketDataPoller.NormaliseSymbol(o.Symbol) == symbol))
+        {
+            bool ours;
+            lock (_pending)
+                ours = _usedClientOrderIds.Contains(order.ClientOrderId);
+            if (!ours || !_lease.IsHeld)
+                continue;
+            try
+            {
+                if (await _exchange.CancelOrderAsync(order.VenueOrderId, cancellationToken).ConfigureAwait(false))
+                    cancelled++;
+            }
+            catch (ExchangeException ex)
+            {
+                LogCancelFailed(_logger, order.VenueOrderId, ex.Message);
+            }
+        }
+
+        if (cancelled > 0)
+            ClearCaches();
+        return cancelled;
     }
 
     /// <summary>Appends to the journal if there is one. A journal failure is logged, never allowed to stop a safety action.</summary>
@@ -669,7 +741,7 @@ public sealed partial class ExecutionService
         ApprovedOrder order, RiskVerdict verdict, bool postOnly, OrderContext? context, bool holdsPosition, CancellationToken cancellationToken)
     {
         // The kill switch may have engaged while the portfolio was being read; it flips before taking the lock.
-        if (_killSwitch.IsEngaged)
+        if (_killSwitch.IsEngaged && order.Purpose != OrderPurpose.ProtectiveExit)
             return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
         // Another engine of this mode may be trading, or this one couldn't renew its lease: it must not act (ADR-0013).
@@ -688,13 +760,17 @@ public sealed partial class ExecutionService
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             LogStateWriteFailed(_logger, ex.Message);
-            return Reject("state-unavailable", "The engine could not record the order before sending it; nothing was sent.");
+            // A stop-loss sell can't rest, so a restart has no working order to recognise: a database outage mustn't stop it.
+            if (order.Purpose != OrderPurpose.ProtectiveExit)
+                return Reject("state-unavailable", "The engine could not record the order before sending it; nothing was sent.");
         }
 
         Interlocked.Exchange(ref _consecutiveRejects, 0);
         _sentNotionalSinceReconcile += order.NotionalQuote;
+        if (order.Purpose == OrderPurpose.ProtectiveExit)
+            _extraAllowanceSinceReconcile += order.NotionalQuote * _gate.Limits.EmergencySlippageFraction; // may fill that far below the mid
         var sentAt = _time.GetUtcNow();
-        _sent.Enqueue(sentAt); // counts toward the order rate even if it fails
+        _sent.Enqueue((sentAt, order.Purpose == OrderPurpose.ProtectiveExit)); // counts toward the order rate even if it fails
         lock (_pending)
         {
             _pending[order.ClientOrderId] = new PendingPlacement(order, sentAt, Uncertain: false);
@@ -823,7 +899,7 @@ public sealed partial class ExecutionService
 
     private void PruneSent(DateTimeOffset now)
     {
-        while (_sent.Count > 0 && now - _sent.Peek() >= TimeSpan.FromMinutes(1))
+        while (_sent.Count > 0 && now - _sent.Peek().At >= TimeSpan.FromMinutes(1))
             _sent.Dequeue();
     }
 

@@ -24,11 +24,18 @@ public static class PositionPlans
     public const int LookbackDays = 30;
 
     /// <summary>Plans for every position big enough to sell, or null if the portfolio can't be valued now.</summary>
-    public static async Task<IReadOnlyList<PositionPlan>?> LoadAsync(ExecutionService execution, IJournal journal, CancellationToken cancellationToken)
+    /// <param name="skipUnpriced">
+    /// For the protective exits: a coin without a fresh price is left out rather than failing all of them (it gets its plan
+    /// back once its quotes return).
+    /// </param>
+    public static async Task<IReadOnlyList<PositionPlan>?> LoadAsync(
+        ExecutionService execution, IJournal journal, CancellationToken cancellationToken, bool skipUnpriced = false)
     {
         ArgumentNullException.ThrowIfNull(execution);
         ArgumentNullException.ThrowIfNull(journal);
-        var valued = await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false);
+        var valued = skipUnpriced
+            ? await execution.GetPortfolioSkippingUnpricedAsync(cancellationToken).ConfigureAwait(false)
+            : await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false);
         if (valued is not { } portfolio)
             return null;
 

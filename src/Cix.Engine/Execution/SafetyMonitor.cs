@@ -13,11 +13,16 @@ public sealed record SafetyCheckResult(string? KillSwitchReason, int BuysCancell
 /// market data stale for too long, and reconciles with the exchange every <see cref="SafetyOptions.ReconcileInterval"/>.
 /// At the configured drawdown limit it cancels open buys (the gate already refuses new ones) but leaves sells working, so
 /// positions can still be reduced; at the hard ceiling (<see cref="HardCeilings.MaxDrawdownFraction"/>) it engages the
-/// kill switch. The risk-gate reject streak trigger lives in <see cref="ExecutionService"/>.
+/// kill switch, the critical state: nothing new until the owner resumes, while <see cref="ProtectionService"/>'s stop-loss sells
+/// go on (no halt blocks them, and nothing is sold off automatically). The risk-gate reject streak trigger lives in
+/// <see cref="ExecutionService"/>.
 /// </summary>
 public sealed partial class SafetyMonitor : BackgroundService
 {
     public const string By = "safety-monitor";
+
+    /// <summary>Who engages the kill switch at the hard drawdown ceiling: the critical state.</summary>
+    public const string CriticalBy = "risk-critical";
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
     private readonly ExecutionService _execution;
@@ -58,6 +63,7 @@ public sealed partial class SafetyMonitor : BackgroundService
     {
         var now = _time.GetUtcNow();
         string? reason = null;
+        var by = By;
         var buysCancelled = 0;
 
         var snapshot = await _execution.SampleAsync(cancellationToken).ConfigureAwait(false);
@@ -66,7 +72,10 @@ public sealed partial class SafetyMonitor : BackgroundService
             var drawdown = (snapshot.PeakEquity - snapshot.Equity) / snapshot.PeakEquity;
             if (drawdown >= HardCeilings.MaxDrawdownFraction)
             {
-                reason = $"Drawdown is {drawdown:P2}, at or above the {HardCeilings.MaxDrawdownFraction:P0} hard ceiling.";
+                by = CriticalBy;
+                // The same text each minute, so a halt already in place records it beside once, not every minute.
+                reason = $"Critical: drawdown reached the {HardCeilings.MaxDrawdownFraction:P0} hard ceiling. Buys, the strategy and the agents stop until the owner resumes; stop-loss sells go on.";
+                LogCritical(_logger, drawdown);
             }
             else if (drawdown >= _limits.MaxDrawdownFraction && !_killSwitch.IsEngaged)
             {
@@ -94,8 +103,9 @@ public sealed partial class SafetyMonitor : BackgroundService
             }
         }
 
-        if (reason is not null && !_killSwitch.IsEngaged)
-            await _execution.EngageKillSwitchAsync(reason, By, cancellationToken).ConfigureAwait(false);
+        // The critical state is recorded even over another halt (beside it), so Resume has to name it too.
+        if (reason is not null && (!_killSwitch.IsEngaged || by == CriticalBy))
+            await _execution.EngageKillSwitchAsync(reason, by, cancellationToken).ConfigureAwait(false);
 
         if (now - _lastReconcile >= _options.ReconcileInterval)
         {
@@ -125,6 +135,9 @@ public sealed partial class SafetyMonitor : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Drawdown {Drawdown} reached the limit: cancelled {Count} open buys; sells stay allowed")]
     private static partial void LogDrawdownBuysCancelled(ILogger logger, int count, decimal drawdown);
+
+    [LoggerMessage(Level = LogLevel.Critical, Message = "Drawdown {Drawdown} is at or above the hard ceiling: critical state, stop-loss sells go on")]
+    private static partial void LogCritical(ILogger logger, decimal drawdown);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Safety check failed ({Error}): {Detail}")]
     private static partial void LogCheckFailed(ILogger logger, string error, string detail);

@@ -31,3 +31,11 @@ What the spike runs (`tools/spike/revx_spike.py`, issues #1 and #3) showed, as o
 - `DELETE` returns 204 with no body.
 - A `GET` for an order right after placing it can return 404; retry briefly before treating it as missing.
 - A timeout or 5xx on placement means the outcome is unknown (`OrderPlacementUncertainException`): reconcile by client order ID, never re-place blindly.
+
+### From the published spec, not yet confirmed by a spike (October 2026)
+
+Read from the OpenAPI document on developer.revolut.com. Treat as the plan until `revx_spike.py` has run against it.
+
+- `order_configuration` on `POST /api/1.0/orders` takes one of: `market`; `limit` with `time_in_force` `gtc` or `ioc` (the engine sends `ioc` for protective exits) and `execution_instructions` `allow_taker` or `post_only`; `conditional` with `trigger_price` and an optional `limit_price`; `tpsl` with `stop_loss` and `take_profit` triggered on the index price. Whether `conditional` and `tpsl` reserve balance, appear in active orders and survive for every pair is the question for the tpsl spike (about 5 EUR).
+- Placement is limited to 10 orders a second and 1,000 a day (the daily cap is not applied to sub-accounts); at most 300 active orders.
+- Signed `GET /api/1.0/tickers` and `GET /api/1.0/order-book/{symbol}` (`limit` up to 192) share the signed 100/s, 1,000/min budget, so a live engine can refresh quotes far faster than the public 1/s allows. Paper stays on the public endpoints.

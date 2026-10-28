@@ -21,6 +21,7 @@ namespace Cix.Engine.Paper;
 /// <item>An order that rests without crossing fills at its limit price, with the maker fee, only once the market
 /// trades through it (best ask strictly below a buy, best bid strictly above a sell), up to the size shown.</item>
 /// <item>A post-only order that would cross is rejected.</item>
+/// <item>An immediate-or-cancel order takes what the book shows at its limit, as a crossing order does; the rest is cancelled.</item>
 /// <item>Funds are reserved at placement: quote currency for buys (full size at the limit plus the taker fee), base for sells.
 /// Fees round down to 8 decimals, so a fill never costs more than its reservation.</item>
 /// <item>Placing the same client order ID again returns the existing order; reusing it with different details is rejected.</item>
@@ -246,6 +247,14 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
 
                 // The size just taken is gone from the book until a new quote arrives.
                 _quotes[symbol] = buy ? quote with { AskSize = shown - quantity } : quote with { BidSize = shown - quantity };
+            }
+
+            // Immediate-or-cancel: whatever didn't fill at once is cancelled, so nothing rests.
+            if (approvedOrder.TimeInForce == TimeInForce.ImmediateOrCancel && order.IsOpen)
+            {
+                order.Status = OrderStatus.Cancelled;
+                order.UpdatedAt = now;
+                ReleaseReservation(order);
             }
 
             return new PlacedOrder(order.VenueOrderId, order.ClientOrderId);

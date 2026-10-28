@@ -117,7 +117,8 @@ public sealed partial class MarketScanService(
     ILogger<MarketScanService> logger,
     Analysis.MarketViewStore? views = null,
     ScannerFilterRecorder? filters = null,
-    Cix.Domain.Risk.RiskLimits? riskLimits = null)
+    Cix.Domain.Risk.RiskLimits? riskLimits = null,
+    ProtectionOptions? protection = null)
 {
     public const string SignalKind = "scan-signal";
     public const string Actor = "scanner";
@@ -338,7 +339,8 @@ public sealed partial class MarketScanService(
     private bool _protectiveRestored;
 
     /// <summary>
-    /// Places a sell for every stop or target exit in <paramref name="scan"/>, through <see cref="ExecutionService"/> and so the
+    /// Places a sell for every target exit in <paramref name="scan"/>, and every stop exit unless <see cref="ProtectionService"/>
+    /// sells stops itself (<see cref="StopsOnEveryQuote"/>), through <see cref="ExecutionService"/> and so the
     /// risk gate. Positions stay protected while agents can't run (usage limit, outage, expired token). Returns the orders placed.
     /// </summary>
     public async Task<int> ApplyProtectiveExitsAsync(ScanResult scan, CancellationToken cancellationToken)
@@ -348,7 +350,7 @@ public sealed partial class MarketScanService(
             return 0;
 
         var placed = 0;
-        foreach (var exit in scan.Exits.Where(x => ProtectiveReasons.Contains(x.Reason)))
+        foreach (var exit in scan.Exits.Where(x => ProtectiveReasons.Contains(x.Reason) && !(x.Reason == "stop" && StopsOnEveryQuote)))
         {
             var now = time.GetUtcNow();
             lock (_protectiveBackoff)
@@ -399,6 +401,9 @@ public sealed partial class MarketScanService(
 
         return placed;
     }
+
+    /// <summary>Stops are sold by <see cref="ProtectionService"/> on every quote, so the scan leaves them alone and sells only targets.</summary>
+    public bool StopsOnEveryQuote => protection is { Enabled: true };
 
     /// <summary>The order source of the sells a strategy switch makes to bring holdings within the new strategy's caps.</summary>
     public const string TrimSource = "strategy-trim";

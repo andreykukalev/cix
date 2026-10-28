@@ -299,6 +299,16 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   assert.ok(m.trader.sub.includes('it placed no order for the signals: see its report'));
   assert.deepEqual(m.positions.sub, ['without a stop-loss: SOL-EUR', 'orders older than 50 min: ETH-EUR']);
 
+  // An exit the engine can't complete outranks everything else on the positions tile; one being sold only warns.
+  const blocked = structuredClone(healthy);
+  blocked.engine.protection = { armed: 2, exiting: ['BTC-EUR', 'HYPE-EUR'], blocked: [{ symbol: 'HYPE-EUR', since: at(3), problem: 'spread-too-wide' }] };
+  const b = V.monitors(blocked, now, ago).positions;
+  assert.deepEqual([b.tone, b.value], ['bad', 'Exit blocked']);
+  assert.deepEqual(b.sub.slice(0, 3), ['exit blocked: HYPE-EUR (spread-too-wide)', 'retried every minute', 'selling at the stop: BTC-EUR, HYPE-EUR']);
+  const selling = structuredClone(healthy);
+  selling.engine.protection = { armed: 1, exiting: ['BTC-EUR'], blocked: [] };
+  assert.deepEqual([V.monitors(selling, now, ago).positions.tone, V.monitors(selling, now, ago).positions.value], ['warn', 'Selling']);
+
   const overdue = structuredClone(healthy);
   overdue.jobs.analyst.last.at = at(14 * 60);
   assert.deepEqual([V.monitors(overdue, now, ago).analyst.tone, V.monitors(overdue, now, ago).analyst.value], ['bad', 'Overdue']);

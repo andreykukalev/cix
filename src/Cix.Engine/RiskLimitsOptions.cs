@@ -19,6 +19,9 @@ public sealed class RiskLimitsOptions
 
     public int MaxTradableSymbols { get; set; }
 
+    /// <summary>The price band for the engine's stop-loss sells; unset means <see cref="MaxPriceDeviationFraction"/>.</summary>
+    public decimal? MaxEmergencySlippageFraction { get; set; }
+
     /// <summary>
     /// The owner's limits file for a trading mode, next to the engine's binary: <c>risk-limits.json</c> (from
     /// <c>config/risk-limits.json</c>) for paper, and <c>risk-limits.live.json</c> (from <c>config/risk-limits.live.json</c>) for
@@ -72,5 +75,6 @@ public sealed class RiskLimitsOptions
         MaxPriceDeviationFraction,
         AllowedSymbols.ToHashSet(StringComparer.Ordinal),
         string.IsNullOrWhiteSpace(AllowedQuoteCurrency) ? null : AllowedQuoteCurrency,
-        MaxTradableSymbols);
+        MaxTradableSymbols,
+        MaxEmergencySlippageFraction);
 }

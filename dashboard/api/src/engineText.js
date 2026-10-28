@@ -16,6 +16,7 @@ const HALT_RU = {
   'Reconciliation found the account changed outside the engine.': 'сверка обнаружила изменения на счёте, сделанные не движком.',
   'A safety limit was reached (drawdown, daily loss or stale market data).': 'достигнут предел безопасности (просадка, дневной убыток или устаревшие рыночные данные).',
   'Too many orders in a row were rejected by the risk gate.': 'риск-контроль отклонил слишком много ордеров подряд.',
+  'Critical: drawdown reached the hard ceiling. Nothing new until you resume; stop-losses keep selling.': 'критическое состояние: просадка достигла жёсткого потолка. Ничего нового до возобновления; стоп-лоссы продолжают продавать.',
   'Waiting for the owner to confirm before trading starts.': 'ждёт подтверждения владельца перед началом торговли.',
   "The saved trading pairs couldn't all be restored; check holdings before resuming.": 'не все сохранённые торговые пары удалось восстановить; проверьте позиции перед возобновлением.',
   'Halted.': 'остановлена.',

@@ -57,6 +57,80 @@ public sealed class RiskGateTests
         Assert.Equal("kill-switch", verdict.Rule);
     }
 
+    private static OrderIntent StopSell(decimal size, decimal price = 49_600m) =>
+        new(Btc, OrderSide.Sell, size, price, "c-stop", OrderPurpose.ProtectiveExit, TimeInForce.ImmediateOrCancel);
+
+    private static RiskLimits WithEmergencyBand(decimal? band) => Limits() with { MaxEmergencySlippageFraction = band };
+
+    [Fact]
+    public void Evaluate_KillSwitchEngaged_LetsTheEnginesStopLossSellThrough()
+    {
+        var verdict = Gate().Evaluate(StopSell(0.0001m), Portfolio(btcPosition: 50m, kill: true), Market());
+
+        Assert.Equal(RiskOutcome.Accepted, verdict.Outcome);
+        Assert.Equal((OrderPurpose.ProtectiveExit, TimeInForce.ImmediateOrCancel), (verdict.Order!.Purpose, verdict.Order.TimeInForce));
+    }
+
+    [Fact]
+    public void Evaluate_ProtectiveExit_MustBeAnImmediateOrCancelSell()
+    {
+        var restingSell = StopSell(0.0001m) with { TimeInForce = TimeInForce.GoodTillCancelled };
+        var buy = StopSell(0.0001m) with { Side = OrderSide.Buy };
+
+        foreach (var order in new[] { restingSell, buy })
+        {
+            var verdict = Gate().Evaluate(order, Portfolio(btcPosition: 50m, kill: true), Market());
+            Assert.Equal(("invalid-order", RiskOutcome.Rejected), (verdict.Rule, verdict.Outcome));
+        }
+    }
+
+    [Fact]
+    public void Evaluate_ProtectiveExit_StillNeedsAPosition_FreshData_AndTheAllowlist()
+    {
+        Assert.Equal("no-position", Gate().Evaluate(StopSell(0.0001m), Portfolio(btcPosition: 0m, kill: true), Market()).Rule);
+        Assert.Equal("stale-market-data", Gate().Evaluate(StopSell(0.0001m), Portfolio(btcPosition: 50m), Market(asOf: Now.AddMinutes(-6))).Rule);
+        var doge = new OrderIntent("DOGE-EUR", OrderSide.Sell, 10m, 0.2m, "c-d", OrderPurpose.ProtectiveExit, TimeInForce.ImmediateOrCancel);
+        Assert.Equal("symbol-allowlist", Gate().Evaluate(doge, Portfolio(kill: true), new MarketSnapshot("DOGE-EUR", 0.2m, Now)).Rule);
+
+        // Never more than the position: resized down like any sell.
+        var verdict = Gate().Evaluate(StopSell(0.01m), Portfolio(btcPosition: 49.6m), Market());
+        Assert.Equal(("position-size", 0.001m), (verdict.Rule, verdict.Order!.BaseSize));
+    }
+
+    [Fact]
+    public void Evaluate_ProtectiveExit_UsesTheEmergencyBand_OrTheNormalOneWhenUnset()
+    {
+        // 3% below the mid: outside the normal 1% band, inside a 3% emergency band.
+        var deep = StopSell(0.0001m, price: 48_500m);
+
+        Assert.Equal("price-band", Gate().Evaluate(deep, Portfolio(btcPosition: 50m), Market()).Rule);
+        Assert.Equal(RiskOutcome.Accepted, Gate(WithEmergencyBand(0.03m)).Evaluate(deep, Portfolio(btcPosition: 50m), Market()).Outcome);
+        Assert.Equal("price-band", Gate(WithEmergencyBand(0.03m)).Evaluate(StopSell(0.0001m, price: 48_400m), Portfolio(btcPosition: 50m), Market()).Rule);
+
+        // An ordinary sell keeps the normal band whatever the emergency one is.
+        Assert.Equal("price-band", Gate(WithEmergencyBand(0.03m)).Evaluate(Sell(0.0001m, 48_500m), Portfolio(btcPosition: 50m), Market()).Rule);
+    }
+
+    [Fact]
+    public void RiskLimits_EmergencyBand_IsCappedByTheHardCeilingOnPriceDeviation()
+    {
+        Assert.Empty(WithEmergencyBand(HardCeilings.MaxPriceDeviationFraction).Validate());
+        Assert.Contains(WithEmergencyBand(HardCeilings.MaxPriceDeviationFraction + 0.0001m).Validate(), e => e.Contains("MaxEmergencySlippageFraction", StringComparison.Ordinal));
+        Assert.Contains(WithEmergencyBand(0m).Validate(), e => e.Contains("MaxEmergencySlippageFraction", StringComparison.Ordinal));
+        Assert.Equal(0.01m, Limits().EmergencySlippageFraction); // unset: the normal band
+    }
+
+    [Fact]
+    public void Evaluate_ProtectiveExits_AreNotCountedAgainstTheTradingRate_ButHaveABackstop()
+    {
+        var full = Portfolio(btcPosition: 50m, ordersLastMinute: 4); // the configured 4 a minute are used up
+
+        Assert.Equal("order-rate", Gate().Evaluate(Sell(0.0001m), full, Market()).Rule);
+        Assert.Equal("order-rate", Gate().Evaluate(Buy(0.0001m), full, Market()).Rule);
+        Assert.Equal(RiskOutcome.Accepted, Gate().Evaluate(StopSell(0.0001m), full, Market()).Outcome);
+        Assert.Equal("order-rate", Gate().Evaluate(StopSell(0.0001m), Portfolio(btcPosition: 50m, ordersLastMinute: RiskGate.MaxProtectiveOrdersPerMinute), Market()).Rule);
+    }
+
     [Fact]
     public void Evaluate_SymbolNotAllowed_Rejects()
     {

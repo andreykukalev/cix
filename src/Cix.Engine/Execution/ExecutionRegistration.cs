@@ -68,4 +68,39 @@ public static class ExecutionRegistration
         services.AddHostedService(sp => sp.GetRequiredService<SafetyMonitor>());
         return services;
     }
+
+    /// <summary>
+    /// Registers the engine's stop-loss exits (<see cref="ProtectionService"/>): a quote listener that spots a stop on every quote,
+    /// and the service that confirms it on a fresh order book and sells. Needs market data, execution and the journal. With
+    /// <see cref="ProtectionOptions.Enabled"/> false, stops are left to the scan as before.
+    /// </summary>
+    public static IServiceCollection AddCixProtection(this IServiceCollection services, ProtectionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        services.AddSingleton(options);
+        if (!options.Enabled)
+            return services;
+
+        services.AddSingleton<ProtectionTrigger>();
+        services.AddSingleton<IQuoteListener>(sp => sp.GetRequiredService<ProtectionTrigger>());
+        services.AddSingleton(sp =>
+        {
+            var poller = sp.GetRequiredService<MarketDataPoller>();
+            return new ProtectionService(
+                sp.GetRequiredService<ExecutionService>(),
+                sp.GetRequiredService<ProtectionTrigger>(),
+                sp.GetRequiredService<MarketState>(),
+                poller.RefreshQuoteAsync,
+                sp.GetRequiredService<Journal.IJournal>(),
+                sp.GetRequiredService<RiskLimits>(),
+                options,
+                sp.GetRequiredService<TimeProvider>(),
+                sp.GetRequiredService<ILogger<ProtectionService>>(),
+                strategy: () => sp.GetService<Strategy.IStrategySpecStore>()?.Active?.Label);
+        });
+        services.AddHostedService(sp => sp.GetRequiredService<ProtectionService>());
+        return services;
+    }
 }

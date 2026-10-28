@@ -36,6 +36,9 @@ public sealed partial class ExecutionService
     private HashSet<string> _uncertainMissedOnce = new(StringComparer.Ordinal);
     private decimal _sentNotionalSinceReconcile;
 
+    /// <summary>Allowance beyond <see cref="SafetyOptions.FillAllowanceFraction"/> for protective exits, which may fill further from the mid.</summary>
+    private decimal _extraAllowanceSinceReconcile;
+
     /// <summary>
     /// Compares the exchange with what the engine expects. An open order the engine didn't send, or a change in holdings
     /// that fills can't explain (a deposit, withdrawal or trade from elsewhere), engages the kill switch: the account is
@@ -187,7 +190,8 @@ public sealed partial class ExecutionService
     {
         var baseline = _store.Current.Holdings;
         var allowance = _safety.BalanceToleranceQuote
-            + ((baseline?.EngineOrdersNotional ?? 0m) + _sentNotionalSinceReconcile) * SafetyOptions.FillAllowanceFraction;
+            + ((baseline?.EngineOrdersNotional ?? 0m) + _sentNotionalSinceReconcile) * SafetyOptions.FillAllowanceFraction
+            + _extraAllowanceSinceReconcile;
         decimal? unexplained = null;
         if (baseline is not null)
         {
@@ -208,6 +212,7 @@ public sealed partial class ExecutionService
         {
             _store.Update(s => s with { Holdings = new HoldingsBaseline(holdings, engineOrdersNotional) });
             _sentNotionalSinceReconcile = 0m;
+            _extraAllowanceSinceReconcile = 0m;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

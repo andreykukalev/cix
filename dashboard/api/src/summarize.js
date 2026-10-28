@@ -259,6 +259,14 @@ function summarize(input, now) {
       unquotedSymbols: status?.unquotedSymbols ?? [],
       marketView: status?.marketView ?? null,
       // Whether the engine takes owner requests now (ok, off, unavailable): the page disables the buttons otherwise.
+      // The engine's stop-loss exits: coins being sold, and exits blocked after 5 tries (retried every minute).
+      protection: status?.protection
+        ? {
+          armed: status.protection.armed ?? 0,
+          exiting: status.protection.exiting ?? [],
+          blocked: (status.protection.blocked ?? []).map((b) => ({ symbol: b.symbol, since: b.since ?? null, problem: b.problem ?? null })),
+        }
+        : null,
       manualRequests: status?.manualRequests
         ? { state: status.manualRequests.state ?? null, awaitingAgent: status.manualRequests.awaitingAgent ?? null, lastPollAt: status.manualRequests.lastPollAt ?? null }
         : null,

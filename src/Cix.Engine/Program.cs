@@ -77,6 +77,9 @@ builder.Services.AddCixExecution(
     builder.Configuration.GetSection(SafetyOptions.SectionName).Get<SafetyOptions>() ?? new SafetyOptions(),
     durableState: cosmos.Enabled);
 
+// The engine's own stop-loss exits: checked on every quote and sold at once, whatever the strategy, the agents or a pause do.
+builder.Services.AddCixProtection(builder.Configuration.GetSection(ProtectionOptions.SectionName).Get<ProtectionOptions>() ?? new ProtectionOptions());
+
 // The MCP tool server: agents' only way in. Loopback only (operator tools need the key from user secrets), or in Azure
 // Entra tokens from the agent jobs' managed identities, with no operator tools (ADR-0013).
 var toolServer = builder.Configuration.GetSection(ToolServerOptions.SectionName).Get<ToolServerOptions>() ?? new ToolServerOptions();
