@@ -3,15 +3,26 @@ using Cix.Domain.MarketData;
 
 namespace Cix.Engine.MarketData;
 
-/// <summary>Runs the poller every second. The poller itself decides what is due.</summary>
+/// <summary>
+/// Runs the poller every second. With tickers, the tickers and the order books and candles run in two loops of their own, so
+/// a slow or hung book or candle request never holds the prices the stops watch (pre-live assessment F-05). The poller itself
+/// decides what is due.
+/// </summary>
 public sealed class MarketDataService(MarketDataPoller poller, TimeProvider time) : BackgroundService
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        poller.HasTickers
+            ? Task.WhenAll(
+                RunAsync(poller.PollTickersOnceAsync, stoppingToken),
+                RunAsync(poller.PollBooksAndCandlesOnceAsync, stoppingToken))
+            : RunAsync(poller.PollOnceAsync, stoppingToken);
+
+    private async Task RunAsync(Func<CancellationToken, Task<int>> poll, CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1), time);
         do
         {
-            await poller.PollOnceAsync(stoppingToken).ConfigureAwait(false);
+            await poll(stoppingToken).ConfigureAwait(false);
         }
         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
     }
