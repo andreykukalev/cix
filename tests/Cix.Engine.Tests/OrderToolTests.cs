@@ -22,7 +22,7 @@ public sealed class OrderToolTests
         var tools = Trader();
         tools.Header(ToolServerOptions.AgentHeader, "trader");
 
-        var result = Parse(await tools.Orders.PlaceOrder("btc-eur", "buy", 0.0005m, 59_950.004m, Why, cancellationToken: CancellationToken.None));
+        var result = Parse(await tools.Orders.PlaceOrder("btc-eur", "buy", 0.0005m, 59_950.004m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
 
         Assert.Equal("placed", result.GetProperty("status").GetString());
         Assert.Equal(59_950.00m, result.GetProperty("approved").GetProperty("price").GetDecimal());
@@ -40,7 +40,7 @@ public sealed class OrderToolTests
         tools.Header(ToolServerOptions.AgentHeader, "trader");
 
         var sell = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "sell", 0.0005m, 60_000m, Why, cancellationToken: CancellationToken.None));
-        var buy = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var buy = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         var sent = tools.Rig.Store.Current.SentOrders;
         await tools.Rig.Execution.ReconcileAsync(CancellationToken.None); // the sell filled at the bid: its fill is journaled
 
@@ -56,7 +56,7 @@ public sealed class OrderToolTests
     {
         var tools = Trader();
 
-        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 64_000m, Why, cancellationToken: CancellationToken.None));
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 64_000m, Why, stopLoss: 63_000m, cancellationToken: CancellationToken.None));
 
         Assert.Equal(("rejected", "price-band"), (result.GetProperty("status").GetString(), result.GetProperty("rule").GetString()));
         Assert.Empty(await tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None));
@@ -68,7 +68,7 @@ public sealed class OrderToolTests
     {
         var tools = Trader();
 
-        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.01m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.01m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
 
         Assert.Equal(("placed", "max-order"), (result.GetProperty("status").GetString(), result.GetProperty("rule").GetString()));
         Assert.Equal(0.00066722m, result.GetProperty("approved").GetProperty("size").GetDecimal());
@@ -102,6 +102,19 @@ public sealed class OrderToolTests
         Assert.Empty(await tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task ABuyWithoutAStop_IsRefusedBeforeAnythingIsSent()
+    {
+        var tools = Trader();
+
+        var ex = await Assert.ThrowsAsync<McpException>(() => tools.Orders.PlaceOrder(
+            "BTC-EUR", "buy", 0.0005m, 59_950m, Why, takeProfit: 62_000m, cancellationToken: CancellationToken.None));
+
+        Assert.Contains("A buy needs a stopLoss", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(await tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None));
+        Assert.DoesNotContain(tools.Journal.Entries, e => e.Kind == "order");
+    }
+
     [Theory]
     [InlineData("79228162514264337593543950335", "60000")] // decimal.MaxValue
     [InlineData("0.0005", "79228162514264337593543950335")]
@@ -122,7 +135,7 @@ public sealed class OrderToolTests
         // The gate allows 40 EUR per order, but the account only holds 30: the exchange refuses for lack of funds.
         var tools = new ToolRig(ToolRig.Observer with { AllowedTools = ["place_order"] }, eur: 30m);
 
-        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0006m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0006m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
 
         Assert.Equal(("failed", "exchange-refused"), (result.GetProperty("status").GetString(), result.GetProperty("rule").GetString()));
     }
@@ -132,7 +145,7 @@ public sealed class OrderToolTests
     {
         var tools = Trader();
 
-        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, "line one\nline two\t\u200B\u202E" + new string('x', 2_000), cancellationToken: CancellationToken.None);
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, "line one\nline two\t\u200B\u202E" + new string('x', 2_000), stopLoss: 59_000m, cancellationToken: CancellationToken.None);
 
         var rationale = Assert.Single(tools.Journal.Entries, e => e.Kind == "order").Data!["rationale"];
         Assert.StartsWith("line one line two x", rationale, StringComparison.Ordinal);
@@ -144,8 +157,8 @@ public sealed class OrderToolTests
     {
         var tools = Trader();
 
-        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, rationaleRu: "Откат в восходящем тренде,\nстоп ниже EMA20.", cancellationToken: CancellationToken.None);
-        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, rationaleRu: "  да ", cancellationToken: CancellationToken.None);
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, rationaleRu: "Откат в восходящем тренде,\nстоп ниже EMA20.", stopLoss: 59_000m, cancellationToken: CancellationToken.None);
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0001m, 59_950m, Why, rationaleRu: "  да ", stopLoss: 59_000m, cancellationToken: CancellationToken.None);
 
         var orders = tools.Journal.Entries.Where(e => e.Kind == "order").ToList();
         Assert.Equal("Откат в восходящем тренде, стоп ниже EMA20.", orders[0].Data!["rationaleRu"]);
@@ -160,7 +173,7 @@ public sealed class OrderToolTests
     public async Task CancelOrder_CancelsOwnOrders_Only()
     {
         var tools = Trader();
-        var placed = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var placed = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         var foreign = await tools.Rig.Paper.PlaceLimitOrderAsync(
             new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 59_900m, "someone-else").Approved(), false, CancellationToken.None);
 
@@ -176,7 +189,7 @@ public sealed class OrderToolTests
     public async Task FillOfAnOrderPlacedBeforeARestart_IsStillJournaled()
     {
         var tools = Trader();
-        var placed = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var placed = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         var restarted = tools.Rig.Restart(() => tools.Rig.Store); // same exchange and state, fresh memory
 
         await restarted.Execution.ReconcileAsync(CancellationToken.None); // sees its own order open: tracks it
@@ -192,7 +205,7 @@ public sealed class OrderToolTests
     {
         var tools = Trader();
 
-        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 60_010m, Why, postOnly: true, cancellationToken: CancellationToken.None));
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 60_010m, Why, postOnly: true, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
 
         Assert.Equal(("failed", "post-only-would-cross"), (result.GetProperty("status").GetString(), result.GetProperty("rule").GetString()));
         Assert.Empty(await tools.Rig.Paper.GetOpenOrdersAsync(null, CancellationToken.None));
@@ -204,7 +217,7 @@ public sealed class OrderToolTests
         var tools = Trader();
         tools.Rig.Exchange.HideOpenOrders = true;
         tools.Rig.Exchange.UncertainAfterSending = true; // reached the exchange, but the engine didn't hear back
-        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var result = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         tools.Rig.Exchange.HideOpenOrders = false;
         tools.Rig.Exchange.UncertainAfterSending = null;
 
@@ -220,7 +233,7 @@ public sealed class OrderToolTests
     public async Task CancelledOrder_IsJournaledAsClosed_AndCancelCarriesTheClientOrderId()
     {
         var tools = Trader();
-        var placed = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var placed = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         await tools.Orders.CancelOrder(placed.GetProperty("orderId").GetString()!, "Trend turned; stepping aside.", cancellationToken: CancellationToken.None);
 
         await tools.Rig.Execution.ReconcileAsync(CancellationToken.None);
@@ -297,14 +310,14 @@ public sealed class OrderToolTests
     public async Task PauseAndResume_AreOperatorOnly_AndJournaled()
     {
         var tools = Trader();
-        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None);
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None);
         await Assert.ThrowsAsync<McpException>(() => tools.Operator.PauseTrading("agent tries", CancellationToken.None));
 
         tools.Header(ToolServerOptions.OperatorKeyHeader, ToolRig.OperatorKey);
         var paused = Parse(await tools.Operator.PauseTrading("Reviewing the strategy.", CancellationToken.None));
-        var blocked = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var blocked = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
         await tools.Operator.ResumeTrading(CancellationToken.None);
-        var after = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, cancellationToken: CancellationToken.None));
+        var after = Parse(await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 59_950m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None));
 
         Assert.Equal(1, paused.GetProperty("cancelled").GetInt32());
         Assert.Equal("kill-switch", blocked.GetProperty("rule").GetString());
@@ -317,7 +330,7 @@ public sealed class OrderToolTests
     public async Task Fill_IsJournaledByReconciliation()
     {
         var tools = Trader();
-        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 60_010m, Why, cancellationToken: CancellationToken.None); // crosses: fills at once
+        await tools.Orders.PlaceOrder("BTC-EUR", "buy", 0.0005m, 60_010m, Why, stopLoss: 59_000m, cancellationToken: CancellationToken.None); // crosses: fills at once
 
         await tools.Rig.Execution.ReconcileAsync(CancellationToken.None);
         await tools.Rig.Execution.ReconcileAsync(CancellationToken.None); // a second pass doesn't journal it twice

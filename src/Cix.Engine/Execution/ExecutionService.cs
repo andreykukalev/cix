@@ -256,6 +256,26 @@ public sealed partial class ExecutionService : IActiveSymbolSource
     /// <summary>Position plans (stop and target by symbol) from the engine state.</summary>
     public IReadOnlyDictionary<string, PositionPlanState> PositionPlanStates => _store.Current.Plans;
 
+    /// <summary>
+    /// Gives a held position without a stop the one the protection set for it (<see cref="EngineState.WithAdoptedStop"/>),
+    /// persisted like a buy's plan so a restart keeps it. Returns the stop now in the plan (the earlier one, if the plan got
+    /// a stop meanwhile), or null when the state couldn't be written: the caller keeps its stop armed and tries again.
+    /// </summary>
+    public decimal? AdoptStop(PositionPlan position, decimal stop, DateTimeOffset at, string? strategy)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        try
+        {
+            var plans = _store.Update(s => s.WithAdoptedStop(position, stop, at, strategy)).Plans;
+            return plans.TryGetValue(position.Symbol, out var plan) ? plan.StopLoss : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogStateWriteFailed(_logger, ex.Message);
+            return null;
+        }
+    }
+
     private static OrderIntent ToIntent(SentOrder o) =>
         new(o.Symbol, o.Side == "sell" ? OrderSide.Sell : OrderSide.Buy, o.Size, o.LimitPrice, o.ClientOrderId);
 
