@@ -124,6 +124,9 @@ public sealed partial class MarketScanService(
     /// <summary>The most recent scan, or null before the first.</summary>
     public ScanResult? Latest { get; private set; }
 
+    /// <summary>A scan older than this no longer decides what can be bought: the scan loop has stalled.</summary>
+    public TimeSpan StaleScanAfter => 3 * options.Interval;
+
     /// <summary>
     /// Why a strategy buy in <paramref name="symbol"/> is refused now, or null when the latest scan let it pass every market
     /// filter of the active strategy (ADR-0021): a watched coin trades only while it passes. A coin not scanned yet is refused
@@ -135,6 +138,8 @@ public sealed partial class MarketScanService(
         symbol = MarketDataPoller.NormaliseSymbol(symbol);
         if (Latest is not { } scan)
             return $"{symbol} hasn't been scanned yet; the strategy's filters decide once it has.";
+        if (time.GetUtcNow() - scan.AsOf > StaleScanAfter)
+            return $"The latest scan is from {scan.AsOf.ToString("u", CultureInfo.InvariantCulture)}, too old for the strategy's filters; buys wait for a fresh one.";
         if (scan.Excluded.FirstOrDefault(e => string.Equals(e.Symbol, symbol, StringComparison.Ordinal)) is { } excluded)
             return $"{symbol} is filtered out by the strategy ({excluded.Reason}): {excluded.Detail}";
         return scan.Ranked.Any(r => string.Equals(r.Symbol, symbol, StringComparison.Ordinal))

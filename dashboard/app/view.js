@@ -337,7 +337,7 @@
     const note = view?.readOnlyReason ? t(view.readOnlyReason)
       : ownerMustWiden ? t('No other pairs can be added yet: the safety limits permit only the pairs in {file}, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to {file}; once that is deployed, they can be added and removed here without another deploy.', { file })
         : view?.full ? t('The most pairs the safety limits allow are tradable: remove one to add another.')
-          : view?.openToAnyPair ? t('You can add any {quote} pair the exchange lists; the engine checks it has enough trading first.', { quote: view.quoteCurrency ?? '' }).replace('  ', ' ')
+          : view?.openToAnyPair ? t('You can add any {quote} pair the exchange lists; the strategy\'s filters decide whether it trades.', { quote: view.quoteCurrency ?? '' }).replace('  ', ' ')
             : t('You can turn the pairs in {file} off and on again here. Adding other coins needs that list widened first.', { file });
     const empty = view?.configuredOnly ? t('no other pairs permitted') : view?.full ? t('the limit is reached') : t('none available');
     return { note, empty, options };

@@ -90,8 +90,11 @@ public sealed partial class SafetyMonitor : BackgroundService
         // down. A quiet coin nobody holds is refused by the gate's own stale-data rule and filtered out by the scan by itself.
         if (reason is null && now - _startedAt >= _options.StaleDataKillAfter)
         {
+            // Held: positions, plus coins with a working buy or an order sent in the last minutes, which may have filled
+            // since the last sample that could be valued.
             var held = (snapshot ?? _execution.LatestSample?.Snapshot)?.PositionQuoteBySymbol
                 .Where(p => p.Value > 0m).Select(p => p.Key).ToHashSet(StringComparer.Ordinal);
+            held?.UnionWith(_execution.ActiveSymbols);
             var checkedCount = 0;
             var stale = new List<string>();
             foreach (var symbol in (_tradable?.Current ?? TradableSymbols.None).Order(StringComparer.Ordinal))

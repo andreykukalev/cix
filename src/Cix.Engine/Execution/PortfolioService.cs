@@ -46,6 +46,7 @@ public sealed class PortfolioService(
     {
         ArgumentNullException.ThrowIfNull(pending);
         var symbolPairs = new List<PairInfo>();
+        var unlisted = new List<string>();
         foreach (var symbol in Tradable.Order(StringComparer.Ordinal))
         {
             PairInfo? pair;
@@ -58,7 +59,10 @@ public sealed class PortfolioService(
                 throw new PortfolioUnavailableException("The exchange's trading rules could not be loaded.", ex);
             }
 
-            symbolPairs.Add(pair ?? throw new PortfolioUnavailableException($"The exchange doesn't list {symbol}."));
+            if (pair is null)
+                unlisted.Add(symbol); // fails the valuation below only if something is held or working in it
+            else
+                symbolPairs.Add(pair);
         }
 
         // The owner's quote currency, even with nothing watched yet: equity is then the cash alone.
@@ -76,6 +80,16 @@ public sealed class PortfolioService(
         catch (ExchangeException ex)
         {
             throw new PortfolioUnavailableException("Balances or open orders could not be read from the exchange.", ex);
+        }
+
+        // A watched pair the exchange no longer lists can't be priced: that matters only if the account holds it or has an
+        // order in it. Otherwise one delisted coin nobody holds would block every order, the stop-loss sells included.
+        foreach (var symbol in unlisted)
+        {
+            if (TotalOf(balances, symbol.Split('-')[0]) > 0m
+                || openOrders.Any(o => o.IsOpen && MarketDataPoller.NormaliseSymbol(o.Symbol) == symbol)
+                || pending.Any(p => p.Order.Symbol == symbol))
+                throw new PortfolioUnavailableException($"The exchange doesn't list {symbol}.");
         }
 
         var now = time.GetUtcNow();

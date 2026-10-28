@@ -1,10 +1,12 @@
 using System.Text.Json;
 using Cix.Domain.Exchange;
 using Cix.Domain.Risk;
+using Cix.Engine.Execution;
 using Cix.Engine.Scanning;
 using Cix.Engine.Strategy;
 using Cix.Engine.Tools;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol;
 
@@ -128,6 +130,22 @@ public sealed class ScannerServiceTests
         await passing.Scanner.ScanAsync(CancellationToken.None);
         Assert.Null(passing.Scanner.BuyRefusal(Rig.Btc)); // ranked: it passes every filter of the strategy
         Assert.StartsWith("SOL-EUR hasn't been scanned yet", passing.Scanner.BuyRefusal("SOL-EUR"), StringComparison.Ordinal);
+
+        // A stalled scan loop no longer vouches for a coin: three intervals (15 minutes) without a scan refuse every buy.
+        Assert.Equal(TimeSpan.FromMinutes(15), passing.Scanner.StaleScanAfter);
+        passing.Rig.Time.Advance(TimeSpan.FromMinutes(15));
+        Assert.Null(passing.Scanner.BuyRefusal(Rig.Btc));
+        passing.Rig.Time.Advance(TimeSpan.FromSeconds(1));
+        Assert.StartsWith("The latest scan is from ", passing.Scanner.BuyRefusal(Rig.Btc), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StrategyFilter_WithoutAScanner_RefusesEveryBuy()
+    {
+        using var services = new ServiceCollection().BuildServiceProvider();
+
+        Assert.Equal("The market scanner isn't running, so no coin passes the strategy's filters.",
+            ExecutionRegistration.StrategyFilter(services, Rig.Btc)); // fails closed
     }
 
     [Fact]

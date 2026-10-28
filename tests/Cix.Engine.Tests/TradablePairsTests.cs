@@ -7,6 +7,7 @@ using Cix.Engine.Journal;
 using Cix.Engine.Manual;
 using Cix.Engine.Pairs;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cix.Engine.Tests;
@@ -276,6 +277,56 @@ public sealed class TradablePairsTests
         Assert.Equal((TradablePairsService.AdoptedAction, Btc, "engine", "SOL-EUR", "BTC-EUR,SOL-EUR"),
             (adopted.Data!["action"], adopted.Data["symbol"], adopted.Data["requestedBy"], adopted.Data["from"], adopted.Data["to"]));
         Assert.True((await setup.Rig.Execution.SampleAsync(CancellationToken.None))!.PositionQuoteBySymbol[Btc] > 0m);
+
+        // Watched, valued and protected, but the owner didn't choose it: the strategy doesn't buy it (Andrei, 2026-10-28).
+        Assert.True(setup.Service.IsAdopted("btc-eur"));
+        Assert.False(setup.Service.IsAdopted(Sol));
+        Assert.Equal(new[] { Btc }, setup.Repository.Saved[TradingMode.Paper].Adopted);
+        Assert.Equal(new[] { Btc }, setup.Repository.Catalog!.Adopted);
+        using var services = new ServiceCollection().AddSingleton(setup.Service).BuildServiceProvider();
+        Assert.Equal("BTC-EUR is watched because the account holds it, but the owner hasn't added it; the strategy buys it once the owner adds it on the Coins tab.",
+            ExecutionRegistration.StrategyFilter(services, Btc));
+    }
+
+    [Fact]
+    public async Task Add_ACoinTheEngineAdopted_LetsTheStrategyBuyIt_AndARestartKeepsWhichAreAdopted()
+    {
+        var setup = new Setup(btc: 0.001m, watched: []);
+        await setup.Service.InitializeAsync(CancellationToken.None);
+
+        var restarted = new Setup(watched: []);
+        restarted.Repository.Saved[TradingMode.Paper] = setup.Repository.Saved[TradingMode.Paper];
+        await restarted.Service.InitializeAsync(CancellationToken.None);
+        Assert.True(restarted.Service.IsAdopted(Btc)); // still not the owner's after a restart
+
+        setup.Request("r-1", "add", Btc);
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal("accepted", setup.RequestStatus("r-1"));
+        Assert.Equal("BTC-EUR added: it was watched because the account holds it, and now the strategy may buy it too.", setup.RequestDetail("r-1"));
+        Assert.False(setup.Service.IsAdopted(Btc));
+        Assert.Empty(setup.Repository.Saved[TradingMode.Paper].Adopted!);
+        Assert.Equal(new[] { Btc }, setup.Repository.Saved[TradingMode.Paper].Symbols);
+        var confirmed = setup.Changes[^1];
+        Assert.Equal((TradablePairsService.ConfirmedAction, Btc, "owner"), (confirmed.Data!["action"], confirmed.Data["symbol"], confirmed.Data["requestedBy"]));
+        using var services = new ServiceCollection().AddSingleton(setup.Service).BuildServiceProvider();
+        Assert.Equal("The market scanner isn't running, so no coin passes the strategy's filters.", ExecutionRegistration.StrategyFilter(services, Btc));
+    }
+
+    [Fact]
+    public async Task Initialize_ASavedListOverTheCap_IsJournaled_SoTheOwnerCanAddItAgain()
+    {
+        var setup = new Setup(watched: []);
+        setup.Repository.Saved[TradingMode.Paper] = new TradablePairsDocument([Btc, Sol, "ADA-EUR", "LINK-EUR"], Rig.T0.AddDays(-1), "owner"); // cap 3
+
+        await setup.Service.InitializeAsync(CancellationToken.None);
+
+        Assert.Empty(setup.Tradable.Current);
+        var lost = Assert.Single(setup.Changes);
+        Assert.Equal(("not-restored", "ADA-EUR,BTC-EUR,LINK-EUR,SOL-EUR", "ADA-EUR,BTC-EUR,LINK-EUR,SOL-EUR"),
+            (lost.Data!["action"], lost.Data["symbol"], lost.Data["from"]));
+        await setup.Service.PollOnceAsync(CancellationToken.None);
+        Assert.True(setup.Rig.KillSwitch.IsEngaged); // until the owner has looked
     }
 
     [Fact]
@@ -284,7 +335,8 @@ public sealed class TradablePairsTests
         var setup = new Setup(btc: 0.001m, watched: []);
         setup.Rig.Exchange.FailBalances = true;
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => setup.Service.InitializeAsync(CancellationToken.None));
+        var failed = await Assert.ThrowsAsync<IOException>(() => setup.Service.InitializeAsync(CancellationToken.None));
+        Assert.True(StartupRetry.IsTransient(failed, CancellationToken.None)); // startup waits and tries again, it doesn't stop
 
         setup.Rig.Exchange.FailBalances = false;
         await setup.Service.InitializeAsync(CancellationToken.None);
@@ -418,6 +470,7 @@ public sealed class TradablePairsTests
     {
         var setup = new Setup(btc: 0.001m);
         Assert.Empty(setup.Tradable.TrySet([Btc, Sol], Rig.T0));
+        Assert.NotNull(await setup.Rig.Execution.SampleAsync(CancellationToken.None)); // while fresh: the sample says BTC is held
         setup.Rig.Time.Advance(TimeSpan.FromMinutes(16));
         setup.Rig.State.Update(new MarketQuote(Sol, 150m, 1m, 150.1m, 1m, setup.Rig.Time.GetUtcNow())); // SOL fresh; held BTC not
 
@@ -425,6 +478,33 @@ public sealed class TradablePairsTests
 
         Assert.Equal("No fresh market data for BTC-EUR for over 15 minutes.", reason); // its stop can't be watched
         Assert.True(setup.Rig.KillSwitch.IsEngaged);
+    }
+
+    [Fact]
+    public async Task Portfolio_AWatchedPairTheExchangeNoLongerLists_BlocksNothing_WhileNothingIsInIt()
+    {
+        var setup = new Setup(btc: 0.001m, watched: [Btc, "ZZZ-EUR"]); // delisted after it was added; nobody holds it
+
+        var sample = await setup.Rig.Execution.SampleAsync(CancellationToken.None);
+
+        Assert.NotNull(sample); // valued without it, so orders and the stop-loss sells in BTC go on
+        Assert.True(sample!.PositionQuoteBySymbol[Btc] > 0m);
+        Assert.False(sample.PositionQuoteBySymbol.ContainsKey("ZZZ-EUR"));
+    }
+
+    [Fact]
+    public async Task SafetyMonitor_ACoinWithAWorkingBuy_CountsAsHeld()
+    {
+        var setup = new Setup();
+        Assert.Empty(setup.Tradable.TrySet([Btc, Sol], Rig.T0));
+        Assert.Equal(ExecutionStatus.Placed, (await setup.Rig.Buy(0.0005m, 59_950.00m)).Status); // below the ask: it rests
+        setup.Rig.Time.Advance(TimeSpan.FromMinutes(16));
+        setup.Rig.State.Update(new MarketQuote(Sol, 150m, 1m, 150.1m, 1m, setup.Rig.Time.GetUtcNow())); // SOL fresh; BTC not
+        Assert.NotNull(await setup.Rig.Execution.SampleAsync(CancellationToken.None)); // nothing held: valued without BTC's price
+
+        var reason = (await setup.Rig.Monitor.CheckOnceAsync(CancellationToken.None)).KillSwitchReason;
+
+        Assert.Equal("No fresh market data for BTC-EUR for over 15 minutes.", reason); // the buy may fill unwatched
     }
 
     private sealed class Setup

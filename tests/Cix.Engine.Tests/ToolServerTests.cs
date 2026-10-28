@@ -42,9 +42,11 @@ internal sealed class ToolRig
         ["get_analyst_brief", "record_market_view"],
         "test") { Hash = "fedcba654321" };
 
-    public ToolRig(StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m, StrategySpec? analyst = null, bool noAnalyst = false, bool protectiveExits = true)
+    public ToolRig(
+        StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m, StrategySpec? analyst = null, bool noAnalyst = false,
+        bool protectiveExits = true, Func<string, string?>? strategyFilter = null)
     {
-        Rig = new Rig(eur: eur, btc: btc);
+        Rig = new Rig(eur: eur, btc: btc, strategyFilter: strategyFilter);
         Http = new HttpContextAccessor { HttpContext = new DefaultHttpContext() };
         Specs = new FixedSpecs(noSpec ? null : spec ?? Observer);
         AnalystSpecs = new FixedAnalystSpec(noAnalyst ? null : analyst ?? AnalystSpec);

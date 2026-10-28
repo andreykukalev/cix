@@ -258,9 +258,10 @@ public sealed partial class ExecutionService : IActiveSymbolSource
     /// </param>
     public async Task<ExecutionResult> PlaceAsync(
         OrderIntent intent, bool postOnly, CancellationToken cancellationToken, bool countsTowardRejectStreak = true, OrderContext? context = null,
-        StrategyLimits? strategy = null, Func<CancellationToken, Task>? beforeSend = null)
+        StrategyLimits? strategy = null, Func<CancellationToken, Task>? beforeSend = null, bool strategyFiltered = false)
     {
-        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, context, strategy, beforeSend, cancellationToken).ConfigureAwait(false);
+        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, context, strategy, strategyFiltered || strategy is not null,
+            beforeSend, cancellationToken).ConfigureAwait(false);
 
         // Engaging takes the placement lock, so it runs after the placement released it.
         // Only a gate rejection made by this call can trip the streak (engine-side rejects never count).
@@ -277,7 +278,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
 
     private async Task<ExecutionResult> PlaceLockedAsync(
         OrderIntent intent, bool postOnly, bool countsTowardRejectStreak, OrderContext? context, StrategyLimits? strategy,
-        Func<CancellationToken, Task>? beforeSend, CancellationToken cancellationToken)
+        bool strategyFiltered, Func<CancellationToken, Task>? beforeSend, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
         intent = intent with { Symbol = MarketDataPoller.NormaliseSymbol(intent.Symbol) };
@@ -297,6 +298,15 @@ public sealed partial class ExecutionService : IActiveSymbolSource
                     return Reject("placement-unresolved", "An earlier order with this client order ID has an unknown outcome; it must be reconciled first.");
                 if (_usedClientOrderIds.Contains(intent.ClientOrderId ?? string.Empty))
                     return Reject("duplicate-client-order-id", "This client order ID was already sent; use a new one for a new order.");
+            }
+
+            // A watched coin trades only while it passes the strategy's market filters (ADR-0021): for the agents' buys and
+            // the owner's agent-assisted ones. First, so a refused buy spends no request; the gate after it stays final. Never
+            // for sells, the owner's direct orders or the protective exits.
+            if (strategyFiltered && intent.Side == OrderSide.Buy && _strategyFilter?.Invoke(intent.Symbol) is { } filtered)
+            {
+                LogRejected(_logger, intent.ClientOrderId ?? string.Empty, "strategy-filter", filtered);
+                return Reject("strategy-filter", filtered); // the strategy's refusal, not the gate's: no reject streak
             }
 
             PairInfo? pair;
@@ -333,14 +343,6 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             StrategyVerdict? strategyCheck = null;
             if (strategy is not null && rounded.Side == OrderSide.Buy)
             {
-                // A watched coin trades only while it passes the strategy's market filters (ADR-0021). Before the gate, which
-                // stays final; never for sells, the owner's direct orders or the protective exits.
-                if (_strategyFilter?.Invoke(rounded.Symbol) is { } filtered)
-                {
-                    LogRejected(_logger, intent.ClientOrderId ?? string.Empty, "strategy-filter", filtered);
-                    return Reject("strategy-filter", filtered); // the strategy's refusal, not the gate's: no reject streak
-                }
-
                 strategyCheck = StrategyGate.CheckBuy(rounded, portfolio, strategy, ActivityFor(context?.RunId), now, pair.BaseStep);
                 if (strategyCheck.Order is not { } allowed)
                 {

@@ -391,6 +391,21 @@ public sealed class ManualRequestTests
     }
 
     [Fact]
+    public async Task AgentAssistedBuy_InACoinTheStrategyFiltersOut_IsRefused()
+    {
+        var rig = new ManualRig(btc: 0m, tools: new ToolRig(Trading, strategyFilter: symbol => $"{symbol} hasn't been scanned yet; the strategy's filters decide once it has."));
+        rig.Request("req-filt-1", "buy", "agent", quoteAmount: 30m);
+        await rig.Poll();
+
+        var answer = Parse(await rig.Manual.AnswerManualRequest("req-filt-1", "execute", Why, stopLoss: 59_000m));
+
+        Assert.Equal(ManualRequestStatus.Rejected, answer.GetProperty("status").GetString());
+        var order = Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "order");
+        Assert.Equal("strategy-filter", order.Data!["rule"]); // the owner's rule: a filtered coin doesn't enter trading
+        Assert.Empty(await rig.Tools.Rig.Exchange.GetOpenOrdersAsync(null, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task ManualOrders_StillMeetTheRiskGate()
     {
         var rig = new ManualRig(btc: 0m);

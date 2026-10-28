@@ -175,7 +175,7 @@ public sealed class ExecutionTests
     }
 
     [Fact]
-    public async Task AStrategyBuy_InACoinTheStrategyFiltersOut_IsRefused_ButSellsAndTheOwnersOrdersAreNot()
+    public async Task AStrategyOrAgentAssistedBuy_InACoinTheStrategyFiltersOut_IsRefused_ButSellsAndTheOwnersOrdersAreNot()
     {
         var rig = new Rig(btc: 0.001m, strategyFilter: symbol => $"{symbol} is filtered out by the strategy (low-volume): 24h volume 10 is below the minimum 100,000.");
 
@@ -184,11 +184,14 @@ public sealed class ExecutionTests
         var sell = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Sell, 0.0005m, 60_000m, "c-2"), postOnly: false, CancellationToken.None,
             strategy: new StrategyLimits());
         var owners = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 60_010m, "c-3"), postOnly: false, CancellationToken.None);
+        var assisted = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Buy, 0.0005m, 60_010m, "c-4"), postOnly: false, CancellationToken.None,
+            strategyFiltered: true); // an owner's request the trader answers
 
         Assert.Equal((ExecutionStatus.Rejected, "strategy-filter"), (buy.Status, buy.Rule));
         Assert.StartsWith("BTC-EUR is filtered out by the strategy", buy.Reason, StringComparison.Ordinal);
         Assert.Equal(ExecutionStatus.Placed, sell.Status); // a held coin outside the strategy can always be sold
         Assert.Equal(ExecutionStatus.Placed, owners.Status); // the owner's direct orders aren't the strategy's
+        Assert.Equal((ExecutionStatus.Rejected, "strategy-filter"), (assisted.Status, assisted.Rule));
         Assert.False(rig.KillSwitch.IsEngaged); // the strategy's refusal never counts towards the gate's reject streak
     }
 

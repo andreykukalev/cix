@@ -381,8 +381,8 @@
     'changed {ago}': 'изменено {ago}',
     'The most pairs the safety limits allow are tradable: remove one to add another.':
       'Торгуется максимум пар, который допускают ограничения безопасности: уберите одну, чтобы добавить другую.',
-    'You can add any {quote} pair the exchange lists; the engine checks it has enough trading first.':
-      'Можно добавить любую пару в {quote}, которая есть на бирже; движок сначала проверит, что по ней достаточно торгов.',
+    'You can add any {quote} pair the exchange lists; the strategy\'s filters decide whether it trades.':
+      'Можно добавить любую пару в {quote}, которая есть на бирже; торгуется ли она, решают фильтры стратегии.',
     'No other pairs can be added yet: the safety limits permit only the pairs in {file}, and all of them are already tradable. To trade other coins, the owner adds "AllowedQuoteCurrency": "EUR" (any EUR pair the exchange lists) and "MaxTradableSymbols" (how many at once, for example 15) to {file}; once that is deployed, they can be added and removed here without another deploy.':
       'Другие пары пока добавить нельзя: ограничения безопасности разрешают только пары из {file}, и все они уже торгуются. Чтобы торговать другими монетами, владелец добавляет в {file} "AllowedQuoteCurrency": "EUR" (любая пара в EUR, которая есть на бирже) и "MaxTradableSymbols" (сколько пар одновременно, например 15); после развёртывания этого изменения пары можно добавлять и убирать здесь без нового развёртывания.',
     'You can turn the pairs in {file} off and on again here. Adding other coins needs that list widened first.':

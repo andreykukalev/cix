@@ -133,6 +133,11 @@ const REASONS_RU = [
     const detail = require('./engineText').engineTextRu(m[3]); // the scanner's sentence; loaded here, as it loads this file
     return detail ? `${m[1]} отсеяна фильтром стратегии: ${detail}` : null;
   }],
+  [/^The latest scan is from (\S+ \S+), too old for the strategy's filters; buys wait for a fresh one\.$/,
+    (m) => `Последняя проверка сканера была ${m[1]}, это слишком давно для фильтров стратегии; покупки ждут новой.`],
+  [/^(\S+) is watched because the account holds it, but the owner hasn't added it; the strategy buys it once the owner adds it on the Coins tab\.$/,
+    (m) => `${m[1]} отслеживается, потому что есть на счёте, но владелец её не добавлял; стратегия будет её покупать, когда владелец добавит её на вкладке «Монеты».`],
+  [/^The market scanner isn't running, so no coin passes the strategy's filters\.$/, () => 'Сканер рынка не работает, поэтому ни одна монета не проходит фильтры стратегии.'],
   [/^Size and limit price must be positive and the client order ID set\.$/, () => 'Размер и лимитная цена должны быть больше нуля, а ID ордера задан.'],
   [/^(\S+) is not tradable on the exchange\.$/, (m) => `${m[1]} не торгуется на бирже.`],
   [/^Size must be a multiple of (\S+) and price of (\S+)\.$/, (m) => `Размер должен быть кратен ${m[1]}, а цена — ${m[2]}.`],

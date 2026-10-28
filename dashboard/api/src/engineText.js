@@ -80,6 +80,8 @@ const FORMATS = [
   [/^(\S+) is not tradable; nothing to remove\.$/, (m) => `${m[1]} не торгуется; удалять нечего.`],
   [/^(\S+) added\. Its prices load now; the scanner can signal it once it has a day of hourly candles, and every order still goes through the risk gate\.$/,
     (m) => `${m[1]} добавлена. Её цены загружаются; сканер сможет дать по ней сигнал, когда наберётся день часовых свечей, а каждый ордер по-прежнему проходит риск-контроль.`],
+  [/^(\S+) added: it was watched because the account holds it, and now the strategy may buy it too\.$/,
+    (m) => `${m[1]} добавлена: её отслеживали, потому что она есть на счёте, а теперь стратегия может её и покупать.`],
   [/^(\S+) removed: no new orders in it\.$/, (m) => `${m[1]} удалена: новых ордеров по ней не будет.`],
   [/^Only (\S+) pairs are permitted by (config\/risk-limits(?:\.live)?\.json)\.$/, (m) => `${m[2]} разрешает только пары в ${m[1]}.`],
   [/^(config\/risk-limits(?:\.live)?\.json) doesn't permit it; only the owner can widen that list\.$/, (m) => `${m[1]} её не разрешает; расширить этот список может только владелец.`],

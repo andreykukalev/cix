@@ -45,6 +45,7 @@ const SENTENCES = [
   ['VVV-EUR is already tradable.', 'VVV-EUR'],
   ['VVV-EUR is not tradable; nothing to remove.', 'VVV-EUR'],
   ['VVV-EUR added. Its prices load now; the scanner can signal it once it has a day of hourly candles, and every order still goes through the risk gate.', 'VVV-EUR'],
+  ['VVV-EUR added: it was watched because the account holds it, and now the strategy may buy it too.', 'VVV-EUR'],
   ['VVV-EUR removed: no new orders in it.', 'VVV-EUR'],
   ['Only EUR pairs are permitted by config/risk-limits.json.', 'EUR'],
   ["config/risk-limits.json doesn't permit it; only the owner can widen that list.", null],

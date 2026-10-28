@@ -937,7 +937,7 @@ function renderPairs(view) {
   document.getElementById('pairs-tradable').replaceChildren(...(view.tradable.length ? view.tradable.map((p) => {
     const blocked = p.pending ? null : V.removeBlock(p.symbol, state.view?.mode === state.mode ? state.view : null);
     const remove = el('button', { type: 'button', class: 'ghost', title: blocked ?? t('Stop trading {symbol}', { symbol: p.symbol }), text: p.pending === 'remove' ? t('removing…') : t('Remove') });
-    remove.disabled = busy || !!p.pending || view.tradable.length <= 1 || !!blocked;
+    remove.disabled = busy || !!p.pending || !!blocked; // the list may be empty (ADR-0021)
     remove.addEventListener('click', () => openPair('remove', p.symbol));
     if (blocked) blockedPairs.push(el('li', {}, el('strong', { text: p.symbol }), `: ${blocked}`));
     return el('li', {}, el('span', { text: p.symbol }), remove);
