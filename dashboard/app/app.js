@@ -24,7 +24,7 @@ function el(tag, props = {}, ...children) {
     else if (key === 'text') node.textContent = value;
     else node.setAttribute(key, value);
   }
-  for (const child of children.flat()) {
+  for (const child of children.flat(Infinity)) { // nested lists too: a cell can hold a chip and an optional [' ', badge]
     if (child === null || child === undefined) continue;
     node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
