@@ -59,6 +59,12 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
     /// <summary>Finished orders kept when saving; older ones are dropped so the saved account stays small.</summary>
     public const int MaxSavedFinishedOrders = 500;
 
+    /// <summary>
+    /// False plays an exchange that ignores immediate-or-cancel and lets the unfilled rest of such an order rest on the book,
+    /// which Revolut X's live behaviour hasn't confirmed yet. Tests only; the protection must cancel that rest itself.
+    /// </summary>
+    public bool HonoursImmediateOrCancel { get; set; } = true;
+
     /// <summary>The account as it stands: balances and every order, for persistence. Quotes are not kept (they go stale).</summary>
     public PaperAccountState ExportState()
     {
@@ -250,7 +256,7 @@ public sealed class PaperExchange : IExchangeClient, IQuoteListener
             }
 
             // Immediate-or-cancel: whatever didn't fill at once is cancelled, so nothing rests.
-            if (approvedOrder.TimeInForce == TimeInForce.ImmediateOrCancel && order.IsOpen)
+            if (approvedOrder.TimeInForce == TimeInForce.ImmediateOrCancel && order.IsOpen && HonoursImmediateOrCancel)
             {
                 order.Status = OrderStatus.Cancelled;
                 order.UpdatedAt = now;

@@ -217,6 +217,27 @@ public sealed class ProtectionTests
     }
 
     [Fact]
+    public async Task AnExchangeThatLetsTheRestOfAnIocOrderRest_HasItCancelledBeforeTheNextTry_AndNothingStaysOpen()
+    {
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.025m)); // the bid shows 0.01
+        p.Rig.Paper.HonoursImmediateOrCancel = false;
+
+        var outcome = await p.ExitAsync(Btc, stop: 61_000m);
+
+        Assert.Equal(ExitOutcome.Exited, outcome);
+        Assert.Equal(0m, await p.Held());
+        Assert.Empty(await p.Rig.Paper.GetOpenOrdersAsync(Btc, CancellationToken.None)); // nothing rests behind a "finished" exit
+        // The first sell fills 0.01 and its rest of 0.015 is left open. The next fresh book fills 0.01 of that rest at the bid (as a
+        // real exchange would), the sweep before the second try cancels the remaining 0.005, and the second sell finds the level
+        // taken; its rest fills on the third book and the third sweep leaves nothing, so the exit ends with the position gone.
+        var orders = p.Orders();
+        Assert.Equal(new[] { 0.01m, 0m }, orders.Select(o => ProtectionRig.D(o.Data!["filledSize"])).ToArray());
+        Assert.All(orders, o => Assert.Equal("ioc-rested", o.Data!["problem"]));
+        Assert.Equal(("exited", "2"), (p.Ended()!.Data!["outcome"], p.Ended()!.Data!["tries"]));
+        Assert.Empty(p.Service.Blocked);
+    }
+
+    [Fact]
     public async Task AGapBelowTheBand_BlocksTheExitAfterFiveTries_WhichSellsByItselfWhenTheBookComesBack()
     {
         var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m));

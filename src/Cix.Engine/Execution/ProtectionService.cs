@@ -155,7 +155,7 @@ public sealed partial class ProtectionService : BackgroundService
     /// <summary>The fixed codes a blocked or failed try reports; free text stays in the journal.</summary>
     public static readonly IReadOnlySet<string> Problems = new HashSet<string>(StringComparer.Ordinal)
     {
-        "quote-unavailable", "quote-stale", "spread-too-wide", "ioc-unfilled", "orders-unavailable", "balances-unavailable",
+        "quote-unavailable", "quote-stale", "spread-too-wide", "ioc-unfilled", "ioc-rested", "orders-unavailable", "balances-unavailable",
         "rejected", "exchange-refused", "placement-uncertain",
     };
 
@@ -432,9 +432,16 @@ public sealed partial class ProtectionService : BackgroundService
                     firstFillAt ??= seenAt;
                 }
 
+                // An order the exchange left open (immediate-or-cancel not honoured) or one that couldn't be read back may be
+                // resting with the coins reserved. The next try cancels the engine's orders on the coin again before it counts
+                // what is left, so a resting sell is never mistaken for a finished exit.
+                if (result.Status is ExecutionStatus.Placed or ExecutionStatus.Uncertain && (order is null || order.IsOpen))
+                    cancelledOwn = false;
+
                 var (code, why) = result.Status switch
                 {
                     ExecutionStatus.Placed when order is null => ("placement-uncertain", "placed, but the order couldn't be read back"),
+                    ExecutionStatus.Placed when order is { IsOpen: true } => ("ioc-rested", "the exchange left the rest of the order open; it is cancelled before the next try"),
                     ExecutionStatus.Placed when filledBase <= 0 => ("ioc-unfilled", "no bids within the emergency band"),
                     ExecutionStatus.Placed => ((string?)null, (string?)null),
                     ExecutionStatus.Uncertain => ("placement-uncertain", result.Reason),
