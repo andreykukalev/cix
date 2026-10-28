@@ -8,7 +8,7 @@ Every step on this page is yours: agents can't set the live mode, add the keys, 
 
 The live engine reads its own limits file, `config/risk-limits.live.json`, never paper's `config/risk-limits.json`. Without it, a Live engine refuses to start. Like paper's file, only you write it (CLAUDE.md rule 3; a hook stops agents from writing either file, whether by editing it or with a command), and the hard ceilings in `HardCeilings.cs` still cap whatever it says. It is built into the image, so a change reaches the live engine with the next image you promote.
 
-A proposal for the first run, 100 EUR on the fixed Safe strategy. Safe's own limits are tighter still: 5 EUR orders, at most 10 EUR per coin, 25% of the allocation in coins, and no buys after a 3 EUR loss in a day.
+The file as it stands, for the first run: 100 EUR on the fixed Safe strategy. Safe's own limits are tighter still: 5 EUR orders, at most 10 EUR per coin, 25% of the allocation in coins, and no buys after a 3 EUR loss in a day.
 
 ```json
 {
@@ -18,18 +18,19 @@ A proposal for the first run, 100 EUR on the fixed Safe strategy. Safe's own lim
     "MaxPositionQuotePerSymbol": 25,
     "MaxDailyLossQuote": 5,
     "MaxDrawdownFraction": 0.10,
-    "MaxOrdersPerMinute": 4,
+    "MaxOrdersPerMinute": 5,
     "MaxPriceDeviationFraction": 0.01,
+    "MaxEmergencySlippageFraction": 0.03,
     "AllowedQuoteCurrency": "EUR",
-    "MaxTradableSymbols": 10
+    "MaxTradableSymbols": 50
   }
 }
 ```
 
-- **Drawdown 10%**, not paper's 15%: new buys stop after a 10% fall from peak equity (10 EUR from 100 EUR) until you resume. Sells, stops and targets carry on.
+- **Drawdown 10%**, not paper's 15%: while equity is 10% or more below its peak (10 EUR from 100 EUR), the gate refuses new buys and the safety checks cancel open ones. It isn't latched: buys are allowed again by themselves once equity is back within 10% of the peak, with no Resume. Sells, stops and targets carry on. Only the 30% hard ceiling halts until you resume (below).
 - **Daily loss 5 EUR**, half the ceiling (10% of the allocation).
-- **Coins: any EUR pair, at most `MaxTradableSymbols`.** No pair list lives in the file (ADR-0021). You add coins on the Live view's Coins tab (with its confirmation); each is watched, and trades only while it passes the live strategy's filters. Coins the sub-account holds are added by the engine and can't be removed while held. The live engine starts watching only what it holds and what you add. Revolut X's smallest order on the liquid pairs is 0.1 EUR (its public pairs list, 27 Oct), well under Safe's 5 EUR.
-- **Emergency slippage** (`MaxEmergencySlippageFraction`, optional): how far below mid a stop-loss sell may go. The protection sells with immediate-or-cancel limits at the bid, and refuses to quote when the bid is further below mid than this; without the setting it uses `MaxPriceDeviationFraction`, which on thin pairs leaves many stops unfilled in a fast fall. `0.03` is the agreed start; the hard ceiling (5%) caps it. Add it to `config/risk-limits.live.json` yourself: `"MaxEmergencySlippageFraction": 0.03`. The `Protection` section of `appsettings.json` holds the engine side (quote age, retry delay, five quick tries, then a retry every minute) with conservative defaults that need no change.
+- **Coins: any EUR pair, at most `MaxTradableSymbols`.** No pair list lives in the file (ADR-0021). You add coins on the Live view's Coins tab (with its confirmation); each is watched, and trades only while it passes the live strategy's filters. Coins the sub-account holds are added by the engine and can't be removed while held. Such a coin has no stop: the protection watches only positions bought with a stop-loss (their plan), so a coin the engine adopts, or one bought without a stop, is sold only by the trader or by you. The live engine starts watching only what it holds and what you add. Revolut X's smallest order on the liquid pairs is 0.1 EUR (its public pairs list, 27 Oct), well under Safe's 5 EUR.
+- **Emergency slippage** (`MaxEmergencySlippageFraction`, optional): how far below mid a stop-loss sell may go. The protection sells with immediate-or-cancel limits at the bid, and refuses to quote when the bid is further below mid than this; without the setting it uses `MaxPriceDeviationFraction`, which on thin pairs leaves many stops unfilled in a fast fall. `0.03` is the agreed start, set in the file above; the hard ceiling (5%) caps it. The `Protection` section of `appsettings.json` holds the engine side (quote age, retry delay, five quick tries, then a retry every minute) with conservative defaults that need no change.
 
 ## The strategy
 
@@ -195,7 +196,20 @@ The engine's protection sells a coin that falls through its stop within seconds,
 2. **A gap, or no bids within the band.** When the price jumps past the stop between two quotes (a few seconds apart in live), the sale happens at the new level: the band bounds the slippage against the mid at the time of the sale, not the distance from the stop, so the loss beyond the stop is the gap. When the book holds no bids at all within the band, the exit is reported blocked ("Выход заблокирован" on the dashboard, a critical log line) after five tries and retried every minute; it sells when bids return, at that price. The band is yours: the engine never widens it by itself.
 3. **The restart window.** While the engine is down and until its stops reload after a start (a deploy or a crash: usually a minute or two, longer if the image can't start), no stop is watched. A stop crossed meanwhile is sold on the first fresh quote after the restart, at that price. Deploys from `main` replace the engine in place and hold the live revision until the new one is healthy, so this window is short, but it exists.
 
+Targets and trend exits are not part of this protection. A position's take-profit is sold by the background scan, which looks every 5 minutes: when the bid is at or above the target it places a limit sell at the bid (re-priced if it rests), and it doesn't while trading is halted. A trend exit (`trend-down`) is left to the trader agent. Only the stop is watched on every quote.
+
 Everything else the protection handles: partial fills (re-quoted every 2 s), orders the exchange left open (cancelled before the next try), uncertain placements (the balance is read before any retry), stale or invalid quotes (never a sale), a crash right after a sell was sent (nothing to resell), and a Pause or critical halt (stops keep selling, buys stop).
+
+### Alerts and health
+
+You hear about trouble without opening the dashboard (`infra/modules/engine-alerts.bicep`). `provision.ps1` sends them to the address it uses for the budget (your sign-in, or `-BudgetEmail`), by email and as a push to the Azure mobile app signed in with that address:
+
+- **Engine needs attention**: a stop-loss exit blocked or failing, the kill switch engaged (by a safety rule, the reconciler or your own Pause), drawdown at the hard ceiling, the engine lease lost (once on every deploy too, when the new revision takes over), the safety checks failing, the engine state not saved, or the container restarting. The alert's `Event` says which.
+- **No heartbeat**: the engine runs (`startEngine`, and not standing by) but has logged nothing for 15 minutes: it stopped, hangs, or the workspace reached its 0.1 GB daily log cap.
+
+Each alert fires once and resolves by itself when the condition clears. They cost about 3 USD a month per environment. They and the engine's health probe change only when you run `provision.ps1` (CI deploys images, not templates).
+
+The engine's liveness probe asks `/healthz`, which answers 503 (`stalled`) when the safety checks have made no progress for 15 minutes: the platform then restarts the engine. An outage of the exchange or the database alone never does that.
 
 ### Back to standby, and stopping
 
