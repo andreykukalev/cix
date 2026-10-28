@@ -56,6 +56,7 @@ FAKE_AZ = textwrap.dedent(r'''
         if s["env_change_at"] and s["gets"] >= s["env_change_at"]: s["engine"]["env"] = [{"name": "Strategy__Name", "value": "balanced"}]
         if s["stop_at"] and s["gets"] >= s["stop_at"]: s["engine"]["runningStatus"] = "Stopped"
         save()
+        if s["fail_gets_from"] and s["gets"] >= s["fail_gets_from"]: sys.exit("ERROR: (TooManyRequests)")
         if s["flaky_every"] and s["gets"] % s["flaky_every"] == 0: sys.exit("ERROR: (TooManyRequests)")
     if kind == "jobs":
         job = s["jobs"].get(name) or sys.exit("ERROR: (ResourceNotFound) " + name)
@@ -164,7 +165,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
         running_status=None, revisions=None, engine_image=None, job_images=None, missing_engine=False, healthy_after=2,
         running_value="Running", new_fails=False, fail_patch=None, rev_lag=0, prov_lag=1, stale=0, conflict_once=False,
         flaky_every=0, fail_push=False, no_digest=False, fail_deactivate=False, lease_fails_after=6, revisions_mode="Single", page_size=0,
-        revision_names=None, extra_env=None, expect_deployed=None, env_change_at=0, stop_at=0, expect_engine_env=None,
+        revision_names=None, extra_env=None, expect_deployed=None, env_change_at=0, stop_at=0, fail_gets_from=0, expect_engine_env=None,
         timeout=5, update_timeout=20, args=(), rollback_state=None, expect_rc=0, expect_engine=None, expect_jobs=None, expect_in_output=(),
         expect_calls=(), never_calls=(), expect_rollback_file=False):
     engine, jobs = names(prefix, env)
@@ -185,7 +186,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
             "fail_patch": fail_patch or {}, "rev_lag": rev_lag, "prov_lag": prov_lag, "stale": stale, "conflict_once": conflict_once,
             "flaky_every": flaky_every, "gets": 0, "fail_deactivate": fail_deactivate, "lease_fails_after": lease_fails_after,
             "revisions_mode": revisions_mode, "page_size": page_size, "revision_names": revision_names or {},
-            "env_change_at": env_change_at, "stop_at": stop_at,
+            "env_change_at": env_change_at, "stop_at": stop_at, "fail_gets_from": fail_gets_from,
         }
         json.dump(state, open(os.path.join(d, "state.json"), "w"))
         for tool, body in (("az", FAKE_AZ), ("docker", FAKE_DOCKER)):
@@ -362,6 +363,9 @@ results = [
     run("an engine stopped by hand while the images were pushed is left alone after all", stop_at=7,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["CI leaves it alone"], expect_deployed=False,
         expect_calls=[f"docker push --quiet {new_engine_tag}"], never_calls=["--method patch", "/deactivate"]),
+    run("an engine Azure can't say is running after the push is left alone, and the run fails", fail_gets_from=7, expect_rc=1,
+        expect_engine=old_engine, expect_jobs=old_agent, expect_deployed=False, expect_in_output=["Couldn't tell whether"],
+        never_calls=["--method patch", "/deactivate"]),
     run("a rollback leaves an engine stopped by hand meanwhile as it is", new_fails=True, stop_at=14, expect_rc=1,
         expect_engine=new_engine, expect_jobs=old_agent, expect_in_output=["was stopped by hand meanwhile", "The rollback itself failed"],
         expect_rollback_file=True),
@@ -495,8 +499,8 @@ results += [
              never_gh=True),
 ]
 
-# live-changes.sh against a fake gh: its deployments to prod (as the --jq it asks for would print them), their statuses,
-# and the comparison.
+# live-changes.sh against a fake gh: its deployments to prod (as the --jq it asks for would print them), their statuses'
+# job links, each job's "Live runs this commit" step, and the comparison.
 CHANGES_SCRIPT = os.path.join(ROOT, "tools", "ci", "live-changes.sh")
 FAKE_GH_CHANGES = textwrap.dedent(r'''
     #!/usr/bin/env python3
@@ -509,7 +513,7 @@ FAKE_GH_CHANGES = textwrap.dedent(r'''
         print("\n".join(f"{d['id']}\t{d['sha']}" for d in s["deployments"])); sys.exit()
     if url.startswith("repos/o/r/deployments/") and "/statuses" in url:
         d = url.split("/")[4]
-        print(s["states"].get(d, "") + "\t" + (f"https://github.com/o/r/actions/runs/1/job/{d}0" if d in s["steps"] else "")); sys.exit()
+        print("" if d not in s["steps"] else f"https://github.com/o/r/actions/runs/1/job/{d}0"); sys.exit()
     if url.startswith("repos/o/r/actions/jobs/"):
         print(s["steps"].get(url.split("/")[5][:-1], "")); sys.exit()
     if url.startswith("repos/o/r/compare/"):
@@ -519,7 +523,7 @@ FAKE_GH_CHANGES = textwrap.dedent(r'''
 ''').lstrip()
 
 
-def changes(name, *, deployments=(), states=None, steps=None, compare=None, expect_in_output=(), never_in_output=()):
+def changes(name, *, deployments=(), steps=None, compare=None, expect_in_output=(), never_in_output=()):
     with tempfile.TemporaryDirectory() as d:
         gh = os.path.join(d, "gh")
         open(gh, "w").write(FAKE_GH_CHANGES)
@@ -527,7 +531,7 @@ def changes(name, *, deployments=(), states=None, steps=None, compare=None, expe
         summary = os.path.join(d, "summary.md")
         env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], GH_TOKEN="t", GITHUB_REPOSITORY="o/r", GITHUB_SHA=NEW,
                    LIVE_ENVIRONMENT="prod", GITHUB_STEP_SUMMARY=summary,
-                   FAKE=json.dumps({"deployments": list(deployments), "states": states or {}, "steps": steps or {}, "compare": compare}))
+                   FAKE=json.dumps({"deployments": list(deployments), "steps": steps or {}, "compare": compare}))
         p = subprocess.run(["bash", CHANGES_SCRIPT], env=env, capture_output=True, text=True, timeout=30)
         out = open(summary).read() if os.path.exists(summary) else ""
     problems = [] if p.returncode == 0 else [f"exit {p.returncode}"]
@@ -538,23 +542,25 @@ def changes(name, *, deployments=(), states=None, steps=None, compare=None, expe
 
 BASE = "3" * 40
 compared = {"status": "ahead", "total_commits": 2,
-            "commits": [{"sha": "a" * 40, "commit": {"message": "Tighter stops\n\nbody"}}, {"sha": "b" * 40, "commit": {"message": "Docs"}}],
-            "files": [{"filename": "src/Cix.Domain/Risk/RiskGate.cs"}, {"filename": "strategies/safe.v3.json"}, {"filename": "docs/a.md"}]}
+            "commits": [{"sha": "a" * 40, "commit": {"message": "Tighter stops\n\nbody"}}, {"sha": "b" * 40, "commit": {"message": "Docs <!-- hide"}}],
+            "files": [{"filename": "src/Cix.Domain/Risk/RiskGate.cs"}, {"filename": "strategies/safe.v3.json"},
+                      {"filename": "tools/trader/agent-job.sh"}, {"filename": "docs/a.md"}]}
 results += [
-    changes("no earlier live deploy says so", expect_in_output=["No earlier live deploy from CI"]),
-    changes("lists the commits since live's last deploy and flags risk and strategy files",
-            deployments=[{"id": 5, "sha": BASE}], states={"5": "success"}, compare=compared,
-            expect_in_output=["Since 3333333", "2 commits", "aaaaaaa Tighter stops", "2 files", "`src/Cix.Domain/Risk/RiskGate.cs`", "`strategies/safe.v3.json`"],
-            never_in_output=["`docs/a.md`", "body"]),
-    changes("a failed newer deploy isn't what live runs", deployments=[{"id": 6, "sha": "4" * 40}, {"id": 5, "sha": BASE}],
-            states={"6": "failure", "5": "success"}, compare={**compared, "files": [{"filename": "docs/a.md"}]},
-            expect_in_output=["Since 3333333", "No change to risk"]),
-    changes("nor one whose job left deploying to a newer commit", deployments=[{"id": 6, "sha": "4" * 40}, {"id": 5, "sha": BASE}],
-            states={"6": "success", "5": "success"}, steps={"6": "skipped", "5": "success"}, compare=compared,
-            expect_in_output=["Since 3333333"]),
-    changes("a comparison that fails says so", deployments=[{"id": 5, "sha": BASE}], states={"5": "success"},
+    changes("no earlier live deploy: it can't tell, and says so", expect_in_output=["Couldn't tell which commit live runs"]),
+    changes("flags files that could reach real money first, then lists the commits as code",
+            deployments=[{"id": 5, "sha": BASE}], steps={"5": "success"}, compare=compared,
+            expect_in_output=["3 changed files could reach real money", "`src/Cix.Domain/Risk/RiskGate.cs`", "`strategies/safe.v3.json`",
+                              "`tools/trader/agent-job.sh`", "Since 3333333", "2 commits", "    aaaaaaa Tighter stops", "    bbbbbbb Docs _!-- hide"],
+            never_in_output=["`docs/a.md`", "body", "<!--"]),
+    changes("a newer deploy whose job didn't deploy (left to a newer run, or a stopped engine) isn't what live runs",
+            deployments=[{"id": 6, "sha": "4" * 40}, {"id": 5, "sha": BASE}], steps={"6": "skipped", "5": "success"},
+            compare={**compared, "files": [{"filename": "docs/a.md"}]}, expect_in_output=["Since 3333333", "No change to code"]),
+    changes("nor one whose job can't be found", deployments=[{"id": 6, "sha": "4" * 40}, {"id": 5, "sha": BASE}], steps={"5": "success"},
+            compare=compared, expect_in_output=["Since 3333333"]),
+    changes("a comparison that fails says so", deployments=[{"id": 5, "sha": BASE}], steps={"5": "success"},
             expect_in_output=["Couldn't compare with 3333333"]),
 ]
+
 
 # .claude/hooks/protect-live-deploy.sh: agents can't approve or reconfigure the live deploy, and ordinary work passes.
 HOOK = os.path.join(ROOT, ".claude", "hooks", "protect-live-deploy.sh")
@@ -569,7 +575,20 @@ HOOK_CASES = [
     ({"tool_name": "Bash", "tool_input": {"command": "gh api -X PUT repos/o/r/actions/oidc/customization/sub"}}, 2),
     ({"tool_name": "mcp__github__actions_run_trigger", "tool_input": {"method": "x", "url": "/repos/o/r/actions/runs/1/pending_deployments"}}, 2),
     ({"tool_name": "Bash", "tool_input": {"command": "gh api repos/o/r/actions/runs/1/approvals"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api graphql -f query='mutation{approveDeployments(input:{}){clientMutationId}}'"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api graphql -f query='mutation{deleteEnvironment(input:{id:1}){clientMutationId}}'"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh variable set --body x LIVE_REGISTRY"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh variable set --env prod --body x LIVE_AZURE_CLIENT_ID"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api repos/o/r/actions/variables -f name=LIVE_REGISTRY -f value=x"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "curl https://api.github.com/repos/o/r/actions/runs/1/pending%5Fdeployments"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api -X DELETE repos/o/r/environments/prod"}}, 2),
     # Ordinary work passes.
+    ({"tool_name": "Bash", "tool_input": {"command": "cat infra/environments/dev.json"}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "git add infra/environments/prod.json docs/live-trading.md"}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "SETTINGS=infra/environments/dev.json python3 x.py"}}, 0),
+    ({"tool_name": "mcp__github__get_file_contents", "tool_input": {"owner": "o", "repo": "r", "path": "infra/environments/dev.json"}}, 0),
+    ({"tool_name": "mcp__github__create_pull_request", "tool_input": {"body": "It sets the repository variables LIVE_AZURE_CLIENT_ID and LIVE_REGISTRY."}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh pr view 5 --json state && git checkout -b feature/1-x"}}, 0),
     ({"tool_name": "Bash", "tool_input": {"command": "git commit -m 'Deploy live after the owner approves each run'"}}, 0),
     ({"tool_name": "Bash", "tool_input": {"command": "curl -s https://api.github.com/repos/o/r/commits/abc/check-runs"}}, 0),
     ({"tool_name": "Bash", "tool_input": {"command": "python3 tools/ci/test-deploy-agents.py"}}, 0),

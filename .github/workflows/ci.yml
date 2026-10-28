@@ -659,6 +659,7 @@ jobs:
           subscription-id: ${{ vars.LIVE_SUBSCRIPTION_ID }}
 
       - name: Deploy the live engine and its agents
+        id: deploy
         if: steps.tip.outputs.deploy == 'true'
         env:
           ENGINE_SHA256: ${{ needs.agents-images.outputs.engine_sha256 }}
@@ -671,7 +672,13 @@ jobs:
           printf '%s  engine.tar.gz\n%s  trader.tar.gz\n' "$ENGINE_SHA256" "$TRADER_SHA256" | sha256sum -c --strict --quiet -
           SUBSCRIPTION_ID="$LIVE_SUBSCRIPTION_ID" REGISTRY="$LIVE_REGISTRY" TAG="$GITHUB_SHA" APPROVED_RUN="$GITHUB_RUN_ID" \
             ENGINE_ARCHIVE=engine.tar.gz TRADER_ARCHIVE=trader.tar.gz ROLLBACK_FILE="$RUNNER_TEMP/live-rollback.json" \
-            bash tools/ci/deploy-agents.sh
+            DEPLOY_OUTPUT="$GITHUB_OUTPUT" bash tools/ci/deploy-agents.sh
+
+      - name: Live runs this commit
+        # The mark tools/ci/live-changes.sh looks for: this run's images run on live (not left to a newer run, nor skipped
+        # because the engine was stopped by hand).
+        if: steps.deploy.outputs.deployed == 'true'
+        run: echo "Live runs $GITHUB_SHA."
 
       - name: Roll back an interrupted deployment
         if: (cancelled() || failure()) && steps.tip.outputs.deploy == 'true'

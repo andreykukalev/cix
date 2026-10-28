@@ -728,7 +728,7 @@ function New-FakeGh([string]$Dir, [string]$Rules = $liveRules, [string]$Branches
      environment citest of owner/repo, its branch policies ($BranchesAfter once one was added), and variables. #>
   if ($onWindows) {
     $lines = @('@echo off', 'echo gh %* >> "%~dp0calls.log"', 'if "%1 %2"=="repo view" echo owner/repo& exit /b 0',
-      'if "%1 %2 %3 %4"=="api --method PUT repos/owner/repo/environments/citest" type "%6" >> "%~dp0calls.log"& exit /b 0',
+      'if "%1 %2 %3 %4"=="api --method PUT repos/owner/repo/environments/citest" type "%~6" >> "%~dp0calls.log"& exit /b 0',
       'if "%1 %2 %3"=="api --method POST" type nul > "%~dp0main-allowed"& exit /b 0',
       "if `"%1 %2`"==`"api repos/owner/repo/environments/citest/deployment-branch-policies`" if exist `"%~dp0main-allowed`" (echo $BranchesAfter& exit /b 0) else (echo $Branches& exit /b 0)",
       "if `"%*`"==`"api repos/owner/repo/environments/citest`" echo $Rules& exit /b 0",
@@ -862,7 +862,7 @@ Check 'setup-ci-deploy.ps1 -For agents (-Yes), protected: trusts only its GitHub
   Expect @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' }).Count 6 'role assignments'
   foreach ($expected in @('trusted only for repo:owner@11/repo@22:environment:citest', 'Trusts repo:owner@11/repo@22:environment:citest.',
       'LIVE_AZURE_CLIENT_ID = 66666666-6666-6666-6666-666666666666', 'LIVE_REGISTRY = crcixcitest1', 'LIVE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa',
-      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'create citest with you as its required reviewer', 'waits in CI for your approval')) {
+      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'waits in CI for your approval')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   foreach ($never in @('refs/heads/main', 'AGENTS_', ' AZURE_CLIENT_ID', ' AZURE_TENANT_ID', ' AZURE_SUBSCRIPTION_ID')) {
@@ -870,7 +870,7 @@ Check 'setup-ci-deploy.ps1 -For agents (-Yes), protected: trusts only its GitHub
   }
   # The environment's rules, set and read back before Azure trusts it; the variables only with -SetGitHubVariables.
   foreach ($rule in @('"can_admins_bypass":\s*false', '"prevent_self_review":\s*false', '"custom_branch_policies":\s*true', '"protected_branches":\s*false', '"type":\s*"User"', '"id":\s*11\b')) {
-    if ($calls -notmatch $rule) { throw "the environment wasn't sent $rule`: $calls" }
+    if ($r.Calls -notmatch $rule) { throw "the environment wasn't sent $rule`: $($r.Calls)" }
   }
   foreach ($call in @('gh api --method POST repos/owner/repo/environments/citest/deployment-branch-policies -f name=main -f type=branch', 'gh api repos/owner/repo/environments/citest')) {
     if (-not $calls.Contains($call)) { throw "no '$call' in: $calls" }

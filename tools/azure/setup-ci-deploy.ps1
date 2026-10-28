@@ -307,6 +307,9 @@ foreach ($assignment in $assignments) {
 
 if ($live) {
   # Before Azure trusts the environment: GitHub creates a missing one bare, and a bare one would let any branch's job in.
+  $stillTrusted = if (@($credentials | Where-Object { $_.subject -ceq $subject }).Count -gt 0) {
+    "Azure still trusts it from an earlier run: fix this now, or remove that trust (App registrations, $identityName, Certificates & secrets, Federated credentials)."
+  } else { "Azure doesn't trust it yet." }
   # Admins can't skip the review, and you may approve runs you started yourself.
   Write-CixStep "GitHub environment $Environment"
   Confirm-Step "Make you ($repoOwner) the only required reviewer of the GitHub environment $Environment, for main only?"
@@ -319,10 +322,10 @@ if ($live) {
     })
   try { Invoke-CixNative { & gh api --method PUT "repos/$Repository/environments/$Environment" --input $file } | Out-Null }
   finally { Remove-Item $file -ErrorAction SilentlyContinue }
-  if ($LASTEXITCODE -ne 0) { throw "Couldn't set the rules of the GitHub environment $Environment (the repository must belong to you, a user). Azure doesn't trust it yet." }
+  if ($LASTEXITCODE -ne 0) { throw "Couldn't set the rules of the GitHub environment $Environment (the repository must belong to you, a user). $stillTrusted" }
   $readBranches = {
     $listed = Invoke-CixNative { & gh api "repos/$Repository/environments/$Environment/deployment-branch-policies" --jq .branch_policies 2>$null }
-    if ($LASTEXITCODE -ne 0) { throw "Couldn't read the branches the GitHub environment $Environment allows. Azure doesn't trust it yet." }
+    if ($LASTEXITCODE -ne 0) { throw "Couldn't read the branches the GitHub environment $Environment allows. $stillTrusted" }
     @("$listed" | ConvertFrom-CixJson | ForEach-Object { "$($_.type):$($_.name)" })
   }
   $branches = @(& $readBranches)
@@ -330,11 +333,11 @@ if ($live) {
   if ($others.Count -gt 0) { throw "The GitHub environment $Environment also allows $($others -join ', '). Remove those under Settings, Environments, $Environment first: only main may deploy." }
   if ($branches -cnotcontains 'branch:main') {
     Invoke-CixNative { & gh api --method POST "repos/$Repository/environments/$Environment/deployment-branch-policies" -f name=main -f type=branch } | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Couldn't limit the GitHub environment $Environment to main. Azure doesn't trust it yet." }
+    if ($LASTEXITCODE -ne 0) { throw "Couldn't limit the GitHub environment $Environment to main. $stillTrusted" }
   }
   # Read back: exactly you as reviewer, no admin bypass, main alone.
   $rules = Invoke-CixNative { & gh api "repos/$Repository/environments/$Environment" 2>$null }
-  if ($LASTEXITCODE -ne 0) { throw "Couldn't read the GitHub environment $Environment back. Azure doesn't trust it yet." }
+  if ($LASTEXITCODE -ne 0) { throw "Couldn't read the GitHub environment $Environment back. $stillTrusted" }
   $rules = "$rules" | ConvertFrom-CixJson
   $reviewers = @(& $field $rules 'protection_rules' | Where-Object { $_.type -eq 'required_reviewers' } | ForEach-Object { & $field $_ 'reviewers' } |
       ForEach-Object { "$($_.type):$(if ($_.PSObject.Properties['reviewer']) { $_.reviewer.id })" })
@@ -345,7 +348,7 @@ if ($live) {
   if ($policy.Count -ne 1 -or "$(@(& $field $policy[0] 'custom_branch_policies'))" -ne 'True' -or "$(@(& $field $policy[0] 'protected_branches'))" -ne 'False') { $wrong += "it isn't limited to chosen branches" }
   $branches = @(& $readBranches)
   if (($branches -join ',') -cne 'branch:main') { $wrong += "it allows $(if ($branches) { $branches -join ', ' } else { 'no branch' }), not main alone" }
-  if ($wrong.Count -gt 0) { throw "The GitHub environment $Environment isn't as it should be: $($wrong -join '; '). Fix it under Settings, Environments, $Environment, then run this again. Azure doesn't trust it yet." }
+  if ($wrong.Count -gt 0) { throw "The GitHub environment $Environment isn't as it should be: $($wrong -join '; '). Fix it under Settings, Environments, $Environment, then run this again. $stillTrusted" }
   Write-CixInfo "The GitHub environment $Environment waits for your approval, and only runs from main."
 }
 

@@ -189,8 +189,9 @@ roll_back_from() {
   valid() { [[ -n "$server_of_file" && "$1" == "$server_of_file/cix-"* ]] || { echo "::error::The rollback file holds no usable image for $2."; return 1; }; }
   previous="$(jq -r '.engine // ""' "$1")"
   engine_stopped || stopped=$?
-  if (( stopped == 0 )); then
-    echo "::error::$engine was stopped by hand meanwhile: CI leaves it stopped, on the image it has now. Before starting it again, put back $previous (provision.ps1, or run CI)."
+  if (( stopped != 1 )); then
+    if (( stopped == 0 )); then echo "::error::$engine was stopped by hand meanwhile: CI leaves it stopped, on the image it has now. Before starting it again, put back $previous (provision.ps1, or run CI)."
+    else echo "::error::Couldn't tell whether $engine was stopped by hand meanwhile, so CI didn't touch it: check it, and put back $previous if it runs another image."; fi
     ok=false
   elif valid "$previous" "$engine"; then
     if set_image "$engine_id" "$previous"; then
@@ -306,9 +307,10 @@ trap 'exit 143' TERM
 
 # 2. The engine, and its health when it runs a replica. Stopped by hand while the images were pushed: left alone after all.
 stopped=0; engine_stopped || stopped=$?
-if (( stopped == 0 )); then
+if (( stopped != 1 )); then
   trap - EXIT INT TERM
   rm -f "$state_file"
+  (( stopped == 0 )) || fail "Couldn't tell whether $engine was stopped by hand meanwhile: nothing was deployed."
   echo "::warning::$engine $stop_note"
   exit 0
 fi
