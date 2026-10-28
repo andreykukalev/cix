@@ -1,6 +1,6 @@
 # 0017. The live environment: paper's templates, switched on by the owner
 
-- Status: accepted
+- Status: accepted; amended by [ADR-0019](0019-live-deploys-from-ci-after-owner-approval.md) (CI deploys new images to live after the owner approves each run)
 - Date: 2026-10-27
 
 ## Context
@@ -24,7 +24,7 @@ The live environment, `prod` (`infra/environments/prod.json`), uses paper's temp
 - **The switch.** The owner's command sets the trading mode, `ASPNETCORE_ENVIRONMENT=Production` (the only environment where the engine accepts the live mode) and the strategy (Safe v2, which only the owner can mark `live`). It starts a new revision, which reads the keys, the live limits file and the spec, or refuses to start. Its kill switch and loss baselines are in the live database, so Live needs no state file in Azure (it still does without Cosmos DB).
 - **Images promoted from paper.** `provision.ps1 -PromoteFrom dev -ImageTag <commit SHA>` copies the images CI tagged with that commit from dev's registry into live's own registry by digest (`az acr import`), then deploys those digests. It refuses a tag whose images dev's engine and trader job don't run now (a tag CI pushed again, or an image that never ran on paper), and images in live's registry that aren't the ones it copied. Live never pulls by a tag CI can move, and its registry is its own, so no live identity needs a role in the group CI reaches.
 - **The keys uploaded from files.** `provision.ps1 -ExchangeApiKeyFile ... -ExchangePrivateKeyFile ...` passes each file to `az keyvault secret set --file`, so a key is never in a variable, on a command line or in output. The apps deployment refuses to start while either secret is missing.
-- **Nothing outside reaches it.** CI never deploys a protected environment (`setup-ci-deploy.ps1` refuses). Before deploying one, `provision.ps1` lists every principal (service principals, groups, other users) with a role on its group, on a resource in it, or above it (the subscription, a management group), except the signed-in owner and the environment's own managed identities. It asks before going on, and refuses under `-Yes`. The `protect-live-mode` hook also refuses Azure CLI and PowerShell commands that name the live environment's resources, a tripwire for agents on the owner's PC, which share the owner's sign-in.
+- **Nothing outside reaches it.** CI doesn't deploy a protected environment (`setup-ci-deploy.ps1` refuses). ADR-0019 later changed that: CI deploys new images there in runs the owner approves, with an identity of its own whose expected roles this check leaves out. Before deploying one, `provision.ps1` lists every principal (service principals, groups, other users) with a role on its group, on a resource in it, or above it (the subscription, a management group), except the signed-in owner and the environment's own managed identities. It asks before going on, and refuses under `-Yes`. The `protect-live-mode` hook also refuses Azure CLI and PowerShell commands that name the live environment's resources, a tripwire for agents on the owner's PC, which share the owner's sign-in.
 - **The shared account.** This replaces the refusal of a protected environment in the shared account (`-AllowProtectedInSharedAccount`, ADR-0009) with a warning, per owner decision 5. The live engine signs in with its own identity, with roles on the live database only.
 
 ## Alternatives considered
@@ -40,7 +40,7 @@ The live environment, `prod` (`infra/environments/prod.json`), uses paper's temp
 
 - **The image is trusted.** The template's pins keep a mistake in configuration from going live, not code written to do it: an image can ignore the settings it is given. What reaches live money is the code the owner promotes, which has been reviewed and merged on `main`, built by CI and run on paper first.
 
-- Every deployment of the live environment, a promotion included, puts the engine back on standby: the owner runs the switch again after it. That is the fail-safe direction.
+- Every deployment of the live environment, a promotion included, puts the engine back on standby: the owner runs the switch again after it. That is the fail-safe direction. (Since ADR-0019 this holds for `provision.ps1`; CI's approved deploys change only the images, and the engine keeps its settings.)
 - The live environment has its own Container Apps environment, registry, Key Vault, queues, logs and budget (20 a month), and the three agent jobs for the live engine, with their own identities.
 - Its outbound IP is probably not paper's (another Container Apps environment), but that isn't guaranteed. The market-data budget across both engines is #67.
 - No dashboard is deployed for live. Paper's dashboard shows the live engine in its live view: for that mode its API reads `cix-live` (`COSMOS_LIVE_DATABASE`, the protected environment's database in the same account). It uses the account's read-only key, which reached that database already. The owner also has the engine's logs.

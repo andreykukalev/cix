@@ -40,7 +40,8 @@
   can't change if the tag is pushed again. Without it, the images the engine and the jobs run now are kept (CI deploys new ones).
 .PARAMETER PromoteFrom
   A protected environment only, with -ImageTag: first copy the images CI tagged with it from that (paper) environment's
-  registry into this one's, by digest, and deploy those. Live runs only images that ran on paper, and CI never reaches it.
+  registry into this one's, by digest, and deploy those. Live runs only images that ran on paper; CI deploys new ones there only
+  after the owner approves each run (ADR-0019).
 .PARAMETER ExchangeApiKeyFile
   A protected environment only: upload this file (the exchange API key) to its Key Vault as revolutx-api-key, without showing
   it. With -ExchangePrivateKeyFile, before the apps are deployed, and again to rotate (docs/live-trading.md).
@@ -127,8 +128,9 @@ if ($settings.protected) {
 Write-CixStep 'Signing in'
 $account = Connect-CixAzure -Settings $settings -SubscriptionId $SubscriptionId
 if ($settings.protected) {
-  # CI and the agents have no role here (ADR-0017): anyone but you and the environment's own identities who holds a role on the
-  # group, in it or above it is shown. -Yes never goes on past them: you decide, having seen them.
+  # CI and the agents have no role here (ADR-0017), but for the live deploy's expected roles (ADR-0019): anyone but you and
+  # the environment's own identities who holds a role on the group, in it or above it is shown. -Yes never goes on past
+  # them: you decide, having seen them.
   $outside = @(Get-CixOutsideAccess -Settings $settings -SubscriptionId $account.id -OwnerId (Get-CixSignedInUser).Id)
   if ($outside.Count -gt 0) {
     $list = "Others with roles on $($settings.resourceGroup), in it or above it: $($outside -join '; ')."

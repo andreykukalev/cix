@@ -1,5 +1,5 @@
 {
-  "$comment": "Settings for the 'prod' environment: real money on Revolut X (epic #72, ADR-0017), next to dev's paper. Read by tools/azure/*.ps1; no secrets here. protected: true keeps CI, the dashboard's requests and reset-database.ps1 out, mounts the exchange keys in the engine (which stands by in paper until the owner switches it), and makes provision.ps1 check that no service principal holds a role on the group. Its database is its own, in the shared account (owner decision 5). Runbook: docs/live-trading.md.",
+  "$comment": "Settings for the 'prod' environment: real money on Revolut X (epic #72, ADR-0017), next to dev's paper. Read by tools/azure/*.ps1; no secrets here. protected: true keeps paper's CI, the dashboard's requests and reset-database.ps1 out (CI deploys new images here only in runs the owner approves, ADR-0019), mounts the exchange keys in the engine (which stands by in paper until the owner switches it), and makes provision.ps1 check that no service principal but the deploy's own holds a role on the group. Its database is its own, in the shared account (owner decision 5). Runbook: docs/live-trading.md.",
   "environmentName": "prod",
   "protected": true,
   "subscriptionId": "",

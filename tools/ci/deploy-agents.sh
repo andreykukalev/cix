@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Deploys the paper engine and the agent jobs to Azure Container Apps (ADR-0013, docs/azure.md), after a merge to main:
+# Deploys the engine and the agent jobs to Azure Container Apps (ADR-0013, docs/azure.md), after a merge to main: paper's,
+# and then, once paper runs the same images and the owner has approved the run, the live environment's (ADR-0019):
 #   1. pushes the two images CI built to the environment's registry, tagged with the commit (agents.deploy platform stops
 #      here: the apps don't exist yet, and provision.ps1 -ImageTag creates them from these images);
 #   2. points the engine at its new image and, when it runs a replica (minimum replicas 1, set by agents.startEngine),
@@ -9,7 +10,8 @@
 # The apps get the images by digest, as the registry gave them on the push: what runs can't change if a tag is pushed again.
 # If anything fails once the engine has changed, the engine and the jobs go back to the images they ran before, and the
 # run fails. An engine stopped or rolled back by hand (the emergency stop, the cutover) is left alone. Nothing here changes
-# infrastructure or settings: provision.ps1 (the owner) creates the apps, their settings and roles.
+# infrastructure or settings: provision.ps1 (the owner) creates the apps, their settings and roles. So the live engine keeps
+# the trading mode, environment and strategy the owner switched it to (or its standby): only the image changes.
 #
 # Changes go through the management API (az rest), as a JSON merge patch of the containers only, so no CLI extension is
 # needed and nothing else in the apps is sent or changed.
@@ -18,7 +20,10 @@
 # Environment: SETTINGS (infra/environments/<env>.json), SUBSCRIPTION_ID, REGISTRY (the registry's name), TAG (the commit
 # SHA), ENGINE_ARCHIVE and TRADER_ARCHIVE (the images as docker save wrote them, tagged cix-engine:ci and cix-trader:ci),
 # and optionally ROLLBACK_FILE (where the previous images are kept while the apps are changing), HEALTH_TIMEOUT_SECONDS
-# (720: the engine's startup probe allows 10 minutes), UPDATE_TIMEOUT_SECONDS (600) and POLL_SECONDS (15).
+# (720: the engine's startup probe allows 10 minutes), UPDATE_TIMEOUT_SECONDS (600), POLL_SECONDS (15) and DEPLOY_OUTPUT
+# (a file, such as $GITHUB_OUTPUT, that gets deployed=true once the apps run this commit's images).
+# A protected environment (live money) also needs APPROVED_RUN: the workflow run the owner approved, which
+# tools/ci/live-approved.sh checked. Without it the script refuses, before any call.
 #
 #   deploy-agents.sh --roll-back   puts back the images in ROLLBACK_FILE, if an interrupted run left it behind.
 set -euo pipefail
@@ -44,9 +49,10 @@ if [[ "$deploy" != apps && "$deploy" != platform ]]; then
   echo "::notice::agents.deploy is '$deploy' in $SETTINGS: there is no registry in Azure to deploy to."
   exit 0
 fi
-if [[ "$(jq -r '.protected // false' "$SETTINGS")" == true ]]; then
-  fail "$SETTINGS is a protected environment: CI never deploys there."
+if [[ "$(jq -r '.protected // false' "$SETTINGS")" == true && "$mode" == deploy && ! "${APPROVED_RUN:-}" =~ ^[0-9]{1,20}$ ]]; then
+  fail "$SETTINGS is a protected environment: CI deploys there only in a run the owner approved (APPROVED_RUN, ADR-0019)."
 fi
+deployed() { [[ -z "${DEPLOY_OUTPUT:-}" ]] || echo "deployed=true" >> "$DEPLOY_OUTPUT"; }
 group="$(jq -r .resourceGroup "$SETTINGS")"
 prefix="$(jq -r .namePrefix "$SETTINGS")"
 env_name="$(jq -r .environmentName "$SETTINGS")"
@@ -84,19 +90,27 @@ settled() {
   done
 }
 
+# An app's or a job's containers but the first one's image: what a deployment leaves as it found it (for the live engine,
+# the mode, environment and strategy the owner switched it to).
+settings_of() { jq -cS '.properties.template.containers | .[0].image = null' <<<"$1"; }
+
 # Points an app or a job at an image (its first container; the other containers and everything else stay as they are)
-# and waits until Azure has applied it: provisioned, with that image. Each step checks its own result, since this also
-# runs where set -e is off (the rollback).
+# and waits until Azure has applied it: provisioned, with that image. Each attempt sends the containers as Azure has them
+# then; with expected settings (settings_of), it refuses if they changed since, such as by the owner meanwhile. Each step
+# checks its own result, since this also runs where set -e is off (the rollback).
 set_image() {
-  local id="$1" image="$2" resource body state attempt deadline
+  local id="$1" image="$2" expected="${3:-}" resource body state attempt deadline
   deadline=$(( $(date +%s) + update_timeout ))
-  resource="$(settled "$id" "$deadline")" || return 1
-  body="$(jq -ec --arg image "$image" '{properties: {template: {containers: (.properties.template.containers | .[0].image = $image)}}}' <<<"$resource")" || return 1
   for attempt in 1 2 3 4; do
+    resource="$(settled "$id" "$deadline")" || return 1
+    if [[ -n "$expected" && "$(settings_of "$resource")" != "$expected" ]]; then
+      echo "::error::${id##*/}'s settings changed while CI was deploying (by hand?): CI doesn't send them back. Run CI on main by hand to deploy again."
+      return 1
+    fi
+    body="$(jq -ec --arg image "$image" '{properties: {template: {containers: (.properties.template.containers | .[0].image = $image)}}}' <<<"$resource")" || return 1
     if az rest --method patch --url "https://management.azure.com$id?api-version=$api" --body "$body" -o none; then break; fi
     if (( attempt == 4 )); then echo "::error::Azure refused to update ${id##*/}."; return 1; fi
-    # Most likely a conflict with an update still in progress: wait for it, then try again.
-    settled "$id" "$deadline" >/dev/null || return 1
+    # Most likely a conflict with an update still in progress: the next attempt waits for it.
   done
   while :; do
     resource="$(get "$id")" || return 1
@@ -157,14 +171,29 @@ retire_old_revisions() {
   [[ "$ok" == true ]]
 }
 
+# Whether the engine was stopped by hand: stopped (az containerapp stop), or its latest revision deactivated or another one
+# activated. CI must not start it again, which a new revision would do. Fails if Azure can't say.
+engine_stopped() {
+  local app latest active
+  app="$(get "$engine_id")" || return 2
+  latest="$(jq -r .properties.latestRevisionName <<<"$app")"
+  active="$(get "$engine_id/revisions/$latest" | jq -r '.properties.active')" || return 2
+  [[ "$(jq -r '.properties.runningStatus // ""' <<<"$app")" =~ ^(Stopped|Suspended)$ || "$active" != true ]]
+}
+
 # Puts back the images in a rollback file: the engine first, then every job, trying them all even if one fails. Only
-# images from the registry they came from.
+# images from the registry they came from. An engine stopped by hand meanwhile stays stopped, on the image it has.
 roll_back_from() {
-  local ok=true previous job server_of_file
+  local ok=true previous job server_of_file stopped=0
   server_of_file="$(jq -er .server "$1")" || server_of_file=""
   valid() { [[ -n "$server_of_file" && "$1" == "$server_of_file/cix-"* ]] || { echo "::error::The rollback file holds no usable image for $2."; return 1; }; }
   previous="$(jq -r '.engine // ""' "$1")"
-  if valid "$previous" "$engine"; then
+  engine_stopped || stopped=$?
+  if (( stopped != 1 )); then
+    if (( stopped == 0 )); then echo "::error::$engine was stopped by hand meanwhile: CI leaves it stopped, on the image it has now. Before starting it again, put back $previous (provision.ps1, or run CI)."
+    else echo "::error::Couldn't tell whether $engine was stopped by hand meanwhile, so CI didn't touch it: check it, and put back $previous if it runs another image."; fi
+    ok=false
+  elif valid "$previous" "$engine"; then
     if set_image "$engine_id" "$previous"; then
       # The images are back either way; a revision left running only keeps the lease from the rolled-back one.
       retire_old_revisions "$previous" || echo "::warning::A revision of $engine other than the latest may still be running: check its revisions in the Azure portal."
@@ -206,16 +235,18 @@ declare -A previous_job
 if [[ "$deploy" == apps ]]; then
   app="$(get "$engine_id")" || fail "Couldn't read $engine in $group: run provision.ps1 with agents.deploy apps first."
   previous_engine="$(jq -r '.properties.template.containers[0].image' <<<"$app")"
+  engine_settings="$(settings_of "$app")"
   min_replicas="$(jq -r '.properties.template.scale.minReplicas // 0' <<<"$app")"
-  # Stopped (az containerapp stop), or its latest revision deactivated or another one activated by hand: CI must not
-  # start it again, which a new revision would do.
-  latest="$(jq -r .properties.latestRevisionName <<<"$app")"
-  latest_active="$(get "$engine_id/revisions/$latest" | jq -r '.properties.active')" || fail "Couldn't read $engine's revision $latest."
-  if [[ "$(jq -r '.properties.runningStatus // ""' <<<"$app")" =~ ^(Stopped|Suspended)$ || "$latest_active" != true ]]; then
-    echo "::warning::$engine is stopped, or its latest revision was deactivated by hand, so CI leaves it alone: nothing was deployed. Once it runs again, run CI on main by hand to deploy the latest commit."
-    exit 0
-  fi
-  for job in "${jobs[@]}"; do previous_job[$job]="$(image_of "$(job_id "$job")")" || fail "Couldn't read the job $job in $group."; done
+  stop_note="is stopped, or its latest revision was deactivated by hand, so CI leaves it alone: nothing was deployed. Once it runs again, run CI on main by hand to deploy the latest commit."
+  stopped=0; engine_stopped || stopped=$?
+  (( stopped != 2 )) || fail "Couldn't read $engine's latest revision."
+  if (( stopped == 0 )); then echo "::warning::$engine $stop_note"; exit 0; fi
+  declare -A job_settings
+  for job in "${jobs[@]}"; do
+    job_json="$(get "$(job_id "$job")")" || fail "Couldn't read the job $job in $group."
+    previous_job[$job]="$(jq -r '.properties.template.containers[0].image' <<<"$job_json")"
+    job_settings[$job]="$(settings_of "$job_json")"
+  done
   [[ "$previous_engine" == "$server/"* ]] || fail "$engine runs $previous_engine, not an image from $server; provision.ps1 sets it up."
   for job in "${jobs[@]}"; do
     [[ "${previous_job[$job]}" == "$server/"* ]] || fail "$job runs ${previous_job[$job]}, not an image from $server; provision.ps1 sets it up."
@@ -246,7 +277,7 @@ fi
 if [[ "$previous_engine" == "$engine_image" ]]; then
   all_current=true
   for job in "${jobs[@]}"; do [[ "${previous_job[$job]}" == "$agent_image" ]] || all_current=false; done
-  if [[ "$all_current" == true ]]; then say "Already running $TAG: nothing to deploy."; exit 0; fi
+  if [[ "$all_current" == true ]]; then say "Already running $TAG: nothing to deploy."; deployed; exit 0; fi
 fi
 say "Engine: $previous_engine -> $engine_image"
 for job in "${jobs[@]}"; do say "Job $job: ${previous_job[$job]} -> $agent_image"; done
@@ -274,8 +305,16 @@ trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# 2. The engine, and its health when it runs a replica.
-set_image "$engine_id" "$engine_image"
+# 2. The engine, and its health when it runs a replica. Stopped by hand while the images were pushed: left alone after all.
+stopped=0; engine_stopped || stopped=$?
+if (( stopped != 1 )); then
+  trap - EXIT INT TERM
+  rm -f "$state_file"
+  (( stopped == 0 )) || fail "Couldn't tell whether $engine was stopped by hand meanwhile: nothing was deployed."
+  echo "::warning::$engine $stop_note"
+  exit 0
+fi
+set_image "$engine_id" "$engine_image" "$engine_settings"
 if (( min_replicas < 1 )); then
   echo "::notice::The engine runs no replica (minimum replicas 0, agents.startEngine false): its new image starts with it, so there is no health to wait for."
 else
@@ -308,8 +347,9 @@ fi
 
 # 3. The jobs: their next executions use the new image.
 for job in "${jobs[@]}"; do
-  set_image "$(job_id "$job")" "$agent_image"
+  set_image "$(job_id "$job")" "$agent_image" "${job_settings[$job]}"
 done
 trap - EXIT INT TERM
 rm -f "$state_file"
+deployed
 say "Deployed $TAG: the engine and the jobs ${jobs[*]}."

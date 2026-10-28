@@ -90,8 +90,8 @@ Deleting the API key in Revolut X stops the engine from placing or cancelling or
 The live environment is `prod` (`infra/environments/prod.json`): resource group `rg-cix-live`, database `cix-live` in the shared account, no dashboard of its own: paper's dashboard shows it under **Live**, reading `cix-live` with the shared account's read-only key. It uses the same templates as paper's `dev`, marked `protected`, which changes four things (ADR-0017):
 
 - **The engine gets the exchange keys** from the live Key Vault, as files, and stands by in paper until you switch it.
-- **Its images come from paper.** You copy the images paper runs now, by digest, from dev's registry into live's own: `provision.ps1` refuses a tag paper doesn't run. CI never deploys here (`setup-ci-deploy.ps1` refuses it), and has no role here.
-- **Nothing outside reaches it.** Before deploying, `provision.ps1` lists everyone with a role on `rg-cix-live`, on anything in it, or above it (the subscription, a management group): service principals, groups and other users, all but you and the environment's own identities. It asks before going on, and with `-Yes` it stops instead.
+- **Its images come from paper.** You copy the images paper runs now, by digest, from dev's registry into live's own: `provision.ps1` refuses a tag paper doesn't run. After that, CI deploys each new image paper runs, once you approve the run ([Deploys from main](#deploys-from-main), ADR-0019); paper's CI identity has no role here.
+- **Nothing outside reaches it.** Before deploying, `provision.ps1` lists everyone with a role on `rg-cix-live`, on anything in it, or above it (the subscription, a management group): service principals, groups and other users, all but you, the environment's own identities, and the live deploy's expected roles (anything else it holds is listed). It asks before going on, and with `-Yes` it stops instead.
 - **Your PC's engine settings stay paper's.** `provision.ps1` doesn't write `.env` or `secrets/cosmos_key` for it.
 
 The agent jobs run here too, for the live engine only, with their own identities and the same `claude-token` (uploaded from `secrets/claude_token` when the live vault has none).
@@ -128,7 +128,7 @@ az containerapp logs show --name ca-cix-prod-engine --resource-group rg-cix-live
 
 ### Switching the engine on
 
-This is the step that trades real money, and it is yours alone. No file in the repository holds it, CI has no role here, and the `protect-live-mode` hook refuses any command an agent writes on this environment. That hook is a tripwire, not the control: what stops anyone else is that only your Azure sign-in has a role here. A Claude session on your PC shares that sign-in, so keep it to sessions you watch, or keep your rights on `rg-cix-live` in a separate admin account (or a role you activate only for this step). One command, from your own sign-in, sets the engine's trading mode, the environment that allows it, and the strategy. In it, `<mode>` stands for the word `Live` (the `protect-live-mode` hook stops anyone writing the setting out in the repository, this page included). Type it exactly so, with a capital L: the engine refuses any other spelling, and the new revision then fails to start while the standby one runs on.
+This is the step that trades real money, and it is yours alone. No file in the repository holds it, CI's deploys keep the engine's settings as they are, and the `protect-live-mode` hook refuses any command an agent writes on this environment. That hook is a tripwire, not the control: what stops anyone else is that only your Azure sign-in has a role here, apart from the live deploy, which signs in only from runs you approve. A Claude session on your PC shares that sign-in, so keep it to sessions you watch, or keep your rights on `rg-cix-live` in a separate admin account (or a role you activate only for this step). One command, from your own sign-in, sets the engine's trading mode, the environment that allows it, and the strategy. In it, `<mode>` stands for the word `Live` (the `protect-live-mode` hook stops anyone writing the setting out in the repository, this page included). Type it exactly so, with a capital L: the engine refuses any other spelling, and the new revision then fails to start while the standby one runs on.
 
 ```powershell
 az containerapp update --name ca-cix-prod-engine --resource-group rg-cix-live --set-env-vars Trading__Mode=<mode> ASPNETCORE_ENVIRONMENT=Production Strategy__Name=safe Strategy__Version=2
@@ -136,7 +136,33 @@ az containerapp update --name ca-cix-prod-engine --resource-group rg-cix-live --
 
 It starts a new revision, which reads the keys, checks them against the live limits and the strategy, keeps its state (the kill switch, loss baselines, the lease) in `cix-live`, syncs the sub-account's balances, and then trades. Watch its first minutes with the `logs show` command above. If it refuses to start (no limits file, a spec that isn't `live`, a key missing), the log says why without showing any key, and the revision stays unhealthy while the standby one keeps running: fix the cause, or put it back on standby.
 
-**Every deployment of the live environment puts the engine back on standby**, because the template pins it to paper. After promoting a new image (step 2 again, without the key files) or uploading new keys, run the switch command again.
+**Every `provision.ps1` deployment of the live environment puts the engine back on standby**, because the template pins it to paper. After promoting a new image (step 2 again, without the key files) or uploading new keys, run the switch command again. CI's deploys (below) don't: they change only the images.
+
+### Deploys from main
+
+Once set up, each change on `main` that paper deploys waits in CI for your approval, then goes to the live engine and its jobs with the same images (ADR-0019). The engine keeps its mode, environment and strategy, its kill switch and its state: no promotion, switch or Resume needed.
+
+**Set it up once**, from your own sign-in, in PowerShell from the repository root, with the GitHub CLI signed in (`gh auth login`):
+
+```powershell
+.\tools\azure\setup-ci-deploy.ps1 -Environment prod -For agents -SetGitHubVariables
+```
+
+It asks before each change. It creates the identity `cix-agents-deploy-prod` with the paper deploy's two roles on live's registry, engine and jobs. It gives the GitHub environment `prod` its rules (you as its only required reviewer, `main` only, no admin bypass, and you may approve runs you started) and reads them back, and only then lets Azure trust jobs in that environment. Then it sets the repository variables `LIVE_AZURE_CLIENT_ID`, `LIVE_REGISTRY`, `LIVE_TENANT_ID` and `LIVE_SUBSCRIPTION_ID`, which switch the job on (without `-SetGitHubVariables` it prints them for you to add). Run it from your own terminal: Claude sessions are blocked from it.
+
+**Each deploy:**
+
+1. A change merges to `main`. CI deploys it to paper as before.
+2. The run's `deploy-live` job then waits, and GitHub notifies you. Open the run (Actions, CI). Its summary, *What this live deploy changes*, lists the commits and files since live's last deploy, with changes to risk, limits, strategies, orders, tools or the deploy flagged. Then press **Review deployments**, tick `prod`, **Approve and deploy**. Approving runs that commit's workflow with the live deploy's rights, so approve only changes you recognise.
+3. The job checks your approval again, pushes the images to live's registry, stops the old engine revision, waits for the new one to be healthy, then updates the jobs. If the new engine fails, it puts the old images back. The engine is down for the new one's startup, usually under a minute.
+
+- Approve within a day: the images are kept that long. After that the job fails; run CI on `main` by hand (Run workflow) and approve that run.
+- If a newer commit changed the images meanwhile, approving the older run deploys nothing: its own run deploys live.
+- To keep live where it is, **reject** the run (Review deployments, Reject): a run left waiting holds back every later one. After a rejection, that run can't deploy again; run CI on `main` by hand for a new one.
+- An engine you stopped by hand (stopped, or its revision deactivated) is left alone, and settings you change while a deploy runs are never sent back: the deploy stops and rolls back instead.
+- Claude sessions use your GitHub account, so GitHub can't tell their approval from yours. They are told never to approve (CLAUDE.md rule 8) and a hook blocks the calls, but that is a tripwire: approve only in the GitHub app or site yourself, and if a live deploy ever runs that you didn't approve, delete `LIVE_AZURE_CLIENT_ID` and look (ADR-0019, "The risk that remains").
+- Changes to `infra/`, the apps' settings or the keys still need `provision.ps1` and then the switch.
+- To turn it off, delete the repository variable `LIVE_AZURE_CLIENT_ID`. If you suspect misuse, also delete the identity's role assignments on `rg-cix-live`.
 
 ### Pausing and resuming from the dashboard (ADR-0018)
 

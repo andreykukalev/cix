@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """tools/ci/deploy-agents.sh against a fake az and docker: every path, including the rollbacks. And tools/ci/agents-tip.sh,
-which decides whether a run deploys at all, against a fake gh, and that it agrees with tools/ci/plan.sh on which files
-change the images.
+which decides whether a run deploys at all, and tools/ci/live-approved.sh, which lets a run deploy live only with the
+owner's approval, against a fake gh; the hook that keeps agents from approving it; and that agents-tip.sh agrees with
+tools/ci/plan.sh on which files change the images.
 
 Runs in CI (no Azure, no Docker daemon needed). Each scenario writes an environment file and a fake Azure state, runs the
 script, and checks what it did to the engine and the jobs, and that it pushed only after loading the images.
@@ -16,6 +17,7 @@ import textwrap
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPT = os.path.join(ROOT, "tools", "ci", "deploy-agents.sh")
 TIP_SCRIPT = os.path.join(ROOT, "tools", "ci", "agents-tip.sh")
+APPROVED_SCRIPT = os.path.join(ROOT, "tools", "ci", "live-approved.sh")
 PLAN_SCRIPT = os.path.join(ROOT, "tools", "ci", "plan.sh")
 SUB = "00000000-0000-0000-0000-000000000001"
 REGISTRY = "crcixdevabc123"
@@ -49,7 +51,12 @@ FAKE_AZ = textwrap.dedent(r'''
     parts = resource[len(prefix):].split("/")
     kind, name, rest = parts[0], parts[1], parts[2:]
     if method == "get":
-        s["gets"] += 1; save()
+        s["gets"] += 1
+        # The owner changing the engine by hand while CI deploys: its settings, or stopping it, from that read on.
+        if s["env_change_at"] and s["gets"] >= s["env_change_at"]: s["engine"]["env"] = [{"name": "Strategy__Name", "value": "balanced"}]
+        if s["stop_at"] and s["gets"] >= s["stop_at"]: s["engine"]["runningStatus"] = "Stopped"
+        save()
+        if s["fail_gets_from"] and s["gets"] >= s["fail_gets_from"]: sys.exit("ERROR: (TooManyRequests)")
         if s["flaky_every"] and s["gets"] % s["flaky_every"] == 0: sys.exit("ERROR: (TooManyRequests)")
     if kind == "jobs":
         job = s["jobs"].get(name) or sys.exit("ERROR: (ResourceNotFound) " + name)
@@ -70,7 +77,9 @@ FAKE_AZ = textwrap.dedent(r'''
     if method == "patch":
         body = json.loads(opt("--body"))
         image = body["properties"]["template"]["containers"][0]["image"]
-        if body != {"properties": {"template": {"containers": [{"name": "engine", "image": image}]}}}: sys.exit("ERROR: sent more than the containers")
+        # The container's settings (for live, the mode and strategy the owner switched it to) go back as Azure has them.
+        if body != {"properties": {"template": {"containers": [{"name": "engine", "image": image, "env": e["env"]}]}}}:
+            sys.exit("ERROR: sent more than the containers, or changed their settings")
         if image in s["fail_patch"].get(name, []): sys.exit("ERROR: (BadRequest) update failed")
         if s["conflict_once"]: s["conflict_once"] = False; save(); sys.exit("ERROR: (Conflict) an operation is in progress")
         # Single revision mode: the revisions running stay active until the new one is ready (below).
@@ -89,7 +98,7 @@ FAKE_AZ = textwrap.dedent(r'''
             if e["stale_left"] == 0: e["image"] = e.pop("pending")
         elif e.get("prov_left", 0) > 0: e["prov_left"] -= 1; provisioning = "InProgress"
         save()
-        props = {"template": {"containers": [{"name": "engine", "image": e["image"]}], "scale": {"minReplicas": e["min"], "maxReplicas": 1}},
+        props = {"template": {"containers": [{"name": "engine", "image": e["image"], "env": e["env"]}], "scale": {"minReplicas": e["min"], "maxReplicas": 1}},
                  "configuration": {"activeRevisionsMode": s["revisions_mode"]},
                  "latestRevisionName": full(latest), "provisioningState": provisioning}
         if e.get("runningStatus"): props["runningStatus"] = e["runningStatus"]
@@ -156,7 +165,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
         running_status=None, revisions=None, engine_image=None, job_images=None, missing_engine=False, healthy_after=2,
         running_value="Running", new_fails=False, fail_patch=None, rev_lag=0, prov_lag=1, stale=0, conflict_once=False,
         flaky_every=0, fail_push=False, no_digest=False, fail_deactivate=False, lease_fails_after=6, revisions_mode="Single", page_size=0,
-        revision_names=None,
+        revision_names=None, extra_env=None, expect_deployed=None, env_change_at=0, stop_at=0, fail_gets_from=0, expect_engine_env=None,
         timeout=5, update_timeout=20, args=(), rollback_state=None, expect_rc=0, expect_engine=None, expect_jobs=None, expect_in_output=(),
         expect_calls=(), never_calls=(), expect_rollback_file=False):
     engine, jobs = names(prefix, env)
@@ -170,12 +179,14 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
             "registry": {"name": REGISTRY, "loginServer": SERVER, "tags": {"cix-environment": registry_env or env}},
             "engine": {"name": "missing" if missing_engine else engine, "image": current, "min": min_replicas,
                        "runningStatus": running_status, "latest": "rev-1",
+                       "env": [{"name": "Strategy__Name", "value": "safe"}, {"name": "Strategy__Version", "value": "2"}],
                        "revisions": revisions if revisions is not None else [{"name": "rev-1", "image": current, "active": True, "polls": 0}]},
             "jobs": job_images or {j: old_agent for j in jobs},
             "healthy_after": healthy_after, "running_value": running_value, "new_fails": new_fails, "new_engine": new_engine,
             "fail_patch": fail_patch or {}, "rev_lag": rev_lag, "prov_lag": prov_lag, "stale": stale, "conflict_once": conflict_once,
             "flaky_every": flaky_every, "gets": 0, "fail_deactivate": fail_deactivate, "lease_fails_after": lease_fails_after,
             "revisions_mode": revisions_mode, "page_size": page_size, "revision_names": revision_names or {},
+            "env_change_at": env_change_at, "stop_at": stop_at, "fail_gets_from": fail_gets_from,
         }
         json.dump(state, open(os.path.join(d, "state.json"), "w"))
         for tool, body in (("az", FAKE_AZ), ("docker", FAKE_DOCKER)):
@@ -185,6 +196,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
         for archive in ("engine.tar.gz", "trader.tar.gz"):
             open(os.path.join(d, archive), "w").close()
         rollback_file = os.path.join(d, "rollback.json")
+        deploy_output = os.path.join(d, "deploy-output")
         if rollback_state:
             json.dump(rollback_state(jobs), open(rollback_file, "w"))
         env_vars = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], SETTINGS=settings, TAG=NEW, REGISTRY=REGISTRY,
@@ -192,7 +204,9 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
                         TRADER_ARCHIVE=os.path.join(d, "trader.tar.gz"), ROLLBACK_FILE=rollback_file,
                         HEALTH_TIMEOUT_SECONDS=str(timeout), POLL_SECONDS="0",
                         # Updates get their own, longer timeout: a slow runner must not time out the update in a health test.
-                        UPDATE_TIMEOUT_SECONDS=str(update_timeout))
+                        UPDATE_TIMEOUT_SECONDS=str(update_timeout), DEPLOY_OUTPUT=deploy_output)
+        env_vars.pop("APPROVED_RUN", None)
+        env_vars.update(extra_env or {})
         if fail_push:
             env_vars["FAIL_PUSH"] = "1"
         if no_digest:
@@ -203,6 +217,7 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
         log_path = os.path.join(d, "calls.log")
         calls = open(log_path).read() if os.path.exists(log_path) else ""
         rollback_left = os.path.exists(rollback_file)
+        said_deployed = os.path.exists(deploy_output) and open(deploy_output).read() == "deployed=true\n"
     problems = []
     if p.returncode != expect_rc:
         problems.append(f"exit {p.returncode}, wanted {expect_rc}")
@@ -221,6 +236,10 @@ def run(name, *, deploy="apps", protected=False, prefix="cix", env="dev", regist
     for call in never_calls:
         if call in calls or call in out:
             problems.append(f"unexpected {call!r}")
+    if expect_engine_env is not None and [v["value"] for v in final["engine"]["env"]] != expect_engine_env:
+        problems.append(f"the engine's settings are {final['engine']['env']}")
+    if expect_deployed is not None and said_deployed != expect_deployed:
+        problems.append("it " + ("said" if said_deployed else "didn't say") + " deployed=true")
     if rollback_left != expect_rollback_file:
         problems.append("the rollback file was " + ("left behind" if rollback_left else "removed"))
     return report("deploy-agents", name, problems, out + "\n--- calls\n" + calls)
@@ -246,7 +265,7 @@ def tampered(jobs):
 
 engine_dev, jobs_dev = names("cix", "dev")
 results = [
-    run("deploys the engine, waits for it to be healthy, then the jobs",
+    run("deploys the engine, waits for it to be healthy, then the jobs", expect_deployed=True,
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Engine revision {engine_dev}--rev-2 is healthy", f"Deployed {NEW}"],
         expect_calls=[f"docker push --quiet {new_engine_tag}", f"docker push --quiet {new_agent_tag}", f"az acr login --name {REGISTRY}"]),
     run("the old revision is stopped, so the new engine can take the engine lease",
@@ -290,7 +309,7 @@ results = [
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=[f"Deployed {NEW}"]),
     run("an engine with no replica gets its new image without waiting", min_replicas=0,
         expect_engine=new_engine, expect_jobs=new_agent, expect_in_output=["The engine runs no replica"], never_calls=["/revisions/rev-2", "deactivate"]),
-    run("an engine that fails comes back to the old image, and the jobs stay", new_fails=True, expect_rc=1,
+    run("an engine that fails comes back to the old image, and the jobs stay", new_fails=True, expect_rc=1, expect_deployed=False,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["failed (provisioning Succeeded, running Failed)", "Rolled back"]),
     run("an engine that never becomes healthy is rolled back after the timeout", healthy_after=None, timeout=1, expect_rc=1,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["wasn't healthy after 1 seconds", "Rolled back"]),
@@ -314,7 +333,7 @@ results = [
         never_calls=["az "]),
     run("a failed push changes nothing", fail_push=True, expect_rc=1, expect_engine=old_engine, expect_jobs=old_agent,
         never_calls=["--method patch"]),
-    run("nothing to do when the commit already runs", engine_image=new_engine, job_images={j: new_agent for j in jobs_dev},
+    run("nothing to do when the commit already runs", engine_image=new_engine, job_images={j: new_agent for j in jobs_dev}, expect_deployed=True,
         expect_in_output=["Already running"], expect_calls=[f"docker push --quiet {new_engine_tag}"], never_calls=["--method patch"]),
     run("an engine whose latest revision was deactivated by hand is left alone",
         revisions=[{"name": "rev-1", "image": old_engine, "active": False, "polls": 0}],
@@ -327,12 +346,32 @@ results = [
     run("a job not running from the registry is left to provision.ps1",
         job_images={**{j: old_agent for j in jobs_dev}, jobs_dev[2]: "mcr.microsoft.com/k8se/quickstart-jobs:latest"},
         expect_rc=1, expect_in_output=["not an image from"], never_calls=["docker", "--method patch"]),
-    run("agents.deploy platform only pushes the images, for provision.ps1 to create the apps from", deploy="platform",
+    run("agents.deploy platform only pushes the images, for provision.ps1 to create the apps from", deploy="platform", expect_deployed=False,
         expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["provision.ps1 -ImageTag " + NEW],
         expect_calls=[f"docker push --quiet {new_engine_tag}", f"docker push --quiet {new_agent_tag}"], never_calls=["az rest"]),
     run("agents.deploy none deploys nothing", deploy="none", expect_in_output=["no registry in Azure"], never_calls=["az ", "docker"]),
-    run("never a protected environment", protected=True, expect_rc=1, expect_in_output=["protected environment"],
-        never_calls=["az ", "docker"]),
+    run("a protected environment only in a run the owner approved", protected=True, expect_rc=1, expect_deployed=False,
+        expect_in_output=["protected environment", "APPROVED_RUN"], never_calls=["az ", "docker"]),
+    run("... whose ID is a number", protected=True, extra_env={"APPROVED_RUN": "12 ; true"}, expect_rc=1,
+        expect_in_output=["protected environment"], never_calls=["az ", "docker"]),
+    run("a protected environment deploys in an approved run, its settings untouched", protected=True, env="prod",
+        extra_env={"APPROVED_RUN": "1234567890"}, expect_engine=new_engine, expect_jobs=new_agent, expect_deployed=True,
+        expect_in_output=[f"Deployed {NEW}"], expect_calls=["ca-cix-prod-engine"]),
+    run("settings changed by hand while the images were pushed are never sent back, and nothing is deployed", env_change_at=7,
+        expect_rc=1, expect_engine=old_engine, expect_jobs=old_agent, expect_engine_env=["balanced"], expect_deployed=False,
+        expect_in_output=["settings changed while CI was deploying"]),
+    run("an engine stopped by hand while the images were pushed is left alone after all", stop_at=7,
+        expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["CI leaves it alone"], expect_deployed=False,
+        expect_calls=[f"docker push --quiet {new_engine_tag}"], never_calls=["--method patch", "/deactivate"]),
+    run("an engine Azure can't say is running after the push is left alone, and the run fails", fail_gets_from=7, expect_rc=1,
+        expect_engine=old_engine, expect_jobs=old_agent, expect_deployed=False, expect_in_output=["Couldn't tell whether"],
+        never_calls=["--method patch", "/deactivate"]),
+    run("a rollback leaves an engine stopped by hand meanwhile as it is", new_fails=True, stop_at=14, expect_rc=1,
+        expect_engine=new_engine, expect_jobs=old_agent, expect_in_output=["was stopped by hand meanwhile", "The rollback itself failed"],
+        expect_rollback_file=True),
+    run("... and an interrupted one is rolled back without an approval", protected=True, env="prod", args=["--roll-back"],
+        engine_image=new_engine, job_images={j: new_agent for j in names("cix", "prod")[1]}, rollback_state=interrupted,
+        expect_rc=1, expect_engine=old_engine, expect_jobs=old_agent, expect_in_output=["was interrupted", "Rolled back"]),
     run("a registry of another environment is refused", registry_env="prod", expect_rc=1,
         expect_in_output=["isn't tagged cix-environment=dev"], never_calls=["docker", "az rest"]),
     run("no engine yet is left to provision.ps1", missing_engine=True, expect_rc=1,
@@ -401,6 +440,165 @@ results += [
     tip("an unreadable tip fails the run", tip_sha="", expect=None, expect_rc=1),
 ]
 
+
+# The fake gh for live-approved.sh: this run's approvals from $APPROVALS, or a failed call when it's empty.
+FAKE_GH_APPROVALS = textwrap.dedent(r'''
+    #!/bin/sh
+    echo "gh $*" >> "$(dirname "$0")/calls.log"
+    [ "$1 $2" = "api repos/o/r/actions/runs/42/approvals" ] && [ -n "$APPROVALS" ] && { echo "$APPROVALS"; exit 0; }
+    exit 1
+''').lstrip()
+
+
+def approval(login, state="approved", environment="prod"):
+    ids = {"owner": 7, "Owner": 7, "collaborator": 8}
+    return {"state": state, "comment": "", "environments": [{"name": environment}], "user": {"login": login, "id": ids[login]}}
+
+
+def approved(name, *, approvals, ref="refs/heads/main", run_id="42", event="push", expect_rc, expect_in_output=(), never_gh=False):
+    with tempfile.TemporaryDirectory() as d:
+        gh = os.path.join(d, "gh")
+        open(gh, "w").write(FAKE_GH_APPROVALS)
+        os.chmod(gh, 0o755)
+        env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], GH_TOKEN="t", GITHUB_REPOSITORY="o/r",
+                   GITHUB_REPOSITORY_OWNER="Owner", GITHUB_REPOSITORY_OWNER_ID="7", GITHUB_RUN_ID=run_id, GITHUB_REF=ref,
+                   GITHUB_EVENT_NAME=event, LIVE_ENVIRONMENT="prod",
+                   APPROVALS=approvals if isinstance(approvals, str) else json.dumps(approvals))
+        p = subprocess.run(["bash", APPROVED_SCRIPT], env=env, capture_output=True, text=True, timeout=30)
+        asked = os.path.exists(os.path.join(d, "calls.log"))
+    out = p.stdout + p.stderr
+    problems = [] if p.returncode == expect_rc else [f"exit {p.returncode}, wanted {expect_rc}"]
+    problems += [f"output lacks {t!r}" for t in expect_in_output if t not in out]
+    if never_gh and asked:
+        problems.append("it asked GitHub")
+    return report("live-approved", name, problems, out)
+
+
+results += [
+    approved("the owner's approval for prod lets the run deploy live", approvals=[approval("owner")], expect_rc=0,
+             expect_in_output=["The owner (Owner) approved this run for prod."]),
+    approved("... and a manual run on main too", approvals=[approval("owner")], event="workflow_dispatch", expect_rc=0),
+    approved("someone else's approval doesn't, even under the owner's name", approvals=[{**approval("collaborator"), "user": {"login": "owner", "id": 8}}], expect_rc=1,
+             expect_in_output=["no approval by Owner for prod"]),
+    approved("someone else's approval doesn't", approvals=[approval("collaborator")], expect_rc=1,
+             expect_in_output=["no approval by Owner for prod", "nothing was deployed"]),
+    approved("nor the owner's for another environment", approvals=[approval("owner", environment="staging")], expect_rc=1,
+             expect_in_output=["no approval by Owner for prod"]),
+    approved("nor a run with no approvals (an environment created without its rules)", approvals=[], expect_rc=1,
+             expect_in_output=["required reviewer"]),
+    approved("a rejection stops it, even beside an approval", approvals=[approval("owner"), approval("owner", state="rejected")],
+             expect_rc=1, expect_in_output=["was rejected for prod"]),
+    approved("approvals GitHub couldn't give stop it", approvals="", expect_rc=1, expect_in_output=["Couldn't read this run's approvals"]),
+    approved("so does an answer that isn't a list", approvals={"message": "Not Found"}, expect_rc=1,
+             expect_in_output=["Couldn't read this run's approvals"]),
+    approved("only from main, and GitHub isn't asked otherwise", approvals=[approval("owner")], ref="refs/heads/feature",
+             expect_rc=1, expect_in_output=["only from main"], never_gh=True),
+    approved("only from a push or a manual run", approvals=[approval("owner")], event="pull_request", expect_rc=1,
+             expect_in_output=["only from a push to main or a manual run"], never_gh=True),
+    approved("a run ID that isn't a number is refused", approvals=[approval("owner")], run_id="42/../1", expect_rc=1,
+             never_gh=True),
+]
+
+# live-changes.sh against a fake gh: its deployments to prod (as the --jq it asks for would print them), their statuses'
+# job links, each job's "Live runs this commit" step, and the comparison.
+CHANGES_SCRIPT = os.path.join(ROOT, "tools", "ci", "live-changes.sh")
+FAKE_GH_CHANGES = textwrap.dedent(r'''
+    #!/usr/bin/env python3
+    import json, os, sys
+    a = sys.argv[1:]
+    s = json.loads(os.environ["FAKE"])
+    if a[0] != "api": sys.exit(1)
+    url = a[1]
+    if url.startswith("repos/o/r/deployments?environment=prod"):
+        print("\n".join(f"{d['id']}\t{d['sha']}" for d in s["deployments"])); sys.exit()
+    if url.startswith("repos/o/r/deployments/") and "/statuses" in url:
+        d = url.split("/")[4]
+        print("" if d not in s["steps"] else f"https://github.com/o/r/actions/runs/1/job/{d}0"); sys.exit()
+    if url.startswith("repos/o/r/actions/jobs/"):
+        print(s["steps"].get(url.split("/")[5][:-1], "")); sys.exit()
+    if url.startswith("repos/o/r/compare/"):
+        if s.get("compare") is None: sys.exit(1)
+        print(json.dumps(s["compare"])); sys.exit()
+    sys.exit(1)
+''').lstrip()
+
+
+def changes(name, *, deployments=(), steps=None, compare=None, expect_in_output=(), never_in_output=()):
+    with tempfile.TemporaryDirectory() as d:
+        gh = os.path.join(d, "gh")
+        open(gh, "w").write(FAKE_GH_CHANGES)
+        os.chmod(gh, 0o755)
+        summary = os.path.join(d, "summary.md")
+        env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], GH_TOKEN="t", GITHUB_REPOSITORY="o/r", GITHUB_SHA=NEW,
+                   LIVE_ENVIRONMENT="prod", GITHUB_STEP_SUMMARY=summary,
+                   FAKE=json.dumps({"deployments": list(deployments), "steps": steps or {}, "compare": compare}))
+        p = subprocess.run(["bash", CHANGES_SCRIPT], env=env, capture_output=True, text=True, timeout=30)
+        out = open(summary).read() if os.path.exists(summary) else ""
+    problems = [] if p.returncode == 0 else [f"exit {p.returncode}"]
+    problems += [f"summary lacks {t!r}" for t in expect_in_output if t not in out]
+    problems += [f"summary has {t!r}" for t in never_in_output if t in out]
+    return report("live-changes", name, problems, out + p.stderr)
+
+
+BASE = "3" * 40
+compared = {"status": "ahead", "total_commits": 2,
+            "commits": [{"sha": "a" * 40, "commit": {"message": "Tighter stops\n\nbody"}}, {"sha": "b" * 40, "commit": {"message": "Docs <!-- hide"}}],
+            "files": [{"filename": "src/Cix.Domain/Risk/RiskGate.cs"}, {"filename": "strategies/safe.v3.json"},
+                      {"filename": "tools/trader/agent-job.sh"}, {"filename": "docs/a.md"}]}
+results += [
+    changes("no earlier live deploy: it can't tell, and says so", expect_in_output=["Couldn't tell which commit live runs"]),
+    changes("flags files that could reach real money first, then lists the commits as code",
+            deployments=[{"id": 5, "sha": BASE}], steps={"5": "success"}, compare=compared,
+            expect_in_output=["3 changed files could reach real money", "`src/Cix.Domain/Risk/RiskGate.cs`", "`strategies/safe.v3.json`",
+                              "`tools/trader/agent-job.sh`", "Since 3333333", "2 commits", "    aaaaaaa Tighter stops", "    bbbbbbb Docs _!-- hide"],
+            never_in_output=["`docs/a.md`", "body", "<!--"]),
+    changes("a newer deploy whose job didn't deploy (left to a newer run, or a stopped engine) isn't what live runs",
+            deployments=[{"id": 6, "sha": "4" * 40}, {"id": 5, "sha": BASE}], steps={"6": "skipped", "5": "success"},
+            compare={**compared, "files": [{"filename": "docs/a.md"}]}, expect_in_output=["Since 3333333", "No change to code"]),
+    changes("nor one whose job can't be found", deployments=[{"id": 6, "sha": "4" * 40}, {"id": 5, "sha": BASE}], steps={"5": "success"},
+            compare=compared, expect_in_output=["Since 3333333"]),
+    changes("a comparison that fails says so", deployments=[{"id": 5, "sha": BASE}], steps={"5": "success"},
+            expect_in_output=["Couldn't compare with 3333333"]),
+]
+
+
+# .claude/hooks/protect-live-deploy.sh: agents can't approve or reconfigure the live deploy, and ordinary work passes.
+HOOK = os.path.join(ROOT, ".claude", "hooks", "protect-live-deploy.sh")
+HOOK_CASES = [
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api -X POST repos/o/r/actions/runs/1/pending_deployments -f state=approved"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "curl -X PUT https://api.github.com/repos/o/r/environments/prod"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "curl https://api.github.com/repos%2Fo%2Fr%2Fenvironments%2Fprod"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh variable set LIVE_AZURE_CLIENT_ID --body x"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api -X PATCH repos/o/r/actions/variables/LIVE_REGISTRY"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "az ad app credential reset --id 123 --append"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "az ad app federated-credential create --id 1 --parameters @f"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api -X PUT repos/o/r/actions/oidc/customization/sub"}}, 2),
+    ({"tool_name": "mcp__github__actions_run_trigger", "tool_input": {"method": "x", "url": "/repos/o/r/actions/runs/1/pending_deployments"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api repos/o/r/actions/runs/1/approvals"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api graphql -f query='mutation{approveDeployments(input:{}){clientMutationId}}'"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api graphql -f query='mutation{deleteEnvironment(input:{id:1}){clientMutationId}}'"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh variable set --body x LIVE_REGISTRY"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh variable set --env prod --body x LIVE_AZURE_CLIENT_ID"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api repos/o/r/actions/variables -f name=LIVE_REGISTRY -f value=x"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "curl https://api.github.com/repos/o/r/actions/runs/1/pending%5Fdeployments"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api -X DELETE repos/o/r/environments/prod"}}, 2),
+    # Ordinary work passes.
+    ({"tool_name": "Bash", "tool_input": {"command": "cat infra/environments/dev.json"}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "git add infra/environments/prod.json docs/live-trading.md"}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "SETTINGS=infra/environments/dev.json python3 x.py"}}, 0),
+    ({"tool_name": "mcp__github__get_file_contents", "tool_input": {"owner": "o", "repo": "r", "path": "infra/environments/dev.json"}}, 0),
+    ({"tool_name": "mcp__github__create_pull_request", "tool_input": {"body": "It sets the repository variables LIVE_AZURE_CLIENT_ID and LIVE_REGISTRY."}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh pr view 5 --json state && git checkout -b feature/1-x"}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "git commit -m 'Deploy live after the owner approves each run'"}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "curl -s https://api.github.com/repos/o/r/commits/abc/check-runs"}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "python3 tools/ci/test-deploy-agents.py"}}, 0),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh variable set AGENTS_REGISTRY --body x"}}, 0),
+    ({"tool_name": "mcp__github__create_pull_request", "tool_input": {"title": "Live deploys", "body": "approval by the owner"}}, 0),
+]
+for payload, want in HOOK_CASES:
+    p = subprocess.run(["bash", HOOK], input=json.dumps(payload), capture_output=True, text=True, timeout=30)
+    results.append(report("protect-live-deploy", ("blocks " if want else "lets through ") + json.dumps(payload["tool_input"])[:80],
+                          [] if p.returncode == want else [f"exit {p.returncode}, wanted {want}"], p.stderr))
 
 def plan_images(path):
     """What plan.sh says about `images` for a pull request that changes only this file."""

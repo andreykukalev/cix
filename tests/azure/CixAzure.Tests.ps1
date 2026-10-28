@@ -721,7 +721,35 @@ $agentsResources = '[' + ((@($agentsTargets) + @($agentsOthers) | ForEach-Object
 $agentsActions = '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/revisions/deactivate/action","Microsoft.App/containerApps/revisions/read","Microsoft.App/containerApps/write","Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.ContainerRegistry/registries/read"]'
 # The role as the script made it before deployments stopped the engine's old revision (#80).
 $agentsActionsBefore = '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/revisions/read","Microsoft.App/containerApps/write","Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.ContainerRegistry/registries/read"]'
-function Invoke-SetupAgentsCi([hashtable]$Overrides, [string]$Deploy = 'platform', [bool]$Protected = $false) {
+# The GitHub environment's rules as GitHub gives them back once set: the owner (ID 11) alone, no admin bypass, chosen branches.
+$liveRules = '{"name":"citest","can_admins_bypass":false,"protection_rules":[{"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"User","reviewer":{"login":"owner","id":11}}]},{"type":"branch_policy"}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+function New-FakeGh([string]$Dir, [string]$Rules = $liveRules, [string]$Branches = '[]', [string]$BranchesAfter = '[{"name":"main","type":"branch"}]') {
+  <# A fake gh next to the fake az, logging to the same calls.log (with the environment rules it was sent): the GitHub
+     environment citest of owner/repo, its branch policies ($BranchesAfter once one was added), and variables. #>
+  if ($onWindows) {
+    $lines = @('@echo off', 'echo gh %* >> "%~dp0calls.log"', 'if "%1 %2"=="repo view" echo owner/repo& exit /b 0',
+      'if "%1 %2 %3 %4"=="api --method PUT repos/owner/repo/environments/citest" type "%~6" >> "%~dp0calls.log"& exit /b 0',
+      'if "%1 %2 %3"=="api --method POST" type nul > "%~dp0main-allowed"& exit /b 0',
+      "if `"%1 %2`"==`"api repos/owner/repo/environments/citest/deployment-branch-policies`" if exist `"%~dp0main-allowed`" (echo $BranchesAfter& exit /b 0) else (echo $Branches& exit /b 0)",
+      "if `"%*`"==`"api repos/owner/repo/environments/citest`" echo $Rules& exit /b 0",
+      'if "%1 %2"=="variable set" exit /b 0', 'exit /b 1')
+    [IO.File]::WriteAllText((Join-Path $Dir 'gh.cmd'), ($lines -join "`r`n"), [Text.Encoding]::ASCII)
+  }
+  else {
+    $lines = @('#!/bin/sh', 'd="$(dirname "$0")"', 'echo "gh $*" >> "$d/calls.log"',
+      'case "$1 $2" in "repo view") echo owner/repo; exit 0 ;; esac',
+      'if [ "$1 $2 $3 $4" = "api --method PUT repos/owner/repo/environments/citest" ]; then cat "$6" >> "$d/calls.log"; exit 0; fi',
+      'if [ "$1 $2 $3" = "api --method POST" ]; then touch "$d/main-allowed"; exit 0; fi',
+      "if [ `"`$1 `$2`" = 'api repos/owner/repo/environments/citest/deployment-branch-policies' ]; then if [ -f `"`$d/main-allowed`" ]; then echo '$BranchesAfter'; else echo '$Branches'; fi; exit 0; fi",
+      "if [ `"`$*`" = 'api repos/owner/repo/environments/citest' ]; then echo '$Rules'; exit 0; fi",
+      'if [ "$1 $2" = "variable set" ]; then exit 0; fi', 'exit 1')
+    $script = Join-Path $Dir 'gh'
+    [IO.File]::WriteAllText($script, (($lines -join "`n") + "`n"))
+    chmod +x $script
+  }
+}
+
+function Invoke-SetupAgentsCi([hashtable]$Overrides, [string]$Deploy = 'platform', [bool]$Protected = $false, [hashtable]$Gh = @{}, [switch]$SetGitHubVariables) {
   $file = Join-CixPath $repo 'infra' 'environments' 'citest.json'
   $json = (Get-CitestJson $Deploy)
   if ($Protected) { $json = $json.Replace('"protected": false', '"protected": true') }
@@ -734,7 +762,11 @@ function Invoke-SetupAgentsCi([hashtable]$Overrides, [string]$Deploy = 'platform
   $extra['resource list'] = $agentsResources
   foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
   try {
-    return Invoke-WithFakeAz @{ GroupExists = 'true'; Extra = $extra } { & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment citest -Repository 'owner/repo' -RepositoryIds '11/22' -For agents -Yes }
+    return Invoke-WithFakeAz @{ GroupExists = 'true'; Extra = $extra } {
+      # A protected environment's setup needs gh: the fake one, never the real one.
+      if ($Protected) { New-FakeGh -Dir (Split-Path -Parent (Get-Command az -CommandType Application | Select-Object -First 1).Source) @Gh }
+      & (Join-Path $azureTools 'setup-ci-deploy.ps1') -Environment citest -Repository 'owner/repo' -RepositoryIds '11/22' -For agents -Yes -SetGitHubVariables:$SetGitHubVariables
+    }
   }
   finally { Remove-Item $file -Force }
 }
@@ -805,7 +837,8 @@ Check 'setup-ci-deploy.ps1 -For agents adds what its earlier role lacks (stoppin
 
 foreach ($case in @(
     @{ Name = 'agents.deploy none'; Deploy = 'none'; Overrides = @{}; Says = 'run provision.ps1 with agents.deploy platform first' },
-    @{ Name = 'a protected environment'; Deploy = 'none'; Protected = $true; Overrides = @{}; Says = 'is protected (live money)' },
+    @{ Name = 'a protected environment without its apps'; Deploy = 'platform'; Protected = $true; Overrides = @{}; Says = 'deploy the live engine with provision.ps1 first' },
+    @{ Name = 'a protected environment''s identity trusting main itself'; Deploy = 'apps'; Protected = $true; Overrides = @{ 'ad app list' = '[{"appId":"66666666-6666-6666-6666-666666666666","displayName":"cix-agents-deploy-citest"}]'; 'ad sp list' = '[{"id":"77777777-7777-7777-7777-777777777777"}]'; 'ad app federated-credential' = $mainCredential }; Says = 'also trusts repo:owner@11/repo@22:ref:refs/heads/main' },
     @{ Name = 'apps not deployed yet'; Deploy = 'apps'; Overrides = @{ 'resource list' = '[]' }; Says = "ca-cix-citest-engine isn't in rg-cix-citest" },
     @{ Name = 'an older, broader role of the same name'; Deploy = 'platform'; Overrides = @{ 'role definition' = "[{`"permissions`":[{`"actions`":[`"Microsoft.App/containerApps/listSecrets/action`",`"Microsoft.App/containerApps/write`"],`"notActions`":[],`"dataActions`":[],`"notDataActions`":[]}],`"assignableScopes`":[`"$agentsGroupId`"]}]" }; Says = 'grants other rights than it should' },
     @{ Name = 'no registry yet'; Deploy = 'platform'; Overrides = @{ 'acr list' = '[]' }; Says = 'No container registry for citest' },
@@ -814,6 +847,56 @@ foreach ($case in @(
     $r = Invoke-SetupAgentsCi $case.Overrides $case.Deploy ([bool]$case['Protected'])
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
     if ($r.Calls -match '(?m)\bcreate\b') { throw 'it changed something before refusing' }
+  }
+}
+
+Check 'setup-ci-deploy.ps1 -For agents (-Yes), protected: trusts only its GitHub environment, and sets LIVE_* variables alone' {
+  $r = Invoke-SetupAgentsCi @{} 'apps' $true
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  $calls = $r.Calls.Replace('"', '')
+  $creates = @($calls -split "`n" | Where-Object { $_ -match '\bcreate\b' })
+  if ($creates[-1] -notmatch 'federated-credential create') { throw "the trust must be created last; creates were: $($creates -join '; ')" }
+  foreach ($scope in @($agentsTargets) + @($agentsRegistryId)) {
+    if (-not $calls.Contains("--role CIX agents deployer (citest) --scope $scope")) { throw "the deployer role isn't on $scope`: $($r.Calls)" }
+  }
+  Expect @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' }).Count 6 'role assignments'
+  foreach ($expected in @('trusted only for repo:owner@11/repo@22:environment:citest', 'Trusts repo:owner@11/repo@22:environment:citest.',
+      'LIVE_AZURE_CLIENT_ID = 66666666-6666-6666-6666-666666666666', 'LIVE_REGISTRY = crcixcitest1', 'LIVE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa',
+      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'waits in CI for your approval')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+  foreach ($never in @('refs/heads/main', 'AGENTS_', ' AZURE_CLIENT_ID', ' AZURE_TENANT_ID', ' AZURE_SUBSCRIPTION_ID')) {
+    if ($r.Output.Contains($never)) { throw "mentions '$never' in: $($r.Output)" }
+  }
+  # The environment's rules, set and read back before Azure trusts it; the variables only with -SetGitHubVariables.
+  foreach ($rule in @('"can_admins_bypass":\s*false', '"prevent_self_review":\s*false', '"custom_branch_policies":\s*true', '"protected_branches":\s*false', '"type":\s*"User"', '"id":\s*11\b')) {
+    if ($r.Calls -notmatch $rule) { throw "the environment wasn't sent $rule`: $($r.Calls)" }
+  }
+  foreach ($call in @('gh api --method POST repos/owner/repo/environments/citest/deployment-branch-policies -f name=main -f type=branch', 'gh api repos/owner/repo/environments/citest')) {
+    if (-not $calls.Contains($call)) { throw "no '$call' in: $calls" }
+  }
+  if ($calls.LastIndexOf('gh api repos/owner/repo/environments/citest') -gt $calls.IndexOf('federated-credential create')) { throw 'Azure trusted the environment before its rules were read back' }
+  if ($calls.Contains('gh variable set')) { throw 'set variables without -SetGitHubVariables' }
+  if (-not $r.Output.Contains('waits for your approval, and only runs from main')) { throw "no note in: $($r.Output)" }
+
+  $r = Invoke-SetupAgentsCi @{} 'apps' $true -SetGitHubVariables
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($k in 'LIVE_AZURE_CLIENT_ID', 'LIVE_REGISTRY', 'LIVE_TENANT_ID', 'LIVE_SUBSCRIPTION_ID') {
+    if (-not $r.Calls.Contains("gh variable set $k --repo owner/repo")) { throw "didn't set $k`: $($r.Calls)" }
+  }
+  if ($r.Calls -match 'variable set (AGENTS|AZURE)_') { throw "touched paper's variables: $($r.Calls)" }
+}
+
+foreach ($case in @(
+    @{ Name = 'admins able to skip the review'; Gh = @{ Rules = $liveRules.Replace('"can_admins_bypass":false', '"can_admins_bypass":true') }; Says = 'admins can skip its review' },
+    @{ Name = 'another reviewer beside the owner'; Gh = @{ Rules = $liveRules.Replace('"id":11}}]', '"id":11}},{"type":"User","reviewer":{"login":"x","id":99}}]') }; Says = 'not you alone' },
+    @{ Name = 'no required reviewer'; Gh = @{ Rules = '{"name":"citest","can_admins_bypass":false,"protection_rules":[],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' }; Says = 'reviewers are none' },
+    @{ Name = 'other branches allowed'; Gh = @{ Branches = '[{"name":"main","type":"branch"},{"name":"dev*","type":"branch"}]' }; Says = 'also allows branch:dev*' },
+    @{ Name = 'every branch allowed'; Gh = @{ Rules = $liveRules.Replace(',"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}', ',"deployment_branch_policy":null') }; Says = "isn't limited to chosen branches" })) {
+  Check "setup-ci-deploy.ps1 -For agents, protected, refuses a GitHub environment with $($case.Name), before Azure trusts it" {
+    $r = Invoke-SetupAgentsCi @{} 'apps' $true $case.Gh
+    if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error) -- $($r.Calls)" }
+    if ($r.Calls -match 'federated-credential create') { throw 'Azure trusts the environment anyway' }
   }
 }
 
@@ -957,7 +1040,7 @@ Check 'setup-dashboard-requests.ps1 accepts the live role once in place, with or
   }
 }
 
-Check 'only the deploy-dashboard and deploy-agents jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
+Check 'only the deploy-dashboard, deploy-agents and deploy-live jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
   # A guard against accidents, not a security control: anyone who can change main can change this test too (ADR-0010).
   $files = @(Get-ChildItem (Join-CixPath $repo '.github' 'workflows') -File | Where-Object { $_.Extension -in '.yml', '.yaml' })
   if ($files.Count -eq 0) { throw 'no workflows found' }
@@ -979,11 +1062,11 @@ Check 'only the deploy-dashboard and deploy-agents jobs may request Azure sign-i
     if ($triggers.Count -eq 0) { throw "$($f.Name): couldn't read its triggers" }
     $unexpected = @($triggers | Where-Object { $_ -notin 'push', 'pull_request', 'workflow_dispatch' })
     if ($unexpected.Count -gt 0) { throw "$($f.Name) runs on $($unexpected -join ', '); only push, pull_request and workflow_dispatch are allowed" }
-    # id-token, in any spelling, only in ci.yml: once inside the deploy-dashboard job and once inside deploy-agents.
+    # id-token, in any spelling, only in ci.yml: once inside each of the deploy-dashboard, deploy-agents and deploy-live jobs.
     $grants = @([regex]::Matches($text, 'id-token'))
     if ($f.Name -ne 'ci.yml') { if ($grants.Count -gt 0) { throw "$($f.Name) mentions id-token" }; continue }
-    Expect $grants.Count 2 'id-token mentions in ci.yml'
-    foreach ($job in 'deploy-dashboard', 'deploy-agents') {
+    Expect $grants.Count 3 'id-token mentions in ci.yml'
+    foreach ($job in 'deploy-dashboard', 'deploy-agents', 'deploy-live') {
       $jobStart = $text.IndexOf("`n  ${job}:")
       if ($jobStart -lt 0) { throw "ci.yml has no $job job" }
       $next = [regex]::Match($text.Substring($jobStart + 1), '\n  [A-Za-z_-]+:')
@@ -1232,6 +1315,48 @@ Check 'provision.ps1 protected: anyone but the owner and its own identities with
   $r = Invoke-AgentsProvision @{ 'identity list' = $identities } @{ Yes = $true; WhatIfOnly = $true } 'none' $true
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   if (-not $r.Output.Contains('Preview only: nothing was changed.')) { throw "no preview in: $($r.Output)" }
+}
+
+# The live deploy's identity (ADR-0019): its own roles on the registry, the engine and the jobs are expected; nothing else it holds.
+Check 'provision.ps1 protected: the live deploy''s expected roles pass, anything else it holds is listed' {
+  $row = { param($Role, $Scope, $Id, $Name = 'cix-agents-deploy-citest') "{`"roleDefinitionName`":`"$Role`",`"scope`":`"$Scope`",`"principalId`":`"$Id`",`"principalName`":`"$Name`",`"principalType`":`"ServicePrincipal`"}" }
+  $registry = "$citestGroup/providers/Microsoft.ContainerRegistry/registries/crcixcitest1"
+  $roles = '[' + ((
+      (& $row 'AcrPush' $registry 'p2'), (& $row 'CIX agents deployer (citest)' $registry 'p2'),
+      (& $row 'CIX agents deployer (citest)' "$citestGroup/providers/Microsoft.App/containerApps/ca-cix-citest-engine" 'p2'),
+      (& $row 'CIX agents deployer (citest)' "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-analyst" 'p2'),
+      (& $row 'CIX agents deployer (citest)' "$citestGroup/providers/Microsoft.KeyVault/vaults/kvcixcitest1" 'p2'),
+      (& $row 'Contributor' $citestGroup 'p2'),
+      (& $row 'AcrPush' $registry 'p9' 'someone-else')) -join ',') + ']'
+  $role = { param($Actions) "[{`"permissions`":[{`"actions`":$Actions,`"notActions`":[],`"dataActions`":[],`"notDataActions`":[]}],`"assignableScopes`":[`"$citestGroup`"]}]" }
+  $trust = '[{"subject":"repo:owner@11/repo@22:environment:citest","issuer":"https://token.actions.githubusercontent.com","audiences":["api://AzureADTokenExchange"]}]'
+  $deployer = @{ 'ad sp list' = '[{"id":"p2","appId":"a2"}]'; 'role definition list' = (& $role $agentsActions); 'ad app federated-credential' = $trust }
+  $fake = @{ 'role assignment list' = $roles } + $deployer
+  $r = Invoke-AgentsProvision $fake @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+  foreach ($expected in @("CIX agents deployer (citest) on $citestGroup/providers/Microsoft.KeyVault/vaults/kvcixcitest1", "Contributor on ${citestGroup}:", "AcrPush on ${registry}: someone-else")) {
+    if (-not $r.Error -or -not $r.Error.Contains($expected)) { throw "missing '$expected' in: $($r.Error)" }
+  }
+  foreach ($never in @('ca-cix-citest-engine', 'caj-cix-citest-analyst', "CIX agents deployer (citest) on ${registry}:", "AcrPush on ${registry}: cix-agents-deploy-citest")) {
+    if ($r.Error.Contains($never)) { throw "listed '$never': $($r.Error)" }
+  }
+
+  # Its expected roles alone pass; none pass once its role grants more, another service principal has its name, or it can
+  # sign in some other way.
+  $mine = '[' + ((& $row 'AcrPush' $registry 'p2'), (& $row 'CIX agents deployer (citest)' "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-trader" 'p2') -join ',') + ']'
+  $r = Invoke-AgentsProvision (@{ 'role assignment list' = $mine } + $deployer) @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($change in @(@{ 'role definition list' = (& $role '["Microsoft.App/containerApps/read","Microsoft.App/containerApps/listSecrets/action"]') },
+      @{ 'ad sp list' = '[{"id":"p2","appId":"a2"},{"id":"p7","appId":"a7"}]' }, @{ 'role definition list' = '[]' },
+      @{ 'ad app show' = '{"passwordCredentials":[{"keyId":"k"}],"keyCredentials":[]}' }, @{ 'ad sp show' = '{"id":"p2","keyCredentials":[{"keyId":"k"}]}' },
+      @{ 'ad sp owner' = '[{"id":"someone-else"}]' }, @{ 'rest --method get' = '{"value":[{"id":"role"}]}' },
+      @{ 'ad app federated-credential' = $trust.Replace(':environment:citest', ':ref:refs/heads/main') },
+      @{ 'ad app federated-credential' = $trust.Substring(0, $trust.Length - 1) + ',' + $trust.Substring(1).Replace(':environment:citest', ':pull_request') })) {
+    $variant = @{ 'role assignment list' = $mine }
+    foreach ($k in $deployer.Keys) { $variant[$k] = $deployer[$k] }
+    foreach ($k in $change.Keys) { $variant[$k] = $change[$k] }
+    $r = Invoke-AgentsProvision $variant @{ Yes = $true; WhatIfOnly = $true } 'none' $true
+    if (-not $r.Error -or -not $r.Error.Contains("AcrPush on ${registry}: cix-agents-deploy-citest")) { throw "didn't list the deployer's roles: $($r.Error)" }
+  }
 }
 
 foreach ($case in @(

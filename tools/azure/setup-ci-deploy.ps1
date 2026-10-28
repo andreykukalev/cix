@@ -2,7 +2,8 @@
 <#
 .SYNOPSIS
   One-time setup so CI can deploy from main without any secret stored in GitHub (ADR-0010): the dashboard (-For
-  dashboard, the default) or the paper engine and the agent jobs (-For agents).
+  dashboard, the default) or the engine and the agent jobs (-For agents). For the protected (live-money) environment,
+  -For agents sets up the live deploy, which runs only after the owner approves it in GitHub (ADR-0019).
 
 .DESCRIPTION
   Creates (or reuses) in Microsoft Entra ID and Azure:
@@ -10,18 +11,22 @@
     2. a federated credential that trusts GitHub Actions tokens only for pushes to main of this repository
        (GitHub's immutable subject repo:<owner>@<owner id>/<repo>@<repo id>:ref:refs/heads/main, which a renamed or
        recreated repository can't match): pull requests, other branches and forks can't use it. It replaces, after
-       asking, the name-only trust (repo:<owner>/<repo>:ref:refs/heads/main) an earlier version of this script made;
+       asking, the name-only trust (repo:<owner>/<repo>:ref:refs/heads/main) an earlier version of this script made.
+       For a protected environment it trusts only jobs in the GitHub environment of the same name instead
+       (repo:<owner>@<owner id>/<repo>@<repo id>:environment:<Environment>), which waits for the owner's approval;
     3. its roles, and no others:
        - dashboard: a custom role, "CIX dashboard deployer (<Environment>)", that may only read a Static Web App and its
          deployment token, assigned on this environment's Static Web App alone;
        - agents: AcrPush on the environment's registry, and a custom role, "CIX agents deployer (<Environment>)", that
          may read and update container apps and jobs, assigned only on the registry (to find it) and, once
-         agents.deploy is apps, on the paper engine and the three jobs. It can't create resources (it holds no right on
+         agents.deploy is apps, on the engine and the three jobs. It can't create resources (it holds no right on
          the resource group) or role assignments, move an identity or an app to another environment, or reach Key
          Vault, storage or the database directly; the live engine gets a resource group
          of its own (docs/research/azure-hosting.md). With agents.deploy platform, run this again after deploying apps.
   Then prints the repository variables CI needs (IDs, not secrets), and sets them with the GitHub CLI if you pass
-  -SetGitHubVariables and gh is installed and signed in.
+  -SetGitHubVariables and gh is installed and signed in. For a protected environment those are LIVE_*, and first,
+  before Azure trusts it, the GitHub environment gets its rules and they are read back: you as its only required
+  reviewer, main only, no admin bypass (this needs gh, signed in as you).
 
   Each change is shown and confirmed first. Running it again changes nothing that is already in place.
   Needs rights to create app registrations and role assignments (Owner on the subscription is enough).
@@ -32,6 +37,8 @@
   .\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id> -SetGitHubVariables
 .EXAMPLE
   .\tools\azure\setup-ci-deploy.ps1 -Environment dev -SubscriptionId <id> -For agents   # after provision.ps1 with agents.deploy platform
+.EXAMPLE
+  .\tools\azure\setup-ci-deploy.ps1 -Environment prod -For agents -SetGitHubVariables   # the live deploy (ADR-0019)
 .PARAMETER RepositoryIds
   <owner id>/<repository id>, GitHub's numeric IDs for the trust. Without it they are read with the GitHub CLI (gh).
 #>
@@ -95,12 +102,24 @@ if (-not $RepositoryIds) {
 }
 $repoOwner, $repoName = $Repository.Split('/')
 $ownerId, $repoId = $RepositoryIds.Split('/')
-$subject = "repo:$repoOwner@$ownerId/$repoName@${repoId}:ref:refs/heads/main"
-$legacySubject = "repo:${Repository}:ref:refs/heads/main" # what an earlier version of this script trusted
 
 Write-CixStep "Environment '$Environment'"
 $settings = Read-CixEnvironment -Name $Environment
-if ($For -eq 'agents' -and $settings.protected) { throw "$Environment is protected (live money): CI never deploys there." }
+if ($For -eq 'dashboard' -and $settings.protected) { throw "$Environment is protected (live money): it has no dashboard of its own." }
+$live = $For -eq 'agents' -and $settings.protected
+if ($live) {
+  # The GitHub environment's rules are the live deploy's control: this script sets and checks them before Azure trusts it.
+  Assert-CixCommand -Name 'gh' -Hint 'Install the GitHub CLI (winget install GitHub.cli) and run gh auth login: the live deploy needs its GitHub environment set up.'
+  $trusted = "jobs of $Repository in its GitHub environment $Environment (owner-approved, main only)"
+  # Only jobs in the GitHub environment of this name, which the owner approves each time (ADR-0019); no name-only trust ever existed.
+  $subject = "repo:$repoOwner@$ownerId/$repoName@${repoId}:environment:$Environment"
+  $legacySubject = $subject
+}
+else {
+  $trusted = "GitHub Actions on main of $Repository"
+  $subject = "repo:$repoOwner@$ownerId/$repoName@${repoId}:ref:refs/heads/main"
+  $legacySubject = "repo:${Repository}:ref:refs/heads/main" # what an earlier version of this script trusted
+}
 $identityName = "cix-$For-deploy-$Environment"
 $roleName = "CIX $For deployer ($Environment)"
 if ($For -eq 'dashboard') {
@@ -111,18 +130,16 @@ if ($For -eq 'dashboard') {
   Write-CixInfo "Static Web App:  $appName in $($settings.resourceGroup)"
 }
 else {
-  # Reading and updating the engine and the jobs: tools/ci/deploy-agents.sh patches only their containers through the
-  # management API, so the update carries no environment or identity, and needs no right on those. It also stops the
-  # engine's old revision, so that the new one can take the engine lease. Each right applies only where the role is
-  # assigned: on those resources and the registry, never on the group.
-  $roleActions = @(
-    'Microsoft.App/containerApps/read', 'Microsoft.App/containerApps/revisions/read', 'Microsoft.App/containerApps/write',
-    'Microsoft.App/containerApps/revisions/deactivate/action',
-    'Microsoft.App/jobs/read', 'Microsoft.App/jobs/write', 'Microsoft.ContainerRegistry/registries/read') | Sort-Object
-  $roleDescription = 'Reads and updates the CIX paper engine and agent jobs it is assigned on, to deploy new images from CI.'
-  $limit = 'push images and update the paper engine and the jobs'
+  # Reading and updating the engine and the jobs (Get-CixAgentsDeployerActions): the update carries no environment or
+  # identity, and needs no right on those. Each right applies only where the role is assigned: on those resources and the
+  # registry, never on the group.
+  $roleActions = @(Get-CixAgentsDeployerActions)
+  $engine = if ($live) { 'live engine' } else { 'paper engine' }
+  $roleDescription = "Reads and updates the CIX $engine and agent jobs it is assigned on, to deploy new images from CI."
+  $limit = "push images and update the $engine and the jobs"
   if ($settings.agents.deploy -eq 'none') { throw "agents.deploy is none in $($settings.path): run provision.ps1 with agents.deploy platform first (it creates the registry)." }
-  Write-CixInfo "Resource group:  $($settings.resourceGroup) (the paper engine and the agent jobs)"
+  if ($live -and $settings.agents.deploy -ne 'apps') { throw "agents.deploy is $($settings.agents.deploy) in $($settings.path): deploy the live engine with provision.ps1 first (docs/live-trading.md)." }
+  Write-CixInfo "Resource group:  $($settings.resourceGroup) (the $engine and the agent jobs)"
 }
 Write-CixInfo "Identity:        $identityName, trusted only for $subject"
 
@@ -140,11 +157,8 @@ else {
   $registryId = "$(Invoke-CixAz @('acr', 'show', '--name', $registry, '--query', 'id', '-o', 'tsv', '--only-show-errors'))".Trim()
   $assignments = @(@{ Role = 'AcrPush'; Scope = $registryId; Label = $registry }, @{ Role = $roleName; Scope = $registryId; Label = $registry })
   if ($settings.agents.deploy -eq 'apps') {
-    # The names infra/modules/agents-names.bicep gives them; each must exist (provision.ps1 creates them).
-    $p = "$($settings.namePrefix)-$($settings.environmentName)"
-    $take = { param([string]$Text, [int]$Length) if ($Text.Length -gt $Length) { $Text.Substring(0, $Length) } else { $Text } }
-    $targets = @("Microsoft.App/containerApps/$(& $take "ca-$p-engine" 32)") +
-      @('trader', 'requests', 'analyst' | ForEach-Object { "Microsoft.App/jobs/$(& $take "caj-$p-$_" 32)" })
+    # Each must exist (provision.ps1 creates them).
+    $targets = @(Get-CixAgentsDeployTargets -Settings $settings)
     $existing = @(Invoke-CixAz @('resource', 'list', '--resource-group', $settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
         ForEach-Object { "$($_.id)" })
     foreach ($target in $targets) {
@@ -202,13 +216,13 @@ if ($app) {
     }
   }
 
-  # It may trust GitHub Actions on main of this repository, and nothing else.
+  # It may trust GitHub Actions on main of this repository (for live, its GitHub environment), and nothing else.
   $credentials = @(Invoke-CixAz @('ad', 'app', 'federated-credential', 'list', '--id', $app.appId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
   $others = @($credentials | Where-Object {
       ($_.subject -cne $subject -and $_.subject -cne $legacySubject) -or $_.issuer -ne 'https://token.actions.githubusercontent.com' -or
       (@(& $field $_ 'audiences') -join ',') -ne 'api://AzureADTokenExchange' })
   if ($others.Count -gt 0) {
-    throw "$identityName also trusts $(($others | ForEach-Object { "$($_.subject) (issuer $($_.issuer))" }) -join ', '). Remove those in the Azure portal (App registrations, Certificates & secrets) first: only main of $Repository may deploy."
+    throw "$identityName also trusts $(($others | ForEach-Object { "$($_.subject) (issuer $($_.issuer))" }) -join ', '). Remove those in the Azure portal (App registrations, Certificates & secrets) first: only $trusted may deploy."
   }
 }
 
@@ -291,23 +305,70 @@ foreach ($assignment in $assignments) {
   Write-CixInfo "Assigned $($assignment.Role) on $($assignment.Label)."
 }
 
-Write-CixStep 'Federated credential (GitHub Actions, main only)'
+if ($live) {
+  # Before Azure trusts the environment: GitHub creates a missing one bare, and a bare one would let any branch's job in.
+  $stillTrusted = if (@($credentials | Where-Object { $_.subject -ceq $subject }).Count -gt 0) {
+    "Azure still trusts it from an earlier run: fix this now, or remove that trust (App registrations, $identityName, Certificates & secrets, Federated credentials)."
+  } else { "Azure doesn't trust it yet." }
+  # Admins can't skip the review, and you may approve runs you started yourself.
+  Write-CixStep "GitHub environment $Environment"
+  Confirm-Step "Make you ($repoOwner) the only required reviewer of the GitHub environment $Environment, for main only?"
+  $file = Write-CixTempJson ([ordered]@{
+      wait_timer               = 0
+      prevent_self_review      = $false
+      reviewers                = @([ordered]@{ type = 'User'; id = [long]$ownerId })
+      can_admins_bypass        = $false
+      deployment_branch_policy = [ordered]@{ protected_branches = $false; custom_branch_policies = $true }
+    })
+  try { Invoke-CixNative { & gh api --method PUT "repos/$Repository/environments/$Environment" --input $file } | Out-Null }
+  finally { Remove-Item $file -ErrorAction SilentlyContinue }
+  if ($LASTEXITCODE -ne 0) { throw "Couldn't set the rules of the GitHub environment $Environment (the repository must belong to you, a user). $stillTrusted" }
+  $readBranches = {
+    $listed = Invoke-CixNative { & gh api "repos/$Repository/environments/$Environment/deployment-branch-policies" --jq .branch_policies 2>$null }
+    if ($LASTEXITCODE -ne 0) { throw "Couldn't read the branches the GitHub environment $Environment allows. $stillTrusted" }
+    @("$listed" | ConvertFrom-CixJson | ForEach-Object { "$($_.type):$($_.name)" })
+  }
+  $branches = @(& $readBranches)
+  $others = @($branches | Where-Object { $_ -cne 'branch:main' })
+  if ($others.Count -gt 0) { throw "The GitHub environment $Environment also allows $($others -join ', '). Remove those under Settings, Environments, $Environment first: only main may deploy." }
+  if ($branches -cnotcontains 'branch:main') {
+    Invoke-CixNative { & gh api --method POST "repos/$Repository/environments/$Environment/deployment-branch-policies" -f name=main -f type=branch } | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Couldn't limit the GitHub environment $Environment to main. $stillTrusted" }
+  }
+  # Read back: exactly you as reviewer, no admin bypass, main alone.
+  $rules = Invoke-CixNative { & gh api "repos/$Repository/environments/$Environment" 2>$null }
+  if ($LASTEXITCODE -ne 0) { throw "Couldn't read the GitHub environment $Environment back. $stillTrusted" }
+  $rules = "$rules" | ConvertFrom-CixJson
+  $reviewers = @(& $field $rules 'protection_rules' | Where-Object { $_.type -eq 'required_reviewers' } | ForEach-Object { & $field $_ 'reviewers' } |
+      ForEach-Object { "$($_.type):$(if ($_.PSObject.Properties['reviewer']) { $_.reviewer.id })" })
+  $policy = @(& $field $rules 'deployment_branch_policy')
+  $wrong = @()
+  if (($reviewers -join ',') -ne "User:$ownerId") { $wrong += "its required reviewers are $(if ($reviewers) { $reviewers -join ', ' } else { 'none' }), not you alone" }
+  if ((@(& $field $rules 'can_admins_bypass') -join '') -ne 'False') { $wrong += 'admins can skip its review' }
+  if ($policy.Count -ne 1 -or "$(@(& $field $policy[0] 'custom_branch_policies'))" -ne 'True' -or "$(@(& $field $policy[0] 'protected_branches'))" -ne 'False') { $wrong += "it isn't limited to chosen branches" }
+  $branches = @(& $readBranches)
+  if (($branches -join ',') -cne 'branch:main') { $wrong += "it allows $(if ($branches) { $branches -join ', ' } else { 'no branch' }), not main alone" }
+  if ($wrong.Count -gt 0) { throw "The GitHub environment $Environment isn't as it should be: $($wrong -join '; '). Fix it under Settings, Environments, $Environment, then run this again. $stillTrusted" }
+  Write-CixInfo "The GitHub environment $Environment waits for your approval, and only runs from main."
+}
+
+Write-CixStep $(if ($live) { "Federated credential (GitHub environment $Environment only)" } else { 'Federated credential (GitHub Actions, main only)' })
 if (@($credentials | Where-Object { $_.subject -ceq $subject }).Count -eq 1) { Write-CixInfo "Already trusts $subject." }
 else {
-  Confirm-Step "Let GitHub Actions on main of $Repository sign in as ${identityName}?"
+  Confirm-Step "Let $trusted sign in as ${identityName}?"
   $file = Write-CixTempJson ([ordered]@{
-      name        = 'github-main-immutable'
+      name        = $(if ($live) { "github-environment-$Environment" } else { 'github-main-immutable' })
       issuer      = 'https://token.actions.githubusercontent.com'
       subject     = $subject
       audiences   = @('api://AzureADTokenExchange')
-      description = "CI deploys CIX ($For) from main (tools/azure/setup-ci-deploy.ps1)."
+      description = $(if ($live) { "CI deploys CIX to $Environment after the owner approves (tools/azure/setup-ci-deploy.ps1, ADR-0019)." } else { "CI deploys CIX ($For) from main (tools/azure/setup-ci-deploy.ps1)." })
     })
   try { Invoke-CixAz @('ad', 'app', 'federated-credential', 'create', '--id', $app.appId, '--parameters', "@$file", '--only-show-errors', '-o', 'none') | Out-Null }
   finally { Remove-Item $file -ErrorAction SilentlyContinue }
   Write-CixInfo "Trusts $subject."
 }
 # The name-only trust an earlier version made: GitHub doesn't send that subject once the repository uses immutable ones.
-foreach ($legacy in @($credentials | Where-Object { $_.subject -ceq $legacySubject })) {
+foreach ($legacy in @($credentials | Where-Object { $_.subject -ceq $legacySubject -and -not $live })) {
   Write-CixInfo "CI can sign in afterwards only if GitHub sends $subject (automatic for repositories created since 15 July 2026; otherwise opt in under the repository's OIDC settings)."
   Confirm-Step "Remove the name-only trust $legacySubject from $identityName (a repository renamed or recreated under this name would match it)?"
   Invoke-CixAz @('ad', 'app', 'federated-credential', 'delete', '--id', $app.appId, '--federated-credential-id', "$(& $field $legacy 'id')", '--only-show-errors') | Out-Null
@@ -315,10 +376,16 @@ foreach ($legacy in @($credentials | Where-Object { $_.subject -ceq $legacySubje
 }
 
 Write-CixStep 'GitHub repository variables (IDs, not secrets)'
-$variables = if ($For -eq 'dashboard') { [ordered]@{ AZURE_CLIENT_ID = $app.appId } } else { [ordered]@{ AGENTS_AZURE_CLIENT_ID = $app.appId; AGENTS_REGISTRY = $registry } }
-$variables['AZURE_TENANT_ID'] = $account.tenantId
-$variables['AZURE_SUBSCRIPTION_ID'] = $account.id
-$variables[$(if ($For -eq 'dashboard') { 'DASHBOARD_ENVIRONMENT' } else { 'AGENTS_ENVIRONMENT' })] = $Environment
+if ($live) {
+  # Its own names: the paper deploy's AGENTS_* and AZURE_* variables stay as they are. The job's GitHub environment is fixed in ci.yml.
+  $variables = [ordered]@{ LIVE_AZURE_CLIENT_ID = $app.appId; LIVE_REGISTRY = $registry; LIVE_TENANT_ID = $account.tenantId; LIVE_SUBSCRIPTION_ID = $account.id }
+}
+else {
+  $variables = if ($For -eq 'dashboard') { [ordered]@{ AZURE_CLIENT_ID = $app.appId } } else { [ordered]@{ AGENTS_AZURE_CLIENT_ID = $app.appId; AGENTS_REGISTRY = $registry } }
+  $variables['AZURE_TENANT_ID'] = $account.tenantId
+  $variables['AZURE_SUBSCRIPTION_ID'] = $account.id
+  $variables[$(if ($For -eq 'dashboard') { 'DASHBOARD_ENVIRONMENT' } else { 'AGENTS_ENVIRONMENT' })] = $Environment
+}
 if ($SetGitHubVariables) {
   Assert-CixCommand -Name 'gh' -Hint 'Install the GitHub CLI (winget install GitHub.cli) and run gh auth login, or set the variables by hand.'
   foreach ($k in $variables.Keys) {
@@ -335,4 +402,7 @@ else {
 if ($For -eq 'agents' -and $settings.agents.deploy -ne 'apps') {
   Write-CixInfo 'CI can push images now. After provision.ps1 deploys agents.deploy apps, run this again.'
 }
-Write-CixInfo "Then run CI on main by hand once (Actions, CI, Run workflow) to check it deploys the $For."
+if ($live) {
+  Write-CixInfo "From now on each change on main that reaches the paper engine waits in CI for your approval (Review deployments, $Environment), then deploys to the live engine, which keeps its mode and strategy."
+}
+else { Write-CixInfo "Then run CI on main by hand once (Actions, CI, Run workflow) to check it deploys the $For." }
