@@ -119,7 +119,7 @@ public sealed class StrategySchemaTests
     [InlineData("timeframe", "\"5m\"", "timeframe must be \"1h\"")]
     [InlineData("scanner.riskPerTradeQuote", "11", "riskPerTradeQuote can't be more than orderQuote")]
     [InlineData("scanner.fastEmaPeriod", "50", "EMA periods must satisfy")]
-    [InlineData("symbols", "[\"DOGE-EUR\"]", "symbols must be a list of at most 20 symbols the mandatory limits permit")]
+    [InlineData("symbols", "[\"DOGE-USD\"]", "symbols must be a list of at most 20 symbols the mandatory limits permit")]
     public void OutOfRangeOrUnknownParameters_AreRefused_WithAReadableReason(string key, string json, string expected)
     {
         var spec = With(Load("balanced", 1), key, JsonNode.Parse(json));

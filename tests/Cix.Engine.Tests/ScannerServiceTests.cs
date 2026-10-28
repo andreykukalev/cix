@@ -160,7 +160,7 @@ public sealed class ScannerServiceTests
         Assert.False(root.GetProperty("halted").GetBoolean());
         Assert.Equal(Rig.Btc, root.GetProperty("entries")[0].GetProperty("symbol").GetString());
         Assert.Equal("up", root.GetProperty("ranked")[0].GetProperty("trend").GetString());
-        Assert.Equal(6, root.GetProperty("excluded").GetArrayLength());
+        Assert.Equal(0, root.GetProperty("excluded").GetArrayLength()); // only the watched coins are scanned, and BTC passes
         var call = Assert.Single(tools.Journal.Entries, e => e.Kind == "tool-call");
         Assert.Equal(("scan_market", "trader"), (call.Data!["tool"], call.Actor));
     }
