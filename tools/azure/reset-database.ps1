@@ -164,9 +164,10 @@ $assertFlat = {
   # minimum is held, so a residual leaves none.
   $state = if ($stateDoc -and $stateDoc.PSObject.Properties['value']) { $stateDoc.value } else { $null }
   if ($state) {
-    $orders = if ($state.PSObject.Properties['orders'] -and $state.orders) { @($state.orders) } else { @() }
+    # @(if ...): an if statement's empty output is $null, not an empty list, and StrictMode then refuses .Count.
+    $orders = @(if ($state.PSObject.Properties['orders'] -and $state.orders) { $state.orders })
     foreach ($o in $orders) { $problems.Add("order in flight: $($o.side) $($o.symbol)") }
-    $known = if ($state.PSObject.Properties['knownClientOrderIds'] -and $state.knownClientOrderIds) { @($state.knownClientOrderIds) } else { @() }
+    $known = @(if ($state.PSObject.Properties['knownClientOrderIds'] -and $state.knownClientOrderIds) { $state.knownClientOrderIds })
     if ($known.Count -gt 0) { $problems.Add("$($known.Count) order(s) sent and not yet seen finish") }
     if ($state.PSObject.Properties['positions'] -and $state.positions) {
       foreach ($p in $state.positions.PSObject.Properties) {
