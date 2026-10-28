@@ -45,7 +45,17 @@ public sealed record EngineStatus(
     ManualRequestsStatus? ManualRequests = null,
     StrategySelectionStatus? StrategySelection = null,
     string? HaltAlsoCategory = null,
-    DateTimeOffset? HaltAlsoAt = null);
+    DateTimeOffset? HaltAlsoAt = null,
+    ProtectionStatus? Protection = null);
+
+/// <summary>
+/// The engine's stop-loss exits (<see cref="ProtectionService"/>), which run whatever the strategy, the agents or a halt do.
+/// </summary>
+/// <param name="Armed">Coins with a stop armed now.</param>
+/// <param name="ArmedAt">When the stops were last loaded; null until the first time (just after a start).</param>
+/// <param name="Exiting">Coins being sold at their stop now.</param>
+/// <param name="Blocked">Exits that failed 5 tries in a row and are retried every minute, with a fixed problem code.</param>
+public sealed record ProtectionStatus(int Armed, DateTimeOffset? ArmedAt, IReadOnlyList<string> Exiting, IReadOnlyList<BlockedExit> Blocked);
 
 /// <summary>
 /// The coin filters the scanner applies, from the active strategy spec (a change is a new spec version). Fractions as
@@ -188,7 +198,8 @@ public sealed partial class EngineStatusService(
     Manual.ManualRequestService? manual = null,
     StrategySelectionService? selection = null,
     TradableSymbols? tradable = null,
-    Journal.IJournal? journal = null) : BackgroundService
+    Journal.IJournal? journal = null,
+    ProtectionService? protection = null) : BackgroundService
 {
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
@@ -203,6 +214,7 @@ public sealed partial class EngineStatusService(
         "owner" => "Paused by the owner.",
         ExecutionService.ReconcilerBy => "Reconciliation found the account changed outside the engine.",
         SafetyMonitor.By => "A safety limit was reached (drawdown, daily loss or stale market data).",
+        SafetyMonitor.CriticalBy => "Critical: drawdown reached the hard ceiling. Nothing new until you resume; stop-losses keep selling.",
         ExecutionService.RejectStreakBy => "Too many orders in a row were rejected by the risk gate.",
         "engine" => "Waiting for the owner to confirm before trading starts.",
         Pairs.TradablePairsService.By => "The saved trading pairs couldn't all be restored; check holdings before resuming.",
@@ -262,7 +274,8 @@ public sealed partial class EngineStatusService(
             manual is null ? null : new ManualRequestsStatus(manual.State, manual.Pending.Count, manual.LastPollAt),
             selection?.Status,
             kill.Engaged && kill.AlsoAt is not null ? HaltCategoryFor(kill.AlsoBy) : null,
-            kill.Engaged ? kill.AlsoAt : null);
+            kill.Engaged ? kill.AlsoAt : null,
+            protection is null ? null : new ProtectionStatus(protection.Armed.Count, protection.ArmedAt, protection.Exiting, protection.Blocked));
     }
 
     private FiltersStatus? Filters()

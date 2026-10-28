@@ -26,6 +26,12 @@ public enum ExecutionStatus
 /// <param name="Order">What was approved and sent; null when rejected before approval.</param>
 public sealed record ExecutionResult(ExecutionStatus Status, string Rule, string Reason, ApprovedOrder? Order = null, PlacedOrder? Placed = null);
 
+/// <summary>
+/// What a stop-loss sell can take now: the free coins above the exchange minimum, and whether a position is still held at all
+/// (free or reserved by an open order). Coins held but not free are an order to cancel, not a finished exit.
+/// </summary>
+public sealed record SellableNow(decimal Sellable, bool HoldsPosition);
+
 /// <summary>The account as <see cref="ExecutionService.RunExclusiveAsync"/> sees it: fresh reads, and orders sent but not settled.</summary>
 public sealed record ExclusiveView(
     Func<CancellationToken, Task<IReadOnlyList<ExchangeOrder>>> OpenOrdersAsync,
@@ -92,7 +98,8 @@ public sealed partial class ExecutionService
     private readonly ILogger<ExecutionService> _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly SemaphoreSlim _lock = new(1, 1);
-    private readonly Queue<DateTimeOffset> _sent = new();
+    /// <summary>Orders sent in the last minute, and which were protective exits: those don't use the trading rate (MaxOrdersPerMinute).</summary>
+    private readonly Queue<(DateTimeOffset At, bool Protective)> _sent = new();
     private readonly Dictionary<string, PendingPlacement> _pending = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedClientOrderIds = new(StringComparer.Ordinal);
 
@@ -234,9 +241,9 @@ public sealed partial class ExecutionService
     /// </param>
     public async Task<ExecutionResult> PlaceAsync(
         OrderIntent intent, bool postOnly, CancellationToken cancellationToken, bool countsTowardRejectStreak = true, OrderContext? context = null,
-        StrategyLimits? strategy = null)
+        StrategyLimits? strategy = null, Func<CancellationToken, Task>? beforeSend = null)
     {
-        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, context, strategy, cancellationToken).ConfigureAwait(false);
+        var result = await PlaceLockedAsync(intent, postOnly, countsTowardRejectStreak, context, strategy, beforeSend, cancellationToken).ConfigureAwait(false);
 
         // Engaging takes the placement lock, so it runs after the placement released it.
         // Only a gate rejection made by this call can trip the streak (engine-side rejects never count).
@@ -252,7 +259,8 @@ public sealed partial class ExecutionService
     }
 
     private async Task<ExecutionResult> PlaceLockedAsync(
-        OrderIntent intent, bool postOnly, bool countsTowardRejectStreak, OrderContext? context, StrategyLimits? strategy, CancellationToken cancellationToken)
+        OrderIntent intent, bool postOnly, bool countsTowardRejectStreak, OrderContext? context, StrategyLimits? strategy,
+        Func<CancellationToken, Task>? beforeSend, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
         intent = intent with { Symbol = MarketDataPoller.NormaliseSymbol(intent.Symbol) };
@@ -260,7 +268,8 @@ public sealed partial class ExecutionService
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_killSwitch.IsEngaged)
+            // A halt stops new risk; the engine's stop-loss sells take risk off and go on (the gate checks the rest).
+            if (_killSwitch.IsEngaged && !intent.IsProtectiveExit)
                 return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
             var now = _time.GetUtcNow();
@@ -290,7 +299,10 @@ public sealed partial class ExecutionService
             PortfolioSnapshot portfolio;
             try
             {
-                portfolio = await _portfolio.GetSnapshotAsync(_sent.Count, PendingSnapshot(), cancellationToken).ConfigureAwait(false);
+                // Trading orders are rated against each other; a protective exit against everything (its own backstop in the gate).
+                var inLastMinute = intent.IsProtectiveExit ? _sent.Count : _sent.Count(o => !o.Protective);
+                portfolio = await _portfolio.GetSnapshotAsync(inLastMinute, PendingSnapshot(), cancellationToken, skipUnpriced: intent.IsProtectiveExit)
+                    .ConfigureAwait(false);
             }
             catch (PortfolioUnavailableException ex)
             {
@@ -325,7 +337,7 @@ public sealed partial class ExecutionService
 
             // Whether the symbol is still held decides if an open position plan applies to this order (see EngineState.WithSent).
             var holdsPosition = portfolio.PositionQuoteBySymbol.GetValueOrDefault(rounded.Symbol) >= Math.Max(pair.MinOrderSizeQuote, 0.00000001m);
-            var result = await SendAsync(order, verdict, postOnly, context, holdsPosition, cancellationToken).ConfigureAwait(false);
+            var result = await SendAsync(order, verdict, postOnly, context, holdsPosition, beforeSend, cancellationToken).ConfigureAwait(false);
             if (strategy is not null && rounded.Side == OrderSide.Buy && result.Status is ExecutionStatus.Placed or ExecutionStatus.Uncertain)
                 NoteBuySent(context?.RunId, now);
             return result;
@@ -420,6 +432,53 @@ public sealed partial class ExecutionService
         return orders;
     }
 
+    /// <summary>One order as the exchange reports it now (uncached), or null if it doesn't know it (yet).</summary>
+    public Task<ExchangeOrder?> GetOrderAsync(string venueOrderId, CancellationToken cancellationToken) =>
+        _exchange.GetOrderAsync(venueOrderId, cancellationToken);
+
+    /// <summary>
+    /// The portfolio valued now, leaving out held coins without a fresh price instead of failing (see
+    /// <see cref="PortfolioService.GetSnapshotAsync"/>). For the protective exits only; null if balances can't be read.
+    /// </summary>
+    public async Task<(PortfolioSnapshot Snapshot, DateTimeOffset At)?> GetPortfolioSkippingUnpricedAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var snapshot = await _portfolio.GetSnapshotAsync(0, PendingSnapshot(), cancellationToken, skipUnpriced: true).ConfigureAwait(false);
+            return (snapshot, _time.GetUtcNow());
+        }
+        catch (PortfolioUnavailableException ex)
+        {
+            LogSampleFailed(_logger, ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// What can be sold of <paramref name="symbol"/> now, read fresh from the exchange (free balance, at least the exchange
+    /// minimum; 0 when nothing is), the way a protective exit sees it: other coins without a fresh price don't stop it.
+    /// </summary>
+    /// <exception cref="PortfolioUnavailableException">Balances or the pair rules can't be read.</exception>
+    public async Task<SellableNow> SellableNowAsync(string symbol, CancellationToken cancellationToken)
+    {
+        symbol = MarketDataPoller.NormaliseSymbol(symbol);
+        var snapshot = await _portfolio.GetSnapshotAsync(0, PendingSnapshot(), cancellationToken, skipUnpriced: true).ConfigureAwait(false);
+        PairInfo? pair = null;
+        try
+        {
+            pair = await _pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is ExchangeException or HttpRequestException)
+        {
+            // Without the pair's minimum, any coins at all count as a position: better a retry than a false "done".
+        }
+
+        var minimum = Math.Max(pair?.MinOrderSizeQuote ?? 0m, 0.00000001m);
+        return new SellableNow(
+            snapshot.SellableBaseBySymbol?.GetValueOrDefault(symbol) ?? 0m,
+            snapshot.PositionQuoteBySymbol.GetValueOrDefault(symbol) >= minimum);
+    }
+
     /// <summary>
     /// Cancels one open order the engine placed. Cancelling never adds risk, so it needs no gate, but orders the engine
     /// didn't place are left alone (reconciliation treats them as a reason to halt).
@@ -460,6 +519,40 @@ public sealed partial class ExecutionService
         {
             return (CancelOutcome.Failed, order.ClientOrderId);
         }
+    }
+
+    /// <summary>
+    /// Cancels every open order the engine placed on <paramref name="symbol"/>, read fresh from the exchange: before a protective
+    /// exit, so a resting sell (a target, a trim, an agent's) frees the coins it holds, and a resting buy doesn't add to a
+    /// falling position. Orders the engine didn't place are left alone. Returns how many were cancelled.
+    /// </summary>
+    /// <exception cref="ExchangeException">Open orders couldn't be listed.</exception>
+    public async Task<int> CancelOwnOrdersOnAsync(string symbol, CancellationToken cancellationToken)
+    {
+        symbol = MarketDataPoller.NormaliseSymbol(symbol);
+        var open = await _exchange.GetOpenOrdersAsync(symbol, cancellationToken).ConfigureAwait(false);
+        var cancelled = 0;
+        foreach (var order in open.Where(o => o.IsOpen && MarketDataPoller.NormaliseSymbol(o.Symbol) == symbol))
+        {
+            bool ours;
+            lock (_pending)
+                ours = _usedClientOrderIds.Contains(order.ClientOrderId);
+            if (!ours || !_lease.IsHeld)
+                continue;
+            try
+            {
+                if (await _exchange.CancelOrderAsync(order.VenueOrderId, cancellationToken).ConfigureAwait(false))
+                    cancelled++;
+            }
+            catch (ExchangeException ex)
+            {
+                LogCancelFailed(_logger, order.VenueOrderId, ex.Message);
+            }
+        }
+
+        if (cancelled > 0)
+            ClearCaches();
+        return cancelled;
     }
 
     /// <summary>Appends to the journal if there is one. A journal failure is logged, never allowed to stop a safety action.</summary>
@@ -666,15 +759,21 @@ public sealed partial class ExecutionService
     }
 
     private async Task<ExecutionResult> SendAsync(
-        ApprovedOrder order, RiskVerdict verdict, bool postOnly, OrderContext? context, bool holdsPosition, CancellationToken cancellationToken)
+        ApprovedOrder order, RiskVerdict verdict, bool postOnly, OrderContext? context, bool holdsPosition,
+        Func<CancellationToken, Task>? beforeSend, CancellationToken cancellationToken)
     {
         // The kill switch may have engaged while the portfolio was being read; it flips before taking the lock.
-        if (_killSwitch.IsEngaged)
+        if (_killSwitch.IsEngaged && order.Purpose != OrderPurpose.ProtectiveExit)
             return Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
         // Another engine of this mode may be trading, or this one couldn't renew its lease: it must not act (ADR-0013).
         if (!_lease.IsHeld)
             return Reject(LeaseRule, LeaseReason);
+
+        // The caller's own pacing, taken under the lock just before the send: the stop-loss sells of many coins leave the lock
+        // one at a time, so their pace holds at the exchange and not only at the door. Nothing is recorded yet if it is cancelled.
+        if (beforeSend is not null)
+            await beforeSend(cancellationToken).ConfigureAwait(false);
 
         // Record the order and its plan before sending: if the engine dies mid-send, the order is still recognised as ours
         // after a restart, and the position it opens still has its stop and target.
@@ -688,13 +787,17 @@ public sealed partial class ExecutionService
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             LogStateWriteFailed(_logger, ex.Message);
-            return Reject("state-unavailable", "The engine could not record the order before sending it; nothing was sent.");
+            // A stop-loss sell can't rest, so a restart has no working order to recognise: a database outage mustn't stop it.
+            if (order.Purpose != OrderPurpose.ProtectiveExit)
+                return Reject("state-unavailable", "The engine could not record the order before sending it; nothing was sent.");
         }
 
         Interlocked.Exchange(ref _consecutiveRejects, 0);
         _sentNotionalSinceReconcile += order.NotionalQuote;
+        if (order.Purpose == OrderPurpose.ProtectiveExit)
+            _extraAllowanceSinceReconcile += order.NotionalQuote * _gate.Limits.EmergencySlippageFraction; // may fill that far below the mid
         var sentAt = _time.GetUtcNow();
-        _sent.Enqueue(sentAt); // counts toward the order rate even if it fails
+        _sent.Enqueue((sentAt, order.Purpose == OrderPurpose.ProtectiveExit)); // counts toward the order rate even if it fails
         lock (_pending)
         {
             _pending[order.ClientOrderId] = new PendingPlacement(order, sentAt, Uncertain: false);
@@ -786,6 +889,12 @@ public sealed partial class ExecutionService
     /// because a caller that gave up is exactly when we must find out.</summary>
     private async Task<PlacedOrder?> FindByClientOrderIdAsync(ApprovedOrder order)
     {
+        // An immediate-or-cancel order is never open by the time the exchange has answered, so there is nothing to find here,
+        // and 7 seconds under the placement lock would hold up every other coin's stop-loss sell. Its fill shows in the balance
+        // the next try reads; reconciliation drops the uncertain placement later.
+        if (order.TimeInForce == TimeInForce.ImmediateOrCancel)
+            return null;
+
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30), _time);
         foreach (var wait in ReconcileDelays)
         {
@@ -823,7 +932,7 @@ public sealed partial class ExecutionService
 
     private void PruneSent(DateTimeOffset now)
     {
-        while (_sent.Count > 0 && now - _sent.Peek() >= TimeSpan.FromMinutes(1))
+        while (_sent.Count > 0 && now - _sent.Peek().At >= TimeSpan.FromMinutes(1))
             _sent.Dequeue();
     }
 

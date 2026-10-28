@@ -24,7 +24,9 @@ public sealed record RiskVerdict(RiskOutcome Outcome, ApprovedOrder? Order, stri
 
 /// <summary>
 /// Final authority on every order. Deterministic and side-effect free.
-/// Risk-reducing sells stay allowed during drawdown and daily-loss halts; the kill switch blocks everything.
+/// Risk-reducing sells stay allowed during drawdown and daily-loss halts. The kill switch blocks everything except the
+/// engine's protective exits (<see cref="OrderIntent.IsProtectiveExit"/>): immediate-or-cancel sells of a held position, which
+/// still pass every other check, priced within <see cref="RiskLimits.EmergencySlippageFraction"/> of the reference price.
 /// </summary>
 public sealed class RiskGate
 {
@@ -50,6 +52,15 @@ public sealed class RiskGate
     }
 
     /// <summary>
+    /// The most orders of any kind in the last minute at which a protective exit is still allowed: 20 coins, each with 5 quick
+    /// tries and a slow one, fit under it; a loop that keeps selling doesn't.
+    /// </summary>
+    public const int MaxProtectiveOrdersPerMinute = 120;
+
+    /// <summary>The limits this gate enforces.</summary>
+    public RiskLimits Limits => _limits;
+
+    /// <summary>
     /// Decides whether <paramref name="intent"/> may be sent. With <paramref name="pair"/>, also enforces the exchange's
     /// rules: the pair must be active, size and price must sit on its steps (round before calling), resizes round down to
     /// its base step, and the final order must meet its minimum and maximum sizes.
@@ -60,7 +71,11 @@ public sealed class RiskGate
         ArgumentNullException.ThrowIfNull(portfolio);
         ArgumentNullException.ThrowIfNull(market);
 
-        if (portfolio.KillSwitchEngaged)
+        if (intent.Purpose == OrderPurpose.ProtectiveExit && !intent.IsProtectiveExit)
+            return RiskVerdict.Reject("invalid-order", "A protective exit must be an immediate-or-cancel sell.");
+
+        // A halt stops new risk, never the stop-loss that takes risk off: it can only sell what is held, and can't rest.
+        if (portfolio.KillSwitchEngaged && !intent.IsProtectiveExit)
             return RiskVerdict.Reject("kill-switch", "The kill switch is engaged; no orders are allowed.");
 
         // Both: on the list of the moment, and permitted by the configured limits (a list can never widen them).
@@ -85,12 +100,20 @@ public sealed class RiskGate
         if (age > HardCeilings.MaxMarketDataAge || age < TimeSpan.Zero)
             return RiskVerdict.Reject("stale-market-data", "Market data is too old (or from the future) to price this order.");
 
+        var band = intent.IsProtectiveExit ? _limits.EmergencySlippageFraction : _limits.MaxPriceDeviationFraction;
         var deviation = Math.Abs(intent.LimitPrice - market.ReferencePrice) / market.ReferencePrice;
-        if (deviation > _limits.MaxPriceDeviationFraction)
-            return RiskVerdict.Reject("price-band", $"Limit price is {deviation:P2} from the reference price; the maximum is {_limits.MaxPriceDeviationFraction:P2}.");
+        if (deviation > band)
+            return RiskVerdict.Reject("price-band", $"Limit price is {deviation:P2} from the reference price; the maximum is {band:P2}.");
 
-        if (portfolio.OrdersInLastMinute >= _limits.MaxOrdersPerMinute)
-            return RiskVerdict.Reject("order-rate", $"At most {_limits.MaxOrdersPerMinute} orders per minute.");
+        // MaxOrdersPerMinute is for trading. Protective exits pace themselves (one try per coin every 2 seconds, a global cap
+        // below the exchange's own limit) because every stop can trigger at once in a crash; this backstop only stops a runaway.
+        if (intent.IsProtectiveExit
+                ? portfolio.OrdersInLastMinute >= MaxProtectiveOrdersPerMinute
+                : portfolio.OrdersInLastMinute >= _limits.MaxOrdersPerMinute)
+        {
+            var rate = intent.IsProtectiveExit ? MaxProtectiveOrdersPerMinute : _limits.MaxOrdersPerMinute;
+            return RiskVerdict.Reject("order-rate", $"At most {rate} orders per minute.");
+        }
 
         var step = pair?.BaseStep ?? DefaultSizeStep;
         var sized = intent.Side == OrderSide.Sell

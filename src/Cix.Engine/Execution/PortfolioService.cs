@@ -33,10 +33,16 @@ public sealed class PortfolioService(
     /// <summary>The pairs tradable now. Removing a pair is refused while it is held, so equity never drops a holding.</summary>
     private IReadOnlySet<string> Tradable => tradable?.Current ?? limits.AllowedSymbols;
 
+    /// <param name="skipUnpriced">
+    /// For protective exits only: a held asset without a fresh price is left out instead of failing the valuation, so one
+    /// coin's stale quote can't block the stop-loss of another. The equity is then partial, so the peak and the 00:00 UTC
+    /// baseline aren't updated from it; a sell needs neither.
+    /// </param>
     public async Task<PortfolioSnapshot> GetSnapshotAsync(
         int ordersInLastMinute,
         IReadOnlyCollection<PendingPlacement> pending,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool skipUnpriced = false)
     {
         ArgumentNullException.ThrowIfNull(pending);
         var symbolPairs = new List<PairInfo>();
@@ -88,7 +94,11 @@ public sealed class PortfolioService(
 
             var quote = market.Quote(pair.Symbol);
             if (quote is null || now - quote.AsOf > HardCeilings.MaxMarketDataAge)
+            {
+                if (skipUnpriced)
+                    continue;
                 throw new PortfolioUnavailableException($"{pair.Base} is held but {pair.Symbol} has no fresh price.");
+            }
 
             positions[pair.Symbol] = held * quote.Mid;
 
@@ -120,7 +130,7 @@ public sealed class PortfolioService(
 
         var equity = TotalOf(balances, quoteCurrency) + positions.Values.Sum();
         var today = DateOnly.FromDateTime(now.UtcDateTime);
-        var state = store.Update(s => s with
+        var state = skipUnpriced ? store.Current : store.Update(s => s with
         {
             PeakEquity = Math.Max(s.PeakEquity, equity),
             Day = today,

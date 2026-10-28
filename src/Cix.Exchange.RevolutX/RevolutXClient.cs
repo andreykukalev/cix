@@ -161,6 +161,8 @@ public sealed class RevolutXClient : IExchangeClient
             w.WriteStartObject("limit");
             w.WriteString("base_size", order.BaseSize.ToString(CultureInfo.InvariantCulture));
             w.WriteString("price", order.LimitPrice.ToString(CultureInfo.InvariantCulture));
+            if (order.TimeInForce == TimeInForce.ImmediateOrCancel)
+                w.WriteString("time_in_force", "ioc"); // the exchange cancels whatever doesn't fill at once
             if (postOnly)
             {
                 w.WriteStartArray("execution_instructions");

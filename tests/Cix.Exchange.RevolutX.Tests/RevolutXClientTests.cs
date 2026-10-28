@@ -87,6 +87,17 @@ public sealed class RevolutXClientTests
     }
 
     [Fact]
+    public void BuildLimitOrderBody_ImmediateOrCancel_SetsTimeInForceInsideTheLimit()
+    {
+        var body = RevolutXClient.BuildLimitOrderBody(
+            Order() with { Side = OrderSide.Sell, Purpose = OrderPurpose.ProtectiveExit, TimeInForce = TimeInForce.ImmediateOrCancel }, postOnly: false);
+
+        Assert.Contains("\"limit\":{\"base_size\":", body, StringComparison.Ordinal);
+        Assert.Contains("\"time_in_force\":\"ioc\"}", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("time_in_force", RevolutXClient.BuildLimitOrderBody(Order(), postOnly: false), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetOrderAsync_NormalisesSymbolSideAndStatus()
     {
         var h = new ClientHarness();

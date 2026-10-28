@@ -501,10 +501,17 @@
     const unprotected = holdings.filter((h) => h.protected === false).map((h) => h.symbol);
     const orders = view?.cycle?.ordersInFlight ?? [];
     const old = orders.filter((o) => (age(o.sentAt, now) ?? 0) > HEALTH.staleOrder).map((o) => o.symbol);
+    // An exit the engine can't complete (spread, liquidity, the exchange) comes first: the position is falling unprotected.
+    const blocked = (e.protection?.blocked ?? []).map((b) => `${b.symbol} (${b.problem})`);
+    const exiting = e.protection?.exiting ?? [];
     out.positions = {
-      tone: unprotected.length ? 'bad' : old.length ? 'warn' : 'ok',
-      value: unprotected.length ? t('No stop') : t('{held} held · {orders} orders', { held: holdings.length, orders: orders.length }),
+      tone: blocked.length || unprotected.length ? 'bad' : old.length || exiting.length ? 'warn' : 'ok',
+      value: blocked.length ? t('Exit blocked') : unprotected.length ? t('No stop') : exiting.length ? t('Selling')
+        : t('{held} held · {orders} orders', { held: holdings.length, orders: orders.length }),
       sub: [
+        blocked.length ? t('exit blocked: {coins}', { coins: blocked.join(', ') }) : null,
+        blocked.length ? t('retried every minute') : null,
+        exiting.length ? t('selling at the stop: {coins}', { coins: exiting.join(', ') }) : null,
         unprotected.length ? t('without a stop-loss: {coins}', { coins: unprotected.join(', ') }) : holdings.length ? t('every position has a stop-loss') : t('nothing held'),
         old.length ? t('orders older than 50 min: {coins}', { coins: old.join(', ') }) : null,
       ].filter(Boolean),

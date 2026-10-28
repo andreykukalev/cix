@@ -287,9 +287,45 @@ public sealed class SafetyMonitorTests
         Assert.Null(atLimit.KillSwitchReason);
         Assert.Equal(1, atLimit.BuysCancelled);
         Assert.Equal(OrderSide.Sell, Assert.Single(stillOpen).Side);
-        Assert.StartsWith("Drawdown", atCeiling.KillSwitchReason, StringComparison.Ordinal);
+        Assert.StartsWith("Critical: drawdown", atCeiling.KillSwitchReason, StringComparison.Ordinal);
         Assert.True(rig.KillSwitch.IsEngaged);
-        Assert.Equal(SafetyMonitor.By, rig.KillSwitch.State.By);
+        Assert.Equal(SafetyMonitor.CriticalBy, rig.KillSwitch.State.By);
+    }
+
+    [Fact]
+    public async Task HardCeilingAlone_EngagesOnce_NotAgainEveryMinute()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m);
+        var sell = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Sell, 0.0005m, 60_010m, "sell"), false, CancellationToken.None);
+        Assert.Equal(ExecutionStatus.Placed, sell.Status);
+
+        rig.Store.Update(s => s with { PeakEquity = 400m }); // 35% down: over the 30% hard ceiling
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        var since = rig.KillSwitch.State.Since;
+        var open = await rig.Execution.PlaceAsync(new OrderIntent(Rig.Btc, OrderSide.Sell, 0.0005m, 60_010m, "sell-while-halted"), false, CancellationToken.None);
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.Equal((true, SafetyMonitor.CriticalBy, since), (rig.KillSwitch.IsEngaged, rig.KillSwitch.State.By, rig.KillSwitch.State.Since));
+        Assert.Equal("kill-switch", open.Rule); // a plain sell is still refused while halted
+        Assert.Single(rig.Journal.Entries, e => e.Kind == "kill-switch"); // engaged once; the second minute neither re-engages nor "also" notes it
+    }
+
+    [Fact]
+    public async Task HardCeilingOverAnotherHalt_IsRecordedBesideIt_OnceNotEveryMinute()
+    {
+        var rig = new Rig(eur: 200m, btc: 0.001m);
+        await rig.Execution.EngageKillSwitchAsync("Paused by the owner from the dashboard (request p-1).", "owner", CancellationToken.None);
+
+        rig.Store.Update(s => s with { PeakEquity = 400m }); // 35% down while paused
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+        var also = rig.KillSwitch.State.AlsoAt;
+        rig.Time.Advance(TimeSpan.FromMinutes(1));
+        await rig.Monitor.CheckOnceAsync(CancellationToken.None);
+
+        Assert.Equal(("owner", SafetyMonitor.CriticalBy), (rig.KillSwitch.State.By, rig.KillSwitch.State.AlsoBy));
+        Assert.Equal(also, rig.KillSwitch.State.AlsoAt); // the same finding a minute later changes nothing
+        Assert.Single(rig.Journal.Entries, e => e.Kind == "kill-switch" && e.Data!["action"] == "also-triggered");
     }
 
     [Fact]

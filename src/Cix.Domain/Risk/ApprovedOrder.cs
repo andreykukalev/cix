@@ -20,6 +20,8 @@ public sealed class ApprovedOrder
         BaseSize = order.BaseSize;
         LimitPrice = order.LimitPrice;
         ClientOrderId = order.ClientOrderId;
+        Purpose = order.Purpose;
+        TimeInForce = order.TimeInForce;
         ApprovedAt = approvedAt;
     }
 
@@ -32,6 +34,10 @@ public sealed class ApprovedOrder
     public decimal LimitPrice { get; }
 
     public string ClientOrderId { get; }
+
+    public OrderPurpose Purpose { get; }
+
+    public TimeInForce TimeInForce { get; }
 
     /// <summary>When the gate approved it; the approval holds only for the market and portfolio it saw then.</summary>
     public DateTimeOffset ApprovedAt { get; }
@@ -50,7 +56,7 @@ public sealed class ApprovedOrder
     }
 
     /// <summary>The approved order as a plain intent, for logging and the journal. It can't be placed.</summary>
-    public OrderIntent ToIntent() => new(Symbol, Side, BaseSize, LimitPrice, ClientOrderId);
+    public OrderIntent ToIntent() => new(Symbol, Side, BaseSize, LimitPrice, ClientOrderId, Purpose, TimeInForce);
 
     public override string ToString() => $"{Side} {BaseSize} {Symbol} @ {LimitPrice} ({ClientOrderId})";
 }

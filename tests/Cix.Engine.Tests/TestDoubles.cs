@@ -22,16 +22,17 @@ internal sealed class FakeMarketData : IMarketDataSource
         Task.FromResult<IReadOnlyList<Candle>>([]);
 }
 
+/// <summary>A clock the test moves. Safe to read and advance from several tasks at once (concurrent exits advance it from their delays).</summary>
 internal sealed class MutableTime(DateTimeOffset start) : TimeProvider
 {
-    private DateTimeOffset _now = start;
+    private long _utcTicks = start.UtcTicks;
 
-    public void Advance(TimeSpan by) => _now += by;
+    public void Advance(TimeSpan by) => Interlocked.Add(ref _utcTicks, by.Ticks);
 
-    public override DateTimeOffset GetUtcNow() => _now;
+    public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
 
     // Elapsed time follows the same clock, so durations measured with timestamps advance with the test.
-    public override long GetTimestamp() => _now.UtcTicks;
+    public override long GetTimestamp() => Interlocked.Read(ref _utcTicks);
 
     public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 }

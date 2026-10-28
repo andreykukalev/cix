@@ -7,6 +7,11 @@ namespace Cix.Domain.Risk;
 /// <paramref name="MaxTradableSymbols"/> pairs in all. When null, only <paramref name="AllowedSymbols"/> are permitted.
 /// </param>
 /// <param name="MaxTradableSymbols">The most pairs tradable at once when <paramref name="AllowedQuoteCurrency"/> is set; 0 otherwise.</param>
+/// <param name="MaxEmergencySlippageFraction">
+/// How far below the reference price an engine stop-loss sell may be priced (<see cref="OrderPurpose.ProtectiveExit"/>).
+/// Null means <paramref name="MaxPriceDeviationFraction"/>, the band every other order gets. Never above
+/// <see cref="HardCeilings.MaxPriceDeviationFraction"/>.
+/// </param>
 public sealed partial record RiskLimits(
     decimal AllocationQuote,
     decimal MaxOrderQuote,
@@ -17,8 +22,12 @@ public sealed partial record RiskLimits(
     decimal MaxPriceDeviationFraction,
     IReadOnlySet<string> AllowedSymbols,
     string? AllowedQuoteCurrency = null,
-    int MaxTradableSymbols = 0)
+    int MaxTradableSymbols = 0,
+    decimal? MaxEmergencySlippageFraction = null)
 {
+    /// <summary>The price band for the engine's stop-loss sells: <see cref="MaxEmergencySlippageFraction"/>, or the normal band.</summary>
+    public decimal EmergencySlippageFraction => MaxEmergencySlippageFraction ?? MaxPriceDeviationFraction;
+
     /// <summary>The most pairs a run-time list may hold.</summary>
     public const int MaxTradableSymbolsLimit = 20;
 
@@ -62,6 +71,8 @@ public sealed partial record RiskLimits(
             errors.Add($"MaxOrdersPerMinute must be in (0, {HardCeilings.MaxOrdersPerMinute}].");
         if (MaxPriceDeviationFraction <= 0 || MaxPriceDeviationFraction > HardCeilings.MaxPriceDeviationFraction)
             errors.Add($"MaxPriceDeviationFraction must be in (0, {HardCeilings.MaxPriceDeviationFraction}].");
+        if (MaxEmergencySlippageFraction is { } emergency && (emergency <= 0 || emergency > HardCeilings.MaxPriceDeviationFraction))
+            errors.Add($"MaxEmergencySlippageFraction must be in (0, {HardCeilings.MaxPriceDeviationFraction}].");
         if (AllowedSymbols.Count == 0)
             errors.Add("AllowedSymbols must not be empty.");
         if (AllowedQuoteCurrency is null)
