@@ -5,7 +5,7 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 - One file per version: `<name>.v<N>.json`. Never edit a version that has run. Copy it to `v<N+1>` and change the copy, so the journal's record of what ran stays true. Each journal entry carries `name@vN#hash`; the hash shows if a file was edited anyway.
 - `status`: `draft` (never runs), `paper` (paper trading only), `live` (paper or live). Only the owner sets `live`; the `protect-live-mode` hook stops agents from writing it.
 - `allowedTools`: the tool server refuses any agent tool not listed here, except `get_strategy_spec`, which every agent may read to learn its own rules.
-- Pick the starting spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration. The default is `good` v1. In paper trading, a selection in the database overrides it at run time (below).
+- Pick the starting spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration. The default is `balanced` v3. In paper trading, a selection in the database overrides it at run time (below).
 
 ## Safe, Balanced and Risky
 
@@ -51,7 +51,7 @@ Three paper strategies to choose from. Each states its purpose and risk profile 
 | Trend exits | yes | yes | yes |
 | 24h volume, spread, hourly ATR (max; min as × cost) | ≥ 50,000 EUR, ≤ 0.3%, ≤ 3%; 1.5× | ≥ 20,000 EUR, ≤ 0.4%, ≤ 5%; 1× | ≥ 20,000 EUR, ≤ 0.5%, ≤ 7%; 0.8× |
 
-The engine enforces each strategy's own limits before the risk gate: a buy larger than the order size, or beyond the per-coin, exposure, daily loss, per-run or cooldown limits, is reduced or refused. They can only be tighter than the mandatory limits in `config/risk-limits.json`, which the risk gate enforces whatever the strategy says, and which only the owner edits. The order-size hook in the trader container still reads the configured spec's `orderQuote`, so with `good` v1 configured it blocks agent buys above 5.5 EUR.
+The engine enforces each strategy's own limits before the risk gate: a buy larger than the order size, or beyond the per-coin, exposure, daily loss, per-run or cooldown limits, is reduced or refused. They can only be tighter than the mandatory limits in `config/risk-limits.json`, which the risk gate enforces whatever the strategy says, and which only the owner edits. The order-size hook in the trader container still reads the configured spec's `orderQuote`, so with `balanced` v3 configured it blocks agent buys above 5.5 EUR.
 
 ### Switching (paper)
 
