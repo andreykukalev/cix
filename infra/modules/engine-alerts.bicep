@@ -14,7 +14,7 @@ import { agentsNames } from 'agents-names.bicep'
 param namePrefix string
 param environmentName string
 
-@description('The Log Analytics workspace\'s region (the agents\' location): log search alerts live beside it.')
+@description('The Log Analytics workspace\'s region (the agents\' location): log search alerts are created beside it.')
 param location string
 
 param tags object
