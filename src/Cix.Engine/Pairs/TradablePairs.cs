@@ -207,10 +207,10 @@ public sealed partial class TradablePairsService(
             if (!tradable.Current.SetEquals(saved.Symbols ?? []))
             {
                 var lost = symbols.Concat(dropped).Where(s => !tradable.Current.Contains(s)).Order(StringComparer.Ordinal).ToList();
-                if (lost.Count > 0)
-                    await AppendAsync("not-restored", $"Saved pairs not restored: {string.Join(", ", lost)}",
+                if (lost.Count > 0 && !await AppendAsync("not-restored", $"Saved pairs not restored: {string.Join(", ", lost)}",
                         new PairChange(false, string.Join(",", lost), saved.UpdatedAt, null), symbols.Concat(dropped).ToHashSet(StringComparer.Ordinal),
-                        tradable.Current, problems.Count > 0 ? problems[0] : $"Not permitted by {LimitsFile}.", Actor).ConfigureAwait(false);
+                        tradable.Current, problems.Count > 0 ? problems[0] : $"Not permitted by {LimitsFile}.", Actor).ConfigureAwait(false))
+                    throw new IOException("The saved pairs that can't be restored couldn't be journaled; retried."); // never replaced unrecorded
                 await repository.SaveAsync(trading.Mode, Document(tradable.Current, _adopted, now, Actor), cancellationToken).ConfigureAwait(false);
             }
 
@@ -403,9 +403,14 @@ public sealed partial class TradablePairsService(
             return null;
         }
 
+        var before = _adopted;
+        _adopted = adopted; // first: a coin is never watched before the strategy knows it is adopted
         if (tradable.TrySet(next, now) is { Count: > 0 } late)
+        {
+            _adopted = before;
             return (ManualRequestStatus.Rejected, late[0]); // can't happen after the check above; kept so a list is never half-applied
-        _adopted = adopted;
+        }
+
         LogApplied(logger, verb, symbol);
         return ("accepted", change.Add
             ? $"{symbol} added. Its prices load now; the scanner can signal it once it has a day of hourly candles, and every order still goes through the risk gate."
@@ -550,9 +555,14 @@ public sealed partial class TradablePairsService(
                 return (true, changed);
             }
 
+            var before = _adopted;
+            _adopted = adopted; // first: a held coin is never watched before the strategy knows it is adopted
             if (tradable.TrySet(next, now) is { Count: > 0 })
+            {
+                _adopted = before;
                 continue; // can't happen after the checks above; the list is never half-applied
-            _adopted = adopted;
+            }
+
             _notAdopted.Remove(symbol);
             changed = true;
             LogAdopted(logger, symbol);

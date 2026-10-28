@@ -404,8 +404,11 @@
     'Add {symbol} to live trading (real money)': 'Добавить {symbol} в реальную торговлю (реальные деньги)',
     'The engine stops trading {symbol}: no new orders, prices no longer polled. It refuses if you still hold {coin} or have an open order in it.':
       'Движок прекратит торговлю {symbol}: никаких новых ордеров, цены больше не запрашиваются. Он откажет, если у вас ещё есть {coin} или открытый ордер по этой паре.',
-    'The engine checks that the exchange lists {symbol} as active and that it traded enough over the last 24 hours, then starts loading its prices. The scanner can signal it once it has a day of hourly candles. Every order in it goes through the same safety limits.':
-      'Движок проверит, что {symbol} активна на бирже и по ней было достаточно торгов за последние 24 часа, и начнёт загружать её цены. Сканер сможет давать по ней сигналы, когда наберётся день часовых свечей. Каждый ордер по ней проходит те же ограничения безопасности.',
+    'The engine checks that the exchange lists {symbol} as active, then starts loading its prices. Whether it trades is the strategy\'s filters\' call at every scan. Every order in it goes through the same safety limits.':
+      'Движок проверит, что {symbol} активна на бирже, и начнёт загружать её цены. Торгуется ли она, при каждом сканировании решают фильтры стратегии. Каждый ордер по ней проходит те же ограничения безопасности.',
+    'On the account, not added by you: the strategy doesn\'t buy it until you add it': 'Есть на счёте, но вы её не добавляли: стратегия не покупает её, пока вы её не добавите',
+    'on the account': 'на счёте',
+    'Add': 'Добавить',
     'Remove pair': 'Убрать пару',
     'Add pair': 'Добавить пару',
     'Removing {symbol}': 'Удаление {symbol}',
