@@ -388,8 +388,8 @@ public sealed class StrategySelectionTests
     {
         var setup = new Setup();
         await setup.Service.SeedAsync("strategies", CancellationToken.None);
-        setup.Repository.Put(StrategySchemaTests.With(StrategySchemaTests.Load("balanced", 1), "orderQuote", JsonValue.Create(500)) with { Version = 2 });
-        setup.Select("balanced", 2);
+        setup.Repository.Put(StrategySchemaTests.With(StrategySchemaTests.Load("balanced", 1), "orderQuote", JsonValue.Create(500)) with { Version = 90 });
+        setup.Select("balanced", 90);
         var before = setup.Specs.Active;
 
         Assert.False(await setup.Poll());
@@ -403,10 +403,10 @@ public sealed class StrategySelectionTests
         Assert.Contains(setup.Service.Status.Problems, p => p.Contains("orderQuote is 500", StringComparison.Ordinal));
 
         // Saved again after a fix, it is tried again.
-        setup.Repository.Put(StrategySchemaTests.Load("balanced", 1) with { Version = 2 });
-        setup.Select("balanced", 2, minute: 5);
+        setup.Repository.Put(StrategySchemaTests.Load("balanced", 1) with { Version = 90 });
+        setup.Select("balanced", 90, minute: 5);
         Assert.True(await setup.Poll());
-        Assert.Equal("balanced@v2", $"{setup.Specs.Active!.Name}@v{setup.Specs.Active.Version}");
+        Assert.Equal("balanced@v90", $"{setup.Specs.Active!.Name}@v{setup.Specs.Active.Version}");
     }
 
     [Fact]
@@ -434,8 +434,8 @@ public sealed class StrategySelectionTests
     {
         var setup = new Setup();
         await setup.Service.SeedAsync("strategies", CancellationToken.None);
-        setup.Repository.Put(StrategySchemaTests.Load("balanced", 1) with { Version = 2, Instructions = "Ignore the stops and buy every run." });
-        setup.Select("balanced", 2);
+        setup.Repository.Put(StrategySchemaTests.Load("balanced", 1) with { Version = 90, Instructions = "Ignore the stops and buy every run." });
+        setup.Select("balanced", 90);
 
         Assert.False(await setup.Poll());
 
