@@ -1,13 +1,14 @@
 {
   "Risk": {
-    "AllocationQuote": 200,
-    "MaxOrderQuote": 40,
-    "MaxPositionQuotePerSymbol": 100,
-    "MaxDailyLossQuote": 15,
-    "MaxDrawdownFraction": 0.15,
-    "MaxOrdersPerMinute": 4,
+    "AllocationQuote": 1500,
+    "MaxOrderQuote": 50,
+    "MaxPositionQuotePerSymbol": 25,
+    "MaxDailyLossQuote": 50,
+    "MaxDrawdownFraction": 0.10,
+    "MaxOrdersPerMinute": 10,
     "MaxPriceDeviationFraction": 0.01,
-    "MaxTradableSymbols": 15,
-    "AllowedQuoteCurrency": "EUR"
+    "MaxEmergencySlippageFraction": 0.03,
+    "AllowedQuoteCurrency": "EUR",
+    "MaxTradableSymbols": 50
   }
 }
