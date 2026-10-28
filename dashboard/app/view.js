@@ -252,7 +252,7 @@
           x: i * slot + gap / 2, width: bar,
           buy: { y: height - buy, height: buy },
           sell: { y: height - buy - sell, height: sell },
-          label: i % labelEvery === 0 || i === list.length - 1 ? tick(p.from, period) : '',
+          label: (list.length - 1 - i) % labelEvery === 0 ? tick(p.from, period) : '', // counted from the latest, which always has one
           title: t(p.trades === 1 ? '{label}: {trades} trade, bought {buy}, sold {sell}' : '{label}: {trades} trades, bought {buy}, sold {sell}',
             { label: months(p.label), trades: p.trades, buy: p.buyVolume, sell: p.sellVolume }),
         };
@@ -555,6 +555,8 @@
     const pollAge = age(m?.lastPollAt, now);
     const reqJob = jobs['trader-requests'] ?? null;
     if (!m) out.requests = { tone: 'warn', value: '–', sub: [t('not reported yet')] };
+    // Live takes no buy or sell requests by design (paper only): nothing to warn about there.
+    else if (m.state === 'off' && view?.mode === 'live') out.requests = { tone: null, value: t('Paper only'), sub: [t('buy and sell requests are for paper trading')] };
     else if (m.state !== 'ok') out.requests = { tone: 'warn', value: t({ off: 'Off', unavailable: 'Unavailable', 'not-used': 'Not used' }[m.state] ?? m.state), sub: [t('the engine takes no requests now')] };
     else {
       out.requests = {
@@ -608,6 +610,25 @@
     }).filter(Boolean).sort((a, b) => order[a.kind] - order[b.kind] || a.symbol.localeCompare(b.symbol));
   }
 
+  // Who sent an order (an order's source) and what a decision did (the journal's tool), in words; the engine's name stays a
+  // hover away. A name the page doesn't know shows as it is.
+  const ORDER_SOURCES = {
+    place_order: 'trader', cancel_order: 'trader', 'protective-exit': 'stop or target', 'manual-direct': 'you, direct',
+    'manual-agent': 'you, via the trader', 'strategy-trim': 'strategy cap',
+  };
+  const TOOL_ACTIONS = {
+    place_order: 'place an order', cancel_order: 'cancel an order', 'protective-exit': 'protective sell', 'manual-direct': 'direct request',
+    'manual-agent': 'request via the trader', 'strategy-trim': 'trim to the cap',
+  };
+
+  /** An engine name as words: { text, title } with the name itself as the title, or the name alone when it has no words. */
+  function named(map, name) {
+    if (name === null || name === undefined || name === '') return { text: '–', title: null };
+    return Object.hasOwn(map, name) ? { text: t(map[name]), title: name } : { text: String(name), title: null };
+  }
+  const orderSource = (name) => named(ORDER_SOURCES, name);
+  const toolAction = (name) => named(TOOL_ACTIONS, name);
+
   /** Who is signed in, from /.auth/me, for the header. Who may see what is decided by the platform and the API, not here. */
   function viewer(me) {
     const p = me?.clientPrincipal ?? null;
@@ -617,7 +638,7 @@
   return {
     change, coins, why, removeBlock, BLOCK_DETAILS, WHY_LABELS, stepDetail, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
     paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES, pairsNote, SELECTION, SELL_DESCRIPTIONS,
-    LEVELS, filterChange, strategyCoins, specName,
+    LEVELS, filterChange, strategyCoins, specName, orderSource, toolAction, ORDER_SOURCES, TOOL_ACTIONS,
     contentLang, pick, months, signalItems, monitors, HEALTH,
   };
 }));

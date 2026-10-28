@@ -80,9 +80,21 @@ function amount(value, digits = 2) {
   return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: Math.max(digits, 8) });
 }
 
-/** A price or level as the engine wrote it (exact decimal string), or a dash. */
+/**
+ * A price or level as the engine wrote it (exact decimal string), or a dash. A long one (an average entry price can carry a
+ * dozen digits) shows at 9 significant digits, with the exact value a hover away.
+ */
 function price(value) {
-  return value === null || value === undefined || value === '' ? '–' : String(value);
+  if (value === null || value === undefined || value === '') return '–';
+  const exact = String(value);
+  const n = Number(exact);
+  if (!Number.isFinite(n) || exact.replace(/^[-+]?0*\.?0*/, '').replace('.', '').length <= 9) return exact;
+  return el('span', { title: exact, text: n.toLocaleString('en-US', { maximumSignificantDigits: 9, useGrouping: false }) });
+}
+
+/** An engine name in words (view.js), the name itself on hover. */
+function named(n) {
+  return el('span', { title: n.title, text: n.text });
 }
 
 function money(value, currency) {
@@ -227,8 +239,9 @@ function renderPortfolio(view) {
     h.symbol, td(money(h.valueQuote, p.currency), 'num'), td(price(h.entryPrice), 'num'),
     td(h.protected ? price(h.stopLoss) : el('span', { class: 'badge bad', text: t('none') }), 'num'), td(price(h.takeProfit), 'num'), h.planStatus ? t(h.planStatus) : '–',
   ], t('Nothing held.'));
-  rows('balances', p.balances ?? [], (b) => [b.currency, td(amount(b.available), 'num'), td(amount(b.reserved), 'num')],
-    view.mode === 'paper' ? t('No paper account yet.') : t('Balances are shown for paper trading only.'));
+  // The simulated account's wallets: paper only. Live's cash and coins are the figures and holdings above, from the exchange.
+  document.getElementById('balances-box').hidden = view.mode !== 'paper';
+  if (view.mode === 'paper') rows('balances', p.balances ?? [], (b) => [b.currency, td(amount(b.available), 'num'), td(amount(b.reserved), 'num')], t('No paper account yet.'));
 }
 
 function renderCycle(view) {
@@ -240,7 +253,7 @@ function renderCycle(view) {
     signalsFigure(scan),
     figure(t('Last trader run'), c.lastTraderRun ? ago(c.lastTraderRun.lastAt) : '–'),
   );
-  rows('orders', c.ordersInFlight ?? [], (o) => [when(o.sentAt), o.symbol, t(o.side), td(amount(o.size, 0), 'num'), td(price(o.limitPrice), 'num'), o.source, shortId(o.clientOrderId)], t('No orders working.'));
+  rows('orders', c.ordersInFlight ?? [], (o) => [when(o.sentAt), o.symbol, t(o.side), td(amount(o.size, 0), 'num'), td(price(o.limitPrice), 'num'), named(V.orderSource(o.source)), shortId(o.clientOrderId)], t('No orders working.'));
   const agents = Object.entries(view.agents ?? {});
   rows('agents', agents, ([name, a]) => [
     name, a.lastRun ? shortId(a.lastRun.runId) : '–', a.lastRun ? when(a.lastRun.lastAt) : '–',
@@ -251,10 +264,10 @@ function renderCycle(view) {
 function renderTables(view) {
   rows('trades', view.trades, (f) => [
     when(f.at), f.symbol ?? '–', f.side ? t(f.side) : '–', td(amount(f.filledSize, 0), 'num'), td(price(f.averagePrice), 'num'), td(price(f.fee), 'num'),
-    f.source ?? '–', f.status ? t(f.status) : '–', shortId(f.clientOrderId),
+    named(V.orderSource(f.source)), f.status ? t(f.status) : '–', shortId(f.clientOrderId),
   ], t('No fills in the last 48 hours.'));
   rows('decisions', view.decisions, (d) => [
-    when(d.at), t(d.actor), d.action ?? '–', d.symbol ?? '–', d.side ? t(d.side) : '–', td(amount(d.size, 0), 'num'), td(price(d.price), 'num'),
+    when(d.at), t(d.actor), named(V.toolAction(d.action)), d.symbol ?? '–', d.side ? t(d.side) : '–', td(amount(d.size, 0), 'num'), td(price(d.price), 'num'),
     el('span', { class: `badge ${{ placed: 'ok', rejected: 'bad', failed: 'bad', uncertain: 'warn' }[d.status] ?? ''}`, text: d.status ? t(d.status) : '–' }),
     td(why(d), 'why'),
   ], t('No decisions in the last 48 hours.'));
@@ -357,7 +370,7 @@ function renderCoins(view) {
       [el('span', { class: 'chip', text: c.symbol }), c.level ? [' ', el('span', { class: `badge level ${c.level.tone}`, title: c.level.detail, text: c.level.label })] : null],
       c.held ? el('span', { class: 'badge ok', text: t('held') }) : el('span', { class: 'muted', text: '–' }),
       td(move(c.hour), 'num'), td(move(c.day), 'num'),
-      td(c.rank === null ? '–' : String(c.rank), 'num'), r.trend ? t(r.trend) : '–',
+      td(c.rank === null ? '–' : String(c.rank), 'num'), r.trend ? t({ flat: 'sideways' }[r.trend] ?? r.trend) : '–',
       td(r.volatility === null || r.volatility === undefined ? '–' : `${(r.volatility * 100).toFixed(1)}%`, 'num'),
       td(r.volumeRatio === null || r.volumeRatio === undefined ? '–' : `${r.volumeRatio.toFixed(1)}×`, 'num'),
       c.signal ? el('span', { class: `badge ${c.signal === 'buy' ? 'ok' : 'bad'}`, text: t(c.signal) }) : '–',
@@ -541,8 +554,12 @@ function renderVolume(a) {
     card(t('Your requests'), String(c.manual), c.manual, p.manual, t('trades from the dashboard')),
     card(t('Fees'), `${c.fees} ${a.currency}`, c.fees, p.fees, t('not in turnover')),
   );
-  const g = V.chart(a.periods, { width: 640, height: 160, labelEvery: a.periods.length > 12 ? 2 : 1, period: a.period });
   const chartNode = document.getElementById('volume-chart');
+  // As wide as it shows, so the labels aren't stretched: the chart scales its height only.
+  const width = Math.max(320, Math.round(chartNode.getBoundingClientRect().width) || 640);
+  chartNode.setAttribute('viewBox', `0 0 ${width} 190`);
+  const labelEvery = Math.max(1, Math.ceil(48 / (width / Math.max(1, a.periods.length)))); // a label is about 48px wide
+  const g = V.chart(a.periods, { width, height: 160, labelEvery, period: a.period });
   chartNode.replaceChildren(svg('title', { id: 'volume-chart-title' }, t('Buy and sell volume by {period}, largest {max} {currency}', { period: t(a.period), max: g.max.toFixed(2), currency: a.currency })));
   document.getElementById('volume-unit').textContent = t('volume in {currency}', { currency: a.currency });
   for (const b of g.bars) {
@@ -550,10 +567,14 @@ function renderVolume(a) {
     group.append(svg('title', {}, b.title));
     if (b.sell.height > 0) group.append(svg('rect', { x: b.x, y: b.sell.y, width: b.width, height: b.sell.height, class: 'sell' }));
     if (b.buy.height > 0) group.append(svg('rect', { x: b.x, y: b.buy.y, width: b.width, height: b.buy.height, class: 'buy' }));
-    if (b.label) group.append(svg('text', { x: b.x + b.width / 2, y: 178, 'text-anchor': 'middle', class: 'tick' }, b.label));
+    if (b.label) { // under its bar, kept inside the chart at either end
+      const mid = b.x + b.width / 2;
+      const [x, anchor] = mid < 24 ? [0, 'start'] : mid > width - 24 ? [width, 'end'] : [mid, 'middle'];
+      group.append(svg('text', { x, y: 178, 'text-anchor': anchor, class: 'tick' }, b.label));
+    }
     chartNode.append(group);
   }
-  chartNode.append(svg('line', { x1: 0, y1: 160, x2: 640, y2: 160, class: 'axis' }));
+  chartNode.append(svg('line', { x1: 0, y1: 160, x2: width, y2: 160, class: 'axis' }));
 }
 
 function setPeriod(period) {
@@ -1226,6 +1247,7 @@ function setTab(tab, { focus = false } = {}) {
   state.tab = name;
   if (changed && name === 'strategy') refreshStrategies(); // read only while the tab is open
   if (changed && name === 'coins') refreshPairs();
+  if (changed && name === 'activity' && state.activity) renderVolume(state.activity); // drawn hidden, it had no width
 }
 
 function setupTabs() {
@@ -1372,6 +1394,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('control-open').addEventListener('click', openControl);
   document.getElementById('control-form').addEventListener('submit', sendControl);
   document.getElementById('control-cancel').addEventListener('click', () => document.getElementById('control-dialog').close());
+  let resized = null;
+  window.addEventListener('resize', () => { // the chart is drawn to its width
+    clearTimeout(resized);
+    resized = setTimeout(() => { if (state.activity && state.tab === 'activity') renderVolume(state.activity); }, 200);
+  });
   await loadViewer();
   setMode(saved);
   state.timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);

@@ -85,6 +85,8 @@ test('the chart stacks sells on buys, scaled to the busiest period', () => {
   assert.deepEqual(g.bars[2].sell, { y: 50, height: 50 });
   assert.equal(g.bars[2].x, 200);
   assert.equal(g.bars[0].title, 'a: 2 trades, bought 30.00, sold 10.00');
+  assert.deepEqual(V.chart([{ from: '2026-10-13' }, { from: '2026-10-14' }, { from: '2026-10-15' }, { from: '2026-10-16' }], { labelEvery: 2 }).bars.map((b) => b.label),
+    ['', '14 Oct', '', '16 Oct'], 'every other label, counted from the latest: no two labels side by side');
   assert.equal(V.chart([]).bars.length, 0);
   assert.equal(V.tick('2026-10-19', 'week'), '19 Oct');
   assert.equal(V.tick('2026-10-01', 'month'), 'Oct');
@@ -313,6 +315,10 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   overdue.jobs.analyst.last.at = at(14 * 60);
   assert.deepEqual([V.monitors(overdue, now, ago).analyst.tone, V.monitors(overdue, now, ago).analyst.value], ['bad', 'Overdue']);
   assert.equal(V.monitors({}, now, ago).trader.value, 'No runs yet');
+  // Live takes no buy or sell requests by design: its tile says so without a warning; paper's switched off still warns.
+  const off = (mode) => V.monitors({ ...structuredClone(healthy), mode, engine: { ...structuredClone(healthy.engine), manualRequests: { state: 'off' } } }, now, ago).requests;
+  assert.deepEqual([off('live').tone, off('live').value], [null, 'Paper only']);
+  assert.deepEqual([off('paper').tone, off('paper').value], ['warn', 'Off']);
 });
 
 test('each watched coin shows its level: trading, filtered out, waiting for data, held outside the strategy, just added, on the account', () => {

@@ -83,7 +83,7 @@
             <h3>Holdings</h3>
             <table id="holdings"><thead><tr><th>Coin</th><th class="num">Value</th><th class="num">Entry</th><th class="num">Stop</th><th class="num">Target</th><th>Plan</th></tr></thead><tbody></tbody></table>
           </div>
-          <div>
+          <div id="balances-box">
             <h3>Balances <span class="muted small">(paper account)</span></h3>
             <table id="balances"><thead><tr><th>Currency</th><th class="num">Available</th><th class="num">Reserved</th></tr></thead><tbody></tbody></table>
           </div>
@@ -171,12 +171,12 @@
       </section>
 
       <section class="panel" aria-labelledby="h-mandatory">
-        <div class="panel-head"><h2 id="h-mandatory">Mandatory safety limits</h2><span class="muted small">enforced by the engine whatever the strategy; only you change them, in config/risk-limits.json</span></div>
-        <table id="mandatory"><thead><tr><th>Limit</th><th class="num">Value</th><th>What it does</th><th>Set in</th></tr></thead><tbody></tbody></table>
+        <div class="panel-head"><h2 id="h-mandatory">Mandatory safety limits</h2><span class="muted small">enforced by the engine whatever the strategy; only you change them</span></div>
+        <table id="mandatory"><thead><tr><th>Limit</th><th class="num">Set to</th><th>What it does</th><th>Set in</th></tr></thead><tbody></tbody></table>
       </section>
 
       <section class="panel" aria-labelledby="h-switches">
-        <div class="panel-head"><h2 id="h-switches">Your strategy switches</h2><span class="muted small">last 7 days, paper</span></div>
+        <div class="panel-head"><h2 id="h-switches">Your strategy switches</h2><span class="muted small">last 7 days</span></div>
         <table id="switches"><thead><tr><th>Sent</th><th>Strategy</th><th>Status</th><th>Outcome</th></tr></thead><tbody></tbody></table>
       </section>
     </div>
@@ -318,7 +318,7 @@
   </dialog>
 
   <footer class="muted small">
-    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests, strategy switches and pair changes are paper only; Pause and Resume work for live too, after you confirm. The engine checks each one and every order goes through the risk gate.
+    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; strategy switches, pair changes, Pause and Resume work for live too, after you confirm. The engine checks each one and every order goes through the risk gate.
     News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.
   </footer>
 </body>

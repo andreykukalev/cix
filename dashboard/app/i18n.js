@@ -102,12 +102,16 @@
       'значения по стратегиям, допустимый диапазон и на что влияет изменение',
     Parameter: 'Параметр',
     'Mandatory safety limits': 'Обязательные ограничения безопасности',
-    'enforced by the engine whatever the strategy; only you change them, in config/risk-limits.json':
-      'движок соблюдает их при любой стратегии; менять их можете только вы, в config/risk-limits.json',
+    'enforced by the engine whatever the strategy; only you change them':
+      'движок соблюдает их при любой стратегии; менять их можете только вы',
+    'Set to': 'Значение',
     'What it does': 'Что делает',
     'Set in': 'Где задаётся',
     'Your strategy switches': 'Ваши смены стратегии',
     'last 7 days, paper': 'за 7 дней, бумажная торговля',
+    'last 7 days': 'за 7 дней',
+    '1h': '1 ч',
+    '24h': '24 ч',
     'Trading activity': 'Торговая активность',
     Period: 'Период',
     Daily: 'По дням',
@@ -168,8 +172,8 @@
     Pause: 'Пауза',
     'Pause trading': 'Приостановить торговлю',
     'I understand this changes real-money trading on Revolut X.': 'Я понимаю, что это меняет торговлю реальными деньгами на Revolut X.',
-    'Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests, strategy switches and pair changes are paper only; Pause and Resume work for live too, after you confirm. The engine checks each one and every order goes through the risk gate. News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.':
-      'Доступно только владельцу: каждая страница и ответ API требуют входа через ваш аккаунт Microsoft. Запросы на покупку и продажу, смены стратегии и изменения пар — только для бумажной торговли; пауза и возобновление работают и для реальной торговли, после вашего подтверждения. Движок проверяет каждый запрос, и каждый ордер проходит риск-контроль. Ссылки на новости в обзоре выбраны агентом-аналитиком в интернете и ведут на внешние сайты.',
+    'Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; strategy switches, pair changes, Pause and Resume work for live too, after you confirm. The engine checks each one and every order goes through the risk gate. News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.':
+      'Доступно только владельцу: каждая страница и ответ API требуют входа через ваш аккаунт Microsoft. Запросы на покупку и продажу — только для бумажной торговли; смена стратегии, изменения пар, пауза и возобновление работают и для реальной торговли, после вашего подтверждения. Движок проверяет каждый запрос, и каждый ордер проходит риск-контроль. Ссылки на новости в обзоре выбраны агентом-аналитиком в интернете и ведут на внешние сайты.',
 
     // --- Words app.js and view.js write ------------------------------------------------------------------------------------
     paper: 'бумажная',
@@ -231,7 +235,6 @@
     none: 'нет',
     'Nothing held.': 'Позиций нет.',
     'No paper account yet.': 'Бумажного счёта пока нет.',
-    'Balances are shown for paper trading only.': 'Балансы показываются только для бумажной торговли.',
     'Last scan': 'Последнее сканирование',
     'Coins ranked': 'Монет в рейтинге',
     '{ranked} of {total}': '{ranked} из {total}',
@@ -325,6 +328,19 @@
     '{status} by {by}': '{status} ({by})',
     direct: 'напрямую',
     trader: 'трейдер',
+    'stop or target': 'стоп или цель',
+    'you, direct': 'вы, напрямую',
+    'you, via the trader': 'вы, через трейдера',
+    'strategy cap': 'лимит стратегии',
+    'place an order': 'выставить ордер',
+    'cancel an order': 'отменить ордер',
+    'protective sell': 'защитная продажа',
+    'direct request': 'прямой запрос',
+    'request via the trader': 'запрос через трейдера',
+    'trim to the cap': 'сокращение до лимита',
+    sideways: 'боковой',
+    'Paper only': 'Только бумажная',
+    'buy and sell requests are for paper trading': 'запросы на покупку и продажу — только для бумажной торговли',
     'Filled {filled}.': 'Исполнено {filled}.',
     'in progress': 'выполняется',
     'No requests in the last 7 days.': 'За последние 7 дней запросов не было.',
@@ -709,6 +725,10 @@
       'Самый низкий из трёх. Небольшие ордера, в монетах не больше четверти средств, не меньше 4 часов между покупками и дневной стоп по убытку 3 EUR. Меньше сделок — меньше и шансов на прибыль; никакие настройки не гарантируют результат.',
     'Moderate. Orders up to 10 EUR, at most half the allocation in coins, an hour between buys, and a daily loss stop of 6 EUR. Losses are limited by stops, not prevented.':
       'Умеренный. Ордера до 10 EUR, в монетах не больше половины средств, час между покупками и дневной стоп по убытку 6 EUR. Стопы ограничивают убытки, но не исключают их.',
+    'Moderate. Orders up to 10 EUR, at most half the allocation in coins, an hour between buys, and a daily loss stop of 5 EUR. Losses are limited by stops, not prevented.':
+      'Умеренный. Ордера до 10 EUR, в монетах не больше половины средств, час между покупками и дневной стоп по убытку 5 EUR. Стопы ограничивают убытки, но не исключают их.',
+    'Highest of the three, still inside every mandatory limit. Orders up to 20 EUR, at most 25 EUR in one coin, up to 80% of the allocation in coins, 15 minutes between buys, and a daily loss stop of 5 EUR. More and larger trades mean larger swings both ways; higher risk does not mean higher returns.':
+      'Самый высокий из трёх, но в пределах всех обязательных ограничений. Ордера до 20 EUR, не больше 25 EUR в одной монете, до 80% средств в монетах, 15 минут между покупками и дневной стоп по убытку 5 EUR. Больше и крупнее сделки — сильнее колебания в обе стороны; больший риск не означает большего дохода.',
     'Highest of the three, still inside every mandatory limit. Orders up to 20 EUR, up to 80% of the allocation in coins, 15 minutes between buys, and a daily loss stop of 12 EUR. More and larger trades mean larger swings both ways; higher risk does not mean higher returns.':
       'Самый высокий из трёх, но в пределах всех обязательных ограничений. Ордера до 20 EUR, до 80% средств в монетах, 15 минут между покупками и дневной стоп по убытку 12 EUR. Больше и крупнее сделки — сильнее колебания в обе стороны; больший риск не означает большего дохода.',
     'Trend indicators': 'Индикаторы тренда',
@@ -846,7 +866,7 @@
 
   /** Words that stay as they are in Russian: names, tickers, technical identifiers the journal filter sends as values. */
   const UNTRANSLATED = new Set([
-    'CIX', 'RU', 'EN', '1h', '24h', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '–', '×', '↻',
+    'CIX', 'RU', 'EN', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '–', '×', '↻',
     'order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request',
     'scanner-filters', 'scan-eligibility', 'strategy', 'pairs', 'balance-snapshot',
   ]);
