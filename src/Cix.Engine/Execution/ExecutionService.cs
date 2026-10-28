@@ -354,7 +354,7 @@ public sealed partial class ExecutionService : IActiveSymbolSource
             if (_waitForFirstReconcile && LastReconciledAt is null && !intent.PassesHalt)
             {
                 if (now - _startedAt < FirstReconcileWait)
-                    return Reject("not-reconciled", "The engine is comparing the account with the exchange after its start; orders wait for that, about a minute.");
+                    return Reject("not-reconciled", "The engine is comparing the account with the exchange after its start; orders are refused until it is done, about a minute and at most five.");
                 if (!_firstReconcileLapseLogged)
                 {
                     _firstReconcileLapseLogged = true; // under the lock

@@ -303,7 +303,8 @@ public sealed partial class ProtectionService : BackgroundService
     /// </summary>
     private async Task<IReadOnlyList<PositionPlan>> AdoptStopsAsync(IReadOnlyList<PositionPlan> plans)
     {
-        if (_atr is null || _stopAtr is null)
+        // Only the engine holding the lease writes shared state (ADR-0013): during a deploy the other one would race its saves.
+        if (_atr is null || _stopAtr is null || !_execution.HoldsLease)
             return plans;
         foreach (var gone in _adopted.Keys.Concat(_waitingForAtr).Where(k => !plans.Any(p => p.Symbol == k)).ToList())
         {

@@ -698,11 +698,29 @@ public sealed class ProtectionTests
     }
 
     [Theory]
-    [InlineData(60_000, 400, 1.5, 59_400)] // 1.5 ATR below the bid
-    [InlineData(60_000, 10, 1.5, 59_700)] // never closer than 0.5% below it
-    [InlineData(100, 100, 1.5, null)] // at or below zero: no stop
-    public void APlanlessStop_IsStopAtrAtrsBelowTheBid_AndAtLeastTheLeastExitDistance(double bid, double atr, double stopAtr, double? expected) =>
-        Assert.Equal(expected is { } e ? (decimal?)e : null, ProtectionService.PlanlessStop((decimal)bid, (decimal)atr, (decimal)stopAtr));
+    [InlineData("60000", "400", "1.5", "59400")] // 1.5 ATR below the bid
+    [InlineData("60000", "10", "1.5", "59700")] // never closer than 0.5% below it
+    [InlineData("100", "100", "1.5", null)] // at or below zero: no stop
+    public void APlanlessStop_IsStopAtrAtrsBelowTheBid_AndAtLeastTheLeastExitDistance(string bid, string atr, string stopAtr, string? expected) =>
+        Assert.Equal(expected is null ? null : (decimal?)ProtectionRig.D(expected), ProtectionService.PlanlessStop(ProtectionRig.D(bid), ProtectionRig.D(atr), ProtectionRig.D(stopAtr)));
+
+    [Fact]
+    public async Task AnEngineWithoutTheLease_SetsNoStop_UntilItHoldsIt()
+    {
+        var lease = new FakeLease();
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m, lease: lease), atr: _ => 400m);
+        lease.IsHeld = false; // a new revision during a deploy, before the old one lets the lease go
+
+        await p.Service.RefreshAsync(CancellationToken.None);
+        Assert.Null(p.Trigger.StopFor(Btc));
+        Assert.Empty(p.Rig.Store.Current.Plans);
+        Assert.DoesNotContain(p.Rig.Journal.Entries, e => e.Kind == "stop-adopted");
+
+        lease.IsHeld = true;
+        await p.Service.RefreshAsync(CancellationToken.None);
+        Assert.Equal(59_400m, p.Trigger.StopFor(Btc));
+        Assert.Equal(59_400m, p.Rig.Store.Current.Plans[Btc].StopLoss);
+    }
 
     [Fact]
     public async Task APositionBoughtWithoutAStop_GetsTheStrategysAtrStop_Once_AndIsSoldBelowIt()

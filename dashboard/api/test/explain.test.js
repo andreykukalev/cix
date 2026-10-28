@@ -150,7 +150,7 @@ test('every reason the gate, the strategy and the execution service write has it
     'Drawdown is 15.20 %; new buys are halted until the owner resumes trading.',
     'Drawdown is 15.20 %; new buys are refused while it stays at or above the limit.',
     "An owner's sell must be a sell.",
-    'The engine is comparing the account with the exchange after its start; orders wait for that, about a minute.',
+    'The engine is comparing the account with the exchange after its start; orders are refused until it is done, about a minute and at most five.',
     'The daily loss limit is reached; new buys are halted until tomorrow (UTC).',
     'No room left under allocation-cap.',
     'Remaining room under max-order is too small for one unit.',

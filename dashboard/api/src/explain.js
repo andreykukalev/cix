@@ -157,8 +157,8 @@ const REASONS_RU = [
   [/^Drawdown is ([\d.,-]+ ?%); new buys are halted until the owner resumes trading\.$/, (m) => `Просадка ${m[1]}: новые покупки остановлены, пока владелец не возобновит торговлю.`], // before F-10
   [/^Drawdown is ([\d.,-]+ ?%); new buys are refused while it stays at or above the limit\.$/, (m) => `Просадка ${m[1]}: новые покупки отклоняются, пока она не меньше лимита.`],
   [/^An owner's sell must be a sell\.$/, () => 'Продажа владельца должна быть продажей.'],
-  [/^The engine is comparing the account with the exchange after its start; orders wait for that, about a minute\.$/,
-    () => 'После запуска движок сверяет счёт с биржей; ордера ждут окончания сверки, около минуты.'],
+  [/^The engine is comparing the account with the exchange after its start; orders are refused until it is done, about a minute and at most five\.$/,
+    () => 'После запуска движок сверяет счёт с биржей; до конца сверки ордера отклоняются: около минуты, не больше пяти.'],
   [/^The daily loss limit is reached; new buys are halted until tomorrow \(UTC\)\.$/, () => 'Достигнут дневной лимит убытка: новые покупки остановлены до завтра (UTC).'],
   [/^No room left under (.+)\.$/, (m) => (limitRu(m[1]) ? `Не осталось места в пределах ${limitRu(m[1])}.` : null)],
   [/^(?:Remaining room|The room left) under (.+) is too small for one unit\.$/, (m) => (limitRu(m[1]) ? `Оставшегося места в пределах ${limitRu(m[1])} не хватает даже на минимальный размер.` : null)],

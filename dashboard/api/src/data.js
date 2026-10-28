@@ -82,7 +82,7 @@ async function loadDashboard(reader, mode, now) {
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const KINDS = new Set(['order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request', 'scanner-filters', 'scan-eligibility', 'strategy', 'pairs', 'balance-snapshot']);
+const KINDS = new Set(['order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request', 'scanner-filters', 'scan-eligibility', 'strategy', 'pairs', 'balance-snapshot', 'stop-adopted']);
 const LIMITS = [50, 100, 200];
 const JOURNAL_DAYS = 14;
 

@@ -11,11 +11,19 @@ namespace Cix.Engine.MarketData;
 public sealed class MarketDataService(MarketDataPoller poller, TimeProvider time) : BackgroundService
 {
     protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
-        poller.HasTickers
-            ? Task.WhenAll(
-                RunAsync(poller.PollTickersOnceAsync, stoppingToken),
-                RunAsync(poller.PollBooksAndCandlesOnceAsync, stoppingToken))
-            : RunAsync(poller.PollOnceAsync, stoppingToken);
+        poller.HasTickers ? RunLanesAsync(stoppingToken) : RunAsync(poller.PollOnceAsync, stoppingToken);
+
+    // A lane that fails stops the other and fails the service, as the single loop did, so stale candles never go unnoticed.
+    private async Task RunLanesAsync(CancellationToken stoppingToken)
+    {
+        using var lanes = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var tickers = RunAsync(poller.PollTickersOnceAsync, lanes.Token);
+        var books = RunAsync(poller.PollBooksAndCandlesOnceAsync, lanes.Token);
+        var first = await Task.WhenAny(tickers, books).ConfigureAwait(false);
+        await lanes.CancelAsync().ConfigureAwait(false);
+        await first.ConfigureAwait(false);
+        await Task.WhenAll(tickers, books).ConfigureAwait(false);
+    }
 
     private async Task RunAsync(Func<CancellationToken, Task<int>> poll, CancellationToken stoppingToken)
     {
