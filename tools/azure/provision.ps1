@@ -23,7 +23,8 @@
   6. With -DeployDashboard, publishes dashboard/ to the Static Web App.
 
   Nothing is deleted, and no data is copied: the engine starts with an empty paper account in Azure. Switching the engine to
-  Azure is a separate, manual step (docs/azure.md).
+  Azure is a separate, manual step (docs/azure.md). The one exception: a Container Apps environment still on its own VNet
+  (deployed before 2026-10-28) is deleted with its apps and VNet, after you confirm it, and recreated without one.
 
 .EXAMPLE
   .\tools\azure\provision.ps1 -Environment dev -WhatIfOnly      # preview only
@@ -140,7 +141,20 @@ if ($settings.protected) {
   }
 }
 
+$rebuild = $null # the old VNet environment to replace, if any (below)
 if (-not $SkipInfrastructure) {
+  # An environment still on its own VNet (before 2026-10-28) leaves it by being rebuilt: found now, deleted only once you say yes.
+  $rebuild = if ($agents -ne 'none') { Get-CixVnetRebuild -Settings $settings } else { $null }
+  if ($rebuild) {
+    if ($agents -ne 'apps' -and $rebuild.Apps.Count -gt 0) { throw "The Container Apps environment is on a VNet and has apps, but $($settings.path) says agents.deploy ${agents}: set it to apps, so the rebuild recreates them." }
+    $what = @(@($rebuild.Apps) + @($rebuild.Environment, $rebuild.Vnet) | Where-Object { $_ } | ForEach-Object { $_.Split('/')[-1] }) -join ', '
+    Write-CixWarn "The Container Apps environment is on its own VNet, which costs a load balancer and a static IP (about 22 USD a month) and can't be removed in place. Before deploying, this deletes $what; the deployment recreates the environment and the apps without a VNet."
+    if ($settings.protected) {
+      if ($Yes -and -not $WhatIfOnly) { throw 'Rebuilding the protected environment stops its engine: run without -Yes, to confirm it yourself.' }
+      Write-CixWarn 'The live engine is gone while it is rebuilt (10-20 minutes): no stop-loss checks or protective exits run then. Do it with no open positions, or accept the gap. Afterwards it stands by in paper until you switch it on again.'
+    }
+  }
+
   Write-CixStep "Shared Cosmos DB account ($($shared.resourceGroup))"
   $existing = Find-CixSharedCosmos -Settings $settings
   if ($existing -and -not $UpdateShared) {
@@ -258,7 +272,10 @@ if (-not $SkipInfrastructure) {
 
   Write-CixStep "CIX ($($settings.resourceGroup), database '$($settings.cosmos.databaseName)')"
   Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -Agents $agentValues -WhatIf | Out-Null
-  if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed.'; return }
+  if ($WhatIfOnly) {
+    if ($rebuild) { Write-CixInfo "The deployment would first delete $what (the preview above doesn't show that)." }
+    Write-CixInfo 'Preview only: nothing was changed.'; return
+  }
   Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"
   # The deployment sets the dashboard's settings to exactly what infra/ says, which would drop the writer identity's and the
   # confirmed owner (setup-dashboard-requests.ps1): keep them in memory and put them back. They are never printed.
@@ -272,6 +289,15 @@ if (-not $SkipInfrastructure) {
       catch { throw "Couldn't read the dashboard's settings (to keep the writer identity's through the deployment); nothing was deployed." }
       foreach ($k in @($current.Keys | Where-Object { $_ -like 'COSMOS_WRITER_*' -or $_ -eq 'DASHBOARD_OWNER_USER_ID' })) { $writerSettings[$k] = $current[$k] }
     }
+  }
+  # Last, once every check has passed: from here on the old apps are gone.
+  if ($rebuild) {
+    Confirm-Step "Delete $what now, and recreate the environment and the apps without a VNet?"
+    if ($agentValues.ContainsKey('engineImageDigest')) {
+      $again = if ($settings.protected) { "-PromoteFrom <paper environment> -ImageTag <the commit SHA paper runs>" } else { '-ImageTag <a tag CI pushed>' }
+      Write-CixWarn "If the deployment fails after this, nothing runs to keep images from: run this again with $again. The images now are cix-engine@$($agentValues.engineImageDigest) and cix-trader@$($agentValues.agentImageDigest)."
+    }
+    Remove-CixVnetEnvironment -Rebuild $rebuild
   }
   try { $outputs = Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -Agents $agentValues }
   catch {
@@ -373,6 +399,10 @@ if ($DeployDashboard) {
 }
 
 Write-CixStep 'Next steps'
+if ($rebuild -and $rebuild.Apps.Count -gt 0) {
+  # CI's deploy identity holds its roles on the engine and each job, and those went with the deleted apps.
+  Write-CixWarn "The engine and the jobs were recreated, and CI's roles on them went with the old ones: run .\tools\azure\setup-ci-deploy.ps1 -Environment $Environment -For agents again before CI's next deploy."
+}
 if ($settings.protected) {
   Write-CixInfo "The engine stands by: it holds the exchange keys in paper mode, so it runs nothing. Switching it is yours alone: docs/live-trading.md, 'Switching the engine on'."
   Write-CixInfo 'A deployment of this environment puts the engine back on standby until you switch it again.'

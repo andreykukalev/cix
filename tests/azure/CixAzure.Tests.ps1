@@ -190,6 +190,21 @@ Check 'the engine queues agent runs only when startEngine is true' {
   if (([regex]::Matches($apps, 'AgentRuns__Mode')).Count -ne 1) { throw 'AgentRuns__Mode is set more than once' }
 }
 
+# No VNet of its own (Azure bills a load balancer and an IP for one, and CIX uses neither): the engine stays private through
+# its environment-only ingress, in an environment that takes no traffic from the internet.
+Check 'the Container Apps environment has no VNet, takes no public traffic, and the engine''s ingress stays inside it' {
+  $platform = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-platform.bicep'))
+  if ($platform -match '(?m)^\s*(vnetConfiguration|infrastructureSubnetId)\b|Microsoft\.Network/') { throw 'the environment is put on a VNet (a billed load balancer and IP)' }
+  if (([regex]::Matches($platform, "(?m)^\s*publicNetworkAccess: 'Disabled'")).Count -ne 1) { throw 'the environment accepts public traffic' }
+  $apps = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-apps.bicep'))
+  if ($apps -notmatch '(?m)^\s*external: false\b') { throw 'the engine''s ingress reaches outside its environment' }
+  if ($apps -match '(?m)^\s*external: true\b') { throw 'an app''s ingress reaches outside its environment' }
+  # Either would let traffic from outside the environment reach an app with internal ingress.
+  foreach ($name in Get-ChildItem (Join-CixPath $repo 'infra') -Recurse -Filter *.bicep) {
+    if ([IO.File]::ReadAllText($name.FullName) -match '(?i)httpRouteConfigs|privateEndpoints') { throw "$($name.Name) routes outside traffic into the environment" }
+  }
+}
+
 # The engine in Azure signs in to Cosmos DB with its identity: no account key anywhere in the agents' templates, and its
 # roles reach CIX's containers only, never delete, and leave the journal append-only.
 Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal append-only' {
@@ -1440,6 +1455,77 @@ foreach ($case in @(
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
     if ($r.Calls -match '(?m)\b(create|import|secret set)\b') { throw "it changed something before refusing: $($r.Calls)" }
   }
+}
+
+# An environment deployed before 2026-10-28 sits on its own VNet (a billed load balancer and IP): provision.ps1 rebuilds it.
+$vnetId = "$citestGroup/providers/Microsoft.Network/virtualNetworks/vnet-cix-citest"
+$vnetFake = @{
+  'resource list' = '[' + ((@("$citestGroup/providers/Microsoft.App/managedEnvironments/cae-cix-citest", "$citestGroup/providers/Microsoft.App/containerApps/ca-cix-citest-engine",
+          "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-trader", "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-requests",
+          "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-analyst", $vnetId) | ForEach-Object { "{`"id`":`"$_`"}" }) -join ',') + ']'
+  'resource show' = "{`"properties`":{`"vnetConfiguration`":{`"infrastructureSubnetId`":`"$vnetId/subnets/snet-apps`",`"internal`":true}}}"
+  'lock list'     = '[]'
+}
+Check 'provision.ps1 agents apps rebuilds an environment on a VNet: apps, environment, then VNet, before the deployment' {
+  $r = Invoke-AgentsProvision $vnetFake @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  $calls = $r.Calls.Replace('"', '')
+  $positions = @('Microsoft.App/containerApps/ca-cix-citest-engine', 'Microsoft.App/jobs/caj-cix-citest-trader', 'Microsoft.App/jobs/caj-cix-citest-requests',
+    'Microsoft.App/jobs/caj-cix-citest-analyst', 'Microsoft.App/managedEnvironments/cae-cix-citest', 'Microsoft.Network/virtualNetworks/vnet-cix-citest') |
+    ForEach-Object { $calls.IndexOf("resource delete --ids $citestGroup/providers/$_ ") }
+  if (@($positions | Where-Object { $_ -lt 0 }).Count -gt 0) { throw "not everything was deleted: $($r.Calls)" }
+  for ($i = 1; $i -lt $positions.Count; $i++) { if ($positions[$i] -lt $positions[$i - 1]) { throw "deleted out of order: $($r.Calls)" } }
+  if ($positions[-1] -gt $calls.IndexOf('deployment sub create')) { throw 'deployed before the old environment was gone' }
+  if (-not $r.Output.Contains('setup-ci-deploy.ps1 -Environment citest -For agents again')) { throw "no reminder about CI's roles in: $($r.Output)" }
+  if (-not $r.Output.Contains("The images now are cix-engine@$digest5")) { throw "the images to redeploy weren't shown before deleting: $($r.Output)" }
+}
+
+Check 'provision.ps1 agents apps on a VNet: a preview deletes nothing, and -Yes never rebuilds the protected environment' {
+  $r = Invoke-AgentsProvision $vnetFake @{ WhatIfOnly = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if (-not $r.Output.Contains('The deployment would first delete ca-cix-citest-engine, caj-cix-citest-trader')) { throw "no notice in: $($r.Output)" }
+  if ($r.Calls.Contains('resource delete')) { throw "a preview deleted something: $($r.Calls)" }
+  $r = Invoke-AgentsProvision $vnetFake @{ Yes = $true; ImageTag = 'abc123' } 'apps' $true
+  if (-not $r.Error -or -not $r.Error.Contains('run without -Yes, to confirm it yourself')) { throw "got: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -match '(?m)\b(resource delete|deployment|import|secret set)\b') { throw "it changed something before refusing: $($r.Calls)" }
+  $r = Invoke-AgentsProvision $vnetFake @{ Yes = $true; SkipEngineConfig = $true } 'platform'
+  if (-not $r.Error -or -not $r.Error.Contains('set it to apps, so the rebuild recreates them')) { throw "got: $($r.Error)" }
+  if ($r.Calls.Contains('resource delete')) { throw "deleted apps platform wouldn't recreate: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents apps on a VNet refuses, changing nothing, when an app it wouldn''t recreate or a lock is in the group' {
+  $extra = $vnetFake['resource list'].Replace(']', ",{`"id`":`"$citestGroup/providers/Microsoft.App/containerApps/someone-elses`"}]")
+  $r = Invoke-AgentsProvision @{ 'resource list' = $extra; 'resource show' = $vnetFake['resource show'] } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains('also holds someone-elses')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match '(?m)\b(resource delete|deployment)\b') { throw "changed something: $($r.Calls)" }
+  $locked = @{}; foreach ($k in $vnetFake.Keys) { $locked[$k] = $vnetFake[$k] }
+  $locked['lock list'] = '[{"name":"keep"}]'
+  $r = Invoke-AgentsProvision $locked @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains('has locks (keep)')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match '(?m)\b(resource delete|deployment)\b') { throw "changed something: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents apps leaves an environment without a VNet as it is' {
+  $r = Invoke-AgentsProvision @{ 'resource list' = $vnetFake['resource list']; 'resource show' = '{"properties":{"vnetConfiguration":null,"publicNetworkAccess":"Disabled"}}' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if ($r.Calls.Contains('resource delete')) { throw "deleted something: $($r.Calls)" }
+  if (-not $r.Calls.Contains("resource show --ids $citestGroup/providers/Microsoft.App/managedEnvironments/cae-cix-citest")) { throw "didn't look at the environment: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents apps on a VNet keeps a VNet that isn''t its own, and deletes nothing if the dashboard''s settings can''t be read' {
+  $foreign = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/vnet-hub'
+  $fake = @{}; foreach ($k in $vnetFake.Keys) { $fake[$k] = $vnetFake[$k] }
+  $fake['resource show'] = "{`"properties`":{`"vnetConfiguration`":{`"infrastructureSubnetId`":`"$foreign/subnets/apps`"}}}"
+  $r = Invoke-AgentsProvision $fake @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if (-not $r.Calls.Contains('resource delete --ids ' + "$citestGroup/providers/Microsoft.App/managedEnvironments/cae-cix-citest")) { throw "the environment wasn't rebuilt: $($r.Calls)" }
+  if ($r.Calls.Contains("resource delete --ids $foreign")) { throw 'deleted a VNet the template never made' }
+  $fake = @{}; foreach ($k in $vnetFake.Keys) { $fake[$k] = $vnetFake[$k] }
+  $fake['staticwebapp show'] = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-citest/providers/Microsoft.Web/staticSites/stapp-cix-citest'
+  $fake['rest --method post'] = 'not json'
+  $r = Invoke-AgentsProvision $fake @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains("Couldn't read the dashboard's settings")) { throw "got: $($r.Error) -- $($r.Calls)" }
+  if ($r.Calls.Contains('resource delete')) { throw "deleted the apps before a check that failed: $($r.Calls)" }
 }
 
 Check 'provision.ps1 agents platform: no budget without an address that gets mail, and nothing for the apps' {
