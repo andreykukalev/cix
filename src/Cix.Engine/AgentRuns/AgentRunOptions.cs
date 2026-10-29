@@ -144,6 +144,12 @@ public sealed class AgentRunOptions
     /// <summary>An analyst run that never used Claude is tried again after this long.</summary>
     public int AnalystRetryMinutes { get; set; } = 30;
 
+    /// <summary>The owner's Run now button: an analyst run at least this long after the last one of any kind.</summary>
+    public int AnalystNowCooldownMinutes { get; set; } = 30;
+
+    /// <summary>The owner's Run now button: at most this many such runs a UTC day.</summary>
+    public int MaxAnalystNowPerDay { get; set; } = 8;
+
     /// <summary>
     /// A run its job hasn't claimed this long after it was queued is dropped and counts as not run. The queue message
     /// expires at the same time, so a job that comes back later finds nothing old to do.
@@ -170,6 +176,8 @@ public sealed class AgentRunOptions
 
     public TimeSpan AnalystRetry => TimeSpan.FromMinutes(AnalystRetryMinutes);
 
+    public TimeSpan AnalystNowCooldown => TimeSpan.FromMinutes(AnalystNowCooldownMinutes);
+
     /// <summary>Quick analyst retries never add up to more than one interval; then it waits for its normal slot.</summary>
     public int MaxAnalystRetries => AnalystIntervalHours * 60 / AnalystRetryMinutes;
 
@@ -187,6 +195,8 @@ public sealed class AgentRunOptions
         Positive(MaxRunsPerDay, nameof(MaxRunsPerDay));
         Positive(MaxRequestRunsPerDay, nameof(MaxRequestRunsPerDay));
         Positive(AnalystRetryMinutes, nameof(AnalystRetryMinutes));
+        Positive(AnalystNowCooldownMinutes, nameof(AnalystNowCooldownMinutes));
+        Positive(MaxAnalystNowPerDay, nameof(MaxAnalystNowPerDay));
         Positive(ClaimTimeoutMinutes, nameof(ClaimTimeoutMinutes));
         Positive(RunTimeoutMinutes, nameof(RunTimeoutMinutes));
         if (RunTimeoutMinutes <= JobReplicaTimeoutMinutes)

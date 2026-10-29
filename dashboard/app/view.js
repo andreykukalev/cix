@@ -488,7 +488,7 @@
     staleOrder: 50 * MIN, // the specs' tidy rule: the trader cancels its orders older than this
   };
   const JOB_STATES = { done: 'Done', failed: 'Failed', 'not-run': "Didn't start", limit: 'Claude limit', running: 'Running now' };
-  const PURPOSES = { signals: 'for new signals', heartbeat: 'position review', scheduled: 'scheduled', requests: 'for your requests', analyst: 'market check' };
+  const PURPOSES = { signals: 'for new signals', heartbeat: 'position review', scheduled: 'scheduled', requests: 'for your requests', analyst: 'market check', owner: 'on your request' };
 
   function age(iso, now) {
     const at = Date.parse(iso ?? '');

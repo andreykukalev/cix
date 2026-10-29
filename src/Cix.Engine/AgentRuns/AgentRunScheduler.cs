@@ -273,6 +273,35 @@ public sealed partial class AgentRunScheduler(
         }
     }
 
+    /// <summary>
+    /// The owner's Run now button (<see cref="AgentRunPlanner.RunAnalystNow"/>): queues an analyst run at once. Yes with what
+    /// was queued, No with why not, or Unavailable when this engine can't decide now (ask again at the next poll).
+    /// </summary>
+    public async Task<(AgentRunAnswer Answer, string Detail)> RunAnalystNowAsync(CancellationToken cancellationToken)
+    {
+        const string Unavailable = "This engine can't queue runs right now.";
+        if (!IsActive || !await _gate.WaitAsync(JobWait, cancellationToken).ConfigureAwait(false))
+            return (AgentRunAnswer.Unavailable, Unavailable);
+        try
+        {
+            var (state, run, refusal) = _planner.RunAnalystNow(await LoadAsync(cancellationToken).ConfigureAwait(false), time.GetUtcNow());
+            if (run is null)
+                return (AgentRunAnswer.No, refusal!);
+            await SaveAsync(state, cancellationToken).ConfigureAwait(false); // before the send, as for every run
+            return await TrySendAsync(run, cancellationToken).ConfigureAwait(false)
+                ? (AgentRunAnswer.Yes, Inv($"Analyst run {run.Id} queued; its market view usually arrives within 10 minutes. The next scheduled run is {_options.AnalystIntervalHours} hours after this one."))
+                : (AgentRunAnswer.No, "The analyst run couldn't be queued; press the button again in a minute.");
+        }
+        catch (AgentRunsUnavailableException)
+        {
+            return (AgentRunAnswer.Unavailable, Unavailable);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(_options.Poll, time);
@@ -438,7 +467,8 @@ public static class AgentRunRegistration
 {
     /// <summary>
     /// The agent-run scheduler, in Queue mode only; Compose keeps its shell loops (Off). Register after the scanner and the
-    /// manual requests, and before AddCixCosmos, which replaces the in-memory state store.
+    /// manual requests (the Run now requests share their container), and before AddCixCosmos, which replaces the in-memory
+    /// state store.
     /// </summary>
     public static IServiceCollection AddCixAgentRuns(this IServiceCollection services, AgentRunOptions options, ToolServerAuth auth, bool durableState)
     {
@@ -446,6 +476,10 @@ public static class AgentRunRegistration
         ArgumentNullException.ThrowIfNull(options);
         options.Validate(auth, durableState);
         services.AddSingleton(options);
+
+        // The owner's Run now button, in both modes: without the scheduler (Off) each request is refused and says why.
+        services.AddSingleton<AnalystRunRequestService>();
+        services.AddHostedService(sp => sp.GetRequiredService<AnalystRunRequestService>());
         if (options.Mode == AgentRunMode.Off)
             return services;
 

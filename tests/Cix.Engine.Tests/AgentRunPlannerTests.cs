@@ -59,6 +59,14 @@ public sealed class AgentRunPlannerTests
             return ended;
         }
 
+        /// <summary>The owner presses Run now: the run queued, or why not.</summary>
+        public (AgentRun? Run, string? Refusal) RunNow()
+        {
+            var (state, run, refusal) = Planner.RunAnalystNow(State, Now);
+            State = state;
+            return (run, refusal);
+        }
+
         /// <summary>The job claims the run and reports how it ended.</summary>
         public void Finish(AgentRun run, AgentRunOutcome outcome)
         {
@@ -265,6 +273,86 @@ public sealed class AgentRunPlannerTests
     }
 
     [Fact]
+    public void OwnerRunNow_QueuesAnAnalystRunAtOnce_OneAtATime_AndRestartsTheCadence()
+    {
+        var sim = new Sim(Options(o => o.Analyst = true));
+        var idle = Signals(scanned: false);
+        sim.Finish(sim.Single(idle), AgentRunOutcome.Done); // the scheduled run at start
+        sim.Advance(TimeSpan.FromHours(2));
+
+        var (run, refusal) = sim.RunNow();
+        Assert.Null(refusal);
+        Assert.Equal((AgentRunKind.Analyst, AgentRunPurpose.Owner, string.Empty), (run!.Kind, run.Purpose, run.Key));
+        Assert.StartsWith("analyst-", run.Id, StringComparison.Ordinal);
+        Assert.Same(run, sim.State.InFlightOf(AgentRunKind.Analyst));
+        Assert.Equal(1, sim.State.OwnerAnalystRuns);
+        Assert.Empty(sim.Tick(idle)); // the schedule doesn't add a second one
+
+        Assert.Contains("already queued", sim.RunNow().Refusal, StringComparison.Ordinal);
+        Assert.NotNull(sim.Claim(run));
+        Assert.Contains("running now", sim.RunNow().Refusal, StringComparison.Ordinal);
+        Assert.Equal(1, sim.State.OwnerAnalystRuns); // refusals don't count
+        sim.Advance(TimeSpan.FromMinutes(10));
+        Assert.NotNull(sim.Complete(run, AgentRunOutcome.Done));
+
+        // The next scheduled run is an interval after the owner's, not at the old slot (T0 + 6 h) just after it.
+        Assert.Equal(T0 + TimeSpan.FromHours(8), sim.State.NextAnalyst);
+        sim.Advance(T0 + TimeSpan.FromHours(6) - sim.Now);
+        Assert.Empty(sim.Tick(idle));
+        sim.Advance(TimeSpan.FromHours(2));
+        Assert.Equal(AgentRunPurpose.Analyst, sim.Single(idle).Purpose);
+    }
+
+    [Fact]
+    public void OwnerRunNow_WaitsACooldownAfterAnyAnalystRun_AndHasADailyCap()
+    {
+        var sim = new Sim(Options(o => (o.Analyst, o.MaxAnalystNowPerDay) = (true, 2)));
+        var idle = Signals(scanned: false);
+        sim.Finish(sim.Single(idle), AgentRunOutcome.Done); // the scheduled run at T0
+        sim.Advance(TimeSpan.FromMinutes(20));
+
+        var (run, refusal) = sim.RunNow();
+        Assert.Null(run);
+        Assert.Equal("The analyst started a run 20 min ago; ask again in 10 min (30 min between runs, to spare the Claude limit).", refusal);
+
+        sim.Advance(TimeSpan.FromMinutes(10));
+        sim.Finish(sim.RunNow().Run!, AgentRunOutcome.Done);
+        sim.Advance(TimeSpan.FromMinutes(29));
+        Assert.Contains("ask again in 1 min", sim.RunNow().Refusal, StringComparison.Ordinal); // from the owner's own run too
+        sim.Advance(TimeSpan.FromMinutes(1));
+        sim.Finish(sim.RunNow().Run!, AgentRunOutcome.NotRun); // a run that couldn't use Claude still counts
+        sim.Advance(TimeSpan.FromHours(1));
+
+        Assert.Equal(
+            "You have asked for 2 analyst runs today, the most a day; the scheduled runs go on (AgentRuns:MaxAnalystNowPerDay).",
+            sim.RunNow().Refusal);
+
+        sim.Advance(TimeSpan.FromHours(16)); // the next UTC day
+        Assert.NotNull(sim.RunNow().Run);
+        Assert.Equal(1, sim.State.OwnerAnalystRuns);
+    }
+
+    [Fact]
+    public void OwnerRunNow_ThatCouldNotBeQueued_DoesNotCount_AndAnAnalystThatIsOff_IsRefused()
+    {
+        var sim = new Sim(Options(o => o.Analyst = true));
+        var run = sim.RunNow().Run!;
+
+        var state = sim.Planner.Unsent(sim.State, run, sim.Now);
+        Assert.Empty(state.InFlight);
+        Assert.Equal(0, state.OwnerAnalystRuns);
+        Assert.Null(state.LastAnalystRun); // the owner can press again at once
+        Assert.NotNull(sim.Planner.RunAnalystNow(state, sim.Now).Run);
+
+        var off = new Sim(Options());
+        var before = off.State;
+        var (none, why) = off.RunNow();
+        Assert.Null(none);
+        Assert.Equal("The analyst is off on this engine (AgentRuns:Analyst).", why);
+        Assert.Same(before, off.State);
+    }
+
+    [Fact]
     public void AnalystRetries_NeverAddUpToMoreThanOneInterval()
     {
         var sim = new Sim(Options(o => o.Analyst = true));
@@ -419,6 +507,8 @@ public sealed class AgentRunPlannerTests
         Assert.Throws<InvalidOperationException>(() => Options(o => o.PollSeconds = 1).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.MaxRunsPerDay = 0).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.AnalystRetryMinutes = 400).Validate(ToolServerAuth.Loopback, false));
+        Assert.Throws<InvalidOperationException>(() => Options(o => o.AnalystNowCooldownMinutes = 0).Validate(ToolServerAuth.Loopback, false));
+        Assert.Throws<InvalidOperationException>(() => Options(o => o.MaxAnalystNowPerDay = 0).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.RunTimeoutMinutes = AgentRunOptions.JobReplicaTimeoutMinutes).Validate(ToolServerAuth.Loopback, false));
     }
 }

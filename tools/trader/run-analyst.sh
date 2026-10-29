@@ -63,12 +63,18 @@ run_once() {
   log="$logs/$run_id.json"
   export CIX_RUN_ID="$run_id"
 
+  # $1, in job mode, is why the engine queued the run: "owner" when the owner pressed Run now on the dashboard.
+  local prompt='Assess the market now and record your view.'
+  if [[ "${1:-}" == owner ]]; then
+    prompt='The owner asked for this check now, outside your schedule, because the market may be moving fast. Look first for news from the last few hours, then assess the market and record your view.'
+  fi
+
   load_credentials || { not_run_reason=credentials; return "$NOT_RUN"; }
   check_expiry || { not_run_reason=credentials; return "$NOT_RUN"; }
   wait_for_engine
   say "$run_id starting ($auth, model $model)"
 
-  (cd "$dir" && timeout "${timeout_minutes}m" env -u IDENTITY_ENDPOINT -u IDENTITY_HEADER -u MSI_ENDPOINT -u MSI_SECRET claude -p 'Assess the market now and record your view.' \
+  (cd "$dir" && timeout "${timeout_minutes}m" env -u IDENTITY_ENDPOINT -u IDENTITY_HEADER -u MSI_ENDPOINT -u MSI_SECRET claude -p "$prompt" \
       --append-system-prompt "$instructions"$'\n\n'"$site_note" \
       --mcp-config "$dir/tools/trader/$mcp" --strict-mcp-config \
       --allowedTools "$tools" --disallowedTools "$denied" \

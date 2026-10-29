@@ -59,7 +59,7 @@ const BODY = JSON.stringify({ id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f', side: 
 
 test('the owner endpoints are registered under /api/owner', () => {
   assert.deepEqual(Object.values(routes).map((r) => r.route).sort(),
-    ['owner/control-requests', 'owner/control-requests/{day}/{id}', 'owner/pair-requests', 'owner/pair-requests/{day}/{id}', 'owner/pairs',
+    ['owner/analyst-requests', 'owner/analyst-requests/{day}/{id}', 'owner/control-requests', 'owner/control-requests/{day}/{id}', 'owner/pair-requests', 'owner/pair-requests/{day}/{id}', 'owner/pairs',
       'owner/requests', 'owner/requests/{day}/{id}', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
 });
 
@@ -353,4 +353,39 @@ test("Pause and Resume: paper's go to paper's database; live's need the owner's 
     assert.equal(reads.length, 0);
   } finally { process.env.COSMOS_LIVE_DATABASE = saved; }
   assert.deepEqual(writeDatabases, ['cix', 'cix-live', 'cix']);
+});
+
+test("Run now: paper's goes to paper's database; live's needs the owner's confirmation; the lookup reads only its own type and mode", async () => {
+  const post = (body) => routes['owner-analyst-requests'].handler(request({ method: 'POST', body: JSON.stringify(body) }), context);
+  const lookup = (day, id, query = '') => routes['owner-analyst-request'].handler(request({ params: { day, id }, query }), context);
+
+  writeDatabases.length = 0;
+  const id = crypto.randomUUID();
+  const paper = await post({ id, note: 'ignored' });
+  assert.equal(paper.status, 201);
+  assert.equal(paper.jsonBody.request.status, 'new');
+  const doc = writes.at(-1);
+  assert.deepEqual(Object.keys(doc).sort(), ['createdAt', 'day', 'id', 'requestedBy', 'status', 'tradingMode', 'type'], 'nothing the analyst reads');
+  assert.equal(doc.type, 'analyst-run');
+  assert.deepEqual(writeDatabases, ['cix']);
+  const again = await post({ id });
+  assert.equal(again.status, 200, 'the same press again is the same request');
+  assert.equal(again.jsonBody.result, 'exists');
+
+  assert.equal((await lookup(doc.day, id)).status, 200);
+  assert.equal((await lookup(doc.day, id, 'mode=live')).status, 404, "paper's request isn't live's");
+
+  const unconfirmed = await post({ id: crypto.randomUUID(), tradingMode: 'live' });
+  assert.equal(unconfirmed.status, 400);
+  assert.match(unconfirmed.jsonBody.error, /real-money/);
+  const live = await post({ id: crypto.randomUUID(), tradingMode: 'live', confirmLive: true });
+  assert.equal(live.status, 201);
+  assert.deepEqual(writeDatabases, ['cix', 'cix', 'cix-live']);
+
+  for (const bad of [{ id: 'nope' }, { id: crypto.randomUUID(), tradingMode: 'demo' }, []]) {
+    assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await lookup('yesterday', id)).status, 400);
+  const visitor = await routes['owner-analyst-requests'].handler(request({ method: 'POST', principal: VISITOR, body: JSON.stringify({ id: crypto.randomUUID() }) }), context);
+  assert.equal(visitor.status, 403);
 });
