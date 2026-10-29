@@ -307,6 +307,8 @@ public sealed class AgentRunSchedulerTests
             CappedOn = new DateOnly(2026, 10, 26),
             LastKey = "buy:SOL-EUR",
             NextHeartbeat = T0,
+            LastAnalystRun = T0,
+            OwnerAnalystRuns = 2,
             InFlight = [new AgentRun("run-20261026-080000-abcdef", AgentRunKind.Requests, AgentRunPurpose.Requests, "manual:a", T0, T0.AddMinutes(1))],
         };
 
@@ -315,6 +317,7 @@ public sealed class AgentRunSchedulerTests
 
         Assert.Equal(json, JsonSerializer.Serialize(back, CosmosDb.Json));
         Assert.Equal(state.InFlight.Single(), back.InFlight.Single());
+        Assert.Equal((T0, 2), (back.LastAnalystRun, back.OwnerAnalystRuns));
     }
 
     [Fact]

@@ -147,7 +147,7 @@ public sealed class AgentRunOptions
     /// <summary>The owner's Run now button: an analyst run at least this long after the last one of any kind.</summary>
     public int AnalystNowCooldownMinutes { get; set; } = 30;
 
-    /// <summary>The owner's Run now button: at most this many such runs a UTC day.</summary>
+    /// <summary>The owner's Run now button: at most this many such runs a UTC day, for this engine (paper and live count apart).</summary>
     public int MaxAnalystNowPerDay { get; set; } = 8;
 
     /// <summary>
@@ -195,8 +195,10 @@ public sealed class AgentRunOptions
         Positive(MaxRunsPerDay, nameof(MaxRunsPerDay));
         Positive(MaxRequestRunsPerDay, nameof(MaxRequestRunsPerDay));
         Positive(AnalystRetryMinutes, nameof(AnalystRetryMinutes));
-        Positive(AnalystNowCooldownMinutes, nameof(AnalystNowCooldownMinutes));
-        Positive(MaxAnalystNowPerDay, nameof(MaxAnalystNowPerDay));
+        if (AnalystNowCooldownMinutes is < 10 or > 720)
+            throw new InvalidOperationException("AgentRuns:AnalystNowCooldownMinutes must be between 10 and 720: each run spends the owner's Claude usage.");
+        if (MaxAnalystNowPerDay is < 1 or > 24)
+            throw new InvalidOperationException("AgentRuns:MaxAnalystNowPerDay must be between 1 and 24: each run spends the owner's Claude usage.");
         Positive(ClaimTimeoutMinutes, nameof(ClaimTimeoutMinutes));
         Positive(RunTimeoutMinutes, nameof(RunTimeoutMinutes));
         if (RunTimeoutMinutes <= JobReplicaTimeoutMinutes)

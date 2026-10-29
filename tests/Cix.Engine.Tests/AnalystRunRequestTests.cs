@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using Cix.Engine.AgentRuns;
 using Cix.Engine.Manual;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cix.Engine.Tests;
@@ -81,7 +82,7 @@ public sealed class AnalystRunRequestTests
         await setup.Poll();
 
         Assert.Equal(ManualRequestStatus.Rejected, setup.Status("run-now-0003"));
-        Assert.Equal("The analyst started a run 8 min ago; ask again in 22 min (30 min between runs, to spare the Claude limit).", setup.Detail("run-now-0003"));
+        Assert.Equal("The analyst was queued 8 min ago; ask again in 22 min (30 min between runs, to spare the Claude limit).", setup.Detail("run-now-0003"));
         Assert.Single(setup.Runs.Queue.Sent, s => s.Run.Kind == AgentRunKind.Analyst);
     }
 
@@ -132,5 +133,36 @@ public sealed class AnalystRunRequestTests
         live.Request("run-now-0009", mode: "live");
         await live.Poll();
         Assert.Equal("accepted", live.Status("run-now-0009"));
+    }
+
+    [Fact]
+    public async Task AnAnswerWhoseDocumentCannotBeUpdated_IsKept_SoTheSchedulerIsNotAskedAgain()
+    {
+        var setup = new Setup();
+        setup.Request("run-now-0010");
+        setup.Requests.FailWrites = true;
+
+        Assert.Equal(1, await setup.Poll());
+        Assert.Equal("new", setup.Status("run-now-0010"));
+
+        setup.Requests.FailWrites = false;
+        Assert.Equal(1, await setup.Poll());
+        Assert.Equal("accepted", setup.Status("run-now-0010")); // its own answer, not "already queued"
+        Assert.Single(setup.Runs.Queue.Sent);
+    }
+
+    [Fact]
+    public void WithAgentRunsOff_TheServiceIsRegistered_WithoutAScheduler()
+    {
+        var services = new ServiceCollection()
+            .AddLogging()
+            .AddSingleton(TimeProvider.System)
+            .AddSingleton(new TradingContext(TradingMode.Paper))
+            .AddSingleton<IManualRequestStore>(new InMemoryManualRequestStore("ok"))
+            .AddCixAgentRuns(new AgentRunOptions(), Tools.ToolServerAuth.Loopback, durableState: false);
+        using var provider = services.BuildServiceProvider();
+
+        Assert.NotNull(provider.GetRequiredService<AnalystRunRequestService>());
+        Assert.Null(provider.GetService<AgentRunScheduler>());
     }
 }

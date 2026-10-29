@@ -153,7 +153,13 @@ job_claim() {
     say "$job_run_id: the engine refused the claim (HTTP $job_status); not run."
     return 2
   fi
-  [[ "$(jq -r '.wanted // false' <<<"$job_body" 2>/dev/null)" == "true" ]] && return 0
+  if [[ "$(jq -r '.wanted // false' <<<"$job_body" 2>/dev/null)" == "true" ]]; then
+    # The engine's word on why the run was queued wins over the queue message's.
+    local purpose
+    purpose="$(jq -r '.purpose // empty' <<<"$job_body" 2>/dev/null)"
+    [[ "$purpose" =~ ^[a-z]{1,20}$ ]] && job_purpose="$purpose"
+    return 0
+  fi
   say "$job_run_id is no longer wanted (already claimed, given up or not this job's); nothing to do."
   return 1
 }

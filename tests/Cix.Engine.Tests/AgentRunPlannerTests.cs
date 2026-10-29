@@ -313,14 +313,17 @@ public sealed class AgentRunPlannerTests
 
         var (run, refusal) = sim.RunNow();
         Assert.Null(run);
-        Assert.Equal("The analyst started a run 20 min ago; ask again in 10 min (30 min between runs, to spare the Claude limit).", refusal);
+        Assert.Equal("The analyst was queued 20 min ago; ask again in 10 min (30 min between runs, to spare the Claude limit).", refusal);
 
         sim.Advance(TimeSpan.FromMinutes(10));
         sim.Finish(sim.RunNow().Run!, AgentRunOutcome.Done);
         sim.Advance(TimeSpan.FromMinutes(29));
         Assert.Contains("ask again in 1 min", sim.RunNow().Refusal, StringComparison.Ordinal); // from the owner's own run too
         sim.Advance(TimeSpan.FromMinutes(1));
+        var next = sim.State.NextAnalyst;
         sim.Finish(sim.RunNow().Run!, AgentRunOutcome.NotRun); // a run that couldn't use Claude still counts
+        Assert.Equal((next, 0), (sim.State.NextAnalyst, sim.State.AnalystRetries)); // not retried: the schedule is as it was
+        Assert.Empty(sim.Tick(idle));
         sim.Advance(TimeSpan.FromHours(1));
 
         Assert.Equal(
@@ -336,13 +339,28 @@ public sealed class AgentRunPlannerTests
     public void OwnerRunNow_ThatCouldNotBeQueued_DoesNotCount_AndAnAnalystThatIsOff_IsRefused()
     {
         var sim = new Sim(Options(o => o.Analyst = true));
+        var idle = Signals(scanned: false);
+        sim.Finish(sim.Single(idle), AgentRunOutcome.Done); // the scheduled run at T0: the next is at T0 + 6 h
+        sim.Advance(TimeSpan.FromHours(1));
         var run = sim.RunNow().Run!;
 
         var state = sim.Planner.Unsent(sim.State, run, sim.Now);
         Assert.Empty(state.InFlight);
         Assert.Equal(0, state.OwnerAnalystRuns);
         Assert.Null(state.LastAnalystRun); // the owner can press again at once
+        Assert.Equal((T0 + TimeSpan.FromHours(6), 0), (state.NextAnalyst, state.AnalystRetries)); // no retry in its place
         Assert.NotNull(sim.Planner.RunAnalystNow(state, sim.Now).Run);
+        Assert.Empty(sim.Planner.Tick(state, idle, sim.Now + TimeSpan.FromMinutes(30)).Dispatch);
+
+        // Never claimed: given up on in a look, not retried, and the schedule stays as it was.
+        var (queued, expired) = (sim.Planner.RunAnalystNow(state, sim.Now).State, sim.Now + TimeSpan.FromMinutes(10));
+        var look = sim.Planner.Tick(queued, idle, expired);
+        Assert.Equal(AgentRunOutcome.NotRun, Assert.Single(look.Expired).Outcome);
+        Assert.Empty(look.Dispatch);
+        Assert.Equal((T0 + TimeSpan.FromHours(6), 0), (look.State.NextAnalyst, look.State.AnalystRetries));
+        var slot = sim.Planner.Tick(state, idle, T0 + TimeSpan.FromHours(6));
+        Assert.Equal(AgentRunPurpose.Analyst, Assert.Single(slot.Dispatch).Purpose);
+        Assert.Equal(T0 + TimeSpan.FromHours(6), slot.State.AnalystSlot); // the cadence goes on from its slot
 
         var off = new Sim(Options());
         var before = off.State;
@@ -507,8 +525,9 @@ public sealed class AgentRunPlannerTests
         Assert.Throws<InvalidOperationException>(() => Options(o => o.PollSeconds = 1).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.MaxRunsPerDay = 0).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.AnalystRetryMinutes = 400).Validate(ToolServerAuth.Loopback, false));
-        Assert.Throws<InvalidOperationException>(() => Options(o => o.AnalystNowCooldownMinutes = 0).Validate(ToolServerAuth.Loopback, false));
+        Assert.Throws<InvalidOperationException>(() => Options(o => o.AnalystNowCooldownMinutes = 9).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.MaxAnalystNowPerDay = 0).Validate(ToolServerAuth.Loopback, false));
+        Assert.Throws<InvalidOperationException>(() => Options(o => o.MaxAnalystNowPerDay = 25).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.RunTimeoutMinutes = AgentRunOptions.JobReplicaTimeoutMinutes).Validate(ToolServerAuth.Loopback, false));
     }
 }

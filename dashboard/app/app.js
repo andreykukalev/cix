@@ -1212,15 +1212,15 @@ function renderAnalystButton(view) {
   const running = view.jobs?.analyst?.last?.state === 'running';
   button.hidden = !state.viewer.signedIn;
   button.textContent = t('Run now');
-  button.disabled = !!state.analystPending || running;
-  button.title = running ? t('The analyst is running now; its view arrives when the run ends.') : t('Ask the analyst for a market view now, outside its schedule');
+  button.disabled = state.analystPending === view.mode || running;
+  button.title = running ? t('The analyst is queued or running now; its view arrives when the run ends.') : t('Ask the analyst for a market view now, outside its schedule');
 }
 
 let analystChoice = null;
 
 function openAnalyst() {
   const view = state.view;
-  if (!view || view.mode !== state.mode || state.analystPending) return;
+  if (!view || view.mode !== state.mode || state.analystPending === view.mode) return;
   const live = view.mode === 'live';
   analystChoice = { mode: view.mode, id: crypto.randomUUID() };
   const form = document.getElementById('run-analyst-form');
@@ -1274,7 +1274,7 @@ async function sendAnalyst(event) {
 
 /** Follows Run now until the engine has answered it (it checks these requests every 10 seconds). */
 function trackAnalyst(item) {
-  state.analystPending = true;
+  state.analystPending = item.tradingMode; // that mode's button waits; the other mode's stays usable
   if (state.view) renderAnalystButton(state.view);
   const started = Date.now();
   const label = t('Analyst run');
@@ -1282,7 +1282,7 @@ function trackAnalyst(item) {
   const timer = setInterval(async () => {
     const stop = (text, tone) => {
       clearInterval(timer);
-      state.analystPending = false;
+      state.analystPending = null;
       requestStatus(text, tone);
       refresh(); // the Analyst tile shows the run
     };

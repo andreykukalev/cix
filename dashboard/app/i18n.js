@@ -172,8 +172,8 @@
     Pause: 'Пауза',
     'Pause trading': 'Приостановить торговлю',
     'I understand this changes real-money trading on Revolut X.': 'Я понимаю, что это меняет торговлю реальными деньгами на Revolut X.',
-    'Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; strategy switches, pair changes, Pause and Resume work for live too, after you confirm. The engine checks each one and every order goes through the risk gate. News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.':
-      'Доступно только владельцу: каждая страница и ответ API требуют входа через ваш аккаунт Microsoft. Запросы на покупку и продажу — только для бумажной торговли; смена стратегии, изменения пар, пауза и возобновление работают и для реальной торговли, после вашего подтверждения. Движок проверяет каждый запрос, и каждый ордер проходит риск-контроль. Ссылки на новости в обзоре выбраны агентом-аналитиком в интернете и ведут на внешние сайты.',
+    'Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; strategy switches, pair changes, Pause, Resume and the analyst\'s Run now work for live too, after you confirm. The engine checks each one and every order goes through the risk gate. News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.':
+      'Доступно только владельцу: каждая страница и ответ API требуют входа через ваш аккаунт Microsoft. Запросы на покупку и продажу — только для бумажной торговли; смена стратегии, изменения пар, пауза, возобновление и внеочередной запуск аналитика работают и для реальной торговли, после вашего подтверждения. Движок проверяет каждый запрос, и каждый ордер проходит риск-контроль. Ссылки на новости в обзоре выбраны агентом-аналитиком в интернете и ведут на внешние сайты.',
 
     // --- Words app.js and view.js write ------------------------------------------------------------------------------------
     paper: 'бумажная',
@@ -485,7 +485,7 @@
     'Run the paper analyst now': 'Запустить аналитика бумажной торговли сейчас',
     'Analyst run': 'Запуск аналитика',
     'Ask the analyst for a market view now, outside its schedule': 'Попросить аналитика оценить рынок сейчас, вне расписания',
-    'The analyst is running now; its view arrives when the run ends.': 'Аналитик уже работает; взгляд на рынок появится, когда запуск закончится.',
+    'The analyst is queued or running now; its view arrives when the run ends.': 'Аналитик уже в очереди или работает; взгляд на рынок появится, когда запуск закончится.',
     'I understand the new market view steers real-money trading on Revolut X.': 'Я понимаю, что новый взгляд на рынок влияет на торговлю реальными деньгами на Revolut X.',
     'The analyst reads the news and the market now, outside its schedule, and records a new market view: risk-off stops new buys, and it can flag coins to avoid. Its next scheduled run comes a full interval after this one. Each run uses your Claude limit, so the engine allows one every 30 minutes at most, and a few a day; it says so if it refuses.':
       'Аналитик сейчас, вне расписания, прочитает новости и рынок и запишет новый взгляд на рынок: risk-off останавливает новые покупки, а ещё он может отметить монеты, которых лучше избегать. Следующий запуск по расписанию будет через полный интервал после этого. Каждый запуск тратит ваш лимит Claude, поэтому движок разрешает не чаще одного раза в 30 минут и несколько раз в день; если он откажет, то объяснит почему.',

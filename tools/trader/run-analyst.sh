@@ -66,7 +66,7 @@ run_once() {
   # $1, in job mode, is why the engine queued the run: "owner" when the owner pressed Run now on the dashboard.
   local prompt='Assess the market now and record your view.'
   if [[ "${1:-}" == owner ]]; then
-    prompt='The owner asked for this check now, outside your schedule, because the market may be moving fast. Look first for news from the last few hours, then assess the market and record your view.'
+    prompt='The owner asked for this check now, outside your schedule. Include any significant news from the last few hours, then assess the market and record your view.'
   fi
 
   load_credentials || { not_run_reason=credentials; return "$NOT_RUN"; }
