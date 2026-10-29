@@ -74,6 +74,8 @@ public static class Reasons
     public const string TooSmall = "too-small";
     public const string NoCash = "no-cash";
     public const string MaxPositions = "max-positions";
+    public const string CheckHolding = "check-holding";
+    public const string DuplicateHolding = "duplicate-holding";
 }
 
 /// <summary>
@@ -87,7 +89,8 @@ public static class Reasons
 /// <see cref="AdvisorSettings.BreakoutDays"/>-day closing high. Strongest momentum first, sized so the loss at the stop
 /// plus a gap stays within <see cref="AdvisorSettings.RiskPerTrade"/>, within the position cap and the free cash.</item>
 /// </list>
-/// Stale or missing data never produces an action, only a note.
+/// Stale or missing data never produces an action, only a note; while the benchmark's data is missing, held positions keep
+/// the normal trail and nothing is bought.
 /// </summary>
 public static class Advisor
 {
@@ -109,10 +112,17 @@ public static class Advisor
 
         var regime = Regime(input, settings, notes);
 
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var holding in input.Holdings)
         {
             if (holding.Quantity <= 0)
                 continue;
+            if (!seen.Add(holding.Symbol))
+            {
+                notes.Add(new(holding.Symbol, Reasons.DuplicateHolding));
+                continue;
+            }
+
             if (!histories.TryGetValue(holding.Symbol, out var history))
             {
                 notes.Add(new(holding.Symbol, Reasons.NoData));
@@ -150,7 +160,7 @@ public static class Advisor
             return;
         }
 
-        if (TrendIndicators.Sma(bars, settings.SlowSmaDays) is not { } trend || Indicators.Atr(bars, settings.AtrDays) is not { } atr)
+        if (TrendIndicators.Sma(bars, settings.SlowSmaDays) is not { } trend || Indicators.Atr(bars, settings.AtrDays) is not { } atr || atr <= 0)
         {
             notes.Add(new(holding.Symbol, Reasons.NotEnoughData));
             return;
@@ -169,12 +179,18 @@ public static class Advisor
 
         if (holding.Stop is { } current && close <= current)
         {
-            actions.Add(Act(ActionKind.Sell, current, Reasons.BelowStop));
+            // A stop the previous close was already under would have sold at the broker by now: the record is off (a typo,
+            // or a split, since recorded stops are in raw prices and bars are adjusted). Ask rather than sell.
+            if (bars.Count >= 2 && bars[^2].Close <= current)
+                notes.Add(new(holding.Symbol, Reasons.CheckHolding));
+            else
+                actions.Add(Act(ActionKind.Sell, current, Reasons.BelowStop));
             return;
         }
 
-        var riskOn = regime == MarketRegime.RiskOn;
-        var trail = riskOn ? settings.TrailingStopAtr : settings.RiskOffTrailingStopAtr;
+        // Only a confirmed risk-off tightens: a stop is never lowered again, so missing data mustn't move it.
+        var riskOff = regime == MarketRegime.RiskOff;
+        var trail = riskOff ? settings.RiskOffTrailingStopAtr : settings.TrailingStopAtr;
         var high = TrendIndicators.HighestCloseSince(bars, holding.OpenedOn) ?? close;
         var stop = FloorTo(high - (trail * atr), tick);
 
@@ -193,7 +209,7 @@ public static class Advisor
         if (holding.Stop is not { } existing)
             actions.Add(Act(ActionKind.SetStop, stop, Reasons.NoStop));
         else if (stop > existing * (1 + settings.MinStopRaiseFraction))
-            actions.Add(Act(ActionKind.RaiseStop, stop, riskOn ? Reasons.Trail : Reasons.RiskOffTighten));
+            actions.Add(Act(ActionKind.RaiseStop, stop, riskOff ? Reasons.RiskOffTighten : Reasons.Trail));
     }
 
     private static void AdviseEntries(
@@ -225,7 +241,8 @@ public static class Advisor
                 || TrendIndicators.Sma(bars, settings.SlowSmaDays) is not { } slow
                 || TrendIndicators.Sma(bars, settings.FastSmaDays) is not { } fast
                 || TrendIndicators.PriorHighestClose(bars, settings.BreakoutDays) is not { } priorHigh
-                || Indicators.Atr(bars, settings.AtrDays) is not { } atr)
+                || Indicators.Atr(bars, settings.AtrDays) is not { } atr
+                || atr <= 0)
             {
                 notes.Add(new(symbol, Reasons.NotEnoughData));
                 continue;
@@ -246,7 +263,8 @@ public static class Advisor
         }
 
         var slots = settings.MaxPositions - held.Count;
-        var cash = input.Cash;
+        if (Budget(input, histories, notes) is not { } cash)
+            return;
         foreach (var c in candidates.OrderByDescending(c => c.Momentum).ThenBy(c => c.History.Instrument.Symbol, StringComparer.Ordinal))
         {
             var instrument = c.History.Instrument;
@@ -279,6 +297,33 @@ public static class Advisor
             cash -= quantity * pricePerShare;
             slots--;
         }
+    }
+
+    /// <summary>
+    /// What new positions may use: the free cash, but never more than the allocation minus what is held (at the last close,
+    /// or the cost without bars), so cash the account holds beyond the allocation is never spent. Null when a holding
+    /// can't be valued for want of an FX rate.
+    /// </summary>
+    private static decimal? Budget(AdvisorInput input, IEnumerable<PriceHistory> histories, List<AdvisorNote> notes)
+    {
+        var bySymbol = histories.ToDictionary(h => h.Instrument.Symbol, StringComparer.Ordinal);
+        var invested = 0m;
+        foreach (var holding in input.Holdings.Where(h => h.Quantity > 0).DistinctBy(h => h.Symbol, StringComparer.Ordinal))
+        {
+            bySymbol.TryGetValue(holding.Symbol, out var history);
+            var price = history is { Bars.Count: > 0 } ? history.Bars[^1].Close : holding.AverageCost;
+            // Without bars the currency is unknown: the base currency is assumed only when nothing else is known.
+            var currency = history?.Instrument.Currency ?? input.BaseCurrency;
+            if (FxRate(input, currency) is not { } fx)
+            {
+                notes.Add(new(holding.Symbol, Reasons.NoFxRate));
+                return null;
+            }
+
+            invested += holding.Quantity * price * fx;
+        }
+
+        return Math.Max(0m, Math.Min(input.Cash, input.Capital - invested));
     }
 
     private static bool IsFresh(IReadOnlyList<Candle> bars, DateOnly today, AdvisorSettings settings)

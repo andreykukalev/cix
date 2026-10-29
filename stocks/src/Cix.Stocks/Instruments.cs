@@ -29,7 +29,7 @@ public static partial class StockSymbol
     /// </summary>
     public static bool IsValid(string? symbol) => symbol is { Length: <= 32 } && Pattern().IsMatch(symbol);
 
-    [GeneratedRegex(@"^[A-Z0-9][A-Z0-9_-]{0,19}\.[A-Z]{1,10}$")]
+    [GeneratedRegex(@"^[A-Z0-9][A-Z0-9_-]{0,19}\.[A-Z]{1,10}\z")]
     private static partial Regex Pattern();
 }
 

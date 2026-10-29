@@ -32,6 +32,10 @@ public sealed class EodhdClient : IDailyBarSource
         ArgumentNullException.ThrowIfNull(http);
         if (http.BaseAddress is null)
             throw new ArgumentException("The HttpClient needs a BaseAddress.", nameof(http));
+        if (http.BaseAddress.Scheme != Uri.UriSchemeHttps)
+            throw new ArgumentException("The key travels in the URL, so EODHD is only reached over https.", nameof(http));
+        if (!http.BaseAddress.AbsolutePath.EndsWith('/'))
+            throw new ArgumentException("The BaseAddress must end with '/', or the request paths drop its last segment.", nameof(http));
         if (string.IsNullOrWhiteSpace(apiToken))
             throw new ArgumentException("The EODHD key is missing.", nameof(apiToken));
         _http = http;
@@ -51,7 +55,7 @@ public sealed class EodhdClient : IDailyBarSource
         EodBar[]? rows;
         try
         {
-            using var response = await _http.GetAsync(new Uri(path, UriKind.Relative), HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            using var response = await _http.GetAsync(new Uri(path, UriKind.Relative), cancellationToken)
                 .ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.OK)
                 throw new StockDataException($"EODHD answered {(int)response.StatusCode} for {symbol}.", (int)response.StatusCode);
@@ -67,6 +71,11 @@ public sealed class EodhdClient : IDailyBarSource
         {
             // Not wrapped: an inner exception's text is out of this client's control.
             throw new StockDataException($"EODHD couldn't be reached for {symbol} ({e.HttpRequestError}).");
+        }
+        catch (IOException e)
+        {
+            // The connection dropped while the body was read.
+            throw new StockDataException($"EODHD's answer for {symbol} was cut off ({e.GetType().Name}).");
         }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -95,11 +104,17 @@ public sealed class EodhdClient : IDailyBarSource
             return null;
 
         var close = row.AdjustedClose is > 0 ? row.AdjustedClose.Value : row.Close.Value;
-        var factor = close / row.Close.Value;
-        decimal Scale(decimal price) => Math.Round(price * factor, 6, MidpointRounding.ToEven);
+        decimal Scale(decimal price) => Math.Round(price * close / row.Close.Value, 6, MidpointRounding.ToEven);
 
         var start = new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-        return new Candle(start, Scale(row.Open.Value), Scale(row.High.Value), Scale(row.Low.Value), Math.Round(close, 6), Math.Max(0m, row.Volume ?? 0m));
+        try
+        {
+            return new Candle(start, Scale(row.Open.Value), Scale(row.High.Value), Scale(row.Low.Value), Math.Round(close, 6), Math.Max(0m, row.Volume ?? 0m));
+        }
+        catch (OverflowException)
+        {
+            return null; // An absurd adjustment: not a price to advise on.
+        }
     }
 
     internal sealed record EodBar(

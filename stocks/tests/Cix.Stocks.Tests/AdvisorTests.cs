@@ -41,8 +41,9 @@ public class AdvisorTests
         IReadOnlyList<Holding>? holdings = null,
         decimal capital = 10_000m,
         decimal cash = 10_000m,
-        IReadOnlyDictionary<string, decimal>? fx = null) =>
-        new(Today, "EUR", capital, cash, fx ?? new Dictionary<string, decimal> { ["USD"] = 0.9m },
+        IReadOnlyDictionary<string, decimal>? fx = null,
+        DateOnly? today = null) =>
+        new(today ?? Today, "EUR", capital, cash, fx ?? new Dictionary<string, decimal> { ["USD"] = 0.9m },
             watchlist ?? [new PriceHistory(Xyz, Line(100m, 0.1m))], benchmark ?? RisingBenchmark, holdings ?? []);
 
     // The rising line ends at close 124.9 with ATR 1: SMA200 114.95, SMA50 122.45, prior 50-day high 124.8.
@@ -106,7 +107,7 @@ public class AdvisorTests
     [Fact]
     public void Evaluate_NoEntriesWhenTheBenchmarkIsMissingOrStale()
     {
-        foreach (var benchmark in new[] { new List<Candle>(), Line(100m, 0.1m, Today.AddDays(-5)) })
+        foreach (var benchmark in new[] { new List<Candle>(), Line(100m, 0.1m, Today.AddDays(-6)) })
         {
             var advice = Advisor.Evaluate(Input(benchmark: benchmark), Settings);
 
@@ -119,7 +120,7 @@ public class AdvisorTests
     [Fact]
     public void Evaluate_StaleOrFutureBarsGiveANoteAndNoAction()
     {
-        foreach (var lastDay in new[] { Today.AddDays(-5), Today.AddDays(1) })
+        foreach (var lastDay in new[] { Today.AddDays(-6), Today.AddDays(1) })
         {
             var advice = Advisor.Evaluate(Input(watchlist: [new PriceHistory(Xyz, Line(100m, 0.1m, lastDay))]), Settings);
 
@@ -131,8 +132,10 @@ public class AdvisorTests
     [Fact]
     public void Evaluate_BarsFromTheLastTradingDayBeforeAWeekendAreFresh()
     {
+        // Thursday's bars on the Tuesday after Easter Monday.
+        var thursday = new DateOnly(2027, 3, 25);
         var advice = Advisor.Evaluate(
-            Input(watchlist: [new PriceHistory(Xyz, Line(100m, 0.1m, Today.AddDays(-3)))], benchmark: Line(100m, 0.1m, Today.AddDays(-3))),
+            Input(watchlist: [new PriceHistory(Xyz, Line(100m, 0.1m, thursday))], benchmark: Line(100m, 0.1m, thursday), today: thursday.AddDays(5)),
             Settings);
 
         Assert.Equal(ActionKind.Buy, Assert.Single(advice.Actions).Kind);
@@ -247,28 +250,130 @@ public class AdvisorTests
     }
 
     [Theory]
-    [InlineData(121.8)] // 121.9 is less than 0.5% higher: not worth a change
-    [InlineData(123.0)] // already above the trail: a stop is never lowered
-    public void Evaluate_TheStopIsLeftAloneOtherwise(double stop)
+    [InlineData("121.8")] // 121.9 is less than 0.5% higher: not worth a change
+    [InlineData("123.0")] // already above the trail: a stop is never lowered
+    public void Evaluate_TheStopIsLeftAloneOtherwise(string stop)
     {
-        var holding = new Holding("XYZ.US", 10m, 115m, (decimal)stop, Today.AddDays(-49));
+        var holding = new Holding("XYZ.US", 10m, 115m, decimal.Parse(stop, System.Globalization.CultureInfo.InvariantCulture), Today.AddDays(-49));
 
         var advice = Advisor.Evaluate(Input(holdings: [holding]), Settings);
 
         Assert.Empty(advice.Actions);
     }
 
-    [Fact]
-    public void Evaluate_ACloseAtOrUnderTheStopIsASell()
+    [Theory]
+    [InlineData("123")]
+    [InlineData("124")]
+    public void Evaluate_ACloseAtOrUnderTheStopIsASell(string stop)
     {
-        var holding = new Holding("XYZ.US", 10m, 115m, 125m, Today.AddDays(-49));
+        // The previous close (124.8) was above the stop; the last one (123) is at or under it.
+        var bars = WithLastClose(Line(100m, 0.1m), 123m);
+        var holding = new Holding("XYZ.US", 10m, 115m, decimal.Parse(stop, System.Globalization.CultureInfo.InvariantCulture), Today.AddDays(-49));
 
-        var action = Assert.Single(Advisor.Evaluate(Input(holdings: [holding]), Settings).Actions);
+        var advice = Advisor.Evaluate(Input(watchlist: [new PriceHistory(Xyz, bars)], holdings: [holding]), Settings);
 
+        var action = Assert.Single(advice.Actions);
         Assert.Equal(ActionKind.Sell, action.Kind);
         Assert.Equal(Reasons.BelowStop, action.Reason);
         Assert.Equal(10m, action.Quantity);
-        Assert.Equal(125m, action.Stop);
+        Assert.Equal(holding.Stop, action.Stop);
+    }
+
+    [Fact]
+    public void Evaluate_AStopAboveTwoClosesIsCheckedNotSold()
+    {
+        // Stop 380 recorded before a 4:1 split (or a typo): the broker would have sold already. Ask, don't sell.
+        var holding = new Holding("XYZ.US", 10m, 115m, 380m, Today.AddDays(-49));
+
+        var advice = Advisor.Evaluate(Input(holdings: [holding]), Settings);
+
+        Assert.Empty(advice.Actions);
+        Assert.Contains(new AdvisorNote("XYZ.US", Reasons.CheckHolding), advice.Notes);
+    }
+
+    [Fact]
+    public void Evaluate_MissingBenchmarkDataKeepsTheNormalTrail()
+    {
+        var holding = new Holding("XYZ.US", 10m, 115m, 121m, Today.AddDays(-49));
+
+        var advice = Advisor.Evaluate(Input(holdings: [holding], benchmark: []), Settings);
+
+        Assert.Equal(MarketRegime.Unknown, advice.Regime);
+        var action = Assert.Single(advice.Actions);
+        Assert.Equal(ActionKind.RaiseStop, action.Kind);
+        Assert.Equal(Reasons.Trail, action.Reason);
+        Assert.Equal(121.9m, action.Stop); // 3 ATR, not risk-off's 2
+    }
+
+    [Fact]
+    public void Evaluate_AFlatPriceGivesNoStopAndNoSell()
+    {
+        // ATR 0 (a halted stock): a stop at the close would read as a breach.
+        var flat = Line(100m, 0m).Select(b => b with { High = b.Close, Low = b.Close }).ToList();
+        var holding = new Holding("XYZ.US", 10m, 100m, null, Today.AddDays(-49));
+
+        var advice = Advisor.Evaluate(Input(watchlist: [new PriceHistory(Xyz, flat)], holdings: [holding]), Settings);
+
+        Assert.Empty(advice.Actions);
+        Assert.Contains(new AdvisorNote("XYZ.US", Reasons.NotEnoughData), advice.Notes);
+    }
+
+    [Fact]
+    public void Evaluate_ADuplicateHoldingIsAdvisedOnce()
+    {
+        var holding = new Holding("XYZ.US", 10m, 115m, null, Today.AddDays(-49));
+
+        var advice = Advisor.Evaluate(Input(holdings: [holding, holding with { Quantity = 5m }]), Settings);
+
+        Assert.Equal(10m, Assert.Single(advice.Actions).Quantity);
+        Assert.Contains(new AdvisorNote("XYZ.US", Reasons.DuplicateHolding), advice.Notes);
+    }
+
+    [Fact]
+    public void Evaluate_CashBeyondTheAllocationIsNotSpent()
+    {
+        // 50,000 EUR in the account, a 10,000 EUR allocation of which 9,000 is held: 1,000 is left, 1000 / 112.41 = 8.9.
+        var holding = new Holding("OLD.US", 100m, 90m, 80m, Today.AddDays(-100));
+
+        var advice = Advisor.Evaluate(Input(cash: 50_000m, holdings: [holding]), Settings);
+
+        var buy = Assert.Single(advice.Actions);
+        Assert.Equal("XYZ.US", buy.Symbol);
+        Assert.Equal(8m, buy.Quantity);
+    }
+
+    [Fact]
+    public void Evaluate_AStopIsFlooredToACoarseTick()
+    {
+        var coarse = Xyz with { PriceTick = 0.5m };
+
+        var buy = Assert.Single(Advisor.Evaluate(Input(watchlist: [new PriceHistory(coarse, Line(100m, 0.1m))]), Settings).Actions);
+
+        // 121.9 floored to 0.5. Risk (124.9 - 121.5 + 1) * 0.9 = 3.96 allows 25.2; the cap's 17.79 decides.
+        Assert.Equal(121.5m, buy.Stop);
+        Assert.Equal(17m, buy.Quantity);
+    }
+
+    [Fact]
+    public void Evaluate_ASmallAllocationIsTooSmallForAShare()
+    {
+        // Capital 100: the cap allows 20 / 112.41 = 0.18 shares, under the one whole share needed.
+        var advice = Advisor.Evaluate(Input(capital: 100m, cash: 100m), Settings);
+
+        Assert.Empty(advice.Actions);
+        Assert.Contains(new AdvisorNote("XYZ.US", Reasons.TooSmall), advice.Notes);
+    }
+
+    [Fact]
+    public void Evaluate_AStopAtOrUnderZeroIsNotAdvised()
+    {
+        // Closes 0.5 to 2.99 with ATR 1: the stop 2.99 - 3 is negative.
+        var penny = Line(0.5m, 0.01m);
+
+        var advice = Advisor.Evaluate(Input(watchlist: [new PriceHistory(Xyz, penny)]), Settings);
+
+        Assert.Empty(advice.Actions);
+        Assert.Contains(new AdvisorNote("XYZ.US", Reasons.NotEnoughData), advice.Notes);
     }
 
     [Fact]
@@ -319,8 +424,9 @@ public class AdvisorTests
     public void Evaluate_ProtectiveActionsComeBeforeBuys()
     {
         var abc = new Instrument("ABC.US", "ABC", "USD", InstrumentKind.Stock);
-        var watchlist = new[] { new PriceHistory(Xyz, Line(100m, 0.1m)), new PriceHistory(abc, Line(100m, 0.1m)) };
-        var holding = new Holding("ABC.US", 3m, 110m, 130m, Today.AddDays(-49));
+        // ABC's last close is under its trend line: a sell.
+        var watchlist = new[] { new PriceHistory(Xyz, Line(100m, 0.1m)), new PriceHistory(abc, WithLastClose(Line(100m, 0.1m), 110m)) };
+        var holding = new Holding("ABC.US", 3m, 110m, 100m, Today.AddDays(-49));
 
         var advice = Advisor.Evaluate(Input(watchlist: watchlist, holdings: [holding]), Settings);
 

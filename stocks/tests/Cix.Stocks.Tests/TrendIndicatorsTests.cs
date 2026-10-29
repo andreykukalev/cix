@@ -46,6 +46,7 @@ public class TrendIndicatorsTests
     [InlineData("A/B.US", false)]
     [InlineData("AAPL.US?x=1", false)]
     [InlineData("AAPL.US&api_token=x", false)]
+    [InlineData("AAPL.US\n", false)]
     [InlineData("", false)]
     [InlineData(null, false)]
     public void SymbolsAreTickerDotExchange(string? symbol, bool valid) =>

@@ -49,11 +49,14 @@ public sealed record AdvisorSettings
     /// <summary>A stop is only worth moving when it rises by at least this fraction, so the owner isn't asked daily for cents.</summary>
     public decimal MinStopRaiseFraction { get; init; } = 0.005m;
 
-    /// <summary>Bars older than this many calendar days are stale (covers a weekend plus a holiday): no advice uses them.</summary>
-    public int MaxBarAgeDays { get; init; } = 4;
+    /// <summary>
+    /// Bars older than this many calendar days are stale: no advice uses them. Five covers a weekend with a holiday on both
+    /// sides (Good Friday to Easter Monday: Thursday's bar on Tuesday).
+    /// </summary>
+    public int MaxBarAgeDays { get; init; } = 5;
 
     /// <summary>The fewest daily bars an instrument needs before anything is computed for it.</summary>
-    public int MinBars => Math.Max(Math.Max(SlowSmaDays, RegimeSmaDays), Math.Max(BreakoutDays, AtrDays) + 1);
+    public int MinBars => Math.Max(Math.Max(SlowSmaDays, RegimeSmaDays), Math.Max(Math.Max(BreakoutDays, AtrDays), MomentumDays) + 1);
 
     /// <summary>Throws when a setting is out of range, so a bad configuration fails at startup rather than advising nonsense.</summary>
     public AdvisorSettings Validate()

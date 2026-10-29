@@ -641,6 +641,11 @@ for path in ["src/Cix.Engine/a.cs", "Cix.slnx", "Directory.Build.props", "global
     results.append(report("agents-tip", f"plan.sh and agents-tip.sh agree on {path}",
                           [] if images == held else [f"plan.sh images={images}, agents-tip.sh holds back={held}"], ""))
 
+# The stocks advisory (ADR-0023) never deploys the engine or the agents, whatever the two scripts agree on.
+for path in ["stocks/src/Cix.Stocks/a.cs", "stocks/Cix.Stocks.slnx", "stocks/tests/Cix.Stocks.Tests/a.cs"]:
+    images = plan_images(path)
+    results.append(report("stocks", f"plan.sh doesn't deploy images for {path}", ["images=true"] if images else [], ""))
+
 failed = results.count(False)
 print(f"{len(results) - failed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

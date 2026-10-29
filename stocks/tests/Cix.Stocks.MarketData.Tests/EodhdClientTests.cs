@@ -140,6 +140,43 @@ public class EodhdClientTests
     }
 
     [Fact]
+    public async Task ABodyCutOffMidwayIsADataError()
+    {
+        var (client, _) = Client(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new FailingStream()) });
+
+        var e = await Assert.ThrowsAsync<StockDataException>(() => client.GetDailyBarsAsync("AAPL.US", From, To, CancellationToken.None));
+
+        Assert.Null(e.InnerException);
+    }
+
+    [Fact]
+    public async Task AnAbsurdAdjustmentIsSkipped()
+    {
+        var (client, _) = Client(_ => Json("""
+            [{"date":"2026-09-01","open":1e20,"high":1e20,"low":1e20,"close":1e-20,"adjusted_close":1e20,"volume":1},
+             {"date":"2026-09-02","open":2,"high":2,"low":2,"close":2,"adjusted_close":2,"volume":1}]
+            """));
+
+        var bars = await client.GetDailyBarsAsync("AAPL.US", From, To, CancellationToken.None);
+
+        Assert.Equal(2m, Assert.Single(bars).Close);
+    }
+
+    private sealed class FailingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new IOException("connection reset");
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public async Task CancellationIsNotTurnedIntoADataError()
     {
         var (client, _) = Client(_ => Json("[]"));
@@ -153,6 +190,7 @@ public class EodhdClientTests
     [InlineData("AAPL")]
     [InlineData("../user.US")]
     [InlineData("AAPL.US?fmt=csv")]
+    [InlineData("AAPL.US\n")]
     public async Task ABadSymbolIsRefusedBeforeAnyRequest(string symbol)
     {
         var (client, handler) = Client(_ => Json("[]"));
@@ -162,9 +200,11 @@ public class EodhdClientTests
     }
 
     [Fact]
-    public void NeedsAKeyAndABaseAddress()
+    public void NeedsAKeyAndAnHttpsBaseAddress()
     {
         Assert.Throws<ArgumentException>(() => new EodhdClient(new HttpClient { BaseAddress = EodhdClient.DefaultBaseAddress }, " "));
         Assert.Throws<ArgumentException>(() => new EodhdClient(new HttpClient(), Token));
+        Assert.Throws<ArgumentException>(() => new EodhdClient(new HttpClient { BaseAddress = new Uri("http://eodhd.com/api/") }, Token));
+        Assert.Throws<ArgumentException>(() => new EodhdClient(new HttpClient { BaseAddress = new Uri("https://eodhd.com/api") }, Token));
     }
 }
