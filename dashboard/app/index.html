@@ -69,7 +69,7 @@
         <h2 class="health-title">Agents and orders</h2>
         <div class="tiles">
           <article class="tile" id="tile-trader"><h2>Trader</h2><p class="value">–</p><p class="sub">–</p></article>
-          <article class="tile" id="tile-analyst"><h2>Analyst</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-analyst"><h2>Analyst</h2><p class="value">–</p><p class="sub">–</p><button type="button" id="run-analyst-open" class="ghost tile-action" hidden>Run now</button></article>
           <article class="tile" id="tile-requests"><h2>Owner requests</h2><p class="value">–</p><p class="sub">–</p></article>
           <article class="tile" id="tile-positions"><h2>Positions and orders</h2><p class="value">–</p><p class="sub">–</p></article>
         </div>
@@ -317,8 +317,21 @@
     </form>
   </dialog>
 
+  <dialog id="run-analyst-dialog" aria-labelledby="run-analyst-title">
+    <form id="run-analyst-form" method="dialog">
+      <h2 id="run-analyst-title">Run the analyst now</h2>
+      <p id="run-analyst-summary" class="summary"></p>
+      <label id="run-analyst-live" class="confirm"><input type="checkbox" name="confirmLive"> <span>I understand the new market view steers real-money trading on Revolut X.</span></label>
+      <p id="run-analyst-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="run-analyst-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="run-analyst-send" class="primary">Run the analyst</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer class="muted small">
-    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; strategy switches, pair changes, Pause and Resume work for live too, after you confirm. The engine checks each one and every order goes through the risk gate.
+    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; strategy switches, pair changes, Pause, Resume and the analyst's Run now work for live too, after you confirm. The engine checks each one and every order goes through the risk gate.
     News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.
   </footer>
 </body>

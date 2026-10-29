@@ -12,6 +12,9 @@
 // Strategy switches, pair changes, Pause and Resume work for live too (ADR-0018): each goes to the live engine's own requests
 // container, only with confirmLive, and each lookup and view takes ?mode=live.
 //
+// The analyst's Run now (POST /api/owner/analyst-requests) is a request too, for either mode: the engine queues an analyst
+// run outside its schedule, or says why not.
+//
 // The writes are POST /api/owner/requests and /api/owner/strategy-requests, with the writer identity whose Cosmos DB role can only create items in the
 // requests container. A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
 // cross-origin only after a preflight this API never answers.
@@ -24,7 +27,9 @@ const { requestDocument, historyItem, RequestError } = require('../requests');
 const { loadRequests, loadRequest, loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest } = require('../data');
 const { strategyRequestDocument, requestItem } = require('../strategies');
 const { pairRequestDocument, pairRequestItem } = require('../pairs');
-const { controlRequestDocument, controlRequestItem } = require('../controls');
+const {
+  controlRequestDocument, controlRequestItem, analystRequestDocument, analystRequestItem, ANALYST_REQUEST_TYPE,
+} = require('../controls');
 
 const MAX_BODY = 4096;
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
@@ -172,6 +177,19 @@ async function createControlRequest(request, context) {
   });
 }
 
+async function createAnalystRequest(request, context) {
+  return ownerOnly(request, context, 'analyst run request', async () => {
+    const doc = analystRequestDocument(await readBody(request), Date.now());
+    const { result, stored } = await createInMode(doc);
+    context.log(`Owner ${doc.tradingMode} analyst run request ${result} (${doc.id})`);
+    if (result === 'created') return respond(201, { result, request: analystRequestItem(doc) });
+    if (!stored) return respond(200, { result, request: analystRequestItem(doc) });
+    return sameRequest(stored, doc, [])
+      ? respond(200, { result, request: analystRequestItem(stored) })
+      : respond(409, { error: DIFFERENT });
+  });
+}
+
 /** The mode a lookup or view asks for: live only when it says so. */
 function modeOf(request) {
   return request.query.get('mode') === 'live' ? 'live' : 'paper';
@@ -281,4 +299,28 @@ app.http('owner-control-request', {
   }),
 });
 
-module.exports = { createRequest, createStrategyRequest, createPairRequest, createControlRequest, readBody, ownerOnly };
+app.http('owner-analyst-requests', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'owner/analyst-requests',
+  handler: createAnalystRequest,
+});
+
+app.http('owner-analyst-request', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'owner/analyst-requests/{day}/{id}',
+  handler: (request, context) => ownerOnly(request, context, 'analyst run lookup', async () => {
+    const mode = modeOf(request);
+    const { day, id } = request.params;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day ?? '') || !/^[0-9a-f-]{36}$/.test(id ?? '')) throw new RangeError('day and id must be a request\'s');
+    requireLiveDatabase(mode);
+    const doc = await getReader(mode).readDocument('requests', id, day);
+    return doc && doc.type === ANALYST_REQUEST_TYPE && (doc.tradingMode ?? 'paper') === mode
+      ? respond(200, analystRequestItem(doc)) : respond(404, { error: 'Not there yet.' });
+  }),
+});
+
+module.exports = {
+  createRequest, createStrategyRequest, createPairRequest, createControlRequest, createAnalystRequest, readBody, ownerOnly,
+};

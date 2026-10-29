@@ -1,7 +1,7 @@
 'use strict';
 // The engine's own sentences in Russian, for the owner's dashboard: why a request or a pair change ended as it did, why the
 // scanner gave a coin no entry or filtered it out, and the risk gate's reasons (explain.js). The engine writes them in
-// English from fixed formats (src/Cix.Engine/Manual/ManualRequestService.cs, Pairs/TradablePairs.cs,
+// English from fixed formats (src/Cix.Engine/Manual/ManualRequestService.cs, Pairs/TradablePairs.cs, AgentRuns/,
 // src/Cix.Domain/Scanning/MarketScanner.cs, Risk/TradableSymbols.cs); each format is read here and said again in Russian,
 // with figures, tickers and abbreviations (ATR, EMA, UTC) as they are. A sentence in no known format gets no Russian (null),
 // and the page shows the English: never a guess. Pure functions: tested on their own (test/engineText.test.js).
@@ -74,6 +74,21 @@ const FORMATS = [
   [/^The request was more than 5 minutes old when the engine saw it; press the button again\.$/,
     'Когда движок увидел запрос, ему было больше 5 минут; нажмите кнопку ещё раз.'],
   [/^Done\.$/, 'Готово.'],
+
+  // --- The analyst's Run now (AgentRuns/AgentRunPlanner.cs, AgentRunScheduler.cs, AnalystRunRequestService.cs) ---------------
+  [/^Analyst run (\S+) queued; its market view usually arrives within 10 minutes\. The next scheduled run is (\d+) hours after this one\.$/,
+    (m) => `Запуск аналитика ${m[1]} поставлен в очередь; взгляд на рынок обычно появляется в течение 10 минут. Следующий запуск по расписанию будет через ${m[2]} ч. после этого.`],
+  [/^The analyst is already queued to run; its view arrives a few minutes after it starts\.$/,
+    'Запуск аналитика уже в очереди; взгляд на рынок появится через несколько минут после старта.'],
+  [/^The analyst is running now; its view arrives when the run ends\.$/, 'Аналитик уже работает; взгляд на рынок появится, когда запуск закончится.'],
+  [/^The analyst was queued (\d+) min ago; ask again in (\d+) min \((\d+) min between runs, to spare the Claude limit\)\.$/,
+    (m) => `Аналитик был поставлен в очередь ${m[1]} мин. назад; попросите снова через ${m[2]} мин. (между запусками не меньше ${m[3]} мин., чтобы беречь лимит Claude).`],
+  [/^You have asked for (\d+) analyst runs today, the most a day; the scheduled runs go on \(AgentRuns:MaxAnalystNowPerDay\)\.$/,
+    (m) => `Сегодня вы уже запросили ${m[1]} внеочередных запусков аналитика, это максимум на день; запуски по расписанию продолжаются (AgentRuns:MaxAnalystNowPerDay).`],
+  [/^The analyst is off on this engine \(AgentRuns:Analyst\)\.$/, 'Аналитик на этом движке выключен (AgentRuns:Analyst).'],
+  [/^The analyst run couldn't be queued; press the button again in a minute\.$/, 'Не удалось поставить запуск аналитика в очередь; нажмите кнопку ещё раз через минуту.'],
+  [/^This engine doesn't queue the agents' runs \(AgentRuns:Mode Off\): the analyst runs on its own loop in Docker Compose\.$/,
+    'Этот движок не ставит запуски агентов в очередь (AgentRuns:Mode Off): в Docker Compose аналитик работает по своему циклу.'],
 
   // --- Pair changes (TradablePairs.cs, TradableSymbols.cs) ----------------------------------------------------------------
   [/^(\S+) is already tradable\.$/, (m) => `${m[1]} уже торгуется.`],

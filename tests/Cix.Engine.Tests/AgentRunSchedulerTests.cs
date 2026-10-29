@@ -191,6 +191,33 @@ public sealed class AgentRunSchedulerTests
     }
 
     [Fact]
+    public async Task RunAnalystNow_SavesBeforeItQueues_AndARunThatCannotBeQueued_DoesNotHoldBackTheNextPress()
+    {
+        var setup = new Setup(analyst: true);
+
+        var (answer, detail) = await setup.Scheduler.RunAnalystNowAsync(CancellationToken.None);
+        Assert.Equal(AgentRunAnswer.Yes, answer);
+        var sent = Assert.Single(setup.Queue.Sent);
+        Assert.True(sent.SavedFirst);
+        Assert.Equal(AgentRunPurpose.Owner, sent.Run.Purpose);
+        Assert.Contains(sent.Run.Id, detail, StringComparison.Ordinal);
+        Assert.Equal(AgentRunAnswer.No, (await setup.Scheduler.RunAnalystNowAsync(CancellationToken.None)).Answer); // one at a time
+        Assert.Equal(AgentRunAnswer.Yes, (await setup.Scheduler.ClaimAsync(sent.Run.Id, "analyst", null, CancellationToken.None)).Answer);
+        Assert.Equal(AgentRunAnswer.Yes, await setup.Scheduler.CompleteAsync(sent.Run.Id, "analyst", AgentRunOutcome.Done, CancellationToken.None));
+
+        setup.Time.Advance(TimeSpan.FromMinutes(30));
+        setup.Queue.Fail = true;
+        Assert.Equal(AgentRunAnswer.No, (await setup.Scheduler.RunAnalystNowAsync(CancellationToken.None)).Answer);
+        Assert.Single(setup.Steps("not-sent"));
+        setup.Queue.Fail = false;
+        Assert.Equal(AgentRunAnswer.Yes, (await setup.Scheduler.RunAnalystNowAsync(CancellationToken.None)).Answer); // no cooldown after it
+        Assert.Equal(2, (await setup.Store.LoadAsync(CancellationToken.None))!.State.OwnerAnalystRuns);
+
+        setup.Lease.IsHeld = false;
+        Assert.Equal(AgentRunAnswer.Unavailable, (await setup.Scheduler.RunAnalystNowAsync(CancellationToken.None)).Answer);
+    }
+
+    [Fact]
     public void WithCosmos_TheRunStateIsInTheDatabase_WhicheverIsRegisteredFirst()
     {
         var options = new AgentRunOptions { Mode = AgentRunMode.Queue, Queues = { ServiceUri = "https://cixruns.queue.core.windows.net" } };
@@ -280,6 +307,8 @@ public sealed class AgentRunSchedulerTests
             CappedOn = new DateOnly(2026, 10, 26),
             LastKey = "buy:SOL-EUR",
             NextHeartbeat = T0,
+            LastAnalystRun = T0,
+            OwnerAnalystRuns = 2,
             InFlight = [new AgentRun("run-20261026-080000-abcdef", AgentRunKind.Requests, AgentRunPurpose.Requests, "manual:a", T0, T0.AddMinutes(1))],
         };
 
@@ -288,6 +317,7 @@ public sealed class AgentRunSchedulerTests
 
         Assert.Equal(json, JsonSerializer.Serialize(back, CosmosDb.Json));
         Assert.Equal(state.InFlight.Single(), back.InFlight.Single());
+        Assert.Equal((T0, 2), (back.LastAnalystRun, back.OwnerAnalystRuns));
     }
 
     [Fact]

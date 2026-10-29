@@ -41,6 +41,15 @@ const SENTENCES = [
   ['A newer Pause or Resume request replaced this one.', null],
   ['The request was more than 5 minutes old when the engine saw it; press the button again.', null],
   ['Done.', null],
+  // AgentRunPlanner.cs, AgentRunScheduler.cs, AnalystRunRequestService.cs (the analyst's Run now)
+  ['Analyst run analyst-20261029-220000-3fa2c1 queued; its market view usually arrives within 10 minutes. The next scheduled run is 6 hours after this one.', 'analyst-20261029-220000-3fa2c1'],
+  ['The analyst is already queued to run; its view arrives a few minutes after it starts.', null],
+  ['The analyst is running now; its view arrives when the run ends.', null],
+  ['The analyst was queued 12 min ago; ask again in 18 min (30 min between runs, to spare the Claude limit).', '18'],
+  ['You have asked for 8 analyst runs today, the most a day; the scheduled runs go on (AgentRuns:MaxAnalystNowPerDay).', '8'],
+  ['The analyst is off on this engine (AgentRuns:Analyst).', 'AgentRuns:Analyst'],
+  ["The analyst run couldn't be queued; press the button again in a minute.", null],
+  ["This engine doesn't queue the agents' runs (AgentRuns:Mode Off): the analyst runs on its own loop in Docker Compose.", 'Docker Compose'],
   // TradablePairs.cs, TradableSymbols.cs
   ['VVV-EUR is already tradable.', 'VVV-EUR'],
   ['VVV-EUR is not tradable; nothing to remove.', 'VVV-EUR'],
@@ -105,7 +114,7 @@ test('every sentence the engine writes for the owner has its Russian, figures ke
     assert.ok(ru, `no Russian for: ${en}`);
     assert.ok(/[а-яё]/i.test(ru), `not Russian: ${ru}`);
     // No English words left, apart from the names, codes and abbreviations kept on purpose.
-    const rest = ru.replace(/config\/risk-limits(?:\.live)?\.json|docs\/live-trading\.md|resume_trading|haltSince|ManualRequests:MaxPerDay|Revolut X|risk-off|taking profit|ask|UTC|ATR|EMA\d*|[A-Z]{2,}-[A-Z]{3}/g, '');
+    const rest = ru.replace(/config\/risk-limits(?:\.live)?\.json|docs\/live-trading\.md|resume_trading|haltSince|ManualRequests:MaxPerDay|AgentRuns:\w+(?: Off)?|analyst-[\d-]+[0-9a-f]+|Docker Compose|Claude|Revolut X|risk-off|taking profit|ask|UTC|ATR|EMA\d*|[A-Z]{2,}-[A-Z]{3}/g, '');
     assert.ok(!/[a-z]{3,}/.test(rest), `English left in: ${ru}`);
     if (kept) assert.ok(ru.includes(kept), `${kept} lost in: ${ru}`);
   }

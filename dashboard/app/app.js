@@ -189,6 +189,7 @@ function renderTiles(view) {
   for (const [key, id] of [['database', 'tile-database'], ['scanner', 'tile-scanner'], ['trader', 'tile-trader'], ['analyst', 'tile-analyst'], ['requests', 'tile-requests'], ['positions', 'tile-positions']]) {
     tile(id, m[key].tone, m[key].value, m[key].sub.map((line) => el('span', { class: 'line', text: line })));
   }
+  renderAnalystButton(view);
 }
 
 /**
@@ -1203,6 +1204,101 @@ function trackControl(item) {
   }, POLL_MS);
 }
 
+// --- The analyst's Run now: an analyst-run request for the mode on screen; live needs the box ticked ------------------------
+
+/** The Analyst tile's button, for the owner: off while a press is being followed or the analyst is running already. */
+function renderAnalystButton(view) {
+  const button = document.getElementById('run-analyst-open');
+  const running = view.jobs?.analyst?.last?.state === 'running';
+  button.hidden = !state.viewer.signedIn;
+  button.textContent = t('Run now');
+  button.disabled = state.analystPending === view.mode || running;
+  button.title = running ? t('The analyst is queued or running now; its view arrives when the run ends.') : t('Ask the analyst for a market view now, outside its schedule');
+}
+
+let analystChoice = null;
+
+function openAnalyst() {
+  const view = state.view;
+  if (!view || view.mode !== state.mode || state.analystPending === view.mode) return;
+  const live = view.mode === 'live';
+  analystChoice = { mode: view.mode, id: crypto.randomUUID() };
+  const form = document.getElementById('run-analyst-form');
+  form.reset();
+  for (const input of form.querySelectorAll('input')) input.disabled = false;
+  document.getElementById('run-analyst-title').textContent = live ? t('Run the live analyst now (real money)') : t('Run the paper analyst now');
+  document.getElementById('run-analyst-summary').textContent = t('The analyst reads the news and the market now, outside its schedule, and records a new market view: risk-off stops new buys, and it can flag coins to avoid. Its next scheduled run comes a full interval after this one. Each run uses your Claude limit, so the engine allows one every 30 minutes at most, and a few a day; it says so if it refuses.');
+  document.getElementById('run-analyst-live').hidden = !live;
+  document.getElementById('run-analyst-error').hidden = true;
+  document.getElementById('run-analyst-send').disabled = false;
+  document.getElementById('run-analyst-dialog').showModal();
+}
+
+async function sendAnalyst(event) {
+  event.preventDefault();
+  const form = document.getElementById('run-analyst-form');
+  const error = document.getElementById('run-analyst-error');
+  const body = { id: analystChoice.id, tradingMode: analystChoice.mode };
+  if (analystChoice.mode === 'live') {
+    if (!form.elements.confirmLive.checked) {
+      error.textContent = t('Tick the box first: this changes real-money trading.');
+      error.hidden = false;
+      return;
+    }
+    body.confirmLive = true;
+  }
+  const send = document.getElementById('run-analyst-send');
+  const label = send.textContent;
+  send.disabled = true;
+  for (const input of form.querySelectorAll('input')) input.disabled = true; // from the first send on, a retry sends the same request
+  send.textContent = t('Sending…');
+  try {
+    const response = await api('/api/owner/analyst-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cix-request': '1' },
+      body: JSON.stringify(body),
+    });
+    const answer = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(answer.error ? t(answer.error) : t('The dashboard answered {status}.', { status: response.status }));
+    document.getElementById('run-analyst-dialog').close();
+    trackAnalyst(answer.request);
+  } catch (e) {
+    if (e instanceof SignedOut) { signedOut(); return; }
+    error.textContent = t('Not confirmed: {error} Send again to retry: it stays the same, single request.', { error: e.message });
+    error.hidden = false;
+    send.disabled = false;
+  } finally {
+    send.textContent = label;
+  }
+}
+
+/** Follows Run now until the engine has answered it (it checks these requests every 10 seconds). */
+function trackAnalyst(item) {
+  state.analystPending = item.tradingMode; // that mode's button waits; the other mode's stays usable
+  if (state.view) renderAnalystButton(state.view);
+  const started = Date.now();
+  const label = t('Analyst run');
+  requestStatus(t('{label}: sent, waiting for the engine…', { label }), 'pending');
+  const timer = setInterval(async () => {
+    const stop = (text, tone) => {
+      clearInterval(timer);
+      state.analystPending = null;
+      requestStatus(text, tone);
+      refresh(); // the Analyst tile shows the run
+    };
+    if (Date.now() - started > 5 * 60_000) { stop(t('{label}: no answer after 5 minutes; the request has expired. Check the Analyst tile and press again if needed.', { label }), 'warn'); return; }
+    try {
+      const response = await api(`/api/owner/analyst-requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}?mode=${encodeURIComponent(item.tradingMode)}`);
+      if (!response.ok) return; // not readable yet, or offline for a moment
+      const it = await response.json();
+      if (it.status === 'new') return;
+      stop(`${label}: ${t(it.status)}. ${it.detail ? engineSays(it.detail, it.detailRu) : ''}`.trim(), it.status === 'accepted' ? 'ok' : 'bad');
+    } catch (error) {
+      if (error instanceof SignedOut) { clearInterval(timer); signedOut(); }
+    }
+  }, POLL_MS);
+}
+
 async function showJournalDay(day, kind) {
   const { mode } = state;
   try {
@@ -1388,6 +1484,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('control-open').addEventListener('click', openControl);
   document.getElementById('control-form').addEventListener('submit', sendControl);
   document.getElementById('control-cancel').addEventListener('click', () => document.getElementById('control-dialog').close());
+  document.getElementById('run-analyst-open').addEventListener('click', openAnalyst);
+  document.getElementById('run-analyst-form').addEventListener('submit', sendAnalyst);
+  document.getElementById('run-analyst-cancel').addEventListener('click', () => document.getElementById('run-analyst-dialog').close());
   let resized = null;
   window.addEventListener('resize', () => { // the chart is drawn to its width
     clearTimeout(resized);
