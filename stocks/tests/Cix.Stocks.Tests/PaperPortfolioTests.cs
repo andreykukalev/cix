@@ -78,6 +78,47 @@ public class PaperPortfolioTests
     }
 
     [Fact]
+    public void ExecuteDay_ABuyCanBeStoppedOutOnItsFirstDay()
+    {
+        var portfolio = Portfolio();
+
+        portfolio.ExecuteDay(Day1, Bars(Bar(Day1, 100m, 101m, 89m, 92m)), [Buy()]);
+
+        // Bought at 101 (cash 8988.99), then the low reaches the stop: 90 × 0.99 = 89.1, value 891, commission 1.
+        Assert.Empty(portfolio.Holdings);
+        Assert.Equal([TradeKind.Buy, TradeKind.StopOut], portfolio.Trades.Select(t => t.Kind));
+        Assert.Equal(9878.99m, portfolio.Cash);
+    }
+
+    [Fact]
+    public void ExecuteDay_AStopRaisedAboveTheOpenSellsAtTheOpen()
+    {
+        var portfolio = Bought();
+
+        portfolio.ExecuteDay(Day2, Bars(Bar(Day2, 97m, 99m, 96m, 98m)), [new(ActionKind.RaiseStop, Xyz.Symbol, 10m, 99m, 98m, Reasons.Trail)]);
+
+        // 97 × 0.99 = 96.03, value 960.3, commission 1: cash 8988.99 + 959.3.
+        Assert.Empty(portfolio.Holdings);
+        Assert.Equal(96.03m, portfolio.Trades[^1].Price);
+        Assert.Equal(9948.29m, portfolio.Cash);
+    }
+
+    [Fact]
+    public void ExecuteDay_ASellNeverCostsMoreThanItBrings()
+    {
+        var portfolio = Portfolio(cash: 10m);
+        portfolio.ExecuteDay(Day1, Bars(Bar(Day1, 5m, 5.5m, 4.5m, 5m)), [Buy(stop: null)]);
+        // (10 − 1) / (5.05 × 1.003) = 1.78: one share at 5.05 and commission 1.
+        Assert.Equal(3.95m, portfolio.Cash);
+
+        portfolio.ExecuteDay(Day2, Bars(Bar(Day2, 0.5m, 0.6m, 0.4m, 0.5m)), [new(ActionKind.Sell, Xyz.Symbol, 1m, 0.5m, null, Reasons.TrendBroken)]);
+
+        // 0.5 × 0.99 = 0.495, and the commission is capped at those proceeds.
+        Assert.Equal(3.95m, portfolio.Cash);
+        Assert.Equal(new PaperTrade(Day2, Xyz.Symbol, TradeKind.Sell, 1m, 0.495m, 0.495m, -6.05m, Reasons.TrendBroken), portfolio.Trades[^1]);
+    }
+
+    [Fact]
     public void ExecuteDay_ABuyIsSkippedWhenItOpensAtOrUnderItsStop()
     {
         var portfolio = Portfolio();

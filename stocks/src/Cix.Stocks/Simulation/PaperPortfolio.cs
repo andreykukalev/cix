@@ -161,7 +161,9 @@ public sealed class PaperPortfolio
             case ActionKind.Sell when held:
                 Sell(day, action.Symbol, bar.Open, TradeKind.Sell, action.Reason);
                 break;
-            case ActionKind.SetStop or ActionKind.RaiseStop when held && action.Stop is { } stop:
+            case ActionKind.SetStop or ActionKind.RaiseStop when held:
+                if (action.Stop is not { } stop)
+                    break;
                 // Raised only, as the advisor promises; a stop above the open would sell at once, which the stop check does.
                 if (position!.Holding.Stop is not { } current || stop > current)
                     _positions[action.Symbol] = position with { Holding = position.Holding with { Stop = stop } };
@@ -218,7 +220,8 @@ public sealed class PaperPortfolio
         var fx = Fx(symbol) ?? 0m;
         var price = at * (1 - _settings.SlippageFraction);
         var value = position.Holding.Quantity * price * fx;
-        var fees = Fees(symbol, value);
+        // A minimum commission larger than the proceeds would leave cash negative: the broker takes at most the proceeds.
+        var fees = Math.Min(Fees(symbol, value), value);
         Cash += value - fees;
         _positions.Remove(symbol);
         _trades.Add(new PaperTrade(day, symbol, kind, position.Holding.Quantity, price, fees, value - fees - position.CostBase, reason));

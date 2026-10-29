@@ -18,8 +18,8 @@ public class BacktesterTests
     // 50-day high in a rising market, so the advisor buys after the first close of the run. From is bar 279 (close 127.9).
     private static List<Candle> Rising() => AdvisorTests.Line(100m, 0.1m, Today, 300);
 
-    private static BacktestResult Run(List<Candle> bars) =>
-        Backtester.Run([new PriceHistory(Xyz, bars)], Rising(), From, Today, "USD", 10_000m, new Dictionary<string, decimal>(), Advisor, Costs);
+    private static BacktestResult Run(List<Candle> bars, List<Candle>? benchmark = null) =>
+        Backtester.Run([new PriceHistory(Xyz, bars)], benchmark ?? Rising(), From, Today, "USD", 10_000m, new Dictionary<string, decimal>(), Advisor, Costs);
 
     [Fact]
     public void Run_AdviceAfterACloseIsCarriedOutAtTheNextOpen()
@@ -49,6 +49,42 @@ public class BacktesterTests
         Assert.Equal(From.AddDays(5), stopOut.Day);
         Assert.Equal(49.5m, stopOut.Price);
     }
+
+    [Fact]
+    public void Run_ABuyWaitsForItsExchangeAndRunsOnTheRepeatedAdvice()
+    {
+        var bars = Rising();
+        // XYZ's exchange is closed on From + 1 (bar 280); the benchmark's isn't.
+        bars.RemoveAt(280);
+
+        var result = Run(bars);
+
+        // The From + 1 close repeats the buy from XYZ's still fresh From bar; it runs at the From + 2 open, 128.1 × 1.01.
+        var buy = Assert.Single(result.Trades, t => t.Kind == TradeKind.Buy);
+        Assert.Equal(From.AddDays(2), buy.Day);
+        Assert.Equal(129.381m, buy.Price);
+    }
+
+    [Fact]
+    public void Run_AWaitingBuyTheNewerAdviceDropsIsNotCarriedOut()
+    {
+        var bars = Rising();
+        bars.RemoveAt(280);
+        var benchmark = Rising();
+        // The benchmark closes under its 200-day average on From + 1: risk-off, so that close advises no entry. It is back
+        // above the next day, so XYZ is bought only at the From + 3 open.
+        benchmark[280] = benchmark[280] with { Open = 50m, High = 51m, Low = 49m, Close = 50m };
+
+        var result = Run(bars, benchmark);
+
+        Assert.Equal(From.AddDays(3), result.Trades[0].Day);
+    }
+
+    [Fact]
+    public void Run_ARangeWithoutBarsIsRefused() =>
+        Assert.Throws<ArgumentException>(() => Backtester.Run(
+            [new PriceHistory(Xyz, Rising())], Rising(), Today.AddDays(10), Today.AddDays(20), "USD", 10_000m,
+            new Dictionary<string, decimal>(), Advisor, Costs));
 
     [Fact]
     public void Run_TheBenchmarkIsHeldFromTheFirstClose()
@@ -82,6 +118,15 @@ public class BacktesterTests
     }
 
     [Fact]
+    public void Stats_AShortSpanHasNoCagrAndALossOfEverythingIsMinusOne()
+    {
+        var day = new DateOnly(2020, 1, 1);
+
+        Assert.Null(Backtester.Stats([(day, 100m), (day.AddDays(10), 130m)], null, 2).Cagr);
+        Assert.Equal(-1m, Backtester.Stats([(day, 100m), (day.AddDays(400), 0m)], null, 2).Cagr);
+    }
+
+    [Fact]
     public void Stats_AnEmptyCurveIsAllZeros() =>
-        Assert.Equal(new BacktestStats(0m, 0m, 0m, 0, null, 0m), Backtester.Stats([], null, 0));
+        Assert.Equal(new BacktestStats(0m, null, 0m, 0, null, 0m), Backtester.Stats([], null, 0));
 }

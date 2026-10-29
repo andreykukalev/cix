@@ -5,12 +5,12 @@ namespace Cix.Stocks.Simulation;
 public sealed record EquityPoint(DateOnly Day, decimal Equity, decimal Benchmark, int Positions);
 
 /// <summary>Summary of an equity curve. Rates are fractions: 0.12 is 12%.</summary>
-/// <param name="Cagr">Compound annual growth over the calendar span.</param>
+/// <param name="Cagr">Compound annual growth over the calendar span, or null for a span under three months, where it means little.</param>
 /// <param name="MaxDrawdown">The largest fall from a peak, as a positive fraction of the peak.</param>
 /// <param name="RoundTrips">Positions opened and closed.</param>
 /// <param name="WinRate">Round trips closed with a profit after fees, or null without any.</param>
 /// <param name="TimeInMarket">Days with at least one position, as a fraction of all days.</param>
-public sealed record BacktestStats(decimal TotalReturn, decimal Cagr, decimal MaxDrawdown, int RoundTrips, decimal? WinRate, decimal TimeInMarket);
+public sealed record BacktestStats(decimal TotalReturn, decimal? Cagr, decimal MaxDrawdown, int RoundTrips, decimal? WinRate, decimal TimeInMarket);
 
 public sealed record BacktestResult(
     IReadOnlyList<EquityPoint> Equity,
@@ -22,7 +22,8 @@ public sealed record BacktestResult(
 /// <summary>
 /// Replays the advisor over history: each trading day the <see cref="PaperPortfolio"/> carries out the previous close's
 /// advice at the open and its stops against the low, then the advisor sees that day's close, the portfolio's holdings and
-/// its cash. The benchmark is bought and held from the first day's close, without fees. What it doesn't model: FX moves
+/// its cash. The advisor's capital is the portfolio's equity, so positions are sized on what the account is worth that day
+/// and gains compound. The benchmark is bought and held from the first day's close, without fees. What it doesn't model: FX moves
 /// (rates are fixed), dividends beyond the adjusted prices, partial fills, and days the owner doesn't act.
 /// </summary>
 public static class Backtester
@@ -30,6 +31,8 @@ public static class Backtester
     /// <summary>The advisor sees at most this many of each instrument's latest bars (about two years), which keeps a long
     /// replay linear; every indicator it uses needs fewer, and a trail since entry is cut off only for older holdings.</summary>
     internal const int Window = 500;
+
+    private const double MinCagrYears = 0.25;
 
     /// <param name="watchlist">Each instrument's full history, from well before <paramref name="from"/> so indicators are warm.</param>
     /// <param name="benchmark">The benchmark's full history, likewise.</param>
@@ -57,6 +60,8 @@ public static class Backtester
             StringComparer.Ordinal);
         var days = watchlist.SelectMany(h => h.Bars).Concat(benchmark).Select(TrendIndicators.TradingDay)
             .Where(d => d >= from && d <= to).Distinct().Order().ToList();
+        if (days.Count == 0)
+            throw new ArgumentException($"No bars between {from:yyyy-MM-dd} and {to:yyyy-MM-dd}.", nameof(from));
 
         var cursors = watchlist.ToDictionary(h => h.Instrument.Symbol, _ => 0, StringComparer.Ordinal);
         var benchmarkCursor = 0;
@@ -93,9 +98,10 @@ public static class Backtester
                     Tail(benchmark, benchmarkCursor),
                     portfolio.Holdings),
                 advisorSettings);
-            // Advice for a symbol that had no bar today and is still waiting is replaced by the newer advice for it.
+            // The owner acts on the latest advice. A buy that waited for its exchange to open is dropped unless the advisor
+            // repeats it (its bars are still fresh, so it does when the entry still holds); a protective action waits on.
             var advised = advice.Actions.Select(a => a.Symbol).ToHashSet(StringComparer.Ordinal);
-            pending = advice.Actions.Concat(waiting.Where(w => !advised.Contains(w.Symbol))).ToList();
+            pending = advice.Actions.Concat(waiting.Where(w => w.Kind != ActionKind.Buy && !advised.Contains(w.Symbol))).ToList();
 
             var benchmarkClose = benchmarkCursor > 0 ? benchmark[benchmarkCursor - 1].Close : (decimal?)null;
             benchmarkStart ??= benchmarkClose;
@@ -126,14 +132,15 @@ public static class Backtester
     internal static BacktestStats Stats(IReadOnlyList<(DateOnly Day, decimal Value)> curve, IReadOnlyList<PaperTrade>? trades, int daysInMarket)
     {
         if (curve.Count == 0 || curve[0].Value <= 0)
-            return new BacktestStats(0m, 0m, 0m, 0, null, 0m);
+            return new BacktestStats(0m, null, 0m, 0, null, 0m);
 
         var first = curve[0].Value;
         var last = curve[^1].Value;
         var totalReturn = (last / first) - 1;
         var years = (curve[^1].Day.DayNumber - curve[0].Day.DayNumber) / 365.25;
         // A growth rate, not an amount of money: computed in double because decimal has no fractional power, then stored as decimal.
-        var cagr = years > 0 && last > 0 ? (decimal)(Math.Pow((double)(last / first), 1 / years) - 1) : totalReturn;
+        var growth = years >= MinCagrYears && last > 0 ? Math.Pow((double)(last / first), 1 / years) - 1 : double.NaN;
+        decimal? cagr = last <= 0 ? -1m : double.IsFinite(growth) && Math.Abs(growth) < 1e9 ? (decimal)growth : null;
 
         var peak = first;
         var drawdown = 0m;
@@ -147,7 +154,7 @@ public static class Backtester
         var closed = trades?.Where(t => t.ProfitBase is not null).ToList() ?? [];
         decimal? winRate = closed.Count > 0 ? (decimal)closed.Count(t => t.ProfitBase > 0) / closed.Count : null;
         return new BacktestStats(
-            Math.Round(totalReturn, 4), Math.Round(cagr, 4), Math.Round(drawdown, 4), closed.Count,
+            Math.Round(totalReturn, 4), cagr is { } c ? Math.Round(c, 4) : null, Math.Round(drawdown, 4), closed.Count,
             winRate is { } w ? Math.Round(w, 4) : null, Math.Round((decimal)daysInMarket / curve.Count, 4));
     }
 

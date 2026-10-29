@@ -21,28 +21,41 @@ internal static class BacktestCommand
         ["BR"] = "EUR", ["LS"] = "EUR", ["VI"] = "EUR", ["HE"] = "EUR", ["SW"] = "CHF",
     };
 
+    private static readonly HashSet<string> Known = new(StringComparer.Ordinal)
+    {
+        "symbols", "benchmark", "from", "to", "capital", "currency", "fx", "step", "out", "cache",
+        "commission", "min-commission", "fx-fee", "slippage",
+        "initial-stop-atr", "trail-atr", "risk", "max-position", "max-positions",
+    };
+
     public static async Task<int> RunAsync(string[] args)
     {
-        Dictionary<string, string> options;
+        using var cancel = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            cancel.Cancel();
+        };
+
         try
         {
-            options = Parse(args);
+            return await RunAsync(Parse(args), cancel.Token);
         }
-        catch (ArgumentException e)
+        catch (Exception e) when (e is ArgumentException or FormatException or OverflowException)
         {
             Console.Error.WriteLine(e.Message);
             Console.Error.WriteLine(Usage);
             return 2;
         }
-
-        try
-        {
-            return await RunAsync(options, CancellationToken.None);
-        }
-        catch (Exception e) when (e is ArgumentException or StockDataException or FormatException)
+        catch (StockDataException e)
         {
             Console.Error.WriteLine(e.Message);
             return 1;
+        }
+        catch (OperationCanceledException)
+        {
+            Console.Error.WriteLine("Cancelled.");
+            return 130;
         }
     }
 
@@ -52,6 +65,7 @@ internal static class BacktestCommand
         Usage: --symbols A.US,B.LSE:USD --benchmark VTI.US --from YYYY-MM-DD --to YYYY-MM-DD
                [--capital 10000] [--currency EUR] [--fx USD=0.92,GBP=1.17] [--step 1] [--out backtest-out]
                [--cache .cache/eodhd] [--commission 0.0025] [--min-commission 1] [--fx-fee 0.0025] [--slippage 0.001]
+               [--initial-stop-atr 3] [--trail-atr 3] [--risk 0.01] [--max-position 0.2] [--max-positions 8]
         A symbol's currency comes from its exchange (US: USD, XETRA/PA/AS...: EUR); give it after a colon otherwise.
         The key is read from EODHD_API_TOKEN; without it the public demo key is used (a few US tickers only).
         """;
@@ -63,9 +77,18 @@ internal static class BacktestCommand
         var baseCurrency = o.GetValueOrDefault("currency", "USD");
         var capital = Decimal(o, "capital", 10_000m);
         var step = Decimal(o, "step", 1m);
-        var fx = (o.GetValueOrDefault("fx") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .Select(pair => pair.Split('=', 2))
-            .ToDictionary(p => p[0].Trim(), p => decimal.Parse(p[1], CultureInfo.InvariantCulture), StringComparer.Ordinal);
+        if (step <= 0)
+            throw new ArgumentException("--step must be above 0.");
+        if (capital <= 0)
+            throw new ArgumentException("--capital must be above 0.");
+        var fx = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        foreach (var pair in (o.GetValueOrDefault("fx") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = pair.Split('=', 2);
+            if (parts.Length != 2 || !decimal.TryParse(parts[1], NumberStyles.Number, CultureInfo.InvariantCulture, out var rate) || rate <= 0)
+                throw new ArgumentException($"--fx takes CURRENCY=rate pairs, for example USD=0.92, not '{pair}'.");
+            fx[parts[0].Trim()] = rate;
+        }
         var instruments = Required(o, "symbols").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(s => Instrument(s.Trim(), step)).ToList();
         var benchmarkSymbol = Required(o, "benchmark");
         var simulation = new SimulationSettings
@@ -75,7 +98,16 @@ internal static class BacktestCommand
             FxFeeFraction = Decimal(o, "fx-fee", 0.0025m),
             SlippageFraction = Decimal(o, "slippage", 0.001m),
         }.Validate();
-        var advisor = new AdvisorSettings { BenchmarkSymbol = benchmarkSymbol }.Validate();
+        var defaults = new AdvisorSettings();
+        var advisor = new AdvisorSettings
+        {
+            BenchmarkSymbol = benchmarkSymbol,
+            InitialStopAtr = Decimal(o, "initial-stop-atr", defaults.InitialStopAtr),
+            TrailingStopAtr = Decimal(o, "trail-atr", defaults.TrailingStopAtr),
+            RiskPerTrade = Decimal(o, "risk", defaults.RiskPerTrade),
+            MaxPositionFraction = Decimal(o, "max-position", defaults.MaxPositionFraction),
+            MaxPositions = o.TryGetValue("max-positions", out var maxPositions) ? int.Parse(maxPositions, CultureInfo.InvariantCulture) : defaults.MaxPositions,
+        }.Validate();
 
         var token = Environment.GetEnvironmentVariable("EODHD_API_TOKEN");
         if (string.IsNullOrWhiteSpace(token))
@@ -109,8 +141,9 @@ internal static class BacktestCommand
 
     private static string Line(string name, BacktestStats s)
     {
+        var cagr = s.Cagr is { } c ? c.ToString("P1", CultureInfo.InvariantCulture) : "n/a";
         var line = string.Create(CultureInfo.InvariantCulture,
-            $"{name,-26} return {s.TotalReturn:P1}, CAGR {s.Cagr:P1}, max drawdown {s.MaxDrawdown:P1}, in market {s.TimeInMarket:P0}");
+            $"{name,-26} return {s.TotalReturn:P1}, CAGR {cagr}, max drawdown {s.MaxDrawdown:P1}, in market {s.TimeInMarket:P0}");
         return s.RoundTrips > 0 ? line + string.Create(CultureInfo.InvariantCulture, $", {s.RoundTrips} round trips, {s.WinRate:P0} won") : line;
     }
 
@@ -149,7 +182,11 @@ internal static class BacktestCommand
         {
             if (!args[i].StartsWith("--", StringComparison.Ordinal) || i + 1 >= args.Length)
                 throw new ArgumentException($"Expected --name value, got '{args[i]}'.");
-            options[args[i][2..]] = args[i + 1];
+            // Only known names: a typo shouldn't run with a default, and nothing unexpected lands in summary.json.
+            var name = args[i][2..];
+            if (!Known.Contains(name))
+                throw new ArgumentException($"Unknown option --{name}.");
+            options[name] = args[i + 1];
         }
 
         return options;
@@ -162,7 +199,11 @@ internal static class BacktestCommand
         o.TryGetValue(name, out var value) ? decimal.Parse(value, CultureInfo.InvariantCulture) : fallback;
 }
 
-/// <summary>Daily bars cached on disk per symbol and range, so repeated runs don't spend the provider's daily calls.</summary>
+/// <summary>
+/// Daily bars cached on disk per symbol and range, so repeated runs don't spend the provider's daily calls. A range that
+/// ends within two days of today isn't cached, as its last bar may be partial; a cache file that doesn't hold sane bars
+/// is fetched again.
+/// </summary>
 internal sealed class CachedBarSource(IDailyBarSource inner, string directory) : IDailyBarSource
 {
     public async Task<IReadOnlyList<Candle>> GetDailyBarsAsync(string symbol, DateOnly firstDay, DateOnly lastDay, CancellationToken cancellationToken)
@@ -171,14 +212,45 @@ internal sealed class CachedBarSource(IDailyBarSource inner, string directory) :
             throw new ArgumentException("The symbol must be TICKER.EXCHANGE, for example AAPL.US.", nameof(symbol));
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, $"{symbol}_{firstDay:yyyyMMdd}_{lastDay:yyyyMMdd}.json");
-        if (File.Exists(path))
-        {
-            await using var cached = File.OpenRead(path);
-            return await JsonSerializer.DeserializeAsync<List<Candle>>(cached, cancellationToken: cancellationToken) ?? [];
-        }
+        if (await ReadAsync(path, firstDay, lastDay, cancellationToken) is { } cached)
+            return cached;
 
         var bars = await inner.GetDailyBarsAsync(symbol, firstDay, lastDay, cancellationToken);
-        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(bars), cancellationToken);
+        if (lastDay < DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-2))
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(bars), cancellationToken);
         return bars;
+    }
+
+    private static async Task<List<Candle>?> ReadAsync(string path, DateOnly firstDay, DateOnly lastDay, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+            return null;
+        try
+        {
+            await using var file = File.OpenRead(path);
+            var bars = await JsonSerializer.DeserializeAsync<List<Candle>>(file, cancellationToken: cancellationToken);
+            return bars is not null && Sane(bars, firstDay, lastDay) ? bars : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The checks the client applies to what it returns: positive prices, a high over the low, one bar a day, in order.</summary>
+    private static bool Sane(List<Candle> bars, DateOnly firstDay, DateOnly lastDay)
+    {
+        DateOnly? previous = null;
+        foreach (var bar in bars)
+        {
+            if (bar is not { Open: > 0, Close: > 0, Low: > 0 } || bar.High < bar.Low)
+                return false;
+            var day = TrendIndicators.TradingDay(bar);
+            if (day < firstDay || day > lastDay || day <= previous)
+                return false;
+            previous = day;
+        }
+
+        return true;
     }
 }
