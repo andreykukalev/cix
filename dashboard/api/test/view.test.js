@@ -258,12 +258,14 @@ test('the coins say why there is no buy: filtered out, a strategy rule, or held 
   };
   const rows = Object.fromEntries(V.coins(view, { tradable: [{ symbol: 'BTC-EUR' }, { symbol: 'VVV-EUR' }] }, 'en').map((r) => [r.symbol, r]));
   assert.equal(rows['BTC-EUR'].why, null);
-  assert.deepEqual(rows['LINK-EUR'].why, { kind: 'blocked', label: 'Held back', text: 'signal limit reached', detail: view.briefing.market[1].detail });
+  assert.deepEqual(rows['LINK-EUR'].why, { kind: 'blocked', label: 'Held back', text: 'signal limit reached', detail: view.briefing.market[1].detail, alarm: false });
   assert.equal(rows['SOL-EUR'].why.kind, 'rule');
   assert.equal(rows['ETH-EUR'].why.detail, 'Already in the portfolio: the strategy opens no second position in a coin.');
   assert.deepEqual([rows['DOGE-EUR'].why.kind, rows['DOGE-EUR'].why.detail], ['filtered', 'Spread 0.31% is above the maximum 0.2%.']);
   // The analyst's news flag is a block, not a market filter, although the scanner drops the coin before ranking.
   assert.equal(rows['XRP-EUR'].why.kind, 'blocked');
+  // ...and a market alarm (red), unlike a routine limit such as already held (orange).
+  assert.deepEqual([rows['XRP-EUR'].why.alarm, rows['ETH-EUR'].why.alarm], [true, false]);
   // A pair just added shows at once, before the engine's first scan of it.
   assert.deepEqual([rows['VVV-EUR'].why.kind, rows['VVV-EUR'].note, rows['VVV-EUR'].inScan], ['pending', 'waiting for its first scan', false]);
   assert.equal(V.coins(view, null, 'ru').find((r) => r.symbol === 'LINK-EUR').why.detail, 'Прошла все правила входа…');

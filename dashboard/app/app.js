@@ -302,8 +302,8 @@ function sourceLink(url, host) {
   return href ? el('a', { href, target: '_blank', rel: 'noopener noreferrer nofollow', text: host || t('source') }) : null;
 }
 
-function chips(symbols) {
-  return (symbols ?? []).map((s) => el('span', { class: 'chip', text: s }));
+function chips(symbols, tone) {
+  return (symbols ?? []).map((s) => el('span', { class: tone ? `chip ${tone}` : 'chip', text: s }));
 }
 
 function renderBriefing(view) {
@@ -318,7 +318,7 @@ function renderBriefing(view) {
   summary.replaceChildren(...(a ? [
     el('span', { class: `badge ${REGIME_TONE[a.regime] ?? ''}`, text: t(a.regime ?? 'unknown') }), ' ',
     says(a.summary ?? '', a.summaryRu),
-    a.avoid?.length && a.active ? el('span', {}, ` ${t('Avoid:')} `, ...chips(a.avoid)) : null,
+    a.avoid?.length && a.active ? el('span', {}, ` ${t('Avoid:')} `, ...chips(a.avoid, 'avoid')) : null,
   ].filter((n) => n !== null) : [t('The analyst has not recorded a view in the last 24 hours.')]));
 
   const highlights = a?.highlights ?? [];
@@ -405,7 +405,7 @@ function renderFilterChange(change) {
 function whyCell(c) {
   if (!c.why) return td(c.note ?? '', 'muted');
   return td([
-    el('span', { class: `why-kind ${c.why.kind}`, text: c.why.label }), ' ', c.why.text,
+    el('span', { class: `why-kind ${c.why.kind}${c.why.alarm ? ' alarm' : ''}`, text: c.why.label }), ' ', c.why.text,
     c.why.detail ? el('span', { class: 'why-detail', text: c.why.detail }) : null,
   ], 'why');
 }
