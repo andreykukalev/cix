@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Whether the owner approved this workflow run for a protected GitHub environment: run by CI's deploy-live job before it
-# signs in to Azure (prod, ADR-0019), and by approve-paper before paper deploys (paper, ADR-0024). The control is the GitHub environment itself (required reviewer: the owner; deployment branches: main),
+# signs in to Azure (prod, ADR-0019), and by approve-paper before paper deploys (paper, ADR-0024). For prod, the live
+# deploy identity also trusts only jobs in that environment; paper's gate is only in the workflow file. The control is the GitHub environment itself (required reviewer: the owner; deployment branches: main),
 # which holds the job until the owner approves it, and the live deploy identity trusts only jobs in that environment. This
 # check makes main's own workflow fail closed if that environment lost its rules: the run must be a push or a manual run
 # on main, and its review history must hold the owner's approval for the environment. It can't stop a workflow that leaves
@@ -15,6 +16,9 @@ set -euo pipefail
 fail() { echo "::error::$*"; exit 1; }
 
 environment="${APPROVAL_ENVIRONMENT:-${LIVE_ENVIRONMENT:-}}"
+# Both set and different: a setting leaked from elsewhere (a job's or the workflow's env). Never guess which one is meant.
+[[ -z "${APPROVAL_ENVIRONMENT:-}" || -z "${LIVE_ENVIRONMENT:-}" || "$APPROVAL_ENVIRONMENT" == "$LIVE_ENVIRONMENT" ]] \
+  || fail "APPROVAL_ENVIRONMENT ($APPROVAL_ENVIRONMENT) and LIVE_ENVIRONMENT ($LIVE_ENVIRONMENT) disagree; nothing was deployed."
 [[ "${GITHUB_REF:-}" == refs/heads/main ]] || fail "Deploys to ${environment:-a protected environment} only from main, not ${GITHUB_REF:-an unknown ref}."
 [[ "${GITHUB_EVENT_NAME:-}" =~ ^(push|workflow_dispatch)$ ]] || fail "Deploys to ${environment:-a protected environment} only from a push to main or a manual run, not ${GITHUB_EVENT_NAME:-an unknown event}."
 [[ "${GITHUB_RUN_ID:-}" =~ ^[0-9]{1,20}$ ]] || fail "GITHUB_RUN_ID must be the run's ID."

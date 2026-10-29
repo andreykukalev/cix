@@ -135,7 +135,7 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
 
 ### Deploying the engine and the agents from CI
 
-Once its deploy identity is set up (below), CI deploys after a push to `main` that changes what goes into the images, or on a manual run of *CI* on `main`, once the .NET tests, the container checks and the secret scan pass (or already passed in the pull request). What goes into the images is what `tools/ci/plan.sh` says: `src/`, `config/`, `strategies/`, `docker/`, `tools/trader/`, `.claude/agents/`, `.claude/hooks/`, `.claude/settings.json`, the solution and build files, the Compose files, and also any change to CI itself or to a file it doesn't classify. Each deployment restarts the paper engine on a new revision (the lease carries its state over).
+Once its deploy identity is set up (below), CI deploys after a push to `main` that changes what goes into the images, or on a manual run of *CI* on `main`, once the .NET tests, the container checks and the secret scan pass (or already passed in the pull request) and you approve the run for paper (below). What goes into the images is what `tools/ci/plan.sh` says: `src/`, `config/`, `strategies/`, `docker/`, `tools/trader/`, `.claude/agents/`, `.claude/hooks/`, `.claude/settings.json`, the solution and build files, the Compose files, and also any change to CI itself or to a file it doesn't classify. Each deployment restarts the paper engine on a new revision (the lease carries its state over).
 
 1. `agents-images` builds `cix-engine` and `cix-trader` in a job with no Azure access, and hands them on as an artifact, with their hashes as job outputs.
 2. `deploy-agents` signs in as `cix-agents-deploy-<environment>`, checks the hashes, and runs `tools/ci/deploy-agents.sh`:

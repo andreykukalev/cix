@@ -9,6 +9,7 @@ script, and checks what it did to the engine and the jobs, and that it pushed on
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -456,7 +457,7 @@ def approval(login, state="approved", environment="prod"):
 
 
 def approved(name, *, approvals, ref="refs/heads/main", run_id="42", event="push", expect_rc, expect_in_output=(), never_gh=False,
-             environment=None):
+             environment=None, extra_env=None):
     with tempfile.TemporaryDirectory() as d:
         gh = os.path.join(d, "gh")
         open(gh, "w").write(FAKE_GH_APPROVALS)
@@ -464,6 +465,7 @@ def approved(name, *, approvals, ref="refs/heads/main", run_id="42", event="push
         env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], GH_TOKEN="t", GITHUB_REPOSITORY="o/r",
                    GITHUB_REPOSITORY_OWNER="Owner", GITHUB_REPOSITORY_OWNER_ID="7", GITHUB_RUN_ID=run_id, GITHUB_REF=ref,
                    GITHUB_EVENT_NAME=event, **({"APPROVAL_ENVIRONMENT": environment} if environment else {"LIVE_ENVIRONMENT": "prod"}),
+                   **(extra_env or {}),
                    APPROVALS=approvals if isinstance(approvals, str) else json.dumps(approvals))
         p = subprocess.run(["bash", APPROVED_SCRIPT], env=env, capture_output=True, text=True, timeout=30)
         asked = os.path.exists(os.path.join(d, "calls.log"))
@@ -505,6 +507,10 @@ results += [
              expect_in_output=["no approval by Owner for paper"]),
     approved("paper without its rules deploys nothing", approvals=[], environment="paper", expect_rc=1,
              expect_in_output=["required reviewer", "nothing was deployed"]),
+    approved("two environment settings that disagree deploy nothing", approvals=[approval("owner", environment="paper")],
+             environment="paper", extra_env={"LIVE_ENVIRONMENT": "prod"}, expect_rc=1, expect_in_output=["disagree"], never_gh=True),
+    approved("an approval for paper isn't one for prod", approvals=[approval("owner", environment="paper")], expect_rc=1,
+             expect_in_output=["no approval by Owner for prod"]),
 ]
 
 # live-changes.sh against a fake gh: its deployments to prod (as the --jq it asks for would print them), their statuses'
@@ -588,6 +594,9 @@ HOOK_CASES = [
     ({"tool_name": "Bash", "tool_input": {"command": "gh variable set --body x LIVE_REGISTRY"}}, 2),
     ({"tool_name": "Bash", "tool_input": {"command": "gh variable set --env prod --body x LIVE_AZURE_CLIENT_ID"}}, 2),
     ({"tool_name": "Bash", "tool_input": {"command": "gh api repos/o/r/actions/variables -f name=LIVE_REGISTRY -f value=x"}}, 2),
+    # The paper gate's switch (ADR-0024).
+    ({"tool_name": "Bash", "tool_input": {"command": "gh variable set PAPER_APPROVAL --body off"}}, 2),
+    ({"tool_name": "Bash", "tool_input": {"command": "gh api -X POST repos/o/r/actions/variables -f name=PAPER_APPROVAL -f value=off"}}, 2),
     ({"tool_name": "Bash", "tool_input": {"command": "curl https://api.github.com/repos/o/r/actions/runs/1/pending%5Fdeployments"}}, 2),
     ({"tool_name": "Bash", "tool_input": {"command": "gh api -X DELETE repos/o/r/environments/prod"}}, 2),
     # Ordinary work passes.
@@ -664,6 +673,30 @@ for path, want in [("stocks/src/Cix.Stocks/a.cs", {"stocks": "true", "images": "
     got = plan_outputs(path)
     problems = [f"{k}={got.get(k)}, wanted {v}" for k, v in want.items() if got.get(k) != v]
     results.append(report("stocks", f"plan.sh on {path}: " + ", ".join(f"{k}={v}" for k, v in want.items()), problems, ""))
+
+# The paper gate stays wired in (ADR-0024): approve-paper waits in the paper environment and checks the approval, and
+# deploy-agents needs it but stays out of any environment (its Azure trust is for workflows on main).
+def workflow_job(text, name):
+    """One job's lines in ci.yml (two-space indented key to the next one), without PyYAML."""
+    m = re.search(rf"^  {re.escape(name)}:\n((?:(?:    .*|\s*)\n)+)", text, re.M)
+    return m.group(1) if m else ""
+
+ci_text = open(os.path.join(ROOT, ".github", "workflows", "ci.yml")).read()
+gate, deploy = workflow_job(ci_text, "approve-paper"), workflow_job(ci_text, "deploy-agents")
+problems = []
+if not re.search(r"^    environment: paper$", gate, re.M):
+    problems.append("approve-paper isn't in the paper environment")
+if not re.search(r"APPROVAL_ENVIRONMENT: paper\n\s+run: bash tools/ci/live-approved.sh", gate):
+    problems.append("approve-paper doesn't run live-approved.sh for paper")
+if not re.search(r"^    needs: \[[^]]*\bapprove-paper\b", deploy, re.M):
+    problems.append("deploy-agents doesn't need approve-paper")
+if "needs.approve-paper.result == 'success'" not in deploy:
+    problems.append("deploy-agents doesn't require approve-paper's success")
+if re.search(r"^    environment:", deploy, re.M):
+    problems.append("deploy-agents is in an environment (its OIDC subject would change)")
+if not gate or not deploy:
+    problems.append("approve-paper or deploy-agents not found in ci.yml")
+results.append(report("paper-gate", "approve-paper gates deploy-agents", problems, ""))
 
 failed = results.count(False)
 print(f"{len(results) - failed} passed, {failed} failed")

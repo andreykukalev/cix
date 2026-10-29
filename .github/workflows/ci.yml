@@ -531,9 +531,11 @@ jobs:
     # approval, so a paper environment without its rules fails closed and deploys nothing. Nothing here signs in to Azure:
     # deploy-agents keeps its own identity and trust (main), unchanged. The repository variable PAPER_APPROVAL=off turns
     # the gate off. Agents never approve it (CLAUDE.md rule 8).
-    needs: agents-images
+    # After the checks, so the owner is asked only for a run that can deploy.
+    needs: [build-test, containers, secret-scan, agents-images]
     if: >-
-      !cancelled() && needs.agents-images.outputs.deploy == 'true' && vars.PAPER_APPROVAL != 'off'
+      !cancelled() && needs.agents-images.result == 'success' && needs.agents-images.outputs.deploy == 'true'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && vars.PAPER_APPROVAL != 'off'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: paper
@@ -571,6 +573,7 @@ jobs:
     if: >-
       !cancelled() && needs.agents-images.outputs.deploy == 'true'
       && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      && (needs.approve-paper.result == 'success' || vars.PAPER_APPROVAL == 'off')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -711,6 +714,7 @@ jobs:
       - name: Approved by the owner, on main?
         env:
           GH_TOKEN: ${{ github.token }} # this step and the next only
+          APPROVAL_ENVIRONMENT: prod
           LIVE_ENVIRONMENT: prod
         run: bash tools/ci/live-approved.sh
 

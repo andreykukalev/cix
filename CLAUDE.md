@@ -11,7 +11,7 @@ CIX runs Claude agents that trade an allocated budget on Revolut X, on a determi
 5. **No secrets in the repo, prompts, logs or tool output.** Keys come from user secrets locally and Key Vault in Azure. Never print a key, even partially.
 6. **Paper trading is the default.** Live trading needs an explicit configuration switch that only the owner sets; a hook blocks agents from setting it in files or commands. Test against `PaperExchange`, never the real account.
 7. **Money is `decimal`.** Never use `double` or `float` for prices, sizes or balances.
-8. **Live and paper deploys are approved by the owner alone** (ADR-0019, ADR-0024). You act with the owner's GitHub account, so GitHub can't tell your approval from theirs: never approve or reject a pending deployment, and never change GitHub environments, the repository's OIDC settings, the `LIVE_*` variables or the `cix-agents-deploy-prod` identity. A hook blocks it. Code you merge reaches live money once the owner approves its run, so say plainly in the PR when a change touches orders, risk, strategies or the deploy.
+8. **Live and paper deploys are approved by the owner alone** (ADR-0019, ADR-0024). You act with the owner's GitHub account, so GitHub can't tell your approval from theirs: never approve or reject a pending deployment, and never change GitHub environments, the repository's OIDC settings, the `LIVE_*` variables, the paper gate's switch or the `cix-agents-deploy-prod` identity. A hook blocks it. Code you merge reaches live money once the owner approves its run, so say plainly in the PR when a change touches orders, risk, strategies or the deploy.
 
 ## Layout
 

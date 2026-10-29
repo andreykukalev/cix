@@ -13,7 +13,7 @@ A job `approve-paper` sits between building the images and `deploy-agents`. It r
 
 - `approve-paper` signs in to nothing. `deploy-agents` keeps its identity and its trust (workflows on `main`), so no Azure setup changes.
 - Live is unchanged: `deploy-live` still needs its own approval in `prod`, after paper deployed. Two clicks for a change that should reach both.
-- The repository variable `PAPER_APPROVAL=off` (the owner's to set) turns the gate off again, for times when paper is a sandbox.
+- The repository variable `PAPER_APPROVAL=off` (the owner's to set; the hook blocks agents from it) turns the gate off again, for times when paper is a sandbox. `deploy-agents` runs only after a successful `approve-paper` or with that switch off, so any other skip fails closed.
 - The dashboard's deploy is not gated: publishing it doesn't restart the engine.
 
 ## Alternatives considered
@@ -29,5 +29,7 @@ A job `approve-paper` sits between building the images and `deploy-agents`. It r
 
 - No change reaches the paper engine until the owner approves its run on the run's page. A run he won't approve should be rejected: one waiting holds `approve-paper`'s group, and the images artifact is kept for a day.
 - Setup, once, by the owner in the repository's settings: create the environment `paper`, add himself as required reviewer, allow `main` only, allow approving runs he started. Before that, every paper deploy fails closed, with the reason in the run.
-- Agents never approve or reject it, as for live (CLAUDE.md rule 8); `.claude/hooks/protect-live-deploy.sh` already blocks the approval APIs for every environment.
+- Agents never approve or reject it, as for live (CLAUDE.md rule 8); `.claude/hooks/protect-live-deploy.sh` already blocks the approval APIs for every environment, and now the gate's switch too.
+- Unlike live, the gate lives only in the workflow file: no Azure trust depends on it. A merged change that removed `approve-paper` would deploy on its own merge run. The owner merges, and `live-changes` flags CI changes.
+- Re-running a failed `deploy-agents` reuses the run's approval: it deploys the content the owner approved, at a later time. The one-day image artifact and the tip check bound it.
 - The stocks advisory gets its own CI job (`stocks`), without the engine's tests and the Cosmos DB emulator. Its future deploy to its own resource group will get its own identity and environment.
