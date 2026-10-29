@@ -635,7 +635,7 @@ for path in ["src/Cix.Engine/a.cs", "Cix.slnx", "Directory.Build.props", "global
              ".claude/settings.json", ".github/workflows/ci.yml", "tools/ci/plan.sh",
              "infra/main.bicep", "infra/environments/dev.json", "dashboard/app/app.js", "docs/azure.md", "README.md",
              ".claude/skills/x/SKILL.md", "tests/azure/CixAzure.Tests.ps1", "tools/azure/provision.ps1",
-             "tests/Cix.Engine.Tests/a.cs", ".gitleaks.toml", "src/README.md", "tools/spike/revx_spike.py", "Makefile",
+             "tests/Cix.Engine.Tests/a.cs", "stocks/src/Cix.Stocks/a.cs", "stocks/Cix.Stocks.slnx", ".gitleaks.toml", "src/README.md", "tools/spike/revx_spike.py", "Makefile",
              ".gitignore", "LICENSE"]:
     images, held = plan_images(path), held_back_by_tip(path)
     results.append(report("agents-tip", f"plan.sh and agents-tip.sh agree on {path}",

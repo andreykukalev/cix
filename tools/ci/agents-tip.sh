@@ -13,7 +13,7 @@ out="${GITHUB_OUTPUT:-/dev/stdout}"
 # The files plan.sh sets `images` for, or makes it run everything for: CI itself, and any file it doesn't classify (all
 # but the ones `quiet` lists, which never change the images). test-deploy-agents.py checks that the two agree.
 images='^(src/|Cix\.slnx$|Directory\.Build\.props$|global\.json$|NuGet\.config$|\.editorconfig$|config/|strategies/|docker/|docker-compose[^/]*\.yml$|\.dockerignore$|tools/trader/|\.claude/agents/|\.claude/hooks/|\.claude/settings\.json$|\.github/workflows/|tools/ci/)'
-quiet='^(tests/|tools/azure/|infra/|dashboard/|docs/|\.claude/skills/|\.gitleaks\.toml$|\.gitignore$|\.gitattributes$|LICENSE$)|\.md$'
+quiet='^(tests/|stocks/|tools/azure/|infra/|dashboard/|docs/|\.claude/skills/|\.gitleaks\.toml$|\.gitignore$|\.gitattributes$|LICENSE$)|\.md$'
 
 if [[ ! -f "${SETTINGS:-}" ]]; then
   echo "::error::No environment file ${SETTINGS:-} (AGENTS_ENVIRONMENT names it)."

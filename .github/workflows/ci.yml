@@ -82,10 +82,14 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Restore
-        run: dotnet restore Cix.slnx
+        run: |
+          dotnet restore Cix.slnx
+          dotnet restore stocks/Cix.Stocks.slnx
 
       - name: Build
-        run: dotnet build Cix.slnx --no-restore --configuration Release
+        run: |
+          dotnet build Cix.slnx --no-restore --configuration Release
+          dotnet build stocks/Cix.Stocks.slnx --no-restore --configuration Release
 
       - name: Wait for the Cosmos DB emulator
         run: |
@@ -97,6 +101,11 @@ jobs:
 
       - name: Test
         run: dotnet test Cix.slnx --no-build --configuration Release --logger "trx;LogFilePrefix=results" --results-directory TestResults
+
+      # The stocks advisory (ADR-0023). It references Cix.Domain, so it runs on engine changes too.
+      - name: Test stocks
+        if: ${{ !cancelled() }}
+        run: dotnet test stocks/Cix.Stocks.slnx --no-build --configuration Release --logger "trx;LogFilePrefix=stocks" --results-directory TestResults
 
       # Failed tests as annotations, so they can be read through the API (check-run annotations) without log access.
       - name: Report failed tests

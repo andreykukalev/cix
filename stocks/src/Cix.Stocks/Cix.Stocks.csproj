@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Pure advisory logic, like Cix.Domain: no I/O and no package references. It reuses Cix.Domain's candles and indicators. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Cix.Domain\Cix.Domain.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Cix.Stocks.Tests" />
+  </ItemGroup>
+</Project>

@@ -74,6 +74,8 @@ for f in "${files[@]}"; do
     infra/*) azure=true; windows=true; dashboard=true ;;
     dashboard/*) azure=true; dashboard=true ;;
     docs/*|*.md|.claude/skills/*|.gitleaks.toml|.gitignore|.gitattributes|LICENSE) ;;
+    # The stocks advisory (ADR-0023): its own solution, outside the engine's and the agents' images, so it never deploys them.
+    stocks/*) dotnet=true ;;
     *) echo "::notice::Unclassified change ($f): running everything."; unknown=true ;;
   esac
 done

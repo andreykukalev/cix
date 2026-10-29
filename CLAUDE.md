@@ -19,6 +19,7 @@ CIX runs Claude agents that trade an allocated budget on Revolut X, on a determi
 - `src/Cix.Exchange.RevolutX`: Revolut X REST client and request signing.
 - `src/Cix.Engine`: the host: market data, execution, portfolio, journal.
 - `tests/`: xUnit tests, one project per source project.
+- `stocks/`: the stocks advisory (ADR-0023), its own solution `stocks/Cix.Stocks.slnx`; changes there never deploy the crypto engine.
 - `tools/spike`: the Revolut X API spike script.
 - `docs/`: architecture, ADRs, research memos.
 
