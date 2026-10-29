@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Cix.Stocks/Cix.Stocks.csproj" />
     <Project Path="src/Cix.Stocks.MarketData/Cix.Stocks.MarketData.csproj" />
+    <Project Path="src/Cix.Stocks.Backtest/Cix.Stocks.Backtest.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Cix.Stocks.Tests/Cix.Stocks.Tests.csproj" />
