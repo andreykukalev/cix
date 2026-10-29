@@ -41,6 +41,7 @@ jobs:
       secrets: ${{ steps.plan.outputs.secrets }}
       dashboard: ${{ steps.plan.outputs.dashboard }}
       images: ${{ steps.plan.outputs.images }}
+      stocks: ${{ steps.plan.outputs.stocks }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,6 +119,47 @@ jobs:
         with:
           name: test-results
           path: TestResults
+
+  # The stocks advisory (ADR-0023): its own solution, without the engine's tests or the Cosmos DB emulator. It references
+  # Cix.Domain, so plan.sh runs it on changes there too. Nothing deploys it yet.
+  stocks:
+    needs: plan
+    if: needs.plan.outputs.stocks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore stocks/Cix.Stocks.slnx
+
+      - name: Build
+        run: dotnet build stocks/Cix.Stocks.slnx --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test stocks/Cix.Stocks.slnx --no-build --configuration Release --logger "trx;LogFilePrefix=stocks" --results-directory TestResults
+
+      # As in build-test: failed tests as annotations, readable through the API.
+      - name: Report failed tests
+        if: failure()
+        shell: python
+        run: |
+          import glob, xml.etree.ElementTree as ET
+          ns = {"t": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
+          esc = lambda s: (s or "").replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for path in glob.glob("TestResults/**/*.trx", recursive=True):
+              for r in ET.parse(path).getroot().iterfind(".//t:UnitTestResult[@outcome='Failed']", ns):
+                  msg = r.findtext(".//t:ErrorInfo/t:Message", "", ns)
+                  trace = r.findtext(".//t:ErrorInfo/t:StackTrace", "", ns)
+                  print(f"::error title={esc(r.get('testName'))}::{esc((msg + chr(10) + trace)[:1500])}")
 
   # The Compose images build, and the engine starts in its container against the emulator (paper, no exchange keys).
   containers:
@@ -482,6 +524,40 @@ jobs:
           compression-level: 0 # already gzipped
           retention-days: 1
 
+  approve-paper:
+    # Between building the images and deploying paper: the owner's approval (ADR-0024), so a merge can't restart the paper
+    # engine in the middle of an evaluation. The job is in the GitHub environment paper, whose rules (the owner as its only
+    # required reviewer, main only) hold it until the owner presses Approve; tools/ci/live-approved.sh then checks the
+    # approval, so a paper environment without its rules fails closed and deploys nothing. Nothing here signs in to Azure:
+    # deploy-agents keeps its own identity and trust (main), unchanged. The repository variable PAPER_APPROVAL=off turns
+    # the gate off. Agents never approve it (CLAUDE.md rule 8).
+    # After the checks, so the owner is asked only for a run that can deploy.
+    needs: [build-test, containers, secret-scan, agents-images]
+    if: >-
+      !cancelled() && needs.agents-images.result == 'success' && needs.agents-images.outputs.deploy == 'true'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && vars.PAPER_APPROVAL != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: paper
+    permissions:
+      contents: read
+      actions: read # this run's approvals
+    concurrency:
+      # As for deploy-live: a run waiting for approval holds the group and only the newest run behind it is kept, so reject
+      # a run you won't approve rather than leave it waiting.
+      group: approve-paper
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Approved by the owner, on main?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVAL_ENVIRONMENT: paper
+        run: bash tools/ci/live-approved.sh
+
   deploy-agents:
     # Step 2: sign in to Azure as the agents' deploy identity, which trusts only workflows on main of this repository (an
     # OIDC federated credential, as for the dashboard: ADR-0010). It may push images to this environment's registry and
@@ -490,12 +566,14 @@ jobs:
     # (Azure has no narrower right); tools/ci/deploy-agents.sh sends only the containers. It waits for the engine's new
     # revision to be healthy, then updates the jobs, and goes back to the previous images if anything fails.
     # Set up once with tools/azure/setup-ci-deploy.ps1 -For agents (docs/azure.md).
-    needs: [build-test, containers, secret-scan, agents-images]
-    # The checks may have been skipped (they passed on this exact content in the pull request); none may have failed,
-    # and cancelling the run stops the deployment (the last step rolls back a half-done one).
+    needs: [build-test, containers, secret-scan, agents-images, approve-paper]
+    # The checks may have been skipped (they passed on this exact content in the pull request), and so may approve-paper
+    # (PAPER_APPROVAL=off); none may have failed, and cancelling the run stops the deployment (the last step rolls back a
+    # half-done one). A rejected or missing approval fails approve-paper, so nothing deploys.
     if: >-
       !cancelled() && needs.agents-images.outputs.deploy == 'true'
       && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      && (needs.approve-paper.result == 'success' || vars.PAPER_APPROVAL == 'off')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -636,6 +714,7 @@ jobs:
       - name: Approved by the owner, on main?
         env:
           GH_TOKEN: ${{ github.token }} # this step and the next only
+          APPROVAL_ENVIRONMENT: prod
           LIVE_ENVIRONMENT: prod
         run: bash tools/ci/live-approved.sh
 

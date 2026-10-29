@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Cix.Stocks/Cix.Stocks.csproj" />
+    <Project Path="src/Cix.Stocks.MarketData/Cix.Stocks.MarketData.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Cix.Stocks.Tests/Cix.Stocks.Tests.csproj" />
+    <Project Path="tests/Cix.Stocks.MarketData.Tests/Cix.Stocks.MarketData.Tests.csproj" />
+  </Folder>
+</Solution>

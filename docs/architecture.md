@@ -91,6 +91,10 @@ The jobs run the same image and scripts as Compose, with `CIX_JOB_MODE=1` (`tool
 
 The state is written only if nobody wrote it since this engine read it (an ETag check), so an engine that lost the lease can't undo the new one's changes. Owner-request runs are refunded at most as often as their cap allows, so a job that always reports `not-run` can't run every 5 minutes. Both endpoints are behind the tool server's Entra check and take JSON (`Content-Type: application/json`). The journal records each step as `agent-run`.
 
+## Stocks advisory
+
+A separate module under `stocks/` (ADR-0023) advises on medium-term stock trading in the owner's Revolut brokerage account, which has no API. It never trades: a deterministic advisor (`Cix.Stocks`) turns adjusted daily bars from EODHD (`Cix.Stocks.MarketData`), the market regime and the holdings the owner records into actions (sell, set stop, raise stop, buy), and the owner places them by hand. It shares `Cix.Domain`'s candles and indicators and nothing else; CI builds and tests it in its own job, `stocks`, and never deploys the crypto engine or agents for it. It will run in its own resource group.
+
 ## Rules that never bend
 
 1. Agents reach the exchange only through tool server tools, and every order passes the risk gate.
