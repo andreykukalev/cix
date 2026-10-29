@@ -292,6 +292,7 @@ function renderActivity(entries, emptyText) {
 
 const DIRECTION_LABEL = { risk: 'Risk', opportunity: 'Opportunity', watch: 'Watch' }; // through t() when shown
 const DIRECTION_TONE = { risk: 'bad', opportunity: 'ok', watch: 'warn' };
+const REGIME_TONE = { 'risk-off': 'bad', 'risk-on': 'ok' }; // the news cards' colours: risk red, opportunity green
 const SEVERITY_LABEL = { 3: 'high', 2: 'medium', 1: 'low' };
 
 /** An external link: https only (the API checks too), opened in a new tab without access back to this page. */
@@ -315,7 +316,7 @@ function renderBriefing(view) {
 
   const summary = document.getElementById('analyst-summary');
   summary.replaceChildren(...(a ? [
-    el('span', { class: `badge ${a.regime === 'risk-off' ? 'warn' : a.regime === 'risk-on' ? 'ok' : ''}`, text: t(a.regime ?? 'unknown') }), ' ',
+    el('span', { class: `badge ${REGIME_TONE[a.regime] ?? ''}`, text: t(a.regime ?? 'unknown') }), ' ',
     says(a.summary ?? '', a.summaryRu),
     a.avoid?.length && a.active ? el('span', {}, ` ${t('Avoid:')} `, ...chips(a.avoid)) : null,
   ].filter((n) => n !== null) : [t('The analyst has not recorded a view in the last 24 hours.')]));
