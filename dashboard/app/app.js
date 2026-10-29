@@ -172,7 +172,7 @@ function renderTiles(view) {
 
   const mv = e.marketView;
   const regime = mv?.active ? mv.regime : 'Neutral';
-  tile('tile-view', regime === 'RiskOff' ? 'warn' : 'ok', t({ RiskOn: 'Risk-on', RiskOff: 'Risk-off', Neutral: 'Neutral' }[regime] ?? regime),
+  tile('tile-view', { RiskOff: 'bad', RiskOn: 'ok' }[regime] ?? '', t({ RiskOn: 'Risk-on', RiskOff: 'Risk-off', Neutral: 'Neutral' }[regime] ?? regime),
     mv?.active ? `${t('until {time}', { time: timeOf(mv.validUntil) })}${mv.avoid?.length ? ` · ${t('avoid {coins}', { coins: mv.avoid.join(', ') })}` : ''}` : t('no active view'));
 
   const quoteAge = ms(e.oldestQuoteAt) === null ? null : (Date.now() - ms(e.oldestQuoteAt)) / 1000;
@@ -292,6 +292,7 @@ function renderActivity(entries, emptyText) {
 
 const DIRECTION_LABEL = { risk: 'Risk', opportunity: 'Opportunity', watch: 'Watch' }; // through t() when shown
 const DIRECTION_TONE = { risk: 'bad', opportunity: 'ok', watch: 'warn' };
+const REGIME_TONE = { 'risk-off': 'bad', 'risk-on': 'ok' }; // the news cards' colours: risk red, opportunity green
 const SEVERITY_LABEL = { 3: 'high', 2: 'medium', 1: 'low' };
 
 /** An external link: https only (the API checks too), opened in a new tab without access back to this page. */
@@ -301,8 +302,8 @@ function sourceLink(url, host) {
   return href ? el('a', { href, target: '_blank', rel: 'noopener noreferrer nofollow', text: host || t('source') }) : null;
 }
 
-function chips(symbols) {
-  return (symbols ?? []).map((s) => el('span', { class: 'chip', text: s }));
+function chips(symbols, tone) {
+  return (symbols ?? []).map((s) => el('span', { class: tone ? `chip ${tone}` : 'chip', text: s }));
 }
 
 function renderBriefing(view) {
@@ -315,9 +316,9 @@ function renderBriefing(view) {
 
   const summary = document.getElementById('analyst-summary');
   summary.replaceChildren(...(a ? [
-    el('span', { class: `badge ${a.regime === 'risk-off' ? 'warn' : a.regime === 'risk-on' ? 'ok' : ''}`, text: t(a.regime ?? 'unknown') }), ' ',
+    el('span', { class: `badge ${REGIME_TONE[a.regime] ?? ''}`, text: t(a.regime ?? 'unknown') }), ' ',
     says(a.summary ?? '', a.summaryRu),
-    a.avoid?.length && a.active ? el('span', {}, ` ${t('Avoid:')} `, ...chips(a.avoid)) : null,
+    a.avoid?.length && a.active ? el('span', {}, ` ${t('Avoid:')} `, ...chips(a.avoid, 'avoid')) : null,
   ].filter((n) => n !== null) : [t('The analyst has not recorded a view in the last 24 hours.')]));
 
   const highlights = a?.highlights ?? [];
@@ -404,7 +405,7 @@ function renderFilterChange(change) {
 function whyCell(c) {
   if (!c.why) return td(c.note ?? '', 'muted');
   return td([
-    el('span', { class: `why-kind ${c.why.kind}`, text: c.why.label }), ' ', c.why.text,
+    el('span', { class: `why-kind ${c.why.kind}${c.why.alarm ? ' alarm' : ''}`, text: c.why.label }), ' ', c.why.text,
     c.why.detail ? el('span', { class: 'why-detail', text: c.why.detail }) : null,
   ], 'why');
 }

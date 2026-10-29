@@ -156,7 +156,8 @@ td.why { min-width: 260px; max-width: 560px; color: var(--muted); }
 }
 .why-kind.filtered { background: var(--chip); color: var(--muted); }
 .why-kind.rule { background: var(--warn-bg); color: var(--warn); }
-.why-kind.blocked { background: var(--bad-bg); color: var(--bad); }
+.why-kind.blocked { background: var(--warn-bg); color: var(--warn); }
+.why-kind.blocked.alarm { background: var(--bad-bg); color: var(--bad); }
 .why-kind.pending { background: var(--ok-bg); color: var(--ok); }
 .why-detail { display: block; font-size: 12px; margin-top: 2px; }
 .coins-legend { margin: 8px 0 0; line-height: 1.7; }
@@ -180,6 +181,7 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .card .meta { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
 .card ul.reasons { margin: 4px 0 0; padding-left: 18px; color: var(--muted); }
 .chip { display: inline-block; padding: 1px 6px; border-radius: 4px; background: var(--chip); font-family: var(--mono); font-size: 12px; }
+.chip.avoid { background: var(--bad-bg); color: var(--bad); }
 a { color: var(--accent); }
 details > summary { cursor: pointer; margin-top: 14px; color: var(--muted); font-size: 13px; }
 details[open] > summary { margin-bottom: 6px; }

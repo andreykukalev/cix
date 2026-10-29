@@ -39,6 +39,8 @@
     'strategy exposure cap reached': "The strategy's total exposure cap is used up: no new buys until something is sold.",
   };
   const WHY_LABELS = { filtered: 'Filtered out', rule: 'Strategy rule', blocked: 'Held back', pending: 'New pair' };
+  // Held back by the market or a halt (red on the page, like the analyst's risk cards), not by a routine limit (orange).
+  const ALARMS = new Set(['trading halted', 'risk-off (market view)', 'news']);
 
   /** Why there is no buy signal for a scan row: its kind, a label for the kind, the short reason and the sentence behind it. */
   function why(r, lang) {
@@ -49,7 +51,7 @@
       : r.rank === null || r.rank === undefined ? 'filtered' : 'rule';
     const detail = said ?? (Object.hasOwn(BLOCK_DETAILS, note) ? t(BLOCK_DETAILS[note])
       : /^cooldown until /.test(note) ? t('The strategy waits between buys.') : null);
-    return { kind, label: t(WHY_LABELS[kind]), text: t(note), detail };
+    return { kind, label: t(WHY_LABELS[kind]), text: t(note), detail, alarm: kind === 'blocked' && ALARMS.has(note) };
   }
 
   /**
@@ -95,11 +97,11 @@
   const LEVELS = {
     trading: { label: 'In trading', tone: 'ok', detail: 'Passes the strategy\'s filters at the latest scan: the strategy can buy it.' },
     filtered: { label: 'Filtered out', tone: '', detail: 'Watched, but the strategy\'s filters exclude it at the latest scan: it isn\'t bought. The reason is under Why no buy.' },
-    flagged: { label: 'Flagged by the analyst', tone: 'warn', detail: 'The market analyst flagged news about it: no strategy buys it until the flag ends.' },
+    flagged: { label: 'Flagged by the analyst', tone: 'bad', detail: 'The market analyst flagged news about it: no strategy buys it until the flag ends.' },
     waiting: { label: 'Waiting for data', tone: 'pending', detail: 'Not enough fresh prices or hourly candles yet: it isn\'t bought until the scan has them.' },
-    outside: { label: 'Held, outside the strategy', tone: 'warn', detail: 'You hold it, but the strategy\'s filters exclude it: it keeps its stop and target and the strategy buys no more. Keep it or sell it yourself.' },
+    outside: { label: 'Held, outside the strategy', tone: 'bad', detail: 'You hold it, but the strategy\'s filters exclude it: it keeps its stop and target and the strategy buys no more. Keep it or sell it yourself.' },
     new: { label: 'Just added', tone: 'pending', detail: 'Its prices are loading; the engine scans a new pair within a minute of adding it.' },
-    adopted: { label: 'On the account', tone: 'warn', detail: 'Held, but you didn\'t add it: the engine watches it and keeps its stop, and the strategy doesn\'t buy it until you add it.' },
+    adopted: { label: 'On the account', tone: 'bad', detail: 'Held, but you didn\'t add it: the engine watches it and keeps its stop, and the strategy doesn\'t buy it until you add it.' },
   };
   const WAITING = new Set(['stale', 'insufficient-history']);
 
