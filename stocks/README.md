@@ -13,4 +13,4 @@ dotnet build stocks/Cix.Stocks.slnx
 dotnet test stocks/Cix.Stocks.slnx
 ```
 
-Changes here never rebuild or redeploy the crypto engine and agents: CI builds and tests this solution in `build-test` only.
+Changes here never rebuild or redeploy the crypto engine and agents: CI builds and tests this solution in its own job, `stocks`, which also runs for changes to `Cix.Domain`.

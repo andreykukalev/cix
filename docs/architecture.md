@@ -93,7 +93,7 @@ The state is written only if nobody wrote it since this engine read it (an ETag 
 
 ## Stocks advisory
 
-A separate module under `stocks/` (ADR-0023) advises on medium-term stock trading in the owner's Revolut brokerage account, which has no API. It never trades: a deterministic advisor (`Cix.Stocks`) turns adjusted daily bars from EODHD (`Cix.Stocks.MarketData`), the market regime and the holdings the owner records into actions (sell, set stop, raise stop, buy), and the owner places them by hand. It shares `Cix.Domain`'s candles and indicators and nothing else; CI builds it in `build-test` and never deploys the crypto engine or agents for it. It will run in its own resource group.
+A separate module under `stocks/` (ADR-0023) advises on medium-term stock trading in the owner's Revolut brokerage account, which has no API. It never trades: a deterministic advisor (`Cix.Stocks`) turns adjusted daily bars from EODHD (`Cix.Stocks.MarketData`), the market regime and the holdings the owner records into actions (sell, set stop, raise stop, buy), and the owner places them by hand. It shares `Cix.Domain`'s candles and indicators and nothing else; CI builds and tests it in its own job, `stocks`, and never deploys the crypto engine or agents for it. It will run in its own resource group.
 
 ## Rules that never bend
 

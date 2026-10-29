@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Decides which CI jobs a run needs, to save GitHub Actions minutes (#73). Writes `name=true|false` lines to
-# $GITHUB_OUTPUT (or stdout) for: dotnet, containers, azure, windows, secrets, dashboard, images; and, when $GITHUB_STEP_SUMMARY
+# $GITHUB_OUTPUT (or stdout) for: dotnet, containers, azure, windows, secrets, stocks, dashboard, images; and, when $GITHUB_STEP_SUMMARY
 # is set, the commit and the plan to the run's summary page.
 #
 #   pull_request       the jobs for the files the pull request changes (against its base)
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 out="${GITHUB_OUTPUT:-/dev/stdout}"
-jobs_of=(dotnet containers azure windows secrets)
+jobs_of=(dotnet containers azure windows secrets stocks)
 emit() { for k in "${jobs_of[@]}" dashboard images; do echo "$k=${!k}" >> "$out"; done; summary; }
 
 # The commit this run tests, and the jobs it runs, on the run's summary page (the run list shows only its name).
@@ -39,8 +39,8 @@ summary() {
     for k in "${jobs_of[@]}" dashboard images; do echo "- $k: ${!k}"; done
   } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Couldn't write the job summary."
 }
-all() { dotnet=true containers=true azure=true windows=true secrets=true dashboard=true images=true; }
-dotnet=false containers=false azure=false windows=false secrets=true dashboard=false images=false
+all() { dotnet=true containers=true azure=true windows=true secrets=true stocks=true dashboard=true images=true; }
+dotnet=false containers=false azure=false windows=false secrets=true stocks=false dashboard=false images=false
 ci_changed=false unknown=false
 
 zero=0000000000000000000000000000000000000000
@@ -64,6 +64,11 @@ files=()
 echo "Changed files (${#files[@]}):"; printf '  %s\n' "${files[@]}"
 
 for f in "${files[@]}"; do
+  # The stocks advisory (ADR-0023) builds on Cix.Domain and the shared build files.
+  case "$f" in
+    stocks/*.md) ;;
+    stocks/*|src/Cix.Domain/*|Directory.Build.props|global.json|NuGet.config|.editorconfig) stocks=true ;;
+  esac
   case "$f" in
     .github/workflows/*|tools/ci/*) ci_changed=true ;;
     src/*|Cix.slnx|Directory.Build.props|global.json|NuGet.config|.editorconfig|config/*|strategies/*)
@@ -74,8 +79,8 @@ for f in "${files[@]}"; do
     infra/*) azure=true; windows=true; dashboard=true ;;
     dashboard/*) azure=true; dashboard=true ;;
     docs/*|*.md|.claude/skills/*|.gitleaks.toml|.gitignore|.gitattributes|LICENSE) ;;
-    # The stocks advisory (ADR-0023): its own solution, outside the engine's and the agents' images, so it never deploys them.
-    stocks/*) dotnet=true ;;
+    # The stocks advisory (ADR-0023): its own job (above), outside the engine's and the agents' images, so it never deploys them.
+    stocks/*) ;;
     *) echo "::notice::Unclassified change ($f): running everything."; unknown=true ;;
   esac
 done
@@ -120,7 +125,7 @@ if [[ "$EVENT" == "push" && "$ci_changed" == false ]]; then
     [[ -n "$run" ]] && passed=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" \
       --jq '[.jobs[] | select(.conclusion == "success") | .name] | join(" ")' 2>/dev/null || true)
     declare -A job_name=([dotnet]=build-test [containers]=containers [azure]=azure-and-dashboard
-      [windows]=azure-scripts-windows-powershell [secrets]=secret-scan)
+      [windows]=azure-scripts-windows-powershell [secrets]=secret-scan [stocks]=stocks)
     skipped=()
     for k in "${jobs_of[@]}"; do
       if [[ "${!k}" == true && " $passed " == *" ${job_name[$k]} "* ]]; then printf -v "$k" false; skipped+=("${job_name[$k]}"); fi

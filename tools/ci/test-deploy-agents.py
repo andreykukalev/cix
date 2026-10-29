@@ -455,14 +455,15 @@ def approval(login, state="approved", environment="prod"):
     return {"state": state, "comment": "", "environments": [{"name": environment}], "user": {"login": login, "id": ids[login]}}
 
 
-def approved(name, *, approvals, ref="refs/heads/main", run_id="42", event="push", expect_rc, expect_in_output=(), never_gh=False):
+def approved(name, *, approvals, ref="refs/heads/main", run_id="42", event="push", expect_rc, expect_in_output=(), never_gh=False,
+             environment=None):
     with tempfile.TemporaryDirectory() as d:
         gh = os.path.join(d, "gh")
         open(gh, "w").write(FAKE_GH_APPROVALS)
         os.chmod(gh, 0o755)
         env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], GH_TOKEN="t", GITHUB_REPOSITORY="o/r",
                    GITHUB_REPOSITORY_OWNER="Owner", GITHUB_REPOSITORY_OWNER_ID="7", GITHUB_RUN_ID=run_id, GITHUB_REF=ref,
-                   GITHUB_EVENT_NAME=event, LIVE_ENVIRONMENT="prod",
+                   GITHUB_EVENT_NAME=event, **({"APPROVAL_ENVIRONMENT": environment} if environment else {"LIVE_ENVIRONMENT": "prod"}),
                    APPROVALS=approvals if isinstance(approvals, str) else json.dumps(approvals))
         p = subprocess.run(["bash", APPROVED_SCRIPT], env=env, capture_output=True, text=True, timeout=30)
         asked = os.path.exists(os.path.join(d, "calls.log"))
@@ -497,6 +498,13 @@ results += [
              expect_in_output=["only from a push to main or a manual run"], never_gh=True),
     approved("a run ID that isn't a number is refused", approvals=[approval("owner")], run_id="42/../1", expect_rc=1,
              never_gh=True),
+    # approve-paper (ADR-0024): the same check for the paper environment.
+    approved("the owner's approval for paper lets paper deploy", approvals=[approval("owner", environment="paper")],
+             environment="paper", expect_rc=0, expect_in_output=["The owner (Owner) approved this run for paper."]),
+    approved("an approval for prod isn't one for paper", approvals=[approval("owner")], environment="paper", expect_rc=1,
+             expect_in_output=["no approval by Owner for paper"]),
+    approved("paper without its rules deploys nothing", approvals=[], environment="paper", expect_rc=1,
+             expect_in_output=["required reviewer", "nothing was deployed"]),
 ]
 
 # live-changes.sh against a fake gh: its deployments to prod (as the --jq it asks for would print them), their statuses'
@@ -602,6 +610,11 @@ for payload, want in HOOK_CASES:
 
 def plan_images(path):
     """What plan.sh says about `images` for a pull request that changes only this file."""
+    return plan_outputs(path).get("images") == "true"
+
+
+def plan_outputs(path):
+    """All of plan.sh's outputs for a pull request that changes only this file."""
     with tempfile.TemporaryDirectory() as d:
         def git(*a):
             return subprocess.run(["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a],
@@ -617,7 +630,7 @@ def plan_images(path):
         env = dict(os.environ, EVENT="pull_request", BASE_SHA=base, HEAD_SHA=head, GITHUB_OUTPUT=os.path.join(d, "plan.out"))
         env.pop("GITHUB_STEP_SUMMARY", None)
         subprocess.run(["bash", PLAN_SCRIPT], cwd=d, env=env, check=True, capture_output=True, text=True, timeout=30)
-        return "images=true" in open(os.path.join(d, "plan.out")).read().split()
+        return dict(line.split("=", 1) for line in open(os.path.join(d, "plan.out")).read().split())
 
 
 def held_back_by_tip(path):
@@ -641,10 +654,16 @@ for path in ["src/Cix.Engine/a.cs", "Cix.slnx", "Directory.Build.props", "global
     results.append(report("agents-tip", f"plan.sh and agents-tip.sh agree on {path}",
                           [] if images == held else [f"plan.sh images={images}, agents-tip.sh holds back={held}"], ""))
 
-# The stocks advisory (ADR-0023) never deploys the engine or the agents, whatever the two scripts agree on.
-for path in ["stocks/src/Cix.Stocks/a.cs", "stocks/Cix.Stocks.slnx", "stocks/tests/Cix.Stocks.Tests/a.cs"]:
-    images = plan_images(path)
-    results.append(report("stocks", f"plan.sh doesn't deploy images for {path}", ["images=true"] if images else [], ""))
+# The stocks advisory (ADR-0023) has its own job and never deploys the engine or the agents, whatever the two scripts
+# agree on; changes to Cix.Domain, which it builds on, run it too.
+for path, want in [("stocks/src/Cix.Stocks/a.cs", {"stocks": "true", "images": "false", "dotnet": "false"}),
+                   ("stocks/Cix.Stocks.slnx", {"stocks": "true", "images": "false", "dotnet": "false"}),
+                   ("stocks/README.md", {"stocks": "false", "images": "false"}),
+                   ("src/Cix.Domain/Risk/a.cs", {"stocks": "true", "images": "true", "dotnet": "true"}),
+                   ("src/Cix.Engine/a.cs", {"stocks": "false", "images": "true"})]:
+    got = plan_outputs(path)
+    problems = [f"{k}={got.get(k)}, wanted {v}" for k, v in want.items() if got.get(k) != v]
+    results.append(report("stocks", f"plan.sh on {path}: " + ", ".join(f"{k}={v}" for k, v in want.items()), problems, ""))
 
 failed = results.count(False)
 print(f"{len(results) - failed} passed, {failed} failed")
