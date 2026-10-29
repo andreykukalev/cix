@@ -172,7 +172,7 @@ function renderTiles(view) {
 
   const mv = e.marketView;
   const regime = mv?.active ? mv.regime : 'Neutral';
-  tile('tile-view', regime === 'RiskOff' ? 'warn' : 'ok', t({ RiskOn: 'Risk-on', RiskOff: 'Risk-off', Neutral: 'Neutral' }[regime] ?? regime),
+  tile('tile-view', { RiskOff: 'bad', RiskOn: 'ok' }[regime] ?? '', t({ RiskOn: 'Risk-on', RiskOff: 'Risk-off', Neutral: 'Neutral' }[regime] ?? regime),
     mv?.active ? `${t('until {time}', { time: timeOf(mv.validUntil) })}${mv.avoid?.length ? ` · ${t('avoid {coins}', { coins: mv.avoid.join(', ') })}` : ''}` : t('no active view'));
 
   const quoteAge = ms(e.oldestQuoteAt) === null ? null : (Date.now() - ms(e.oldestQuoteAt)) / 1000;
