@@ -25,6 +25,7 @@ A third agent, the **market analyst**, runs every 6 hours in its own container (
    - Risk-off stops new entries, and an avoided symbol gets no new entry. The scanner drops those signals, and `place_order` refuses those buys outright.
    - Exits are never blocked. Risk-on changes nothing.
    - The view expires, and an expired or missing view counts as neutral.
+   - A risk-off view gets one extra analyst run `AgentRuns:RiskOffRecheckMinutes` (20) before it ends, so a shock that has passed doesn't pause buys until the next 6-hourly slot, and one still going on is renewed without a gap. From analyst v4, risk-off lasts 3 hours and is kept for a market-wide shock under way now; trouble in some coins is neutral plus those coins avoided.
    - Even a fully manipulated analyst can therefore only pause entries for at most 12 hours at a time. It can never cause a trade or keep one open.
 4. **Free text stays away from the trader.**
    - The scanner applies only the structured fields.

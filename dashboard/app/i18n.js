@@ -574,6 +574,7 @@
     'for your requests': 'по вашим запросам',
     'market check': 'обзор рынка',
     'on your request': 'по вашему запросу',
+    'risk-off recheck': 'перепроверка risk-off',
     'Not used': 'Не используется',
     'Buy signal: the trader may buy it in its next run.': 'Сигнал на покупку: трейдер может купить её в следующем запуске.',
     'Sell signal ({why}): the trader sells it in its next run.': 'Сигнал на продажу ({why}): трейдер продаст её в следующем запуске.',

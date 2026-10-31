@@ -336,6 +336,51 @@ public sealed class AgentRunPlannerTests
     }
 
     [Fact]
+    public void RiskOff_GetsOneRecheck_ShortlyBeforeItEnds_OutsideTheCadence()
+    {
+        var sim = new Sim(Options(o => o.Analyst = true));
+        var idle = Signals(scanned: false);
+        sim.Finish(sim.Single(idle), AgentRunOutcome.Done); // the scheduled run at T0: the next is at T0 + 6 h
+        AgentRunInputs RiskOff(TimeSpan until) => idle with { RiskOffUntil = T0 + until };
+
+        sim.Advance(TimeSpan.FromMinutes(159));
+        Assert.Empty(sim.Tick(RiskOff(TimeSpan.FromHours(3)))); // 21 minutes before it ends
+        sim.Advance(TimeSpan.FromMinutes(1));
+        var recheck = sim.Single(RiskOff(TimeSpan.FromHours(3)));
+        Assert.Equal((AgentRunKind.Analyst, AgentRunPurpose.Recheck), (recheck.Kind, recheck.Purpose));
+        Assert.Empty(sim.Tick(RiskOff(TimeSpan.FromHours(3)))); // one at a time
+        sim.Advance(TimeSpan.FromMinutes(8));
+        sim.Finish(recheck, AgentRunOutcome.Done);
+        Assert.Equal((T0 + TimeSpan.FromHours(6), 0), (sim.State.NextAnalyst, sim.State.AnalystRetries)); // the cadence stays
+        Assert.Contains("ask again", sim.RunNow().Refusal, StringComparison.Ordinal); // it counts for the owner's cooldown
+
+        // Renewed until T0 + 5:50: its recheck at 5:30 never starts and isn't retried, nor run twice for the same view.
+        sim.Advance(T0 + TimeSpan.FromMinutes(330) - sim.Now);
+        var renewed = sim.Single(RiskOff(TimeSpan.FromMinutes(350)));
+        sim.Finish(renewed, AgentRunOutcome.NotRun);
+        Assert.Equal((T0 + TimeSpan.FromHours(6), 0), (sim.State.NextAnalyst, sim.State.AnalystRetries));
+        sim.Advance(TimeSpan.FromMinutes(10));
+        Assert.Empty(sim.Tick(RiskOff(TimeSpan.FromMinutes(350))));
+        sim.Advance(TimeSpan.FromMinutes(10)); // ended: no recheck after the view, only the slot at T0 + 6 h
+        Assert.Empty(sim.Tick(RiskOff(TimeSpan.FromMinutes(350))));
+        sim.Advance(TimeSpan.FromMinutes(10));
+        var slot = sim.Single(RiskOff(TimeSpan.FromMinutes(350)));
+        Assert.Equal(AgentRunPurpose.Analyst, slot.Purpose);
+        sim.Finish(slot, AgentRunOutcome.Done); // the next slot is at T0 + 12 h
+
+        // Never without a risk-off view; a new one gets its own recheck.
+        sim.Advance(T0 + TimeSpan.FromMinutes(705) - sim.Now);
+        Assert.Empty(sim.Tick(idle));
+        Assert.Equal(AgentRunPurpose.Recheck, sim.Single(RiskOff(TimeSpan.FromHours(12))).Purpose);
+
+        // Off with 0.
+        var off = new Sim(Options(o => (o.Analyst, o.RiskOffRecheckMinutes) = (true, 0)));
+        off.Finish(off.Single(idle), AgentRunOutcome.Done);
+        off.Advance(TimeSpan.FromMinutes(170));
+        Assert.Empty(off.Tick(RiskOff(TimeSpan.FromHours(3))));
+    }
+
+    [Fact]
     public void OwnerRunNow_ThatCouldNotBeQueued_DoesNotCount_AndAnAnalystThatIsOff_IsRefused()
     {
         var sim = new Sim(Options(o => o.Analyst = true));
@@ -528,6 +573,8 @@ public sealed class AgentRunPlannerTests
         Assert.Throws<InvalidOperationException>(() => Options(o => o.AnalystNowCooldownMinutes = 9).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.MaxAnalystNowPerDay = 0).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.MaxAnalystNowPerDay = 25).Validate(ToolServerAuth.Loopback, false));
+        Assert.Throws<InvalidOperationException>(() => Options(o => o.RiskOffRecheckMinutes = -1).Validate(ToolServerAuth.Loopback, false));
+        Assert.Throws<InvalidOperationException>(() => Options(o => o.RiskOffRecheckMinutes = 61).Validate(ToolServerAuth.Loopback, false));
         Assert.Throws<InvalidOperationException>(() => Options(o => o.RunTimeoutMinutes = AgentRunOptions.JobReplicaTimeoutMinutes).Validate(ToolServerAuth.Loopback, false));
     }
 }

@@ -144,6 +144,12 @@ public sealed class AgentRunOptions
     /// <summary>An analyst run that never used Claude is tried again after this long.</summary>
     public int AnalystRetryMinutes { get; set; } = 30;
 
+    /// <summary>
+    /// A risk-off view gets an extra analyst run this long before it ends (0: none), so the pause ends or is renewed on fresh
+    /// news rather than at the next slot. Long enough for the run to finish before the view ends.
+    /// </summary>
+    public int RiskOffRecheckMinutes { get; set; } = 20;
+
     /// <summary>The owner's Run now button: an analyst run at least this long after the last one of any kind.</summary>
     public int AnalystNowCooldownMinutes { get; set; } = 30;
 
@@ -178,6 +184,8 @@ public sealed class AgentRunOptions
 
     public TimeSpan AnalystNowCooldown => TimeSpan.FromMinutes(AnalystNowCooldownMinutes);
 
+    public TimeSpan RiskOffRecheck => TimeSpan.FromMinutes(RiskOffRecheckMinutes);
+
     /// <summary>Quick analyst retries never add up to more than one interval; then it waits for its normal slot.</summary>
     public int MaxAnalystRetries => AnalystIntervalHours * 60 / AnalystRetryMinutes;
 
@@ -197,6 +205,8 @@ public sealed class AgentRunOptions
         Positive(AnalystRetryMinutes, nameof(AnalystRetryMinutes));
         if (AnalystNowCooldownMinutes is < 10 or > 720)
             throw new InvalidOperationException("AgentRuns:AnalystNowCooldownMinutes must be between 10 and 720: each run spends the owner's Claude usage.");
+        if (RiskOffRecheckMinutes is < 0 or > 60)
+            throw new InvalidOperationException("AgentRuns:RiskOffRecheckMinutes must be between 0 (off) and 60.");
         if (MaxAnalystNowPerDay is < 1 or > 24)
             throw new InvalidOperationException("AgentRuns:MaxAnalystNowPerDay must be between 1 and 24: each run spends the owner's Claude usage.");
         Positive(ClaimTimeoutMinutes, nameof(ClaimTimeoutMinutes));

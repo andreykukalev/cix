@@ -375,7 +375,24 @@ public sealed class MarketAnalystTests
     }
 
     [Fact]
-    public void AnalystSpecV3_AddsRussian_WithTheSameTwoTools_AndIsTheConfiguredOne()
+    public void AnalystSpecV4_KeepsRiskOffShort_WithTheSameTwoTools_AndIsTheConfiguredOne()
+    {
+        var spec = FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", "analyst.v4.json"), "analyst", 4, TradingMode.Paper);
+
+        Assert.Equal(new[] { "get_analyst_brief", "record_market_view" }, spec.AllowedTools.Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal((6, 3), (spec.Parameters["validHours"].GetInt32(), spec.Parameters["riskOffHours"].GetInt32()));
+        Assert.Contains("validHours = riskOffHours", spec.Instructions, StringComparison.Ordinal);
+        Assert.Contains("record neutral and avoid those coins instead of risk-off", spec.Instructions, StringComparison.Ordinal);
+        Assert.Contains("summaryRu", spec.Instructions, StringComparison.Ordinal);
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (!File.Exists(Path.Combine(root.FullName, "Cix.slnx")))
+            root = root.Parent ?? throw new InvalidOperationException("Repository root not found.");
+        using var settings = JsonDocument.Parse(File.ReadAllText(Path.Combine(root.FullName, "src", "Cix.Engine", "appsettings.json")));
+        Assert.Equal(4, settings.RootElement.GetProperty("Analyst").GetProperty("Version").GetInt32());
+    }
+
+    [Fact]
+    public void AnalystSpecV3_AddsRussian_WithTheSameTwoTools()
     {
         var spec = FileStrategySpecStore.Load(Path.Combine(AppContext.BaseDirectory, "strategies", "analyst.v3.json"), "analyst", 3, TradingMode.Paper);
 
@@ -383,11 +400,6 @@ public sealed class MarketAnalystTests
         Assert.Equal(5, spec.Parameters["maxHighlights"].GetInt32());
         Assert.Contains("summaryRu", spec.Instructions, StringComparison.Ordinal);
         Assert.Contains("titleRu", spec.Instructions, StringComparison.Ordinal);
-        var root = new DirectoryInfo(AppContext.BaseDirectory);
-        while (!File.Exists(Path.Combine(root.FullName, "Cix.slnx")))
-            root = root.Parent ?? throw new InvalidOperationException("Repository root not found.");
-        using var settings = JsonDocument.Parse(File.ReadAllText(Path.Combine(root.FullName, "src", "Cix.Engine", "appsettings.json")));
-        Assert.Equal(3, settings.RootElement.GetProperty("Analyst").GetProperty("Version").GetInt32());
     }
 
     [Fact]

@@ -22,6 +22,9 @@ public static class AgentRunPurpose
 
     /// <summary>The owner asked for an analyst run now, from the dashboard.</summary>
     public const string Owner = "owner";
+
+    /// <summary>A risk-off view is about to end: the analyst looks again, so it ends or is renewed on fresh news.</summary>
+    public const string Recheck = "recheck";
 }
 
 /// <summary>A run the engine queued and hasn't heard the end of.</summary>
@@ -101,7 +104,8 @@ public sealed record AgentRunState
 /// <param name="SignalDriven">Whether the active strategy uses the scanner (scan_market).</param>
 /// <param name="SignalKey">The latest scan's signals, like <c>buy:SOL-EUR|sell:BTC-EUR:stop</c>.</param>
 /// <param name="RequestsKey">The owner's requests waiting for the trader, like <c>manual:&lt;id&gt;|...</c>.</param>
-public sealed record AgentRunInputs(bool Scanned, bool SignalDriven, string SignalKey, string RequestsKey);
+/// <param name="RiskOffUntil">When the current market view ends, if it is risk-off; null otherwise.</param>
+public sealed record AgentRunInputs(bool Scanned, bool SignalDriven, string SignalKey, string RequestsKey, DateTimeOffset? RiskOffUntil = null);
 
 /// <summary>A run given up on: never claimed (not run) or never reported (failed).</summary>
 public sealed record ExpiredRun(AgentRun Run, AgentRunOutcome Outcome);
@@ -140,7 +144,7 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
 
         s = PlanRequests(s, inputs, now, dispatch, notices);
         s = PlanTrader(s, inputs, now, dispatch, notices);
-        s = PlanAnalyst(s, now, dispatch);
+        s = PlanAnalyst(s, inputs, now, dispatch);
         return new AgentRunPlan(s, dispatch, expired, notices);
     }
 
@@ -311,13 +315,29 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
         return s with { Runs = s.Runs + 1, LastRun = now, InFlight = [.. s.InFlight, run] };
     }
 
-    private AgentRunState PlanAnalyst(AgentRunState s, DateTimeOffset now, List<AgentRun> dispatch)
+    private AgentRunState PlanAnalyst(AgentRunState s, AgentRunInputs inputs, DateTimeOffset now, List<AgentRun> dispatch)
     {
-        if (!options.Analyst || s.InFlightOf(AgentRunKind.Analyst) is not null || (s.NextAnalyst is { } next && now < next))
+        if (!options.Analyst || s.InFlightOf(AgentRunKind.Analyst) is not null)
             return s;
+        if (s.NextAnalyst is { } next && now < next)
+            return RecheckRiskOff(s, inputs, now, dispatch);
         var run = new AgentRun(AgentRun.NewId(AgentRunKind.Analyst, now), AgentRunKind.Analyst, AgentRunPurpose.Analyst, string.Empty, now);
         dispatch.Add(run);
         return s with { AnalystSlot = s.AnalystSlot ?? now, LastAnalystRun = now, InFlight = [.. s.InFlight, run] }; // the first run is at start
+    }
+
+    // A risk-off view gets one more look shortly before it ends, so a shock that has passed doesn't keep buys paused until the
+    // next slot, and one still going on is renewed without a gap. Once per view: any analyst run in that lead counts.
+    private AgentRunState RecheckRiskOff(AgentRunState s, AgentRunInputs inputs, DateTimeOffset now, List<AgentRun> dispatch)
+    {
+        if (options.RiskOffRecheck <= TimeSpan.Zero || inputs.RiskOffUntil is not { } until)
+            return s;
+        var from = until - options.RiskOffRecheck;
+        if (now < from || now >= until || (s.LastAnalystRun is { } last && last >= from))
+            return s;
+        var run = new AgentRun(AgentRun.NewId(AgentRunKind.Analyst, now), AgentRunKind.Analyst, AgentRunPurpose.Recheck, string.Empty, now);
+        dispatch.Add(run);
+        return s with { LastAnalystRun = now, InFlight = [.. s.InFlight, run] };
     }
 
     private AgentRunState Apply(AgentRunState s, AgentRun run, AgentRunOutcome outcome, DateTimeOffset now)
@@ -346,6 +366,9 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
                 return run.Purpose == AgentRunPurpose.Scheduled && s.NextScheduled is { } next && next <= now
                     ? s with { NextScheduled = now + options.Interval }
                     : s;
+
+            case AgentRunKind.Analyst when run.Purpose == AgentRunPurpose.Recheck:
+                return s; // extra to the schedule: not retried, and the cadence stays as it was
 
             case AgentRunKind.Analyst when run.Purpose == AgentRunPurpose.Owner:
                 // The owner's run: one that never started isn't retried and leaves the schedule alone (the owner can press
