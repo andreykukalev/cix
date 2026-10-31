@@ -435,6 +435,12 @@ public class DailyRunTests
         public Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken) => inner.GetCandidatesAsync(id, cancellationToken);
 
         public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
+
+        public Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken) => inner.GetOwnerStateAsync(cancellationToken);
+
+        public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);
+
+        public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken) => inner.GetPortfolioSubmissionAsync(sequence, cancellationToken);
     }
 
     /// <summary>Another run saves the portfolio between this run's read and its write.</summary>
@@ -474,5 +480,11 @@ public class DailyRunTests
         public Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken) => inner.GetCandidatesAsync(id, cancellationToken);
 
         public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
+
+        public Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken) => inner.GetOwnerStateAsync(cancellationToken);
+
+        public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);
+
+        public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken) => inner.GetPortfolioSubmissionAsync(sequence, cancellationToken);
     }
 }

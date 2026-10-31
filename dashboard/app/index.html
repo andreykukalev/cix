@@ -256,6 +256,20 @@
       </section>
       <p id="stocks-banner" class="banner" role="status" hidden></p>
 
+      <section class="panel" aria-labelledby="h-stocks-owner">
+        <div class="panel-head"><h2 id="h-stocks-owner">My portfolio</h2><span id="stocks-owner-meta" class="muted small"></span><button type="button" id="stocks-portfolio-open" class="ghost">Edit portfolio</button></div>
+        <p id="stocks-owner-banner" class="banner" role="status" hidden></p>
+        <div id="stocks-owner-body" hidden>
+          <h3>What to do in Revolut</h3>
+          <table id="stocks-owner-actions"><thead><tr><th>Action</th><th>Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th>Why</th></tr></thead><tbody></tbody></table>
+          <h3>My holdings</h3>
+          <table id="stocks-owner-holdings"><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Bought at</th><th class="num">Last close</th><th class="num">Change</th><th class="num">Stop</th><th class="num" title="How far the price can fall before the stop sells">To the stop</th><th>Opened</th></tr></thead><tbody></tbody></table>
+          <h3>Notes</h3>
+          <table id="stocks-owner-notes"><thead><tr><th>Stock</th><th>Why there is no action</th></tr></thead><tbody></tbody></table>
+        </div>
+        <p class="muted small">Your real account at Revolut's broker, in dollars: the advice is sized on the capital you give it, less what your holdings cost. After a buy or a sell, edit the portfolio; the next nightly run takes it into account. A stop the advice sets or raises is taken as placed.</p>
+      </section>
+
       <section class="panel" aria-labelledby="h-stocks-actions">
         <div class="panel-head"><h2 id="h-stocks-actions">What to do in Revolut</h2><span id="stocks-meta" class="muted small"></span></div>
         <table id="stocks-actions"><thead><tr><th>Action</th><th>Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th>Why</th></tr></thead><tbody></tbody></table>
@@ -368,6 +382,22 @@
       <div class="actions">
         <button type="button" id="run-analyst-cancel" class="ghost">Cancel</button>
         <button type="submit" id="run-analyst-send" class="primary">Run the analyst</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="stocks-portfolio-dialog" class="wide" aria-labelledby="stocks-portfolio-title">
+    <form id="stocks-portfolio-form" method="dialog">
+      <h2 id="stocks-portfolio-title">My portfolio</h2>
+      <p class="muted small">Everything you hold at Revolut's broker now, and the capital the advisor may plan with. Applied at the next nightly run, after the US close.</p>
+      <label class="field">Capital, USD <input type="text" name="capital" inputmode="decimal" autocomplete="off"></label>
+      <table id="stocks-portfolio-rows" class="form-table"><thead><tr><th>Ticker</th><th class="num">Shares</th><th class="num">Price paid, USD</th><th class="num">Stop, USD</th><th>Bought on</th><th></th></tr></thead><tbody></tbody></table>
+      <p><button type="button" id="stocks-portfolio-add" class="ghost">Add a holding</button></p>
+      <p class="muted small">A US ticker, like EPAM or EPAM.US. The price paid is the average per share; leave the stop empty if none is placed.</p>
+      <p id="stocks-portfolio-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="stocks-portfolio-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="stocks-portfolio-send" class="primary">Save portfolio</button>
       </div>
     </form>
   </dialog>

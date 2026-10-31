@@ -1,6 +1,7 @@
 // The stocks advisory in Azure (ADR-0023): its own resource group, apart from CIX's crypto groups, with
 //   - its own Cosmos DB account, serverless (billed per request: cents a month at one run a night), with the cix-stocks
-//     database the dashboard's Stocks tab reads;
+//     database the dashboard's Stocks tab reads, and where the dashboard's writer identity creates the owner's portfolio
+//     submissions (ADR-0026);
 //   - its own Key Vault (the EODHD key, set by the owner, never by a template), identity, logs and Container Apps
 //     environment;
 //   - the nightly job (stocks/src/Cix.Stocks.Host), once an image is given.
@@ -46,6 +47,9 @@ param budgetStartDate string = '2026-11-01'
 @description('Where budget alerts go (provision-stocks.ps1 passes your sign-in address). Empty: no budget.')
 param budgetContactEmail string = ''
 
+@description('The dashboard writer\'s service principal object ID (provision-stocks.ps1 finds it from the dashboard\'s settings), allowed to create the owner\'s portfolio submissions only. Empty: no grant, and the Stocks page can\'t send the portfolio.')
+param writerPrincipalId string = ''
+
 @description('Extra tags.')
 param tags object = {}
 
@@ -70,6 +74,7 @@ module platform 'modules/stocks-platform.bicep' = {
     monthlyBudget: monthlyBudget
     budgetStartDate: budgetStartDate
     budgetContactEmail: budgetContactEmail
+    writerPrincipalId: writerPrincipalId
   }
 }
 

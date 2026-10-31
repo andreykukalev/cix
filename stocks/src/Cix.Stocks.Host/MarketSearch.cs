@@ -68,8 +68,10 @@ public sealed class MarketSearch(
         if (advice is null)
             return null; // nothing advised yet: no session to search, no capital to size on
 
+        // Sized on the owner's real capital once there is one (ADR-0026), the paper portfolio's equity before.
+        var capital = advice.Owner?.Capital ?? advice.Equity;
         CandidatesDocument Page(string status, int listed = 0, int shortlisted = 0, IReadOnlyList<CandidateLine>? lines = null) =>
-            new(status == SearchStatus.Done ? advice.AsOf : null, now, status, advice.Regime, advice.BaseCurrency, advice.Equity, listed, shortlisted, lines ?? []);
+            new(status == SearchStatus.Done ? advice.AsOf : null, now, status, advice.Regime, advice.BaseCurrency, capital, listed, shortlisted, lines ?? []);
 
         if (!settings.Enabled)
         {
@@ -154,7 +156,8 @@ public sealed class MarketSearch(
         }
 
         var bySymbol = universe!.Stocks.DistinctBy(s => s.Symbol, StringComparer.Ordinal).ToDictionary(s => s.Symbol, StringComparer.Ordinal);
-        var exclude = config.Watchlist.Select(w => w.Symbol).Concat(advice.Holdings.Select(h => h.Symbol)).Append(config.Benchmark)
+        var exclude = config.Watchlist.Select(w => w.Symbol).Concat(advice.Holdings.Select(h => h.Symbol))
+            .Concat(advice.Owner?.Holdings.Select(h => h.Symbol) ?? []).Append(config.Benchmark)
             .ToHashSet(StringComparer.Ordinal);
         var shortlist = Screener.Shortlist(rows, bySymbol, advice.AsOf, config.AdvisorSettings.MaxSharePrice, exclude, settings);
 
@@ -189,7 +192,7 @@ public sealed class MarketSearch(
 
             var listed = bySymbol[row.Symbol];
             // Judged on the advised session only: a stock whose own bars lag would be judged on an older close.
-            if (Screener.Evaluate(row.Symbol, listed.Name, listed.Venue, row.MarketCap, bars, today, advice.Equity, config.AdvisorSettings, settings) is { } candidate
+            if (Screener.Evaluate(row.Symbol, listed.Name, listed.Venue, row.MarketCap, bars, today, capital, config.AdvisorSettings, settings) is { } candidate
                 && candidate.Day == advice.AsOf)
                 found.Add(candidate);
         }

@@ -75,7 +75,9 @@ public sealed record AdviceDocument(
     IReadOnlyList<NoteLine> Notes,
     IReadOnlyList<TradeLine> Trades,
     IReadOnlyList<SkippedLine> Skipped,
-    IReadOnlyList<WatchLine>? Watchlist = null);
+    IReadOnlyList<WatchLine>? Watchlist = null,
+    OwnerSection? Owner = null,
+    PortfolioRefusal? Refusal = null);
 
 /// <summary>
 /// One watched stock as the advisor sees it, for the Stocks page's watchlist: its last close, the closing high it must beat

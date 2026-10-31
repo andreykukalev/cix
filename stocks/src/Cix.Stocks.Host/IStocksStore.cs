@@ -54,7 +54,23 @@ public interface IStocksStore
 
     /// <summary>Replaces <c>candidates-latest</c>, which the dashboard reads.</summary>
     Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken);
+
+    /// <summary>The owner's real portfolio as the last run left it (ADR-0026); null before the first submission was applied.</summary>
+    Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken);
+
+    /// <summary>Saves the owner's portfolio if it is still at <paramref name="etag"/> (null: none saved yet).</summary>
+    /// <exception cref="StoreConflictException">Another run saved it first.</exception>
+    Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The owner's submission <c>portfolio-N</c> from the dashboard, in the <c>requests</c> container, which the job only
+    /// reads; null when there is none under that number, a read with no submission when it can't be read as one.
+    /// </summary>
+    Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken);
 }
+
+/// <summary>A submission document that exists: its value, or null when it isn't a submission (the run refuses it).</summary>
+public sealed record SubmissionRead(PortfolioSubmission? Submission);
 
 /// <summary>A store in memory, for tests and dry runs. Values go through JSON, as they would to the database.</summary>
 public sealed class InMemoryStocksStore : IStocksStore
@@ -162,4 +178,52 @@ public sealed class InMemoryStocksStore : IStocksStore
         _docs["advice/candidates-latest"] = JsonSerializer.Serialize(candidates, StocksJson.Options);
         return Task.CompletedTask;
     }
+
+    private int _ownerVersion;
+
+    public Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken)
+    {
+        lock (_stateLock)
+        {
+            var state = Read<OwnerState>("state/owner");
+            return Task.FromResult(state is null ? null : new Versioned<OwnerState>(state, _ownerVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
+    }
+
+    public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken)
+    {
+        lock (_stateLock)
+        {
+            var exists = _docs.ContainsKey("state/owner");
+            if (exists ? etag != _ownerVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) : etag is not null)
+                throw new StoreConflictException("The owner's portfolio changed since it was read.");
+            _docs["state/owner"] = JsonSerializer.Serialize(state, StocksJson.Options);
+            _ownerVersion++;
+            return Task.FromResult(_ownerVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+    }
+
+    public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken)
+    {
+        if (!_docs.TryGetValue(SubmissionKey(sequence), out var json))
+            return Task.FromResult<SubmissionRead?>(null);
+        try
+        {
+            return Task.FromResult<SubmissionRead?>(new(JsonSerializer.Deserialize<PortfolioSubmission>(json, StocksJson.Options)));
+        }
+        catch (JsonException)
+        {
+            return Task.FromResult<SubmissionRead?>(new(null));
+        }
+    }
+
+    /// <summary>Adds a submission as the dashboard would: as JSON text, its numbers as strings.</summary>
+    public void Submit(PortfolioSubmission submission) =>
+        _docs[SubmissionKey(submission.Sequence)] = JsonSerializer.Serialize(submission, StocksJson.Options);
+
+    /// <summary>Adds a submission's raw JSON, for documents the page could send malformed.</summary>
+    public void SubmitJson(int sequence, string json) => _docs[SubmissionKey(sequence)] = json;
+
+    private static string SubmissionKey(int sequence) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"requests/portfolio-{sequence}");
 }

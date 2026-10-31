@@ -1652,6 +1652,21 @@ Check 'provision-stocks.ps1 (-Yes) first run: deploys, stores the key unseen, bu
   foreach ($group in 'rg-cix-prod', 'rg-shared') { if ($r.Calls -match "deployment group create .*$group") { throw "touched $group" } }
 }
 
+Check 'provision-stocks.ps1 lets the dashboard''s own writer identity, and no other, create portfolio submissions' {
+  $writerApp = 'aaaaaaaa-1111-2222-3333-444444444444'
+  $settings = "{`"properties`":{`"COSMOS_ENDPOINT`":`"https://cosmos-shared-x.documents.azure.com:443/`",`"COSMOS_WRITER_CLIENT_ID`":`"$writerApp`",`"COSMOS_WRITER_SECRET`":`"$sample`"}}"
+  $r = Invoke-ProvisionStocks @{ 'rest' = $settings; 'ad sp show' = '{"id":"bbbbbbbb-1111-2222-3333-444444444444","displayName":"cix-dashboard-writer-dev"}' }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -notmatch "ad sp show --id $writerApp") { throw "the writer wasn't looked up by the dashboard's own setting: $($r.Calls)" }
+  if ($r.Output -notmatch 'Dashboard writer: cix-dashboard-writer-dev') { throw "no writer found: $($r.Output)" }
+  if ($r.Output.Contains($sample) -or $r.Calls.Contains($sample)) { throw "the dashboard's settings were printed" }
+
+  # Another identity under the setting (a name that isn't the writer's): no grant.
+  $r = Invoke-ProvisionStocks @{ 'rest' = $settings; 'ad sp show' = '{"id":"bbbbbbbb-1111-2222-3333-444444444444","displayName":"someone-else"}' }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Output -notmatch "doesn't name cix-dashboard-writer-dev" -or $r.Output -match 'Dashboard writer: ') { throw "granted another identity: $($r.Output)" }
+}
+
 Check 'provision-stocks.ps1 run again changes nothing that is in place: no build, no job deployment, no key, no settings' {
   $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
   $settings = "{`"properties`":{`"STOCKS_COSMOS_ENDPOINT`":`"$stocksEndpoint`",`"STOCKS_COSMOS_DATABASE`":`"cix-stocks`",`"STOCKS_COSMOS_READONLY_KEY`":`"$sample`"}}"

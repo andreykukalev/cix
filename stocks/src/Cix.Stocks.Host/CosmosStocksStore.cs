@@ -17,6 +17,10 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
     public const string StateContainer = "state";
     public const string TradesContainer = "trades";
     public const string BarsContainer = "bars";
+
+    /// <summary>The owner's portfolio submissions from the dashboard (ADR-0026): the dashboard's writer creates, the job reads.</summary>
+    public const string RequestsContainer = "requests";
+    private const string OwnerStateId = "owner";
     private const string StateId = "paper";
     private const string SearchStateId = "search";
     private const string UniverseId = "universe";
@@ -97,6 +101,28 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
 
     public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) =>
         Get(AdviceContainer).UpsertItemAsync(new Envelope<CandidatesDocument>("candidates-latest", candidates), new PartitionKey("candidates-latest"), cancellationToken: cancellationToken);
+
+    public async Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken) =>
+        await ReadAsync<OwnerState>(Get(StateContainer), OwnerStateId, cancellationToken).ConfigureAwait(false);
+
+    public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) =>
+        SaveVersionedAsync(OwnerStateId, state, etag, "Another run saved the owner's portfolio first: this run's result was dropped.", cancellationToken);
+
+    // Read as plain JSON first: a document the run can't read as a submission is refused, not a failed run.
+    public async Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken)
+    {
+        var id = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"portfolio-{sequence}");
+        if (await ReadAsync<System.Text.Json.JsonElement>(Get(RequestsContainer), id, cancellationToken).ConfigureAwait(false) is not { } read)
+            return null;
+        try
+        {
+            return new(System.Text.Json.JsonSerializer.Deserialize<PortfolioSubmission>(read.Value, StocksJson.Options));
+        }
+        catch (Exception e) when (e is System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return new(null); // not JSON of a submission, or no value at all
+        }
+    }
 
     private async Task<string> SaveVersionedAsync<T>(string id, T value, string? etag, string conflict, CancellationToken cancellationToken)
     {

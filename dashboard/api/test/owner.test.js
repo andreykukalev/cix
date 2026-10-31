@@ -32,7 +32,8 @@ CosmosReader.prototype.query = async function query(container, sql, options) {
 const stored = new Map(); // what the fake writer created, by id, for reads after a retry
 CosmosReader.prototype.readDocument = async function readDocument(container, id, pk) {
   reads.push({ database: this.database, container, id, pk });
-  if (container === 'requests' && stored.has(id)) return stored.get(id).day === pk ? stored.get(id) : null;
+  // CIX's requests are partitioned by day; the stocks database's (the owner's portfolio) by id.
+  if (container === 'requests' && stored.has(id)) return (stored.get(id).day ?? id) === (pk ?? id) ? stored.get(id) : null;
   // The looked-up request has its own id, so the request created in these tests never finds it as yesterday's.
   return id === 'a1b2c3d4-0000-4000-8000-000000000001' && pk === '2026-10-26' ? { id, type: 'manual-request', status: 'placed' } : null;
 };
@@ -40,6 +41,7 @@ Object.assign(process.env, {
   COSMOS_ENDPOINT: 'https://acct.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('k').toString('base64'), COSMOS_DATABASE: 'cix',
   COSMOS_LIVE_DATABASE: 'cix-live', DASHBOARD_OWNER_USER_ID: 'owner-user-id',
   COSMOS_WRITER_TENANT_ID: '11111111-2222-3333-4444-555555555555', COSMOS_WRITER_CLIENT_ID: 'app', COSMOS_WRITER_SECRET: ['x', 'y'].join(''),
+  STOCKS_COSMOS_ENDPOINT: 'https://stocks.documents.azure.com', STOCKS_COSMOS_READONLY_KEY: Buffer.from('s').toString('base64'),
 });
 require('../src/functions/owner.js');
 Module._load = originalLoad;
@@ -60,7 +62,7 @@ const BODY = JSON.stringify({ id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f', side: 
 test('the owner endpoints are registered under /api/owner', () => {
   assert.deepEqual(Object.values(routes).map((r) => r.route).sort(),
     ['owner/analyst-requests', 'owner/analyst-requests/{day}/{id}', 'owner/control-requests', 'owner/control-requests/{day}/{id}', 'owner/pair-requests', 'owner/pair-requests/{day}/{id}', 'owner/pairs',
-      'owner/requests', 'owner/requests/{day}/{id}', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
+      'owner/requests', 'owner/requests/{day}/{id}', 'owner/stocks-portfolio', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
 });
 
 test('the owner creates a request; the same click again is not a second request', async () => {
@@ -389,3 +391,66 @@ test("Run now: paper's goes to paper's database; live's needs the owner's confir
   const visitor = await routes['owner-analyst-requests'].handler(request({ method: 'POST', principal: VISITOR, body: JSON.stringify({ id: crypto.randomUUID() }) }), context);
   assert.equal(visitor.status, 403);
 });
+
+const PORTFOLIO = {
+  clientId: '0d9c2f4e-1a2b-4c3d-8e9f-0a1b2c3d4e5f', capital: '10000',
+  holdings: [{ symbol: 'epam.us', name: 'EPAM Systems', quantity: '10', averageCost: '170.50', stop: '', openedOn: '2026-10-20' }],
+};
+
+test('the owner sends the stocks portfolio to the stocks database; the same dialog again is not sent twice', async () => {
+  writes.length = 0;
+  writeDatabases.length = 0;
+  stored.clear();
+  const sent = await routes['owner-stocks-portfolio'].handler(request({ method: 'POST', body: JSON.stringify(PORTFOLIO) }), context);
+  assert.equal(sent.status, 201);
+  assert.deepEqual(writeDatabases, ['cix-stocks']);
+  const [doc] = writes;
+  assert.equal(doc.id, 'portfolio-1');
+  assert.equal(doc.value.sequence, 1);
+  assert.equal(doc.value.capital, '10000');
+  assert.deepEqual(doc.value.holdings, [{ symbol: 'EPAM.US', name: 'EPAM Systems', quantity: '10', averageCost: '170.50', stop: null, openedOn: '2026-10-20' }]);
+  assert.equal(sent.jsonBody.pending.sequence, 1);
+
+  const again = await routes['owner-stocks-portfolio'].handler(request({ method: 'POST', body: JSON.stringify(PORTFOLIO) }), context);
+  assert.equal(again.status, 200);
+  assert.equal(again.jsonBody.result, 'exists');
+  assert.equal(writes.length, 1);
+
+  // A new dialog: the next number.
+  const next = await routes['owner-stocks-portfolio'].handler(request({ method: 'POST', body: JSON.stringify({ ...PORTFOLIO, clientId: '1d9c2f4e-1a2b-4c3d-8e9f-0a1b2c3d4e5f', capital: '5000' }) }), context);
+  assert.equal(next.status, 201);
+  assert.equal(writes[1].id, 'portfolio-2');
+});
+
+test('a portfolio the host would refuse is refused before anything is written', async () => {
+  writes.length = 0;
+  for (const [body, says] of [
+    [{ ...PORTFOLIO, holdings: [{ symbol: 'SAP.XETRA', quantity: '1', averageCost: '1' }] }, 'US share'],
+    [{ ...PORTFOLIO, capital: '0' }, 'capital'],
+    [{ ...PORTFOLIO, holdings: [{ symbol: 'EPAM.US', quantity: '1', averageCost: '1' }, { symbol: 'EPAM.US', quantity: '2', averageCost: '1' }] }, 'twice'],
+    [{ ...PORTFOLIO, holdings: [{ symbol: 'EPAM.US', quantity: '1e3', averageCost: '1' }] }, 'number'],
+    [{ ...PORTFOLIO, holdings: [{ symbol: 'EPAM.US', quantity: '1', averageCost: '1', openedOn: '2999-01-01' }] }, 'after today'],
+  ]) {
+    const answer = await routes['owner-stocks-portfolio'].handler(request({ method: 'POST', body: JSON.stringify(body) }), context);
+    assert.equal(answer.status, 400, says);
+    assert.match(answer.jsonBody.error, new RegExp(says, 'i'));
+  }
+  const visitor = await routes['owner-stocks-portfolio'].handler(request({ method: 'POST', principal: VISITOR, body: JSON.stringify(PORTFOLIO) }), context);
+  assert.equal(visitor.status, 403);
+  const crossSite = await routes['owner-stocks-portfolio'].handler(request({ method: 'POST', headers: { 'x-cix-request': null }, body: JSON.stringify(PORTFOLIO) }), context);
+  assert.equal(crossSite.status, 400);
+  assert.equal(writes.length, 0);
+});
+
+test('without the writer\'s role on the stocks database the page is told to run the setup', async () => {
+  stored.clear();
+  writerAnswer = 403;
+  try {
+    const answer = await routes['owner-stocks-portfolio'].handler(request({ method: 'POST', body: JSON.stringify(PORTFOLIO) }), context);
+    assert.equal(answer.status, 503);
+    assert.match(answer.jsonBody.error, /provision-stocks\.ps1/);
+  } finally {
+    writerAnswer = null;
+  }
+});
+

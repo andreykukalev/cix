@@ -41,7 +41,16 @@ A symbol's currency comes from its exchange (`US` is USD, `XETRA`, `PA`, `AS` an
 4. The previous close's advice is carried out in the paper portfolio at the next session's open (sells, then stops, then buys), and the stops are checked on every session since, including a held symbol's sessions whose bars came a night late.
 5. The advisor runs on the latest close, sized on the portfolio's equity, within the owner's caps: `maxSharePrice` (dearer shares are noted `too-expensive`) and `maxThemeFraction` per watchlist theme (`theme-limit`; a holding the same advice sells still counts that night). A close already advised is never carried out twice.
 
-The run writes to its own database (`cix-stocks`, containers `advice`, `state`, `trades`, `bars`, all with partition key `/id`): the trades and the dated advice (`advice-YYYY-MM-DD`) once each, never changed; the paper portfolio with an ETag, so of two overlapping runs only one saves; then `advice-latest`, which a later run republishes from the dated advice if a failure left it behind. The page shows money to the cent; the portfolio keeps every digit. The EODHD key is read from `/run/secrets/eodhd-api-token` (Key Vault) and is never logged.
+The run writes to its own database (`cix-stocks`, containers `advice`, `state`, `trades`, `bars`, all with partition key `/id`; it only reads `requests`): the trades and the dated advice (`advice-YYYY-MM-DD`) once each, never changed; the paper portfolio with an ETag, so of two overlapping runs only one saves; then `advice-latest`, which a later run republishes from the dated advice if a failure left it behind. The page shows money to the cent; the portfolio keeps every digit. The EODHD key is read from `/run/secrets/eodhd-api-token` (Key Vault) and is never logged.
+
+### The owner's real portfolio
+
+The owner sends his real portfolio from the Stocks page (ADR-0026): the capital the advisor may plan with, in USD, and each holding at Revolut's broker (US shares only: ticker, shares, average price paid, the stop resting at the broker, the day bought). Each save is the whole portfolio, `portfolio-N` in the `requests` container, created by the dashboard's writer identity, which can do nothing else there.
+
+1. At the start of the run, the newest submission after the applied one is checked (`OwnerPortfolio.Apply`) and applied, or refused with a reason the page shows (`capital`, `holdings`, `symbol`, `figures`, `opened`, `sequence`, `unreadable`), and never read again. Without any, there is no owner section and the advice is the paper portfolio's alone.
+2. The owner's holdings are fetched first, after the benchmark; one outside the watchlist costs a call a night.
+3. The advisor runs again for the owner: capital from the submission, free cash the capital less what the holdings cost, the owner's holdings checked first. A stop it sets or raises is saved as placed; a sell is advised again each night until the owner sends the portfolio without it. A split moves the holding (note `adjusted`); a dividend changes nothing.
+4. The owner state is saved with an ETag (`state/owner`) after the paper portfolio. The watchlist's `held` and the market-wide search (sized on the owner's capital, his holdings left out) follow the owner's portfolio once there is one.
 
 ### Market-wide search
 
@@ -49,7 +58,7 @@ After the advice, the same run searches the whole US market for candidates (ADR-
 
 1. Its calls are reserved in its own state (`state/search`, `screener.maxCallsPerDay`, 300 by default) before any is made: the whole-market download (100 calls), the symbol list when older than `universeDays` (1 call, kept in `state/universe`), and each shortlisted stock's bars (1 call each at most, `shortlistSize` 40). Calls not made go back.
 2. The shortlist: common stocks on `venues`, priced from `minPrice` to the advisor's `maxSharePrice`, with `minMarketCap` and `minDollarVolume` (50-day average volume times the close), the provider's 50-day EMA over its 200-day and the close over that, within `maxBelowHigh` of the 250-day high; nearest the high first. The watchlist, the holdings and the benchmark are left out.
-3. Each shortlisted stock's own bars go through `Advisor.Entry`, the same rule as the watchlist: a breakout, or an uptrend within `nearHighFraction` of its prior high, is a candidate, sized by the advisor's rules on the paper portfolio's equity (`Advisor.InitialStop`, `Advisor.Sized`). Entry signals first, then momentum, at most `maxCandidates`.
+3. Each shortlisted stock's own bars go through `Advisor.Entry`, the same rule as the watchlist: a breakout, or an uptrend within `nearHighFraction` of its prior high, is a candidate, sized by the advisor's rules on the owner's capital (the paper portfolio's equity before he sends one) (`Advisor.InitialStop`, `Advisor.Sized`). Entry signals first, then momentum, at most `maxCandidates`.
 4. `candidates-YYYY-MM-DD` once, then `candidates-latest`, in the `advice` container. A session already searched isn't searched again (a page a failed run left behind is copied from the dated one); a download for an earlier session (`not-ready`) or a later one than the advice (`advice-behind`) is retried by the next run. Bars stop being fetched 12 minutes into the job, inside its 15-minute timeout, and what was found is listed.
 
 Locally, `EODHD_API_TOKEN=... dotnet run --project stocks/src/Cix.Stocks.Host -- --dry-run` keeps everything in memory and prints the advice. It still spends the key's calls, which the nightly run doesn't know about: with the free key, a dry run the same UTC day leaves the job short.
@@ -72,9 +81,14 @@ The host writes one document after each close: id `advice-latest` in the `advice
   "notes": [{ "symbol": "NVDA.US", "reason": "max-positions" }],
   "watchlist": [{ "symbol": "EPAM.US", "name": "EPAM Systems", "currency": "USD", "theme": "software", "lastClose": 168.2,
                   "lastDay": "2026-10-30", "breakoutHigh": 190.5, "trendAverage": 181.3,
-                  "status": "held | breakout | uptrend | below-trend | not-enough-data | no-data" }]
+                  "status": "held | breakout | uptrend | below-trend | not-enough-data | no-data" }],
+  "owner": { "capital": 10000, "cash": 7120, "invested": 2880, "value": 3105.5, "appliedSequence": 1, "updatedAt": "2026-10-30T18:00:00Z",
+             "actions": [ /* as above */ ], "holdings": [ /* as above */ ], "notes": [ /* as above */ ] },
+  "refusal": { "sequence": 2, "reason": "capital | holdings | symbol | figures | opened | sequence | unreadable" }
 }
 ```
+
+`owner` is the advice for the owner's real portfolio (absent until he sends one; `value` is the holdings at the last close, null when one has no bars) and `refusal` the newest submission the run refused (absent otherwise). The page sends `POST /api/owner/stocks-portfolio` with `{ clientId, capital, holdings: [{ symbol, name, quantity, averageCost, stop, openedOn }] }` (numbers as decimal strings) and the route creates `{ id: "portfolio-N", value: { sequence: N, submittedAt, capital, holdings, clientId } }`; `GET /api/stocks` adds `pending`, the newest submission the host hasn't seen yet.
 
 The route also reads `candidates-latest` (null until the first search):
 

@@ -8,7 +8,9 @@
   Reads infra/stocks/stocks.json and, after a preview and your confirmation of each step:
     1. deploys infra/stocks/main.bicep: the resource group, a serverless Cosmos DB account with the cix-stocks database, a
        Key Vault, the job's identity (allowed to pull from the CIX registry of registryEnvironment, and nothing else there),
-       logs, a Container Apps environment and a monthly budget;
+       logs, a Container Apps environment and a monthly budget; and lets the dashboard's writer identity (the one
+       setup-dashboard-requests.ps1 made, found from the dashboard's own settings) create the owner's portfolio
+       submissions in the stocks database's requests container, and nothing else there (ADR-0026);
     2. stores the EODHD key in that vault, from -EodhdKeyFile or a hidden prompt (never echoed, never on a command line);
        a key already there is kept unless you pass -ReplaceKey;
     3. builds the job's image from the commit you have checked out (git HEAD, not uncommitted changes) in that registry, as
@@ -94,6 +96,7 @@ function Invoke-StocksDeployment([string]$Digest, [switch]$WhatIf) {
     monthlyBudget             = $stocks.monthlyBudget
     budgetStartDate           = $stocks.budgetStartDate
     budgetContactEmail        = $me.Email
+    writerPrincipalId         = $writerPrincipal
     tags                      = $stocks.tags
   }
   $parameters = New-CixParametersFile -Values $values -Label 'stocks'
@@ -123,6 +126,25 @@ function Invoke-StocksDeployment([string]$Digest, [switch]$WhatIf) {
     }
   }
   finally { Remove-Item $parameters -ErrorAction SilentlyContinue }
+}
+
+# The dashboard's writer identity (ADR-0012), taken from the dashboard's own settings, so only the identity the dashboard signs
+# in as gets the grant. Empty when the dashboard or its writer isn't set up: the Stocks page then can't send the portfolio.
+function Find-WriterPrincipal {
+  $site = "$(Invoke-CixNative { & az staticwebapp show --name $appName --resource-group $dashboardEnv.resourceGroup --query id -o tsv --only-show-errors 2>$null })".Trim()
+  if ($LASTEXITCODE -ne 0 -or $site -notmatch '^/subscriptions/') { return '' }
+  $settings = Get-CixStaticSiteSettings -SiteId $site
+  try { $clientId = if ($settings.ContainsKey('COSMOS_WRITER_CLIENT_ID')) { "$($settings['COSMOS_WRITER_CLIENT_ID'])".Trim() } else { '' } }
+  finally { $settings = $null } # it holds secrets too
+  if ($clientId -notmatch '^[0-9a-fA-F-]{36}$') { return '' }
+  try { $sp = Invoke-CixAz @('ad', 'sp', 'show', '--id', $clientId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson }
+  catch { return '' }
+  $expected = "cix-dashboard-writer-$($dashboardEnv.environmentName)"
+  if (-not $sp -or "$($sp.displayName)" -ne $expected -or "$($sp.id)" -notmatch '^[0-9a-fA-F-]{36}$') {
+    Write-CixWarn "The dashboard's writer setting doesn't name $expected; no grant is made. Run setup-dashboard-requests.ps1 -Environment $($dashboardEnv.environmentName)."
+    return ''
+  }
+  return "$($sp.id)"
 }
 
 function New-PrivateFolder {
@@ -309,6 +331,9 @@ if ($me.Email -and -not $budgetExists -and $start -lt [datetime]::new($today.Yea
 }
 if (-not $me.Email) { Write-CixWarn 'Your sign-in has no mail address, so no budget alert is set up.' }
 $currentDigest = Get-JobImageDigest -JobId $jobId -Server $server
+$writerPrincipal = Find-WriterPrincipal
+if ($writerPrincipal) { Write-CixInfo "Dashboard writer: cix-dashboard-writer-$($dashboardEnv.environmentName), to be allowed to create portfolio submissions only." }
+else { Write-CixWarn "No dashboard writer found on $appName: the Stocks page can't send your portfolio. Run setup-dashboard-requests.ps1 -Environment $($dashboardEnv.environmentName), then this again." }
 if ($KeepImage -and -not $currentDigest) { throw '-KeepImage: there is no job yet to keep the image of; run this without it.' }
 
 Write-CixStep "Step 1 of 5: the stocks resources ($($stocks.resourceGroup))"

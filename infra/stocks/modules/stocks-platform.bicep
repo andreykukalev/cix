@@ -9,6 +9,8 @@
 //     indexed: every read is by id. The job signs in with its identity and has a data role on each container with only what it
 //     does there, never delete; trades are append-only. Account keys can't change databases or containers (metadata writes
 //     go through this template), and the dashboard reads with the read-only key;
+//   - the requests container, where the dashboard's writer identity (ADR-0012) creates the owner's portfolio submissions
+//     (ADR-0026) and may do nothing else, and which the job only reads;
 //   - a monthly budget on the group, when a contact address is given.
 
 import { stocksNames, stocksDatabase } from 'stocks-names.bicep'
@@ -25,6 +27,9 @@ param budgetStartDate string
 
 @description('Where budget alerts go. Empty: no budget.')
 param budgetContactEmail string
+
+@description('The dashboard writer\'s service principal object ID (cix-dashboard-writer-<environment>), allowed to create the owner\'s portfolio submissions in the requests container only. Empty: no grant.')
+param writerPrincipalId string = ''
 
 var names = stocksNames(namePrefix, resourceGroup().id)
 var keyVaultSecretsOfficer = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
@@ -123,6 +128,7 @@ var containers = [
   { name: 'state', role: 'writer', actions: [metadata, '${item}/read', '${item}/create', '${item}/replace'] } // the portfolio, with ETags
   { name: 'trades', role: 'appender', actions: [metadata, '${item}/create'] } // append-only: created once, never read back
   { name: 'bars', role: 'cache', actions: [metadata, '${item}/read', '${item}/upsert'] }
+  { name: 'requests', role: 'reader', actions: [metadata, '${item}/read'] } // the owner's portfolio submissions, from the dashboard
 ]
 
 resource stores 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = [
@@ -169,6 +175,33 @@ resource assignments 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2
     }
   }
 ]
+
+// The dashboard's writer identity may create items in the requests container: the owner's portfolio submissions, which the
+// job checks before applying them. It can't read, change or delete anything in this account.
+var requestsScope = '${cosmos.id}/dbs/${stocksDatabase}/colls/requests'
+
+resource writerRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-11-15' = if (!empty(writerPrincipalId)) {
+  parent: cosmos
+  name: guid(cosmos.id, stocksDatabase, 'cix-dashboard-writer', 'requests')
+  dependsOn: [assignments] // after the job's: one role change on the account at a time
+  properties: {
+    roleName: 'CIX dashboard stocks portfolio writer'
+    type: 'CustomRole'
+    assignableScopes: [requestsScope]
+    permissions: [{ dataActions: [metadata, '${item}/create'] }]
+  }
+}
+
+resource writerAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = if (!empty(writerPrincipalId)) {
+  parent: cosmos
+  dependsOn: [writerRole]
+  name: guid(cosmos.id, stocksDatabase, writerPrincipalId, 'requests')
+  properties: {
+    roleDefinitionId: writerRole.id
+    principalId: writerPrincipalId
+    scope: requestsScope
+  }
+}
 
 resource budget 'Microsoft.Consumption/budgets@2023-05-01' = if (!empty(budgetContactEmail)) {
   name: names.budget

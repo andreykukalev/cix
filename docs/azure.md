@@ -378,11 +378,11 @@ Settings are in `infra/stocks/stocks.json` (no secrets): the region, the schedul
 ```
 
 The script, with a preview and a confirmation for each step:
-1. deploys `infra/stocks/main.bicep`;
+1. deploys `infra/stocks/main.bicep`, and lets the dashboard's writer identity (`cix-dashboard-writer-<dashboardEnvironment>`, from `setup-dashboard-requests.ps1`, found by the dashboard's own `COSMOS_WRITER_CLIENT_ID` setting) create the owner's portfolio submissions in the stocks database's `requests` container, and nothing else there (ADR-0026); without that identity the Stocks page can't send the portfolio, and the script says so;
 2. stores the EODHD key in the vault from a hidden prompt (or `-EodhdKeyFile <path>`), never shown or put on a command line; a stored key is kept unless you pass `-ReplaceKey`;
 3. builds the image in the dev registry from the commit you have checked out (only the stocks sources, never uncommitted changes), tagged `cix-stocks:<commit>-<UTC time>` and locked, and deploys the digest the build itself reports, never one looked up by tag (CI's deploy identity can push to that registry); skipped when the job runs that commit's image already, and `-KeepImage` redeploys the image the job runs;
 4. deploys the job with that image, by digest;
-5. gives the dashboard the stocks database's read-only key (`STOCKS_COSMOS_*` settings, never printed); `provision.ps1` keeps them when it redeploys the dashboard. The read-only key reads every container of the stocks account (advice, the paper portfolio, its trades and cached bars), and nothing else: the account holds only stocks data. To rotate it, `az cosmosdb keys regenerate --key-kind primaryReadonly` on the account, then run the script again.
+5. gives the dashboard the stocks database's read-only key (`STOCKS_COSMOS_*` settings, never printed); `provision.ps1` keeps them when it redeploys the dashboard. The read-only key reads every container of the stocks account (advice, the paper and owner portfolios, the owner's submissions, the paper trades and cached bars), and nothing else: the account holds only stocks data. To rotate it, `az cosmosdb keys regenerate --key-kind primaryReadonly` on the account, then run the script again.
 
 Run it again after a change under `stocks/` merges (`git pull` first) to deploy the new image: CI builds and tests the stocks code but deploys nothing of it. The run's log is in the Azure portal: `caj-cix-stocks-daily`, Execution history. The vault's name comes from the group's: after deleting `rg-cix-stocks`, purge the deleted vault (or wait the 7 days it is kept) before running the script again.
 

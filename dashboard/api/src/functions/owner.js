@@ -15,6 +15,10 @@
 // The analyst's Run now (POST /api/owner/analyst-requests) is a request too, for either mode: the engine queues an analyst
 // run outside its schedule, or says why not.
 //
+// The owner's real stocks portfolio (ADR-0026) is a request too: POST /api/owner/stocks-portfolio creates the next
+// submission, portfolio-N, in the stocks database's own requests container, where the same writer identity holds a separate
+// create-only role (provision-stocks.ps1). The stocks host applies the newest on its next nightly run.
+//
 // The writes are POST /api/owner/requests and /api/owner/strategy-requests, with the writer identity whose Cosmos DB role can only create items in the
 // requests container. A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
 // cross-origin only after a preflight this API never answers.
@@ -31,7 +35,12 @@ const {
   controlRequestDocument, controlRequestItem, analystRequestDocument, analystRequestItem, ANALYST_REQUEST_TYPE,
 } = require('../controls');
 
+const { stocksReader, stocksView } = require('../stocks');
+const { portfolioValue, portfolioDocument, firstUnseen, pendingPortfolio } = require('../portfolio');
+
 const MAX_BODY = 4096;
+const MAX_PORTFOLIO_BODY = 16_384; // 50 holdings
+const STOCKS_NOT_SET_UP = "The Stocks page can't send your portfolio yet: run tools/azure/provision-stocks.ps1 again, after setup-dashboard-requests.ps1.";
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 const getReader = readerCache(); // each mode's database: live's engine writes to its own (ADR-0017); requests are paper's
 const writers = new Map();
@@ -78,11 +87,11 @@ async function ownerOnly(request, context, what, handler) {
 }
 
 /** The body of a request from the dashboard page, or a RequestError: JSON, small, with the page's own header. */
-async function readBody(request) {
+async function readBody(request, max = MAX_BODY) {
   if (request.headers.get('x-cix-request') !== '1') throw new RequestError('Send requests from the dashboard.');
   if (!/^application\/json(;|$)/i.test(request.headers.get('content-type') ?? '')) throw new RequestError('The request must be JSON.');
   const text = await request.text();
-  if (text.length > MAX_BODY) throw new RequestError('The request is too large.');
+  if (text.length > max) throw new RequestError('The request is too large.');
   try {
     return JSON.parse(text);
   } catch {
@@ -187,6 +196,58 @@ async function createAnalystRequest(request, context) {
     return sameRequest(stored, doc, [])
       ? respond(200, { result, request: analystRequestItem(stored) })
       : respond(409, { error: DIFFERENT });
+  });
+}
+
+let stocksRead;
+let stocksWriter;
+
+/** The stocks database's writer: the same identity, its create-only role there (provision-stocks.ps1); partitioned by id. */
+function getStocksWriter() {
+  if (!process.env.STOCKS_COSMOS_ENDPOINT) throw new WriterNotConfigured(STOCKS_NOT_SET_UP);
+  stocksWriter ??= new RequestWriter({
+    endpoint: process.env.STOCKS_COSMOS_ENDPOINT,
+    database: process.env.STOCKS_COSMOS_DATABASE || 'cix-stocks',
+    tenantId: process.env.COSMOS_WRITER_TENANT_ID,
+    clientId: process.env.COSMOS_WRITER_CLIENT_ID,
+    clientSecret: process.env.COSMOS_WRITER_SECRET,
+    partitionKeyOf: (doc) => doc.id,
+  });
+  return stocksWriter;
+}
+
+/**
+ * Sends the owner's whole portfolio as the next submission. The number is the first free one after what the host has seen;
+ * a send that loses the number to another takes the next. The same dialog sent again (its clientId) is answered with the
+ * submission already there, not sent twice.
+ */
+async function createStocksPortfolio(request, context) {
+  return ownerOnly(request, context, 'portfolio', async () => {
+    const now = Date.now();
+    const value = portfolioValue(await readBody(request, MAX_PORTFOLIO_BODY), now);
+    stocksRead ??= stocksReader();
+    if (!stocksRead) throw new WriterNotConfigured(STOCKS_NOT_SET_UP);
+    const latest = await stocksRead.readDocument('advice', 'advice-latest');
+    const advice = latest ? stocksView(latest.value ?? null, now) : null;
+    const { newest, next } = await pendingPortfolio(stocksRead, firstUnseen(advice));
+    if (value.clientId && newest?.clientId === value.clientId) return respond(200, { result: 'exists', pending: newest });
+    let n = next;
+    for (let attempt = 0; attempt < 3 && n !== null; attempt += 1, n += 1) {
+      let result;
+      try {
+        result = await getStocksWriter().create(portfolioDocument(value, n));
+      } catch (error) {
+        // The role is granted by provision-stocks.ps1: without it, say so.
+        if (error instanceof WriterError && error.status === 403) throw new WriterNotConfigured(STOCKS_NOT_SET_UP);
+        throw error;
+      }
+      if (result === 'created') {
+        context.log(`Owner stocks portfolio created: portfolio-${n}, ${value.holdings.length} holdings`);
+        return respond(201, { result, pending: { sequence: n, ...value } });
+      }
+    }
+    if (n === null) throw new RequestError('Too many portfolio changes are waiting for the next run: wait for it, then send again.');
+    throw new RequestError('Another change was sent at the same time: reload the page and send again.');
   });
 }
 
@@ -321,6 +382,13 @@ app.http('owner-analyst-request', {
   }),
 });
 
+app.http('owner-stocks-portfolio', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'owner/stocks-portfolio',
+  handler: createStocksPortfolio,
+});
+
 module.exports = {
-  createRequest, createStrategyRequest, createPairRequest, createControlRequest, createAnalystRequest, readBody, ownerOnly,
+  createRequest, createStrategyRequest, createPairRequest, createControlRequest, createAnalystRequest, createStocksPortfolio, readBody, ownerOnly,
 };
