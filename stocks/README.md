@@ -33,7 +33,7 @@ A symbol's currency comes from its exchange (`US` is USD, `XETRA`, `PA`, `AS` an
 
 ## Daily run
 
-`Cix.Stocks.Host` runs once a night after the US close (a Container Apps job; its infrastructure comes separately), and must start after `dataReadyUtc` (01:00 UTC the next day), when EODHD has the session's bars. It never places an order. The advice is for the paper portfolio, which carries every piece of advice out by itself: the owner, following the advice at the broker, holds the same, and the record shows what following it earns.
+`Cix.Stocks.Host` runs once a night after the US close (a Container Apps job in `rg-cix-stocks`, set up by `tools/azure/provision-stocks.ps1`, see `docs/azure.md`, "Stocks advisory"), and must start after `dataReadyUtc` (01:00 UTC the next day), when EODHD has the session's bars. It never places an order. The advice is for the paper portfolio, which carries every piece of advice out by itself: the owner, following the advice at the broker, holds the same, and the record shows what following it earns.
 
 1. The night's EODHD calls are reserved in the saved portfolio before any is made (`maxCallsPerRun`, and `maxCallsPerDay` across the UTC day: 18, as the free key allows 20), so a run overlapping another fails instead of spending them twice.
 2. Bars for the benchmark, then the held symbols, then the rest of `config/stocks.json`'s watchlist, the longest unfetched first. Bars fetched after the latest session's data was ready are reused from the database, so a repeated or manual run the same night spends no calls. A symbol over budget, or whose fetch fails or comes back empty, keeps its older bars with the note `call-budget` or `data-error`.
@@ -47,7 +47,7 @@ Locally, `EODHD_API_TOKEN=... dotnet run --project stocks/src/Cix.Stocks.Host --
 
 ## Dashboard
 
-The dashboard's Stocks tab reads `GET /api/stocks` (`dashboard/api/src/stocks.js`), read only and owner only. The route reads the stocks host's own Cosmos DB account, never the crypto engines' databases, through these app settings: `STOCKS_COSMOS_ENDPOINT`, `STOCKS_COSMOS_READONLY_KEY` and `STOCKS_COSMOS_DATABASE` (default `cix-stocks`). Without them, the tab says the advisor isn't connected. The infrastructure that sets them comes with the host.
+The dashboard's Stocks tab reads `GET /api/stocks` (`dashboard/api/src/stocks.js`), read only and owner only. The route reads the stocks host's own Cosmos DB account, never the crypto engines' databases, through these app settings: `STOCKS_COSMOS_ENDPOINT`, `STOCKS_COSMOS_READONLY_KEY` and `STOCKS_COSMOS_DATABASE` (default `cix-stocks`). Without them, the tab says the advisor isn't connected. `tools/azure/provision-stocks.ps1` sets them, and `provision.ps1` keeps them when it redeploys the dashboard.
 
 The host writes one document after each close: id `advice-latest` in the `advice` container, with partition key `/id`. Its `value` looks like this:
 

@@ -1584,6 +1584,97 @@ foreach ($case in @(
   }
 }
 
+Check 'the stocks templates: their own account, no deletes, pull-only on the registry, and the key from the vault' {
+  $dir = Join-CixPath $repo 'infra' 'stocks'
+  $all = (Get-ChildItem $dir -Recurse -Filter *.bicep | ForEach-Object { [IO.File]::ReadAllText($_.FullName) }) -join "`n"
+  $platform = [IO.File]::ReadAllText((Join-CixPath $dir 'modules' 'stocks-platform.bicep'))
+  $job = [IO.File]::ReadAllText((Join-CixPath $dir 'modules' 'stocks-job.bicep'))
+  $pull = [IO.File]::ReadAllText((Join-CixPath $dir 'modules' 'stocks-registry-pull.bicep'))
+  if ($all -match '(?i)items/delete|\{item\}/delete|items/\*|containers/\*|sqlDatabases/\*|databaseAccounts/\*') { throw 'a Cosmos DB role allows deletes or wildcards' }
+  if ($all -match '(?i)rg-shared|cosmos-shared|Read-CixSharedSettings') { throw 'the stocks templates reference the shared (crypto) Cosmos DB account' }
+  if ($platform -notmatch "EnableServerless") { throw 'the stocks account should be serverless' }
+  if ($platform -notmatch 'disableKeyBasedMetadataWriteAccess: true') { throw 'keys could change the database or containers' }
+  if ($job -match 'listKeys') { throw 'the job gets an account key; it signs in with its identity' }
+  if ($job -notmatch "keyVaultUrl: '\$\{vault\.properties\.vaultUri\}secrets/\$\{eodhdSecret\}'") { throw 'the EODHD key should come from the vault' }
+  if ($pull -notmatch "acrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'" -or ([regex]::Matches($pull, 'roleAssignments@')).Count -ne 1) { throw 'the registry grant should be AcrPull alone' }
+}
+
+# --- provision-stocks.ps1: the stocks advisory's own group, key, image and job (ADR-0023) -----------------------------------
+$stocksHead = "$(& git -C $repo rev-parse HEAD)".Trim()
+$stocksDigest = "sha256:$('a' * 64)"
+$stocksJobId = '/subscriptions/x/resourceGroups/rg-cix-stocks/providers/Microsoft.App/jobs/caj-cix-stocks-daily'
+$stocksEndpoint = 'https://cosmos-cix-stocks-x.documents.azure.com:443/'
+$fakeEodhdKey = @('fake', 'eodhd', '9c41') -join '.' # built at run time; must never appear in output or on a command line
+$newStocks = @{
+  'ad signed-in-user'       = '{"id":"11111111-2222-3333-4444-555555555555","mail":"owner@example.com"}'
+  'acr list'                = '[{"name":"crcixdevabc123","tags":{"cix-environment":"dev"}}]'
+  'resource list'           = '[]'
+  'consumption budget list' = '[]'
+  'deployment sub create'   = "{`"properties`":{`"outputs`":{`"cosmosAccountName`":{`"value`":`"cosmos-cix-stocks-x`"},`"cosmosEndpoint`":{`"value`":`"$stocksEndpoint`"},`"databaseName`":{`"value`":`"cix-stocks`"},`"keyVaultName`":{`"value`":`"kvcixstocksx`"},`"registryName`":{`"value`":`"crcixdevabc123`"},`"jobName`":{`"value`":`"caj-cix-stocks-daily`"}}}}"
+  'keyvault secret list'    = '[]'
+  'acr repository list'     = '[]'
+  'acr repository show'     = $stocksDigest
+  'resource show'           = $stocksJobId
+  'staticwebapp show'       = '/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev'
+  'rest'                    = '{"properties":{"COSMOS_ENDPOINT":"https://cosmos-shared-x.documents.azure.com:443/"}}'
+}
+function Invoke-ProvisionStocks([hashtable]$Overrides = @{}, [hashtable]$Arguments = @{ Yes = $true }) {
+  $extra = @{}; foreach ($k in $newStocks.Keys) { $extra[$k] = $newStocks[$k] }
+  foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
+  $keyDir = Join-Path ([IO.Path]::GetTempPath()) "cix-test-$([guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Path $keyDir | Out-Null
+  $keyFile = Join-Path $keyDir 'eodhd.txt'
+  [IO.File]::WriteAllText($keyFile, "$fakeEodhdKey`n")
+  try {
+    return Invoke-WithFakeAz @{ GroupExists = 'true'; Extra = $extra } {
+      & (Join-Path $azureTools 'provision-stocks.ps1') -EodhdKeyFile $keyFile @Arguments
+    }
+  }
+  finally { Remove-Item $keyDir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+Check 'provision-stocks.ps1 (-Yes) first run: deploys, stores the key unseen, builds the commit, deploys the job, gives the dashboard read access' {
+  $r = Invoke-ProvisionStocks
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 2) { throw "expected two deployments (resources, then the job): $($r.Calls)" }
+  if ($r.Calls -notmatch 'keyvault secret set --vault-name kvcixstocksx --name eodhd-api-token --file ') { throw "the key wasn't stored from a file: $($r.Calls)" }
+  if ($r.Output.Contains($fakeEodhdKey) -or $r.Calls.Contains($fakeEodhdKey)) { throw 'the EODHD key was printed or put on a command line' }
+  if ($r.Calls -notmatch "acr build --registry crcixdevabc123 --image cix-stocks:$stocksHead --file stocks/Dockerfile ") { throw "the commit's image wasn't built in the dev registry: $($r.Calls)" }
+  if ($r.Calls -notmatch 'cosmosdb keys list --resource-group rg-cix-stocks --name cosmos-cix-stocks-x --type read-only-keys') { throw 'the dashboard should get the read-only key of the stocks account only' }
+  if ($r.Calls -notmatch 'rest --method put --url https://management\.azure\.com/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft\.Web/staticSites/stapp-cix-dev/config/appsettings\S* --body @') { throw "the dashboard's settings weren't written from a file: $($r.Calls)" }
+  if ($r.Output.Contains($sample) -or $r.Calls.Contains($sample)) { throw 'the read-only key was printed or put on a command line' }
+  if ($r.Calls -match '/start\?') { throw 'started a run without -RunNow' }
+  foreach ($group in 'rg-cix-prod', 'rg-shared') { if ($r.Calls -match "deployment group create .*$group") { throw "touched $group" } }
+}
+
+Check 'provision-stocks.ps1 run again changes nothing that is in place: no build, no job deployment, no key, no settings' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $settings = "{`"properties`":{`"STOCKS_COSMOS_ENDPOINT`":`"$stocksEndpoint`",`"STOCKS_COSMOS_DATABASE`":`"cix-stocks`",`"STOCKS_COSMOS_READONLY_KEY`":`"$sample`"}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'            = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"}]"
+    'resource show'            = $job
+    'keyvault secret list'     = '[{"name":"eodhd-api-token"}]'
+    'acr repository list'      = '["cix-stocks"]'
+    'acr repository show-tags' = "[`"$stocksHead`"]"
+    'rest'                     = $settings
+  }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 1) { throw "expected the resources' deployment only: $($r.Calls)" }
+  foreach ($call in 'acr build', 'keyvault secret set', 'rest --method put') { if ($r.Calls.Contains($call)) { throw "called $call" } }
+}
+
+Check 'provision-stocks.ps1 -WhatIfOnly previews and changes nothing' {
+  $r = Invoke-ProvisionStocks @{} @{ WhatIfOnly = $true }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -notmatch 'deployment sub what-if') { throw 'no preview' }
+  foreach ($call in 'deployment sub create', 'keyvault secret set', 'acr build', 'rest --method put') { if ($r.Calls.Contains($call)) { throw "called $call" } }
+}
+
+Check 'provision.ps1 keeps the Stocks tab''s settings through a dashboard deployment' {
+  $script = [IO.File]::ReadAllText((Join-Path $azureTools 'provision.ps1'))
+  if ($script -notmatch [regex]::Escape("`$_ -like 'STOCKS_COSMOS_*'")) { throw 'STOCKS_COSMOS_* is not kept' }
+}
+
 # Without secrets/claude_token (it is never in the repo; skipped where a developer has one), a vault without claude-token stops.
 if (-not (Test-Path (Join-CixPath $repo 'secrets' 'claude_token'))) {
   Check 'provision.ps1 agents apps refuses: no claude-token in the vault and none to upload' {

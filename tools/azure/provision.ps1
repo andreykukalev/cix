@@ -278,7 +278,8 @@ if (-not $SkipInfrastructure) {
   }
   Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"
   # The deployment sets the dashboard's settings to exactly what infra/ says, which would drop the writer identity's and the
-  # confirmed owner (setup-dashboard-requests.ps1): keep them in memory and put them back. They are never printed.
+  # confirmed owner (setup-dashboard-requests.ps1) and the Stocks tab's read access (provision-stocks.ps1): keep them in memory
+  # and put them back. They are never printed.
   $writerSettings = @{}
   $siteId = $null
   if ($settings.deployDashboard) {
@@ -287,7 +288,7 @@ if (-not $SkipInfrastructure) {
       $siteId = "$found".Trim()
       try { $current = Get-CixStaticSiteSettings -SiteId $siteId }
       catch { throw "Couldn't read the dashboard's settings (to keep the writer identity's through the deployment); nothing was deployed." }
-      foreach ($k in @($current.Keys | Where-Object { $_ -like 'COSMOS_WRITER_*' -or $_ -eq 'DASHBOARD_OWNER_USER_ID' })) { $writerSettings[$k] = $current[$k] }
+      foreach ($k in @($current.Keys | Where-Object { $_ -like 'COSMOS_WRITER_*' -or $_ -like 'STOCKS_COSMOS_*' -or $_ -eq 'DASHBOARD_OWNER_USER_ID' })) { $writerSettings[$k] = $current[$k] }
     }
   }
   # Last, once every check has passed: from here on the old apps are gone.
