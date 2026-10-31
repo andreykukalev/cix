@@ -454,3 +454,79 @@ test('without the writer\'s role on the stocks database the page is told to run 
   }
 });
 
+
+const postPortfolio = (body, extra = {}) => routes['owner-stocks-portfolio'].handler(
+  request({ method: 'POST', body: typeof body === 'string' ? body : JSON.stringify(body), ...extra }), context);
+
+test('the same dialog sent again with other figures is refused, not dropped', async () => {
+  writes.length = 0;
+  stored.clear();
+  assert.equal((await postPortfolio(PORTFOLIO)).status, 201);
+  const edited = await postPortfolio({ ...PORTFOLIO, capital: '9000' });
+  assert.equal(edited.status, 409);
+  assert.match(edited.jsonBody.error, /other figures/);
+  assert.equal(edited.jsonBody.pending.capital, '10000');
+  assert.equal(writes.length, 1);
+});
+
+test('a portfolio body too large, or not JSON, is refused', async () => {
+  writes.length = 0;
+  stored.clear();
+  const large = await postPortfolio({ ...PORTFOLIO, pad: 'x'.repeat(16_384) });
+  assert.equal(large.status, 400);
+  assert.match(large.jsonBody.error, /too large/);
+  const form = await postPortfolio(JSON.stringify(PORTFOLIO), { headers: { 'content-type': 'text/plain' } });
+  assert.equal(form.status, 400);
+  assert.match(form.jsonBody.error, /JSON/);
+  assert.equal((await postPortfolio('{not json')).status, 400);
+  assert.equal(writes.length, 0);
+});
+
+test('a name loses what could disguise the ticker, and a day bought may be the owner\'s tomorrow-in-UTC', async () => {
+  writes.length = 0;
+  stored.clear();
+  const day = (n) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+  const holdings = [
+    { symbol: 'EPAM.US', name: 'EP‮AM​ Systems ', quantity: '1', averageCost: '1', openedOn: day(1) },
+    { symbol: 'NIO.US', name: '\u{1F600}'.repeat(85), quantity: '1', averageCost: '1' },
+  ];
+  assert.equal((await postPortfolio({ ...PORTFOLIO, holdings })).status, 201);
+  assert.deepEqual(writes[0].value.holdings.map((h) => h.name), ['EPAM Systems', '\u{1F600}'.repeat(80)]);
+  assert.equal(writes[0].value.holdings[0].openedOn, day(1));
+  const later = await postPortfolio({ ...PORTFOLIO, clientId: crypto.randomUUID(), holdings: [{ ...holdings[0], openedOn: day(2) }] });
+  assert.equal(later.status, 400);
+  assert.match(later.jsonBody.error, /after today/);
+});
+
+test('an unreadable waiting submission is passed over; the next number is used', async () => {
+  writes.length = 0;
+  stored.clear();
+  stored.set('portfolio-1', { id: 'portfolio-1', value: { sequence: 1, capital: 'oops' } });
+  const sent = await postPortfolio(PORTFOLIO);
+  assert.equal(sent.status, 201);
+  assert.equal(writes[0].id, 'portfolio-2');
+});
+
+test('with too many waiting, or the numbers taken as they are tried, the owner is told to wait or reload', async () => {
+  writes.length = 0;
+  stored.clear();
+  const waiting = (n) => ({ id: `portfolio-${n}`, value: { sequence: n, submittedAt: new Date().toISOString(), capital: '1000', holdings: [] } });
+  for (let n = 1; n <= 50; n += 1) stored.set(`portfolio-${n}`, waiting(n));
+  const full = await postPortfolio(PORTFOLIO);
+  assert.equal(full.status, 400);
+  assert.match(full.jsonBody.error, /Too many/);
+  assert.equal(writes.length, 0);
+
+  // Another tab takes each number just before this one tries it.
+  stored.clear();
+  const create = RequestWriter.prototype.create;
+  RequestWriter.prototype.create = async function taken(doc) { writes.push(doc); return 'exists'; };
+  try {
+    const raced = await postPortfolio(PORTFOLIO);
+    assert.equal(raced.status, 400);
+    assert.match(raced.jsonBody.error, /same time/);
+    assert.deepEqual(writes.map((d) => d.id), ['portfolio-1', 'portfolio-2', 'portfolio-3']);
+  } finally {
+    RequestWriter.prototype.create = create;
+  }
+});

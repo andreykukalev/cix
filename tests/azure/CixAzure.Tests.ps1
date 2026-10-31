@@ -1655,16 +1655,27 @@ Check 'provision-stocks.ps1 (-Yes) first run: deploys, stores the key unseen, bu
 Check 'provision-stocks.ps1 lets the dashboard''s own writer identity, and no other, create portfolio submissions' {
   $writerApp = 'aaaaaaaa-1111-2222-3333-444444444444'
   $settings = "{`"properties`":{`"COSMOS_ENDPOINT`":`"https://cosmos-shared-x.documents.azure.com:443/`",`"COSMOS_WRITER_CLIENT_ID`":`"$writerApp`",`"COSMOS_WRITER_SECRET`":`"$sample`"}}"
-  $r = Invoke-ProvisionStocks @{ 'rest' = $settings; 'ad sp show' = '{"id":"bbbbbbbb-1111-2222-3333-444444444444","displayName":"cix-dashboard-writer-dev"}' }
+  $sp = { param($name, $app) "{`"id`":`"bbbbbbbb-1111-2222-3333-444444444444`",`"appId`":`"$app`",`"displayName`":`"$name`"}" }
+  $r = Invoke-ProvisionStocks @{ 'rest' = $settings; 'ad sp show' = (& $sp 'cix-dashboard-writer-dev' $writerApp) }
   if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
   if ($r.Calls -notmatch "ad sp show --id $writerApp") { throw "the writer wasn't looked up by the dashboard's own setting: $($r.Calls)" }
   if ($r.Output -notmatch 'Dashboard writer: cix-dashboard-writer-dev') { throw "no writer found: $($r.Output)" }
   if ($r.Output.Contains($sample) -or $r.Calls.Contains($sample)) { throw "the dashboard's settings were printed" }
 
-  # Another identity under the setting (a name that isn't the writer's): no grant.
-  $r = Invoke-ProvisionStocks @{ 'rest' = $settings; 'ad sp show' = '{"id":"bbbbbbbb-1111-2222-3333-444444444444","displayName":"someone-else"}' }
-  if ($r.Error) { throw "failed: $($r.Error)" }
-  if ($r.Output -notmatch "doesn't name cix-dashboard-writer-dev" -or $r.Output -match 'Dashboard writer: ') { throw "granted another identity: $($r.Output)" }
+  # Another identity under the setting (a name that isn't the writer's, the name in other case, another app's): no grant.
+  foreach ($other in @(@('someone-else', $writerApp), @('CIX-dashboard-writer-dev', $writerApp), @('cix-dashboard-writer-dev', 'cccccccc-1111-2222-3333-444444444444'))) {
+    $r = Invoke-ProvisionStocks @{ 'rest' = $settings; 'ad sp show' = (& $sp $other[0] $other[1]) }
+    if ($r.Error) { throw "failed: $($r.Error)" }
+    if ($r.Output -notmatch "doesn't name cix-dashboard-writer-dev" -or $r.Output -match 'Dashboard writer: ') { throw "granted another identity ($($other -join ', ')): $($r.Output)" }
+  }
+
+  # No writer set up on the dashboard, or a setting that isn't a client id: no lookup, no grant, and the owner is told.
+  foreach ($missing in @('{"properties":{}}', '{"properties":{"COSMOS_WRITER_CLIENT_ID":"not-a-guid"}}')) {
+    $r = Invoke-ProvisionStocks @{ 'rest' = $missing }
+    if ($r.Error) { throw "failed: $($r.Error)" }
+    if ($r.Calls -match 'ad sp show') { throw "looked up a writer that isn't set: $($r.Calls)" }
+    if ($r.Output -notmatch 'No dashboard writer found' -or $r.Output -match 'Dashboard writer: ') { throw "no warning for a missing writer: $($r.Output)" }
+  }
 }
 
 Check 'provision-stocks.ps1 run again changes nothing that is in place: no build, no job deployment, no key, no settings' {

@@ -63,8 +63,10 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
         var notes = new List<AdvisorNote>();
 
         // 0. The owner's real portfolio (ADR-0026): as the last run left it, or the newest submission from the page since.
-        var ownerSaved = await store.GetOwnerStateAsync(cancellationToken).ConfigureAwait(false);
-        var (owner, refusal) = await OwnerAsync(ownerSaved?.Value, cancellationToken).ConfigureAwait(false);
+        // Their broker account is in USD, so only a USD advisor advises it.
+        var ownerSaved = UsdBase ? await store.GetOwnerStateAsync(cancellationToken).ConfigureAwait(false) : null;
+        var ownerRecord = UsdBase ? await OwnerAsync(ownerSaved?.Value, now, cancellationToken).ConfigureAwait(false) : null;
+        var owner = OwnerPortfolio.HasPortfolio(ownerRecord) ? ownerRecord : null;
 
         // 1. What needs fetching, and the reservation of its calls.
         var cutoff = config.DataCutoff(now);
@@ -227,7 +229,7 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
                 string.Equals(w.Currency, config.BaseCurrency, StringComparison.Ordinal) ? 1m : config.Fx.TryGetValue(w.Currency, out var fx) && fx > 0 ? fx : (decimal?)null,
                 config.AdvisorSettings)).ToList(),
             ownerSection,
-            refusal);
+            ownerRecord?.Refusal);
 
         // The terms the positions and the pending advice are now in, to recognise the next split or dividend.
         var nextTerms = new Dictionary<string, SymbolTerms>(StringComparer.Ordinal);
@@ -246,8 +248,8 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
         var next = new PaperState(
             config.BaseCurrency, state.Capital, portfolio.Cash, portfolio.Positions, asOf, pending, today, calls + spent, nextTerms);
         await store.SaveStateAsync(next, etag, cancellationToken).ConfigureAwait(false);
-        if (nextOwner is not null)
-            await store.SaveOwnerStateAsync(nextOwner, ownerSaved?.ETag, cancellationToken).ConfigureAwait(false);
+        if ((nextOwner ?? ownerRecord) is { } ownerNext && !ReferenceEquals(ownerNext, ownerSaved?.Value))
+            await store.SaveOwnerStateAsync(ownerNext, ownerSaved?.ETag, cancellationToken).ConfigureAwait(false);
         await store.SaveLatestAdviceAsync(document, cancellationToken).ConfigureAwait(false);
         return new(RunOutcome.Advised, asOf, spent, trades.Count, result.Actions.Count, document.Notes.Count);
     }
@@ -266,29 +268,35 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
             .Distinct(StringComparer.Ordinal).ToList();
 
     /// <summary>
-    /// The fetch order: the benchmark and the held symbols first (the owner's before the paper portfolio's), then the rest,
-    /// the longest unfetched first, so with too small a budget no symbol waits for ever.
+    /// The fetch order: the benchmark, then the held symbols (their stops need fresh bars), then the rest of the watchlist;
+    /// within each group the longest unfetched first, so with too small a budget no symbol waits for ever.
     /// </summary>
     private List<string> Order(PaperState state, OwnerState? owner, Dictionary<string, CachedBars?> cache)
     {
-        var first = Held(state, owner);
-        var rest = config.Watchlist.Select(w => w.Symbol).Where(s => !first.Contains(s))
+        var held = Held(state, owner);
+        IEnumerable<string> Oldest(IEnumerable<string> symbols) => symbols
             .Select((s, i) => (Symbol: s, Index: i))
             .OrderBy(x => cache[x.Symbol]?.FetchedAt ?? DateTimeOffset.MinValue)
             .ThenBy(x => x.Index)
             .Select(x => x.Symbol);
-        return first.Concat(rest).ToList();
+        return held.Take(1)
+            .Concat(Oldest(held.Skip(1)))
+            .Concat(Oldest(config.Watchlist.Select(w => w.Symbol).Where(s => !held.Contains(s))))
+            .ToList();
     }
 
+    private bool UsdBase => string.Equals(config.BaseCurrency, "USD", StringComparison.Ordinal);
+
     /// <summary>
-    /// The owner's portfolio for this run: the saved one, or the newest submission after it (one the page sent since). A
-    /// refused newest submission leaves the portfolio as it was, marked as seen so it isn't refused again every night.
+    /// The owner's record for this run: the saved one, or the newest submission since the last one seen (one the page sent
+    /// since), applied. A refused newest submission leaves the portfolio as it was (none, before the first is applied); the
+    /// refusal is kept, and shown, until a newer submission is applied, and it isn't looked at again.
     /// </summary>
-    private async Task<(OwnerState? Owner, PortfolioRefusal? Refusal)> OwnerAsync(OwnerState? saved, CancellationToken cancellationToken)
+    private async Task<OwnerState?> OwnerAsync(OwnerState? saved, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        var applied = saved?.AppliedSequence ?? 0;
+        var seen = OwnerPortfolio.Seen(saved);
         (int Sequence, SubmissionRead Read)? newest = null;
-        for (var n = applied + 1; n <= applied + OwnerPortfolio.MaxPending; n++)
+        for (var n = seen + 1; n <= seen + OwnerPortfolio.MaxPending; n++)
         {
             if (await store.GetPortfolioSubmissionAsync(n, cancellationToken).ConfigureAwait(false) is not { } read)
                 break;
@@ -296,13 +304,14 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
         }
 
         if (newest is not { } found)
-            return (saved, null);
+            return saved;
         var (state, error) = found.Read.Submission is not { } submission ? (null, "unreadable")
             : submission.Sequence != found.Sequence ? (null, "sequence")
             : OwnerPortfolio.Apply(submission);
         if (state is not null)
-            return (state, null);
-        return (saved is null ? null : saved with { AppliedSequence = found.Sequence }, new PortfolioRefusal(found.Sequence, error!));
+            return state;
+        var refusal = new PortfolioRefusal(found.Sequence, error!);
+        return (saved ?? new OwnerState(0m, [], 0, now)) with { SeenSequence = found.Sequence, Refusal = refusal };
     }
 
     /// <summary>

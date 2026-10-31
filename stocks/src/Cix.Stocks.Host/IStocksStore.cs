@@ -70,7 +70,51 @@ public interface IStocksStore
 }
 
 /// <summary>A submission document that exists: its value, or null when it isn't a submission (the run refuses it).</summary>
-public sealed record SubmissionRead(PortfolioSubmission? Submission);
+public sealed record SubmissionRead(PortfolioSubmission? Submission)
+{
+    private static readonly SubmissionRead Unreadable = new((PortfolioSubmission?)null);
+
+    /// <summary>A submission is a few kilobytes (the page sends at most 16 KB): anything far larger isn't one.</summary>
+    private const int MaxBytes = 64 * 1024;
+
+    /// <summary>
+    /// A stored document <c>{ id, value }</c> read as a submission. Anything else (too large, too deeply nested, not JSON, the
+    /// wrong shape) is a read with no submission, never an exception: the dashboard's writer could create any document, and
+    /// one bad document must not stop the nightly run.
+    /// </summary>
+    public static SubmissionRead Parse(ReadOnlySpan<byte> document)
+    {
+        if (document.Length > MaxBytes)
+            return Unreadable;
+        try
+        {
+            using var json = JsonDocument.Parse(document.ToArray(), new JsonDocumentOptions { MaxDepth = 8 });
+            if (json.RootElement.ValueKind != JsonValueKind.Object || !json.RootElement.TryGetProperty("value", out var value))
+                return Unreadable;
+            return new SubmissionRead(value.Deserialize<PortfolioSubmission>(StocksJson.Options));
+        }
+        catch (Exception e) when (e is JsonException or InvalidOperationException or NotSupportedException or ArgumentException or FormatException)
+        {
+            return Unreadable;
+        }
+    }
+
+    /// <summary>A stream's document, read up to just past the limit.</summary>
+    public static async Task<SubmissionRead> ParseAsync(Stream document, CancellationToken cancellationToken)
+    {
+        using var buffer = new MemoryStream();
+        var chunk = new byte[16 * 1024];
+        int read;
+        while ((read = await document.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            buffer.Write(chunk, 0, read);
+            if (buffer.Length > MaxBytes)
+                return Unreadable;
+        }
+
+        return Parse(buffer.GetBuffer().AsSpan(0, (int)buffer.Length));
+    }
+}
 
 /// <summary>A store in memory, for tests and dry runs. Values go through JSON, as they would to the database.</summary>
 public sealed class InMemoryStocksStore : IStocksStore
@@ -203,26 +247,17 @@ public sealed class InMemoryStocksStore : IStocksStore
         }
     }
 
-    public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken)
-    {
-        if (!_docs.TryGetValue(SubmissionKey(sequence), out var json))
-            return Task.FromResult<SubmissionRead?>(null);
-        try
-        {
-            return Task.FromResult<SubmissionRead?>(new(JsonSerializer.Deserialize<PortfolioSubmission>(json, StocksJson.Options)));
-        }
-        catch (JsonException)
-        {
-            return Task.FromResult<SubmissionRead?>(new(null));
-        }
-    }
+    public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken) =>
+        Task.FromResult(_docs.TryGetValue(SubmissionKey(sequence), out var json) ? SubmissionRead.Parse(System.Text.Encoding.UTF8.GetBytes(json)) : null);
 
-    /// <summary>Adds a submission as the dashboard would: as JSON text, its numbers as strings.</summary>
+    /// <summary>Adds a submission as the dashboard would: <c>{ id, value }</c>, its numbers as strings.</summary>
     public void Submit(PortfolioSubmission submission) =>
-        _docs[SubmissionKey(submission.Sequence)] = JsonSerializer.Serialize(submission, StocksJson.Options);
+        _docs[SubmissionKey(submission.Sequence)] = JsonSerializer.Serialize(
+            new Envelope<PortfolioSubmission>(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"portfolio-{submission.Sequence}"), submission), StocksJson.Options);
 
-    /// <summary>Adds a submission's raw JSON, for documents the page could send malformed.</summary>
-    public void SubmitJson(int sequence, string json) => _docs[SubmissionKey(sequence)] = json;
+    /// <summary>Adds a submission whose value is this raw JSON, for documents the page could send malformed.</summary>
+    public void SubmitJson(int sequence, string valueJson) =>
+        _docs[SubmissionKey(sequence)] = string.Create(System.Globalization.CultureInfo.InvariantCulture, $$"""{"id":"portfolio-{{sequence}}","value":{{valueJson}}}""");
 
     private static string SubmissionKey(int sequence) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"requests/portfolio-{sequence}");

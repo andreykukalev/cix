@@ -6,7 +6,7 @@
 // reads nothing of crypto's then), and renderStocks when the language changes. Uses app.js's helpers (el, rows, td,
 // tile, amount, price, getJson, t) and its state, so it loads after app.js. Every value is written as text, never as HTML.
 
-const stocks = { answer: null, error: null, sent: null, clientId: null };
+const stocks = { answer: null, error: null, sent: null, clientId: null, failed: null };
 
 async function refreshStocks() {
   if (state.signedOut) return;
@@ -313,18 +313,41 @@ function openPortfolio() {
   document.getElementById('stocks-portfolio-error').hidden = true;
   document.getElementById('stocks-portfolio-send').disabled = false;
   stocks.clientId = crypto.randomUUID(); // a retry of this dialog is the same submission
+  stocks.failed = null;
   document.getElementById('stocks-portfolio-dialog').showModal();
+}
+
+/**
+ * A number as typed, as the page sends it: spaces group thousands (10 000), and so do commas before a point (10,000.50); a
+ * single comma otherwise is the decimal point (12,5). A comma before exactly three digits and no point (10,000 or 1,234)
+ * could be either, so it is refused (null) rather than guessed.
+ */
+function typedNumber(v) {
+  const s = v.trim().replace(/[\s\u00a0\u202f]/g, '');
+  if (/^\d{1,3}(,\d{3})+\.\d+$/.test(s)) return s.replaceAll(',', '');
+  if (/^\d{1,3}(,\d{3})+$/.test(s)) return null;
+  if (/^\d+,\d+$/.test(s)) return s.replace(',', '.');
+  return s;
+}
+
+/** Today in the owner's time zone, as the date picker gives it. */
+function localToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /** The dialog's portfolio, checked as the host checks it; { error } names the first problem. */
 function portfolioBody() {
   const form = document.getElementById('stocks-portfolio-form');
-  const capital = form.elements.capital.value.trim().replace(',', '.');
+  const ambiguous = (v) => t('{value} could be thousands or a decimal: write it as 10000 or 10.5.', { value: v.trim() });
+  const capitalTyped = form.elements.capital.value;
+  const capital = typedNumber(capitalTyped);
+  if (capital === null) return { error: ambiguous(capitalTyped) };
   if (!DECIMAL.test(capital) || !(Number(capital) > 0) || Number(capital) > 1_000_000) return { error: t('Enter the capital: a number above 0, up to 1 000 000.') };
   const holdings = [];
   const seen = new Set();
   for (const row of document.querySelectorAll('#stocks-portfolio-rows tbody tr')) {
-    const get = (name) => row.querySelector(`[name="${name}"]`).value.trim().replace(',', '.');
+    const get = (name) => row.querySelector(`[name="${name}"]`).value.trim();
     const raw = get('symbol').toUpperCase();
     if (!raw && !get('quantity') && !get('averageCost')) continue; // an empty row
     const symbol = raw.includes('.') ? raw : `${raw}.US`;
@@ -332,16 +355,18 @@ function portfolioBody() {
     if (seen.has(symbol)) return { error: t('{symbol} is listed twice.', { symbol }) };
     seen.add(symbol);
     const figure = (name) => {
-      const v = get(name);
-      return DECIMAL.test(v) && Number(v) > 0 && Number(v) <= 1_000_000 ? v : null;
+      const v = typedNumber(get(name));
+      return v !== null && DECIMAL.test(v) && Number(v) > 0 && Number(v) <= 1_000_000 ? v : null;
     };
+    const unclear = ['quantity', 'averageCost', 'stop'].find((name) => get(name) && typedNumber(get(name)) === null);
+    if (unclear) return { error: `${symbol}: ${ambiguous(get(unclear))}` };
     const quantity = figure('quantity');
     const averageCost = figure('averageCost');
     if (!quantity || !averageCost) return { error: t('{symbol}: enter the shares and the price paid per share, as numbers above 0.', { symbol }) };
     const stop = get('stop') ? figure('stop') : null;
     if (get('stop') && !stop) return { error: t('{symbol}: the stop must be a number above 0, or empty.', { symbol }) };
     const openedOn = get('openedOn') || null;
-    if (openedOn && openedOn > new Date().toISOString().slice(0, 10)) return { error: t('{symbol}: the day bought cannot be after today.', { symbol }) };
+    if (openedOn && openedOn > localToday()) return { error: t('{symbol}: the day bought cannot be after today.', { symbol }) };
     holdings.push({ symbol, name: row.dataset.name ?? null, quantity, averageCost, stop, openedOn });
   }
   if (holdings.length > 50) return { error: t('At most 50 holdings.') };
@@ -353,6 +378,10 @@ async function sendPortfolio(event) {
   const error = document.getElementById('stocks-portfolio-error');
   const { body, error: problem } = portfolioBody();
   if (problem) { error.textContent = problem; error.hidden = false; return; }
+  // Changed since a send that failed (and may have been saved all the same): a new submission, which then stands as the newest.
+  const figures = JSON.stringify({ capital: body.capital, holdings: body.holdings });
+  if (stocks.failed !== null && stocks.failed !== figures) body.clientId = stocks.clientId = crypto.randomUUID();
+  stocks.failed = null;
   const send = document.getElementById('stocks-portfolio-send');
   const label = send.textContent;
   send.disabled = true;
@@ -370,6 +399,7 @@ async function sendPortfolio(event) {
     renderStocks();
   } catch (e) {
     if (e instanceof SignedOut) { signedOut(); return; }
+    stocks.failed = figures;
     error.textContent = t('Not saved: {error} Save again to retry: it stays one change.', { error: e.message });
     error.hidden = false;
     send.disabled = false;

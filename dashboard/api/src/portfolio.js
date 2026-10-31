@@ -30,12 +30,12 @@ function decimal(v, what, max, optional = false) {
   return s.replace(/^0+(?=\d)/, ''); // no leading zeros: 007 is 7
 }
 
-/** A real calendar day, not after today (UTC). */
-function day(v, today) {
+/** A real calendar day, not after the owner's today: the page sends their local date, so up to a day ahead of UTC's. */
+function day(v, latest) {
   if (v === undefined || v === null || v === '') return null;
   const s = typeof v === 'string' ? v.trim() : '';
   if (!DAY.test(s) || !Number.isFinite(Date.parse(s)) || new Date(s).toISOString().slice(0, 10) !== s) throw new PortfolioError('The day bought must be a date.');
-  if (s > today) throw new PortfolioError('The day bought cannot be after today.');
+  if (s > latest) throw new PortfolioError('The day bought cannot be after today.');
   return s;
 }
 
@@ -45,7 +45,7 @@ function name(v) {
   return s ? [...s].slice(0, 80).join('') : null;
 }
 
-function holding(h, today) {
+function holding(h, latest) {
   if (!h || typeof h !== 'object') throw new PortfolioError('Each holding needs a ticker, the shares and the price paid.');
   const symbol = typeof h.symbol === 'string' ? h.symbol.trim().toUpperCase() : '';
   if (!SYMBOL.test(symbol)) throw new PortfolioError('A ticker must be a US share, like EPAM.US.');
@@ -55,18 +55,18 @@ function holding(h, today) {
     quantity: decimal(h.quantity, `The shares of ${symbol}`, MAX_FIGURE),
     averageCost: decimal(h.averageCost, `The price paid for ${symbol}`, MAX_FIGURE),
     stop: decimal(h.stop, `The stop of ${symbol}`, MAX_FIGURE, true),
-    openedOn: day(h.openedOn, today),
+    openedOn: day(h.openedOn, latest),
   };
 }
 
 /** The submission the page sent, checked: capital and holdings, each symbol once. Throws PortfolioError. */
 function portfolioValue(body, now) {
   const b = body && typeof body === 'object' ? body : {};
-  const today = new Date(now).toISOString().slice(0, 10);
+  const latest = new Date(new Date(now).getTime() + 86_400_000).toISOString().slice(0, 10); // as OwnerPortfolio.Apply
   const capital = decimal(b.capital, 'The capital', MAX_CAPITAL);
   if (!Array.isArray(b.holdings)) throw new PortfolioError('The holdings must be a list.');
   if (b.holdings.length > MAX_HOLDINGS) throw new PortfolioError(`At most ${MAX_HOLDINGS} holdings.`);
-  const holdings = b.holdings.map((h) => holding(h, today));
+  const holdings = b.holdings.map((h) => holding(h, latest));
   const seen = new Set();
   for (const h of holdings) {
     if (seen.has(h.symbol)) throw new PortfolioError(`${h.symbol} is listed twice.`);
@@ -79,6 +79,12 @@ function portfolioValue(body, now) {
 /** The document for submission number n. */
 function portfolioDocument(value, n) {
   return { id: `portfolio-${n}`, value: { sequence: n, ...value } };
+}
+
+/** Whether two submissions hold the same capital and holdings. */
+function samePortfolio(a, b) {
+  const key = (p) => JSON.stringify({ capital: p.capital, holdings: p.holdings });
+  return key(a) === key(b);
 }
 
 /** The first submission number the host hasn't seen: after the applied one and after a refused one. */
@@ -113,4 +119,4 @@ async function pendingPortfolio(reader, start) {
   return { newest, next: null };
 }
 
-module.exports = { portfolioValue, portfolioDocument, firstUnseen, pendingPortfolio, submissionView, PortfolioError, CONTAINER, MAX_PENDING, MAX_HOLDINGS };
+module.exports = { portfolioValue, portfolioDocument, firstUnseen, samePortfolio, pendingPortfolio, submissionView, PortfolioError, CONTAINER, MAX_PENDING, MAX_HOLDINGS };

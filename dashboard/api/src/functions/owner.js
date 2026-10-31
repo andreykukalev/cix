@@ -36,10 +36,11 @@ const {
 } = require('../controls');
 
 const { stocksReader, stocksView } = require('../stocks');
-const { portfolioValue, portfolioDocument, firstUnseen, pendingPortfolio } = require('../portfolio');
+const { portfolioValue, portfolioDocument, firstUnseen, pendingPortfolio, samePortfolio, MAX_PENDING } = require('../portfolio');
 
 const MAX_BODY = 4096;
 const MAX_PORTFOLIO_BODY = 16_384; // 50 holdings
+const SENT_DIFFERENT = 'This portfolio was already saved with other figures; it stands as first saved. Close the dialog and open it again to save the new ones.';
 const STOCKS_NOT_SET_UP = "The Stocks page can't send your portfolio yet: run tools/azure/provision-stocks.ps1 again, after setup-dashboard-requests.ps1.";
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 const getReader = readerCache(); // each mode's database: live's engine writes to its own (ADR-0017); requests are paper's
@@ -230,9 +231,15 @@ async function createStocksPortfolio(request, context) {
     const latest = await stocksRead.readDocument('advice', 'advice-latest');
     const advice = latest ? stocksView(latest.value ?? null, now) : null;
     const { newest, next } = await pendingPortfolio(stocksRead, firstUnseen(advice));
-    if (value.clientId && newest?.clientId === value.clientId) return respond(200, { result: 'exists', pending: newest });
+    if (value.clientId && newest?.clientId === value.clientId) {
+      // The same dialog again: the first send stands. Edited figures since would be dropped silently, so say so.
+      return samePortfolio(newest, value)
+        ? respond(200, { result: 'exists', pending: newest })
+        : respond(409, { error: SENT_DIFFERENT, pending: newest });
+    }
     let n = next;
-    for (let attempt = 0; attempt < 3 && n !== null; attempt += 1, n += 1) {
+    const last = next === null ? null : Math.min(next + 2, firstUnseen(advice) + MAX_PENDING - 1); // the host looks no further
+    for (; n !== null && n <= last; n += 1) {
       let result;
       try {
         result = await getStocksWriter().create(portfolioDocument(value, n));
@@ -246,7 +253,7 @@ async function createStocksPortfolio(request, context) {
         return respond(201, { result, pending: { sequence: n, ...value } });
       }
     }
-    if (n === null) throw new RequestError('Too many portfolio changes are waiting for the next run: wait for it, then send again.');
+    if (next === null || n > firstUnseen(advice) + MAX_PENDING - 1) throw new RequestError('Too many portfolio changes are waiting for the next run: wait for it, then send again.');
     throw new RequestError('Another change was sent at the same time: reload the page and send again.');
   });
 }

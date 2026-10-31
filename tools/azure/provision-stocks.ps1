@@ -140,7 +140,7 @@ function Find-WriterPrincipal {
   try { $sp = Invoke-CixAz @('ad', 'sp', 'show', '--id', $clientId, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson }
   catch { return '' }
   $expected = "cix-dashboard-writer-$($dashboardEnv.environmentName)"
-  if (-not $sp -or "$($sp.displayName)" -ne $expected -or "$($sp.id)" -notmatch '^[0-9a-fA-F-]{36}$') {
+  if (-not $sp -or "$($sp.displayName)" -cne $expected -or "$($sp.appId)" -ne $clientId -or "$($sp.id)" -notmatch '^[0-9a-fA-F-]{36}$') {
     Write-CixWarn "The dashboard's writer setting doesn't name $expected; no grant is made. Run setup-dashboard-requests.ps1 -Environment $($dashboardEnv.environmentName)."
     return ''
   }
@@ -333,7 +333,7 @@ if (-not $me.Email) { Write-CixWarn 'Your sign-in has no mail address, so no bud
 $currentDigest = Get-JobImageDigest -JobId $jobId -Server $server
 $writerPrincipal = Find-WriterPrincipal
 if ($writerPrincipal) { Write-CixInfo "Dashboard writer: cix-dashboard-writer-$($dashboardEnv.environmentName), to be allowed to create portfolio submissions only." }
-else { Write-CixWarn "No dashboard writer found on $appName: the Stocks page can't send your portfolio. Run setup-dashboard-requests.ps1 -Environment $($dashboardEnv.environmentName), then this again." }
+else { Write-CixWarn "No dashboard writer found on ${appName}: the Stocks page can't send your portfolio. Run setup-dashboard-requests.ps1 -Environment $($dashboardEnv.environmentName), then this again." }
 if ($KeepImage -and -not $currentDigest) { throw '-KeepImage: there is no job yet to keep the image of; run this without it.' }
 
 Write-CixStep "Step 1 of 5: the stocks resources ($($stocks.resourceGroup))"

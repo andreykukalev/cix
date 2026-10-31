@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Cix.Stocks.Host;
 
 /// <summary>One holding as the owner enters it on the Stocks page.</summary>
@@ -22,13 +24,13 @@ public sealed record OwnerHolding(string Symbol, string? Name, decimal Quantity,
 /// The owner's real portfolio between runs: the capital they give the advisor, what they hold, the submission it came from,
 /// and the terms of each holding's bars (to recognise a split). The advisor assumes a stop it advised was placed.
 /// </summary>
+/// <param name="AppliedSequence">The submission the portfolio comes from; 0 when none was ever applied, and the record only
+/// remembers the refused ones.</param>
+/// <param name="SeenSequence">The newest submission the run looked at, applied or refused: the next run looks after it.</param>
+/// <param name="Refusal">The newest submission, when it was refused: shown until a newer one is applied.</param>
 public sealed record OwnerState(
     decimal Capital, IReadOnlyList<OwnerHolding> Holdings, int AppliedSequence, DateTimeOffset UpdatedAt,
-    IReadOnlyDictionary<string, SymbolTerms>? Terms = null)
-{
-    /// <summary>What the holdings cost: the capital minus this is what new positions may use.</summary>
-    public decimal Invested => Holdings.Sum(h => h.Quantity * h.AverageCost);
-}
+    IReadOnlyDictionary<string, SymbolTerms>? Terms = null, int SeenSequence = 0, PortfolioRefusal? Refusal = null);
 
 /// <summary>The advice for the owner's real portfolio, on the Stocks page beside the paper record.</summary>
 /// <param name="Cash">What new positions may use: the capital minus what the holdings cost, never under zero.</param>
@@ -48,8 +50,17 @@ public static class OwnerPortfolio
 {
     public const int MaxHoldings = 50;
 
-    /// <summary>The most submissions one run looks through after the applied one: the newest of them is applied.</summary>
-    public const int MaxPending = 50;
+    /// <summary>The newest submission a run looked at: the next looks after it.</summary>
+    public static int Seen(OwnerState? state) => state is null ? 0 : Math.Max(state.SeenSequence, state.AppliedSequence);
+
+    /// <summary>Whether the record holds a portfolio to advise, not only the refusals before the first.</summary>
+    public static bool HasPortfolio(OwnerState? state) => state is { AppliedSequence: > 0 };
+
+    /// <summary>
+    /// The most submissions one run looks through after the last one seen: the newest of them is applied. More than the page
+    /// lets wait (50 after the last one seen), so the two never disagree on which is the newest.
+    /// </summary>
+    public const int MaxPending = 1000;
     public const decimal MaxCapital = 1_000_000m;
     private const decimal MaxPrice = 1_000_000m;
     private const decimal MaxQuantity = 1_000_000m;
@@ -57,7 +68,8 @@ public static class OwnerPortfolio
     /// <summary>
     /// The state a submission makes, or null with the reason it was refused (the page checks too; this is the last word):
     /// <c>capital</c>, <c>holdings</c> (too many), <c>symbol</c> (not a US share, or twice), <c>figures</c> (a quantity, cost
-    /// or stop not positive or out of bounds), <c>opened</c> (bought after the submission). The owner's broker account is in
+    /// or stop not positive or out of bounds), <c>opened</c> (bought after the submission's day, give or take a day for the
+    /// owner's time zone: the page sends their local date). The owner's broker account is in
     /// USD, so US shares only. The submission's figures are the broker's as they are now, so the terms of the bars (to
     /// recognise a split) start again from this run's bars.
     /// </summary>
@@ -79,27 +91,34 @@ public static class OwnerPortfolio
                 return (null, "symbol");
             if (h.Quantity is <= 0 or > MaxQuantity || h.AverageCost is <= 0 or > MaxPrice || h.Stop is <= 0 or > MaxPrice)
                 return (null, "figures");
-            if (h.OpenedOn is { } opened && opened > day)
+            if (h.OpenedOn is { } opened && opened > day.AddDays(1))
                 return (null, "opened");
             holdings.Add(new(h.Symbol, Name(h.Name), h.Quantity, h.AverageCost, h.Stop, h.OpenedOn ?? day));
         }
 
-        return (new OwnerState(submission.Capital, holdings, submission.Sequence, submission.SubmittedAt), null);
+        return (new OwnerState(submission.Capital, holdings, submission.Sequence, submission.SubmittedAt, SeenSequence: submission.Sequence), null);
     }
 
-    /// <summary>A name to show, or null: at most 80 characters, none that could disguise the ticker beside it.</summary>
+    /// <summary>
+    /// A name to show, or null: without the characters that could disguise the ticker beside it (control, format such as bidi
+    /// overrides and zero-width, line and paragraph separators), at most 80 characters (code points, as the page counts).
+    /// </summary>
     private static string? Name(string? name)
     {
-        var trimmed = name?.Trim();
-        if (trimmed is not { Length: > 0 and <= 80 })
+        if (name is null)
             return null;
-        foreach (var c in trimmed)
+        var kept = new StringBuilder();
+        foreach (var rune in name.EnumerateRunes())
         {
-            if (char.GetUnicodeCategory(c) is System.Globalization.UnicodeCategory.Control or System.Globalization.UnicodeCategory.Format
-                or System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator)
-                return null;
+            if (Rune.GetUnicodeCategory(rune) is not (System.Globalization.UnicodeCategory.Control or System.Globalization.UnicodeCategory.Format
+                or System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator))
+                kept.Append(rune.ToString());
         }
 
-        return trimmed;
+        var trimmed = kept.ToString().Trim();
+        if (trimmed.Length == 0)
+            return null;
+        var runes = trimmed.EnumerateRunes().Take(80).Select(r => r.ToString());
+        return string.Concat(runes).TrimEnd();
     }
 }

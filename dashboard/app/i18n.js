@@ -1001,6 +1001,13 @@
     '{symbol}: the stop must be a number above 0, or empty.': '{symbol}: стоп должен быть числом больше 0 или пустым.',
     '{symbol}: the day bought cannot be after today.': '{symbol}: день покупки не может быть позже сегодняшнего.',
     'At most 50 holdings.': 'Не больше 50 позиций.',
+    'This portfolio was already saved with other figures; it stands as first saved. Close the dialog and open it again to save the new ones.':
+      'Этот портфель уже сохранён с другими цифрами и остаётся таким, как сохранён в первый раз. Закройте окно и откройте снова, чтобы сохранить новые.',
+    "The Stocks page can't send your portfolio yet: run tools/azure/provision-stocks.ps1 again, after setup-dashboard-requests.ps1.":
+      'Страница пока не может отправить портфель: запустите tools/azure/provision-stocks.ps1 ещё раз, после setup-dashboard-requests.ps1.',
+    'Too many portfolio changes are waiting for the next run: wait for it, then send again.': 'Слишком много изменений портфеля ждут следующего запуска: дождитесь его и отправьте снова.',
+    'Another change was sent at the same time: reload the page and send again.': 'Одновременно отправлено другое изменение: обновите страницу и отправьте снова.',
+    '{value} could be thousands or a decimal: write it as 10000 or 10.5.': '{value}: это тысячи или дробь? Напишите 10000 или 10.5.',
     'Not saved: {error} Save again to retry: it stays one change.': 'Не сохранено: {error} Сохраните снова: это останется одним изменением.',
     'Candidates from the whole market': 'Кандидаты со всего рынка',
     'Shares by the advisor\'s rules: the loss to the stop, plus a gap, is 1% of the capital, and at most 20% of it goes into one stock':

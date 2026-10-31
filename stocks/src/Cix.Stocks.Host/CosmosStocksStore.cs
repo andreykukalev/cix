@@ -108,20 +108,15 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
     public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) =>
         SaveVersionedAsync(OwnerStateId, state, etag, "Another run saved the owner's portfolio first: this run's result was dropped.", cancellationToken);
 
-    // Read as plain JSON first: a document the run can't read as a submission is refused, not a failed run.
+    // Read as a stream and parsed here, bounded: a document the run can't read as a submission is refused, not a failed run.
     public async Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken)
     {
         var id = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"portfolio-{sequence}");
-        if (await ReadAsync<System.Text.Json.JsonElement>(Get(RequestsContainer), id, cancellationToken).ConfigureAwait(false) is not { } read)
+        using var response = await Get(RequestsContainer).ReadItemStreamAsync(id, new PartitionKey(id), cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
-        try
-        {
-            return new(System.Text.Json.JsonSerializer.Deserialize<PortfolioSubmission>(read.Value, StocksJson.Options));
-        }
-        catch (Exception e) when (e is System.Text.Json.JsonException or InvalidOperationException)
-        {
-            return new(null); // not JSON of a submission, or no value at all
-        }
+        response.EnsureSuccessStatusCode();
+        return await SubmissionRead.ParseAsync(response.Content, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<string> SaveVersionedAsync<T>(string id, T value, string? etag, string conflict, CancellationToken cancellationToken)
