@@ -480,7 +480,7 @@ async function refresh() {
     banner(t("Couldn't load the dashboard: {error}", { error: error.message }), true);
     document.getElementById('updated').textContent = t('Update failed');
   }
-  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests(), state.tab === 'strategy' ? refreshStrategies() : null, state.tab === 'coins' ? refreshPairs() : null]);
+  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests(), state.tab === 'strategy' ? refreshStrategies() : null, state.tab === 'coins' ? refreshPairs() : null, state.tab === 'stocks' ? refreshStocks() : null]);
 }
 
 /** Everything /api/dashboard feeds, in the page's language: after each refresh, and again when the language changes. */
@@ -1321,7 +1321,7 @@ function renderJournal() {
 
 // --- Tabs ---------------------------------------------------------------------------------------------------------------------
 
-const TABS = ['overview', 'coins', 'strategy', 'activity', 'requests', 'journal'];
+const TABS = ['overview', 'coins', 'strategy', 'activity', 'requests', 'journal', 'stocks'];
 
 /** Shows one tab's panel. The tab is kept in the address (#coins), so a reload or a bookmark opens the same one. */
 function setTab(tab, { focus = false } = {}) {
@@ -1338,6 +1338,7 @@ function setTab(tab, { focus = false } = {}) {
   state.tab = name;
   if (changed && name === 'strategy') refreshStrategies(); // read only while the tab is open
   if (changed && name === 'coins') refreshPairs();
+  if (changed && name === 'stocks') refreshStocks(); // stocks.js: the stocks advisor's advice, read only (ADR-0023)
   if (changed && name === 'activity' && state.activity) renderVolume(state.activity); // drawn hidden, it had no width
 }
 
@@ -1408,6 +1409,7 @@ function setLang(lang) {
   if (state.strategiesError) renderStrategiesError();
   if (state.pairs) renderPairs(state.pairs);
   if (state.pairsError) renderPairsError();
+  if (stocks.answer || stocks.error) renderStocks();
   if (state.signedOut) signedOut();
   else if (state.loadError) {
     banner(t("Couldn't load the dashboard: {error}", { error: state.loadError }), true);

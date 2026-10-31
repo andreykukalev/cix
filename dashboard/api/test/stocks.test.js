@@ -1,0 +1,128 @@
+'use strict';
+// The Stocks tab's read (ADR-0023): the advisor's document checked field by field, and the route owner only, reading the
+// stocks database alone.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const Module = require('node:module');
+
+const routes = {};
+const originalLoad = Module._load;
+Module._load = function load(request, ...rest) {
+  if (request === '@azure/functions') return { app: { http: (name, options) => { routes[name] = options; } } };
+  return originalLoad.call(this, request, ...rest);
+};
+const { CosmosReader } = require('../src/cosmos');
+const reads = [];
+let latest = null;
+CosmosReader.prototype.readDocument = async function readDocument(container, id) {
+  reads.push({ endpoint: this.base, database: this.database, container, id });
+  return latest;
+};
+Object.assign(process.env, {
+  COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('crypto').toString('base64'), COSMOS_DATABASE: 'cix',
+  STOCKS_COSMOS_ENDPOINT: 'https://stocks.documents.azure.com', STOCKS_COSMOS_READONLY_KEY: Buffer.from('stocks').toString('base64'),
+  DASHBOARD_OWNER_USER_ID: 'owner-user-id',
+});
+require('../src/functions/stocks.js');
+Module._load = originalLoad;
+const { stocksView, loadStocks, stocksReader } = require('../src/stocks');
+
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
+const OWNER = b64({ identityProvider: 'aad', userId: 'owner-user-id', userRoles: ['authenticated', 'owner'] });
+const VISITOR = b64({ identityProvider: 'aad', userId: 'visitor', userRoles: ['authenticated'] });
+const context = { log() {}, error() {} };
+const NOW = Date.parse('2026-10-30T22:00:00Z');
+
+function request(principal) {
+  const headers = { 'x-ms-client-principal': principal };
+  return { method: 'GET', params: {}, query: new URLSearchParams(), headers: { get: (n) => headers[n.toLowerCase()] ?? null } };
+}
+
+const ADVICE = {
+  asOf: '2026-10-30', generatedAt: '2026-10-30T21:30:00Z', regime: 'risk-on', benchmark: 'CSPX.LSE', baseCurrency: 'EUR',
+  capital: 10000, cash: 6200.5, equity: 10150.25,
+  actions: [
+    { kind: 'buy', symbol: 'MSFT.US', name: 'Microsoft', currency: 'USD', quantity: 4, referencePrice: 512.3, stop: 480.1, reason: 'breakout' },
+    { kind: 'raise-stop', symbol: 'SAP.XETRA', currency: 'EUR', quantity: 10, referencePrice: 250, stop: 231.5, reason: 'trail' },
+    { kind: 'sell', symbol: 'ASML.AS', currency: 'EUR', quantity: 2, referencePrice: 610, reason: 'trend-broken' },
+  ],
+  holdings: [
+    { symbol: 'SAP.XETRA', name: 'SAP', currency: 'EUR', quantity: 10, averageCost: 200, lastClose: 250, stop: 225, openedOn: '2026-08-01' },
+  ],
+  notes: [{ symbol: 'NVDA.US', reason: 'max-positions' }],
+};
+
+test('the route is registered under /api/stocks', () => {
+  assert.equal(routes.stocks.route, 'stocks');
+  assert.deepEqual(routes.stocks.methods, ['GET']);
+});
+
+test('only the confirmed owner gets an answer; nobody else reaches the database', async () => {
+  reads.length = 0;
+  const answer = await routes.stocks.handler(request(VISITOR), context);
+  assert.equal(answer.status, 403);
+  assert.deepEqual(reads, []);
+});
+
+test('the owner reads the stocks database alone, never the crypto one', async () => {
+  reads.length = 0;
+  latest = { id: 'advice-latest', value: ADVICE };
+  const answer = await routes.stocks.handler(request(OWNER), context);
+  assert.equal(answer.status, 200);
+  assert.equal(answer.headers['cache-control'], 'no-store');
+  assert.deepEqual(reads, [{ endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'advice-latest' }]);
+  assert.equal(answer.jsonBody.configured, true);
+  assert.equal(answer.jsonBody.advice.actions.length, 3);
+});
+
+test('without the stocks settings the tab is not set up, and nothing is read', async () => {
+  assert.equal(stocksReader({ COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: 'a2V5' }), null);
+  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+});
+
+test('no document yet is set up but without advice', async () => {
+  const reader = { readDocument: async () => null };
+  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+});
+
+test('actions come protective first, in the advisor\'s order within a kind', () => {
+  const view = stocksView({ ...ADVICE, actions: [...ADVICE.actions, { kind: 'set-stop', symbol: 'AAPL.US', quantity: 3, stop: 200, reason: 'no-stop' }] }, NOW);
+  assert.deepEqual(view.actions.map((a) => `${a.kind} ${a.symbol}`), ['sell ASML.AS', 'set-stop AAPL.US', 'raise-stop SAP.XETRA', 'buy MSFT.US']);
+});
+
+test('holdings carry the change since entry and the room to the stop', () => {
+  const [h] = stocksView(ADVICE, NOW).holdings;
+  assert.equal(h.change, 0.25); // 250 / 200 − 1
+  assert.equal(h.toStop, 0.1); // (250 − 225) / 250
+  assert.equal(h.openedOn, '2026-08-01');
+});
+
+test('advice ages by calendar day and goes stale after four', () => {
+  assert.deepEqual([stocksView(ADVICE, NOW).ageDays, stocksView(ADVICE, NOW).stale], [0, false]);
+  const friday = { ...ADVICE, asOf: '2026-10-30' };
+  assert.equal(stocksView(friday, Date.parse('2026-11-02T22:00:00Z')).stale, false); // Monday evening, before the host ran
+  assert.equal(stocksView(friday, Date.parse('2026-11-04T08:00:00Z')).stale, true);
+  assert.equal(stocksView({ ...ADVICE, asOf: 'yesterday' }, NOW).stale, true);
+});
+
+test('a malformed document gives gaps, not errors or markup', () => {
+  const view = stocksView({
+    regime: 'moon', asOf: 42, capital: -5, cash: 'lots', benchmark: '../etc',
+    actions: [
+      { kind: 'short', symbol: 'MSFT.US' }, { kind: 'buy', symbol: 'msft' }, { kind: 'buy', symbol: 'MSFT.US', quantity: 'four', reason: '<b>x</b>' }, null,
+    ],
+    holdings: [{ symbol: 'SAP.XETRA', quantity: 0 }, { symbol: 'SAP.XETRA', quantity: 1, lastClose: 10, stop: 12 }],
+    notes: [{ symbol: 'NVDA.US', reason: 'Max Positions' }, { symbol: 'NVDA.US', reason: 'max-positions' }],
+  }, NOW);
+  assert.equal(view.regime, 'unknown');
+  assert.equal(view.asOf, null);
+  assert.equal(view.stale, true);
+  assert.equal(view.capital, null);
+  assert.equal(view.cash, null);
+  assert.equal(view.benchmark, null);
+  assert.deepEqual(view.actions, [{ kind: 'buy', symbol: 'MSFT.US', name: null, currency: null, quantity: null, referencePrice: null, stop: null, reason: null }]);
+  assert.equal(view.holdings.length, 1);
+  assert.equal(view.holdings[0].toStop, -0.2); // already under its stop
+  assert.deepEqual(view.notes, [{ symbol: 'NVDA.US', reason: 'max-positions' }]);
+  assert.deepEqual(stocksView(null, NOW).actions, []);
+});

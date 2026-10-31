@@ -10,6 +10,7 @@
   <script src="i18n.js" defer></script>
   <script src="view.js" defer></script>
   <script src="app.js" defer></script>
+  <script src="stocks.js" defer></script>
 </head>
 <body>
   <header class="top">
@@ -43,6 +44,7 @@
       <button type="button" role="tab" id="tab-activity" data-tab="activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">▤</span>Activity</button>
       <button type="button" role="tab" id="tab-requests" data-tab="requests" aria-controls="panel-requests" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">⇄</span>Requests</button>
       <button type="button" role="tab" id="tab-journal" data-tab="journal" aria-controls="panel-journal" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">☰</span>Journal</button>
+      <button type="button" role="tab" id="tab-stocks" data-tab="stocks" aria-controls="panel-stocks" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">▲</span>Stocks</button>
     </nav>
   </header>
 
@@ -241,6 +243,33 @@
       <section class="panel" aria-labelledby="h-state">
         <div class="panel-head"><h2 id="h-state">State documents</h2><span class="muted small">what the engine knows now (see docs/persistence.md)</span></div>
         <table id="state"><thead><tr><th>Document</th><th>Type</th><th>Updated</th><th>What it is</th></tr></thead><tbody></tbody></table>
+      </section>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" id="panel-stocks" aria-labelledby="tab-stocks" hidden>
+      <section class="health" aria-label="Stocks advisor">
+        <div class="tiles">
+          <article class="tile" id="tile-stocks-market"><h2>Stock market</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-stocks-advice"><h2>Advice for</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-stocks-account"><h2>Stocks portfolio</h2><p class="value">–</p><p class="sub">–</p></article>
+        </div>
+      </section>
+      <p id="stocks-banner" class="banner" role="status" hidden></p>
+
+      <section class="panel" aria-labelledby="h-stocks-actions">
+        <div class="panel-head"><h2 id="h-stocks-actions">What to do in Revolut</h2><span id="stocks-meta" class="muted small"></span></div>
+        <table id="stocks-actions"><thead><tr><th>Action</th><th>Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th>Why</th></tr></thead><tbody></tbody></table>
+        <p class="muted small">Advice, not orders: CIX can't trade on Revolut, so you place each order and stop yourself. Sells and stops come first, then buys. A stop is only ever raised, never lowered. The Paper and Live switch is for crypto: it doesn't change this tab.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="h-stocks-holdings">
+        <div class="panel-head"><h2 id="h-stocks-holdings">Holdings and stops</h2></div>
+        <table id="stocks-holdings"><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Bought at</th><th class="num">Last close</th><th class="num">Change</th><th class="num">Stop</th><th class="num" title="How far the price can fall before the stop sells">To the stop</th><th>Opened</th></tr></thead><tbody></tbody></table>
+      </section>
+
+      <section class="panel" aria-labelledby="h-stocks-notes">
+        <div class="panel-head"><h2 id="h-stocks-notes">Notes</h2></div>
+        <table id="stocks-notes"><thead><tr><th>Stock</th><th>Why there is no action</th></tr></thead><tbody></tbody></table>
       </section>
     </div>
   </main>

@@ -28,3 +28,24 @@ dotnet run --project stocks/src/Cix.Stocks.Backtest -- \
 ```
 
 A symbol's currency comes from its exchange (`US` is USD, `XETRA`, `PA`, `AS` and the other euro exchanges are EUR, `SW` is CHF); give it after a colon otherwise, as LSE lines trade in USD, GBP or GBX. Options: `--step` (smallest quantity, 1 for whole shares), the advisor's `--initial-stop-atr`, `--trail-atr`, `--risk` (per trade, as a fraction), `--max-position` (fraction) and `--max-positions`, `--commission`, `--min-commission`, `--fx-fee`, `--slippage`, `--out` (default `backtest-out`), `--cache` (default `.cache/eodhd`). Bars are cached per symbol and range, so a rerun spends no API calls; a range ending within two days of today isn't cached, as its last bar may be partial. The report is `summary.json` (return, CAGR, max drawdown, round trips, win rate, time in the market, for the strategy and the benchmark), `equity.csv` and `trades.csv`.
+
+## Dashboard
+
+The dashboard's Stocks tab reads `GET /api/stocks` (`dashboard/api/src/stocks.js`), read only and owner only. The route reads the stocks host's own Cosmos DB account, never the crypto engines' databases, through these app settings: `STOCKS_COSMOS_ENDPOINT`, `STOCKS_COSMOS_READONLY_KEY` and `STOCKS_COSMOS_DATABASE` (default `cix-stocks`). Without them, the tab says the advisor isn't connected. The infrastructure that sets them comes with the host.
+
+The host writes one document after each close: id `advice-latest` in the `advice` container, with partition key `/id`. Its `value` looks like this:
+
+```json
+{
+  "asOf": "2026-10-30", "generatedAt": "2026-10-30T21:30:00Z",
+  "regime": "risk-on | risk-off | unknown", "benchmark": "CSPX.LSE",
+  "baseCurrency": "EUR", "capital": 10000, "cash": 6200.5, "equity": 10150.25,
+  "actions": [{ "kind": "sell | set-stop | raise-stop | buy", "symbol": "MSFT.US", "name": "Microsoft", "currency": "USD",
+                "quantity": 4, "referencePrice": 512.3, "stop": 480.1, "reason": "breakout" }],
+  "holdings": [{ "symbol": "SAP.XETRA", "name": "SAP", "currency": "EUR", "quantity": 10, "averageCost": 200,
+                 "lastClose": 250, "stop": 225, "openedOn": "2026-08-01" }],
+  "notes": [{ "symbol": "NVDA.US", "reason": "max-positions" }]
+}
+```
+
+Reasons are the advisor's codes (`Cix.Stocks.Reasons`). The tab checks every field, drops what doesn't fit, and marks advice older than four days as stale.
