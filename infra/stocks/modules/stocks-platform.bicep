@@ -75,7 +75,7 @@ resource jobIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-3
   tags: tags
 }
 
-// The owner, named explicitly (not whoever deploys), sets and rotates the EODHD key.
+// The owner (provision-stocks.ps1 passes the signed-in user's object ID) sets and rotates the EODHD key.
 resource ownerSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(ownerObjectId)) {
   name: guid(vault.id, ownerObjectId, keyVaultSecretsOfficer)
   scope: vault
@@ -121,7 +121,7 @@ var metadata = 'Microsoft.DocumentDB/databaseAccounts/readMetadata'
 var containers = [
   { name: 'advice', role: 'writer', actions: [metadata, '${item}/read', '${item}/create', '${item}/upsert'] } // dated advice once, advice-latest upserted
   { name: 'state', role: 'writer', actions: [metadata, '${item}/read', '${item}/create', '${item}/replace'] } // the portfolio, with ETags
-  { name: 'trades', role: 'appender', actions: [metadata, '${item}/read', '${item}/create'] } // append-only
+  { name: 'trades', role: 'appender', actions: [metadata, '${item}/create'] } // append-only: created once, never read back
   { name: 'bars', role: 'cache', actions: [metadata, '${item}/read', '${item}/upsert'] }
 ]
 

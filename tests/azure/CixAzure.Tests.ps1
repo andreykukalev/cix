@@ -1606,14 +1606,17 @@ $stocksJobId = '/subscriptions/x/resourceGroups/rg-cix-stocks/providers/Microsof
 $stocksEndpoint = 'https://cosmos-cix-stocks-x.documents.azure.com:443/'
 $fakeEodhdKey = @('fake', 'eodhd', '9c41') -join '.' # built at run time; must never appear in output or on a command line
 $newStocks = @{
+  'bicep'                   = 'Bicep CLI version 0.33.0'
+  'provider show'           = '{"resourceTypes":[{"resourceType":"jobs","locations":["Poland Central"]},{"resourceType":"containerApps","locations":["Poland Central"]},{"resourceType":"managedEnvironments","locations":["Poland Central"]}]}'
   'ad signed-in-user'       = '{"id":"11111111-2222-3333-4444-555555555555","mail":"owner@example.com"}'
   'acr list'                = '[{"name":"crcixdevabc123","tags":{"cix-environment":"dev"}}]'
   'resource list'           = '[]'
   'consumption budget list' = '[]'
   'deployment sub create'   = "{`"properties`":{`"outputs`":{`"cosmosAccountName`":{`"value`":`"cosmos-cix-stocks-x`"},`"cosmosEndpoint`":{`"value`":`"$stocksEndpoint`"},`"databaseName`":{`"value`":`"cix-stocks`"},`"keyVaultName`":{`"value`":`"kvcixstocksx`"},`"registryName`":{`"value`":`"crcixdevabc123`"},`"jobName`":{`"value`":`"caj-cix-stocks-daily`"}}}}"
   'keyvault secret list'    = '[]'
-  'acr repository list'     = '[]'
-  'acr repository show'     = $stocksDigest
+  'group show'              = '{"name":"rg-cix-stocks","tags":{"cix-component":"stocks"}}'
+  'acr build'               = '{"runId":"ca1"}'
+  'acr task show-run'       = "{`"runId`":`"ca1`",`"status`":`"Succeeded`",`"outputImages`":[{`"registry`":`"crcixdevabc123.azurecr.io`",`"repository`":`"cix-stocks`",`"tag`":`"$stocksHead-20261031120000`",`"digest`":`"$stocksDigest`"}]}"
   'resource show'           = $stocksJobId
   'staticwebapp show'       = '/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev'
   'rest'                    = '{"properties":{"COSMOS_ENDPOINT":"https://cosmos-shared-x.documents.azure.com:443/"}}'
@@ -1639,7 +1642,10 @@ Check 'provision-stocks.ps1 (-Yes) first run: deploys, stores the key unseen, bu
   if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 2) { throw "expected two deployments (resources, then the job): $($r.Calls)" }
   if ($r.Calls -notmatch 'keyvault secret set --vault-name kvcixstocksx --name eodhd-api-token --file ') { throw "the key wasn't stored from a file: $($r.Calls)" }
   if ($r.Output.Contains($fakeEodhdKey) -or $r.Calls.Contains($fakeEodhdKey)) { throw 'the EODHD key was printed or put on a command line' }
-  if ($r.Calls -notmatch "acr build --registry crcixdevabc123 --image cix-stocks:$stocksHead --file stocks/Dockerfile ") { throw "the commit's image wasn't built in the dev registry: $($r.Calls)" }
+  if ($r.Calls -notmatch "acr build --registry crcixdevabc123 --image cix-stocks:$stocksHead-\d{14} --file stocks/Dockerfile ") { throw "the commit's image wasn't built in the dev registry: $($r.Calls)" }
+  if ($r.Calls -notmatch 'acr task show-run --registry crcixdevabc123 --run-id ca1') { throw 'the digest should come from the build run' }
+  if ($r.Calls -match 'acr repository show ') { throw 'looked the image up by tag, which anyone with push rights could move' }
+  if ($r.Calls -notmatch "acr repository update --name crcixdevabc123 --image cix-stocks:$stocksHead-20261031120000 --write-enabled false --delete-enabled false") { throw 'the built tag was not locked' }
   if ($r.Calls -notmatch 'cosmosdb keys list --resource-group rg-cix-stocks --name cosmos-cix-stocks-x --type read-only-keys') { throw 'the dashboard should get the read-only key of the stocks account only' }
   if ($r.Calls -notmatch 'rest --method put --url https://management\.azure\.com/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft\.Web/staticSites/stapp-cix-dev/config/appsettings\S* --body @') { throw "the dashboard's settings weren't written from a file: $($r.Calls)" }
   if ($r.Output.Contains($sample) -or $r.Calls.Contains($sample)) { throw 'the read-only key was printed or put on a command line' }
@@ -1654,13 +1660,31 @@ Check 'provision-stocks.ps1 run again changes nothing that is in place: no build
     'resource list'            = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"}]"
     'resource show'            = $job
     'keyvault secret list'     = '[{"name":"eodhd-api-token"}]'
-    'acr repository list'      = '["cix-stocks"]'
-    'acr repository show-tags' = "[`"$stocksHead`"]"
+    'acr repository show'      = "{`"digest`":`"$stocksDigest`",`"tags`":[`"$stocksHead-20261030120000`"]}"
     'rest'                     = $settings
   }
   if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
   if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 1) { throw "expected the resources' deployment only: $($r.Calls)" }
   foreach ($call in 'acr build', 'keyvault secret set', 'rest --method put') { if ($r.Calls.Contains($call)) { throw "called $call" } }
+}
+
+Check 'provision-stocks.ps1 rebuilds when the job runs another commit''s image' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@sha256:$('b' * 64)`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'        = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"}]"
+    'resource show'        = $job
+    'keyvault secret list' = '[{"name":"eodhd-api-token"}]'
+    'acr repository show'  = "{`"digest`":`"sha256:$('b' * 64)`",`"tags`":[`"$('0' * 40)-20261030120000`"]}"
+  }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -notmatch 'acr build ') { throw 'did not build the new commit' }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 2) { throw "expected the job to be redeployed: $($r.Calls)" }
+}
+
+Check 'provision-stocks.ps1 refuses a resource group that is not the stocks advisory''s' {
+  $r = Invoke-ProvisionStocks @{ 'group show' = '{"name":"rg-cix-stocks","tags":{"cix-environment":"dev"}}' }
+  if (-not $r.Error -or -not $r.Error.Contains("isn't the stocks advisory's")) { throw "got: $($r.Error)" }
+  if ($r.Calls -match 'deployment sub ') { throw 'deployed anyway' }
 }
 
 Check 'provision-stocks.ps1 -WhatIfOnly previews and changes nothing' {

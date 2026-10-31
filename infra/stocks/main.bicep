@@ -24,8 +24,8 @@ param namePrefix string = 'cix'
 @description('The resource group of the CIX registry the image is pulled from (the dev environment\'s).')
 param registryResourceGroupName string
 
-@description('The CIX environment that registry belongs to, for its name (agents-names.bicep).')
-param registryEnvironmentName string = 'dev'
+@description('That registry\'s name (provision-stocks.ps1 finds it by its cix-environment tag), the one the image is built in.')
+param registryName string
 
 @description('The job image\'s digest (sha256:...) in the registry\'s cix-stocks repository. Empty: no job yet.')
 param imageDigest string = ''
@@ -78,8 +78,7 @@ module registryPull 'modules/stocks-registry-pull.bicep' = {
   name: 'cix-stocks-registry-pull'
   scope: resourceGroup(registryResourceGroupName)
   params: {
-    namePrefix: namePrefix
-    registryEnvironmentName: registryEnvironmentName
+    registryName: registryName
     principalId: platform.outputs.jobPrincipalId
   }
 }

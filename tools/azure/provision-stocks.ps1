@@ -12,7 +12,8 @@
     2. stores the EODHD key in that vault, from -EodhdKeyFile or a hidden prompt (never echoed, never on a command line);
        a key already there is kept unless you pass -ReplaceKey;
     3. builds the job's image from the commit you have checked out (git HEAD, not uncommitted changes) in that registry, as
-       cix-stocks:<commit>, unless the registry already has it; -KeepImage redeploys the image the job runs now instead;
+       cix-stocks:<commit>-<UTC time>, locked, and takes its digest from the build itself; skipped when the job runs that
+       commit's image already. -KeepImage redeploys the image the job runs now instead;
     4. deploys the nightly job with that image, by digest;
     5. gives the dashboard of dashboardEnvironment the stocks database's read-only key (STOCKS_COSMOS_* settings, never
        printed), so its Stocks tab shows the advice;
@@ -86,7 +87,7 @@ function Invoke-StocksDeployment([string]$Digest, [switch]$WhatIf) {
     location                  = $stocks.location
     namePrefix                = $stocks.namePrefix
     registryResourceGroupName = $registryEnv.resourceGroup
-    registryEnvironmentName   = $registryEnv.environmentName
+    registryName              = $registry
     imageDigest               = $Digest
     schedule                  = $stocks.schedule
     ownerObjectId             = $me.Id
@@ -111,7 +112,11 @@ function Invoke-StocksDeployment([string]$Digest, [switch]$WhatIf) {
         return $result.properties.outputs
       }
       catch {
-        if ($attempt -ge 3 -or "$($_.Exception.Message)" -notmatch '(?i)principal|keyvault|key vault|secret|AuthorizationFailed|Forbidden|UNAUTHORIZED') { throw }
+        $message = "$($_.Exception.Message)"
+        # Access to the vault, the registry or the database, granted moments ago, reaching the new identity late.
+        $late = $message -match '(?i)AuthorizationFailed|Forbidden|UNAUTHORIZED|Unable to get value using Managed identity|PrincipalNotFound|does not exist in the directory'
+        if (-not $late) { throw }
+        if ($attempt -ge 4) { throw "$message Access granted moments ago can take up to half an hour to apply: run this again later; it picks up where it stopped." }
         Write-CixWarn 'The deployment failed on access that was just granted, which can take a few minutes to apply. Trying again in 2 minutes.'
         Start-Sleep -Seconds 120
       }
@@ -124,58 +129,55 @@ function New-PrivateFolder {
   # A fresh folder only you can open (Linux and macOS share /tmp); on Windows the per-user temp folder.
   $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-$([guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $dir | Out-Null
-  if (-not $OnWindows) {
-    Invoke-CixNative { chmod 700 $dir }
-    if ($LASTEXITCODE -ne 0) { Remove-Item $dir -Recurse -Force; throw 'Could not restrict access to a temporary folder.' }
+  if ($OnWindows) {
+    $me = "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+    Invoke-CixNative { icacls $dir /inheritance:r /grant:r "${me}:(OI)(CI)F" | Out-Null }
   }
+  else { Invoke-CixNative { chmod 700 $dir } }
+  if ($LASTEXITCODE -ne 0) { Remove-Item $dir -Recurse -Force; throw 'Could not restrict access to a temporary folder.' }
   return $dir
 }
 
 function Test-EodhdKey([string]$Key) { return $Key -match '^[A-Za-z0-9._-]{8,128}$' }
 
 function Set-EodhdKey([string]$Vault) {
-  if ($EodhdKeyFile) {
-    if (-not (Test-Path $EodhdKeyFile -PathType Leaf)) { throw "No file $EodhdKeyFile." }
-    if (-not (Test-EodhdKey (Get-Content $EodhdKeyFile -Raw).Trim())) { throw "$EodhdKeyFile doesn't hold one EODHD API token (letters, digits, dots and hyphens, on one line)." }
-    $source = (Resolve-Path $EodhdKeyFile).Path
-    $dir = $null
-  }
-  else {
-    Write-CixInfo 'Paste your EODHD API token (from https://eodhd.com/cp/settings) and press Enter. It is not shown.'
-    $secure = Read-Host '    EODHD API token' -AsSecureString
-    $dir = New-PrivateFolder
-    $source = Join-Path $dir 'eodhd'
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try {
-      $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr).Trim()
-      if (-not (Test-EodhdKey $plain)) { throw "That doesn't look like an EODHD API token (letters, digits, dots and hyphens); nothing was stored." }
-      [IO.File]::WriteAllText($source, $plain, (New-Object System.Text.UTF8Encoding $false))
-    }
-    finally {
-      [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-      $plain = $null
-      $secure = $null
-    }
-  }
+  # Whatever the source (a 5.1 file may be UTF-16), the vault gets the trimmed, checked value as UTF-8 from a private file.
+  $dir = New-PrivateFolder
+  $source = Join-Path $dir 'eodhd'
+  $plain = $null
   try {
-    # The Secrets Officer role on the vault was granted moments ago in a first run, and can take minutes to apply.
-    for ($attempt = 1; ; $attempt++) {
-      try { Set-CixVaultSecretFromFile -Vault $Vault -Name $SecretName -Path $source -ContentType 'EODHD API token'; break }
-      catch {
-        if ($attempt -ge 5) { throw "Couldn't store the key in $Vault. If you were just given access to the vault, run this again in a few minutes." }
-        Write-CixInfo 'The vault refused (access granted moments ago may not have applied yet); trying again in a minute.'
-        Start-Sleep -Seconds 60
-      }
+    if ($EodhdKeyFile) {
+      if (-not (Test-Path $EodhdKeyFile -PathType Leaf)) { throw "No file $EodhdKeyFile." }
+      $plain = "$(Get-Content $EodhdKeyFile -Raw)".Trim()
+      if (-not (Test-EodhdKey $plain)) { throw "$EodhdKeyFile doesn't hold one EODHD API token (letters, digits, dots and hyphens, on one line); nothing was stored." }
     }
+    else {
+      Write-CixInfo 'Paste your EODHD API token (from https://eodhd.com/cp/settings) and press Enter. It is not shown.'
+      $secure = Read-Host '    EODHD API token' -AsSecureString
+      $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+      try { $plain = "$([Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr))".Trim() }
+      finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr); $secure = $null }
+      if (-not (Test-EodhdKey $plain)) { throw "That doesn't look like an EODHD API token (letters, digits, dots and hyphens); nothing was stored." }
+    }
+    [IO.File]::WriteAllText($source, $plain, (New-Object System.Text.UTF8Encoding $false))
+    $plain = $null
+    # The value never reaches a message: if az fails, say only what to check.
+    try { Set-CixVaultSecretFromFile -Vault $Vault -Name $SecretName -Path $source -ContentType 'EODHD API token' }
+    catch { throw "Couldn't store the key in $Vault as $SecretName. If a deleted secret of that name is kept for recovery, recover or purge it in the Azure portal (the vault, Secrets, Manage deleted secrets), then run this again." }
   }
-  finally { if ($dir) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue } }
+  finally {
+    $plain = $null
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Test-VaultSecretWithRetry([string]$Vault) {
+  # Listing names needs the Secrets Officer role granted in step 1, which can take minutes to apply on a first run.
   for ($attempt = 1; ; $attempt++) {
     try { return (Test-CixVaultSecret -Vault $Vault -Name $SecretName) }
     catch {
-      if ($attempt -ge 5) { throw "Couldn't list the secrets in $Vault. If you were just given access to the vault, run this again in a few minutes." }
+      if ("$($_.Exception.Message)" -notmatch '(?i)Forbidden|403|not authorized|ForbiddenByRbac') { throw }
+      if ($attempt -ge 10) { throw "$Vault still refuses you: your access to it, granted in step 1, can take up to half an hour to apply. Run this again later." }
       Write-CixInfo 'The vault refused (access granted moments ago may not have applied yet); trying again in a minute.'
       Start-Sleep -Seconds 60
     }
@@ -191,7 +193,12 @@ function Get-JobImageDigest([string]$JobId, [string]$Server) {
   return $Matches[1]
 }
 
-function Build-StocksImage([string]$Registry) {
+function Build-StocksImage([string]$Registry, [string]$RunningDigest) {
+  <#
+    Builds the checked-out commit and returns the digest the build itself reports, never one looked up by tag: anyone who can
+    push to the registry (CI's deploy identity can) could point a tag at another image. Each build gets a tag of its own,
+    <commit>-<UTC time>, locked once built.
+  #>
   Assert-CixCommand -Name 'git' -Hint 'Install Git from https://git-scm.com, then reopen the terminal.'
   $commit = "$(Invoke-CixNative { & git -C $Root rev-parse HEAD 2>$null })".Trim()
   if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw "Couldn't read the checked-out commit of $Root (is it a git clone?)." }
@@ -199,37 +206,53 @@ function Build-StocksImage([string]$Registry) {
   if ($dirty.Count -gt 0) { Write-CixWarn "You have uncommitted changes in the stocks sources; the image is built from commit $($commit.Substring(0, 12)) without them." }
   $branch = "$(Invoke-CixNative { & git -C $Root rev-parse --abbrev-ref HEAD 2>$null })".Trim()
   Write-CixInfo "Commit: $commit ($branch). Run 'git pull' on main first if you want the latest."
-  $tag = "${Repository}:$commit"
 
-  $tags = @()
-  $repositories = @(Invoke-CixAz @('acr', 'repository', 'list', '--name', $Registry, '-o', 'json') | ConvertFrom-CixJson)
-  if ($repositories -contains $Repository) { $tags = @(Invoke-CixAz @('acr', 'repository', 'show-tags', '--name', $Registry, '--repository', $Repository, '-o', 'json') | ConvertFrom-CixJson) }
-  if ($tags -contains $commit) { Write-CixInfo "$Registry already has $tag; using it." }
-  else {
-    Confirm-Step "Build $tag in $Registry (a minute or two, a few cents of registry build time)?"
-    $dir = New-PrivateFolder
-    try {
-      $zip = Join-Path $dir 'source.zip'
-      $context = Join-Path $dir 'source'
-      Invoke-CixNative { & git -C $Root archive --format=zip -o $zip $commit -- @ImageSources }
-      if ($LASTEXITCODE -ne 0) { throw "git archive failed for commit $commit." }
-      Expand-Archive -Path $zip -DestinationPath $context
-      # Build logs carry characters a Windows console code page can't print, which stops az: send them as UTF-8.
-      $savedEncoding = $env:PYTHONIOENCODING
-      $env:PYTHONIOENCODING = 'utf-8'
-      try { Invoke-CixNative { & az acr build --registry $Registry --image $tag --file 'stocks/Dockerfile' --platform linux/amd64 --only-show-errors $context | Out-Host } }
-      finally { $env:PYTHONIOENCODING = $savedEncoding }
-      if ($LASTEXITCODE -ne 0) { throw "The image build failed (see its log above); nothing was deployed." }
+  # The job's image, by its digest (fixed content): built from this commit already if one of its tags says so.
+  if ($RunningDigest) {
+    $running = Invoke-CixAz @('acr', 'repository', 'show', '--name', $Registry, '--image', "$Repository@$RunningDigest", '-o', 'json') | ConvertFrom-CixJson
+    $runningTags = @(if ($running -and $running.PSObject.Properties['tags']) { $running.tags })
+    if (@($runningTags | Where-Object { "$_" -match "^$commit-\d{14}$" }).Count -gt 0) {
+      Write-CixInfo "The job runs this commit's image already ($Repository@$($RunningDigest.Substring(0, 19))...); nothing to build."
+      return $RunningDigest
     }
-    finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
   }
-  $digest = "$(Invoke-CixAz @('acr', 'repository', 'show', '--name', $Registry, '--image', $tag, '--query', 'digest', '-o', 'tsv'))".Trim()
-  if ($digest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw "$Registry has no image $tag." }
+
+  $tag = "$commit-$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss'))"
+  Confirm-Step "Build ${Repository}:$($commit.Substring(0, 12)) in $Registry (a minute or two, a few cents of registry build time)?"
+  $dir = New-PrivateFolder
+  try {
+    $zip = Join-Path $dir 'source.zip'
+    $context = Join-Path $dir 'source'
+    Invoke-CixNative { & git -C $Root archive --format=zip -o $zip $commit -- @ImageSources }
+    if ($LASTEXITCODE -ne 0) { throw "git archive failed for commit $commit." }
+    Expand-Archive -Path $zip -DestinationPath $context
+    $queued = Invoke-CixAz @('acr', 'build', '--registry', $Registry, '--image', "${Repository}:$tag", '--file', 'stocks/Dockerfile',
+      '--platform', 'linux/amd64', '--no-wait', '--only-show-errors', '-o', 'json', $context) | ConvertFrom-CixJson
+  }
+  finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+  $runId = if ($queued -and $queued.PSObject.Properties['runId']) { "$($queued.runId)" } else { '' }
+  if ($runId -notmatch '^[A-Za-z0-9]{1,32}$') { throw 'The registry queued the build but returned no run ID; nothing was deployed.' }
+
+  # The build's log, until it ends. It carries characters a Windows console code page can't print, which stops az: UTF-8.
+  $savedEncoding = $env:PYTHONIOENCODING
+  $env:PYTHONIOENCODING = 'utf-8'
+  try { Invoke-CixNative { & az acr task logs --registry $Registry --run-id $runId --only-show-errors | Out-Host } }
+  finally { $env:PYTHONIOENCODING = $savedEncoding }
+  $run = Invoke-CixAz @('acr', 'task', 'show-run', '--registry', $Registry, '--run-id', $runId, '-o', 'json') | ConvertFrom-CixJson
+  if (-not $run -or -not $run.PSObject.Properties['status'] -or "$($run.status)" -ne 'Succeeded') { throw "The image build (run $runId) didn't succeed (see its log above); nothing was deployed." }
+  $images = @(@(if ($run.PSObject.Properties['outputImages']) { $run.outputImages }) | Where-Object { $_ -and "$($_.repository)" -eq $Repository -and "$($_.tag)" -match "^$commit-\d{14}$" })
+  if ($images.Count -ne 1 -or "$($images[0].digest)" -cnotmatch '^sha256:[0-9a-f]{64}$') { throw "The build (run $runId) reported no $Repository image; nothing was deployed." }
+  $digest = "$($images[0].digest)"
+  $tag = "$($images[0].tag)"
+  # Locked: the tag can't be moved or deleted (a push identity can't unlock it).
+  Invoke-CixAz @('acr', 'repository', 'update', '--name', $Registry, '--image', "${Repository}:$tag", '--write-enabled', 'false', '--delete-enabled', 'false', '--only-show-errors', '-o', 'none') | Out-Null
+  Write-CixInfo "Built ${Repository}:$tag ($($digest.Substring(0, 19))...)."
   return $digest
 }
 
 Write-CixStep 'Checking prerequisites'
 Assert-CixAzureCli
+Assert-CixAgentsTools # the templates need Bicep 0.32 or later
 
 Write-CixStep 'Settings'
 $stocks = Read-StocksSettings
@@ -254,11 +277,16 @@ $registry = Find-CixAgentsResource -Settings $registryEnv -Kind acr
 if (-not $registry) { throw "No registry found in $($registryEnv.resourceGroup); run provision.ps1 -Environment $($registryEnv.environmentName) first." }
 $server = "$($registry.ToLowerInvariant()).azurecr.io"
 Write-CixInfo "Registry: $registry"
+Assert-CixAppsRegion -Settings @{ agents = @{ location = $stocks.location }; path = $SettingsPath }
 
 # What exists already: a job keeps running its image through the first step.
 $jobId = ''
 $budgetExists = $false
 if ((Invoke-CixAz @('group', 'exists', '--name', $stocks.resourceGroup)) -eq 'true') {
+  # Only a group this script made: the template sets the group's tags, which other CIX scripts rely on in their own groups.
+  $existing = Invoke-CixAz @('group', 'show', '--name', $stocks.resourceGroup, '-o', 'json') | ConvertFrom-CixJson
+  $isStocks = $existing -and $existing.PSObject.Properties['tags'] -and $existing.tags -and $existing.tags.PSObject.Properties['cix-component'] -and $existing.tags.'cix-component' -eq 'stocks'
+  if (-not $isStocks) { throw "Resource group $($stocks.resourceGroup) exists but isn't the stocks advisory's (no tag cix-component=stocks). Name a new group in $SettingsPath." }
   $all = @(Invoke-CixAz @('resource', 'list', '--resource-group', $stocks.resourceGroup, '-o', 'json') | ConvertFrom-CixJson)
   $jobs = @($all | Where-Object { "$($_.type)" -eq 'Microsoft.App/jobs' -and "$($_.name)" -eq "caj-$($stocks.namePrefix)-stocks-daily" })
   if ($jobs.Count -eq 1) { $jobId = "$($jobs[0].id)" }
@@ -294,11 +322,12 @@ else {
 }
 
 Write-CixStep "Step 3 of 5: the job's image ($registry)"
-$digest = if ($KeepImage) { Write-CixInfo "Keeping the image the job runs: $Repository@$currentDigest"; $currentDigest } else { Build-StocksImage -Registry $registry }
+$digest = if ($KeepImage) { Write-CixInfo "Keeping the image the job runs: $Repository@$currentDigest"; $currentDigest } else { Build-StocksImage -Registry $registry -RunningDigest $currentDigest }
 
 Write-CixStep 'Step 4 of 5: the nightly job'
 if ($digest -eq $currentDigest -and $jobId) { Write-CixInfo "The job runs $Repository@$digest already." }
 else {
+  Invoke-StocksDeployment -Digest $digest -WhatIf | Out-Null
   Confirm-Step "Deploy the nightly job with $Repository@$($digest.Substring(0, 19))... (runs at '$($stocks.schedule)' UTC)?"
   $outputs = Invoke-StocksDeployment -Digest $digest
   $jobName = "$($outputs.jobName.value)"
