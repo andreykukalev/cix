@@ -960,6 +960,24 @@
     'Uptrend, under its high': 'Тренд вверх, ниже максимума',
     'Over your price cap': 'Дороже потолка цены',
     'Old prices': 'Старые цены',
+    'Candidates from the whole market': 'Кандидаты со всего рынка',
+    'Shares by the advisor\'s rules: 1% of the capital at risk to the stop, at most 20% of it in one stock':
+      'Количество по правилам советника: риск до стопа 1% капитала, не больше 20% капитала в одной акции',
+    '6 months': '6 месяцев',
+    'The change over the last 126 sessions, about six months: the advisor\'s ranking': 'Изменение за последние 126 сессий, примерно полгода: по нему советник ранжирует',
+    'US common stocks on the main exchanges, from your price cap down to 5, worth 2 billion or more and traded for 20 million a day, that pass the same entry rule as the watchlist: entry signals first, then uptrends within 3% of their high. Not in the watchlist or the holdings. You choose: nothing here is bought by itself.':
+      'Обыкновенные акции США на основных биржах, по цене от 5 до вашего потолка, капитализацией от 2 миллиардов и оборотом от 20 миллионов в день, которые проходят то же правило входа, что и список наблюдения: сначала сигналы на вход, потом восходящие тренды в пределах 3% от максимума. Без акций из списка наблюдения и позиций. Выбираете вы: само ничего не покупается.',
+    'The market search hasn\'t run yet.': 'Поиск по рынку ещё не запускался.',
+    'The market search is off: it needs EODHD\'s paid plan (EOD All World), as the free key can\'t download the whole market. It is turned on in stocks/config/stocks.json.':
+      'Поиск по рынку выключен: нужен платный тариф EODHD (EOD All World), бесплатный ключ не скачивает весь рынок. Включается в stocks/config/stocks.json.',
+    'The day\'s search calls are spent: no search tonight.': 'Запросы на поиск за сегодня исчерпаны: сегодня поиска нет.',
+    'EODHD refused or failed the whole-market download: no search tonight. A free key is always refused.':
+      'EODHD отказал или не смог отдать данные по всему рынку: сегодня поиска нет. Бесплатному ключу всегда отказывает.',
+    'EODHD\'s download wasn\'t for the latest session yet: the next run searches again.': 'Данные EODHD ещё не за последнюю сессию: следующий запуск поищет снова.',
+    'Market risk-off: the advisor buys nothing new until it recovers. These are for watching.': 'Рынок: избегать риска. Советник ничего нового не покупает, пока рынок не восстановится; эти акции для наблюдения.',
+    '{shortlisted} checked of {listed} stocks, close of {day}': 'проверено {shortlisted} из {listed} акций, закрытие {day}',
+    'Near its high': 'Рядом с максимумом',
+    'No stock in the market passes the entry rule tonight.': 'Сегодня ни одна акция рынка не проходит правило входа.',
     'No uptrend': 'Нет восходящего тренда',
     above: 'выше',
     'The advice has no watchlist yet: it comes with the next run.': 'В советах пока нет списка наблюдения: он появится со следующим запуском.',

@@ -8,6 +8,10 @@ const { CosmosReader } = require('./cosmos');
 
 const CONTAINER = 'advice';
 const LATEST = 'advice-latest';
+const CANDIDATES = 'candidates-latest'; // the market-wide search's page (ADR-0025), same container
+const SEARCH_STATUSES = new Set(['done', 'off', 'call-budget', 'data-error', 'not-ready']);
+const CANDIDATE_STATUSES = new Set(['breakout', 'near-high']);
+const MAX_CANDIDATES = 100;
 const DAY_MS = 24 * 3600 * 1000;
 /**
  * Advice is stale once this many weekday closes have passed without new advice (today's close not counted, as it may not
@@ -120,6 +124,40 @@ function watchOrder(x, y) {
   return x.i - y.i;
 }
 
+function candidate(c) {
+  const s = symbol(c?.symbol);
+  const status = CANDIDATE_STATUSES.has(c?.status) ? c.status : null;
+  const close = positive(c?.close);
+  if (!s || !status || close === null) return null;
+  const breakoutHigh = positive(c.breakoutHigh);
+  const stop = positive(c.stop);
+  const shares = positive(c.shares);
+  return {
+    symbol: s, name: name(c.name), venue: name(c.venue), status, close, breakoutHigh, trendAverage: positive(c.trendAverage), stop, shares,
+    amount: shares !== null ? shares * close : null,
+    momentum: num(c.momentum), marketCap: positive(c.marketCap),
+    toStop: stop !== null ? (close - stop) / close : null,
+    toBreakout: ratio(breakoutHigh, close),
+  };
+}
+
+/** The market-wide search's page, every field checked; null when there is none. */
+function candidatesView(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    status: SEARCH_STATUSES.has(value.status) ? value.status : null,
+    asOf: day(value.asOf),
+    generatedAt: iso(value.generatedAt),
+    regime: REGIMES.has(value.regime) ? value.regime : 'unknown',
+    baseCurrency: currency(value.baseCurrency),
+    capital: positive(value.capital),
+    listed: Number.isInteger(value.listed) && value.listed >= 0 ? value.listed : null,
+    shortlisted: Number.isInteger(value.shortlisted) && value.shortlisted >= 0 ? value.shortlisted : null,
+    // The host ranks them (entry signals first, then momentum): the order is kept.
+    candidates: (Array.isArray(value.candidates) ? value.candidates.slice(0, MAX_CANDIDATES) : []).map(candidate).filter(Boolean),
+  };
+}
+
 /** Weekdays strictly between two UTC days: the closes there have been since asOf, not counting today's. */
 function weekdaysBetween(fromMs, toMs) {
   let n = 0;
@@ -159,9 +197,11 @@ function stocksView(value, now) {
 /** The Stocks tab's answer: whether the stocks database is set up, and the latest advice when there is one. */
 async function loadStocks(reader, now) {
   const generatedAt = new Date(now).toISOString();
-  if (!reader) return { configured: false, advice: null, generatedAt };
-  const doc = await reader.readDocument(CONTAINER, LATEST);
-  return { configured: true, advice: doc ? stocksView(doc.value ?? null, now) : null, generatedAt };
+  if (!reader) return { configured: false, advice: null, candidates: null, generatedAt };
+  const [doc, found] = await Promise.all([reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES)]);
+  return {
+    configured: true, advice: doc ? stocksView(doc.value ?? null, now) : null, candidates: found ? candidatesView(found.value ?? null) : null, generatedAt,
+  };
 }
 
-module.exports = { stocksReader, stocksView, loadStocks, CONTAINER, LATEST, STALE_MISSED_CLOSES };
+module.exports = { stocksReader, stocksView, candidatesView, loadStocks, CONTAINER, LATEST, CANDIDATES, STALE_MISSED_CLOSES };

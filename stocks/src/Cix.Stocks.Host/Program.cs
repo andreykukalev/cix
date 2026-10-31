@@ -9,6 +9,8 @@ using Cix.Stocks.MarketData;
 //   EODHD key      the file EODHD_API_TOKEN_FILE (default /run/secrets/eodhd-api-token, mounted from Key Vault), or
 //                  EODHD_API_TOKEN for a local run
 //   database       STOCKS_COSMOS_ENDPOINT, STOCKS_COSMOS_DATABASE (default cix-stocks), AZURE_CLIENT_ID (managed identity)
+// After the advice, the market-wide search (ADR-0025) runs when config/stocks.json turns it on: its failure fails the run,
+// but the advice is saved by then.
 // `--dry-run` keeps everything in memory and prints the advice instead: it still spends EODHD calls.
 // Exit codes: 0 advised or already advised, 1 failed, 2 bad configuration.
 return await StocksHost.RunAsync(args);
@@ -62,6 +64,14 @@ internal static class StocksHost
             MaxResponseContentBufferSize = 4 * 1024 * 1024,
         };
         var source = new EodhdClient(http, key);
+        // The whole-market download is tens of megabytes: its own client, with room for it.
+        using var bulkHttp = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false })
+        {
+            BaseAddress = EodhdClient.DefaultBaseAddress,
+            Timeout = TimeSpan.FromSeconds(180),
+            MaxResponseContentBufferSize = 128 * 1024 * 1024,
+        };
+        var market = new EodhdClient(bulkHttp, key);
         try
         {
             if (dryRun)
@@ -69,8 +79,13 @@ internal static class StocksHost
                 var memory = new InMemoryStocksStore();
                 var report = await new DailyRun(config, source, memory, TimeProvider.System).RunAsync(cancel.Token);
                 Print(report);
-                if (memory.Documents.TryGetValue("advice/advice-latest", out var advice))
-                    Console.WriteLine(JsonSerializer.Serialize(JsonDocument.Parse(advice), Indented));
+                Print(await new MarketSearch(config, market, source, memory, TimeProvider.System).RunAsync(cancel.Token));
+                foreach (var id in new[] { "advice/advice-latest", "advice/candidates-latest" })
+                {
+                    if (memory.Documents.TryGetValue(id, out var page))
+                        Console.WriteLine(JsonSerializer.Serialize(JsonDocument.Parse(page), Indented));
+                }
+
                 return 0;
             }
 
@@ -88,6 +103,7 @@ internal static class StocksHost
 
             using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
             Print(await new DailyRun(config, source, store, TimeProvider.System).RunAsync(cancel.Token));
+            Print(await new MarketSearch(config, market, source, store, TimeProvider.System).RunAsync(cancel.Token));
             return 0;
         }
         catch (OperationCanceledException) when (cancel.IsCancellationRequested)
@@ -106,6 +122,10 @@ internal static class StocksHost
     private static void Print(RunReport r) =>
         Console.WriteLine($"{r.Outcome}: close {r.AsOf?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) ?? "none"}, " +
                           $"{r.Calls} EODHD calls, {r.Trades} paper trades, {r.Actions} actions, {r.Notes} notes.");
+
+    private static void Print(CandidatesDocument? c) =>
+        Console.WriteLine(c is null ? "Market search: nothing new to search."
+            : $"Market search: {c.Status}, {c.Candidates.Count} candidates from {c.Shortlisted} shortlisted of {c.Listed} listed.");
 
     private static string? Env(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } v ? v : null;
 

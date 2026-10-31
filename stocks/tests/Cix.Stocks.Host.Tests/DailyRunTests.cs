@@ -421,6 +421,18 @@ public class DailyRunTests
 
         public Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken) =>
             failAdvice ? inner.SaveLatestAdviceAsync(advice, cancellationToken) : throw new IOException("connection lost");
+
+        public Task<Versioned<SearchState>?> GetSearchStateAsync(CancellationToken cancellationToken) => inner.GetSearchStateAsync(cancellationToken);
+
+        public Task<string> SaveSearchStateAsync(SearchState state, string? etag, CancellationToken cancellationToken) => inner.SaveSearchStateAsync(state, etag, cancellationToken);
+
+        public Task<StoredUniverse?> GetUniverseAsync(CancellationToken cancellationToken) => inner.GetUniverseAsync(cancellationToken);
+
+        public Task SaveUniverseAsync(StoredUniverse universe, CancellationToken cancellationToken) => inner.SaveUniverseAsync(universe, cancellationToken);
+
+        public Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken) => inner.AddCandidatesAsync(id, candidates, cancellationToken);
+
+        public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
     }
 
     /// <summary>Another run saves the portfolio between this run's read and its write.</summary>
@@ -446,5 +458,17 @@ public class DailyRunTests
         public Task<AdviceDocument?> GetAdviceAsync(string id, CancellationToken cancellationToken) => inner.GetAdviceAsync(id, cancellationToken);
 
         public Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken) => inner.SaveLatestAdviceAsync(advice, cancellationToken);
+
+        public Task<Versioned<SearchState>?> GetSearchStateAsync(CancellationToken cancellationToken) => inner.GetSearchStateAsync(cancellationToken);
+
+        public Task<string> SaveSearchStateAsync(SearchState state, string? etag, CancellationToken cancellationToken) => inner.SaveSearchStateAsync(state, etag, cancellationToken);
+
+        public Task<StoredUniverse?> GetUniverseAsync(CancellationToken cancellationToken) => inner.GetUniverseAsync(cancellationToken);
+
+        public Task SaveUniverseAsync(StoredUniverse universe, CancellationToken cancellationToken) => inner.SaveUniverseAsync(universe, cancellationToken);
+
+        public Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken) => inner.AddCandidatesAsync(id, candidates, cancellationToken);
+
+        public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
     }
 }

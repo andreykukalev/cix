@@ -18,6 +18,8 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
     public const string TradesContainer = "trades";
     public const string BarsContainer = "bars";
     private const string StateId = "paper";
+    private const string SearchStateId = "search";
+    private const string UniverseId = "universe";
 
     private readonly CosmosClient _client;
     private readonly string _database;
@@ -53,20 +55,53 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
     public async Task<Versioned<PaperState>?> GetStateAsync(CancellationToken cancellationToken) =>
         await ReadAsync<PaperState>(Get(StateContainer), StateId, cancellationToken).ConfigureAwait(false);
 
-    public async Task<string> SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken)
+    public Task<string> SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken) =>
+        SaveVersionedAsync(StateId, state, etag, "Another run saved the paper portfolio first: this run's result was dropped.", cancellationToken);
+
+    public async Task<Versioned<SearchState>?> GetSearchStateAsync(CancellationToken cancellationToken) =>
+        await ReadAsync<SearchState>(Get(StateContainer), SearchStateId, cancellationToken).ConfigureAwait(false);
+
+    public Task<string> SaveSearchStateAsync(SearchState state, string? etag, CancellationToken cancellationToken) =>
+        SaveVersionedAsync(SearchStateId, state, etag, "Another run saved the search's state first: this search was dropped.", cancellationToken);
+
+    public async Task<StoredUniverse?> GetUniverseAsync(CancellationToken cancellationToken) =>
+        (await ReadAsync<StoredUniverse>(Get(StateContainer), UniverseId, cancellationToken).ConfigureAwait(false))?.Value;
+
+    // The state container allows create and replace, not upsert: replace, or create the first time.
+    public async Task SaveUniverseAsync(StoredUniverse universe, CancellationToken cancellationToken)
     {
         var container = Get(StateContainer);
-        var item = new Envelope<PaperState>(StateId, state);
+        var item = new Envelope<StoredUniverse>(UniverseId, universe);
+        try
+        {
+            await container.ReplaceItemAsync(item, UniverseId, new PartitionKey(UniverseId), cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (CosmosException e) when (e.StatusCode == HttpStatusCode.NotFound)
+        {
+            await container.CreateItemAsync(item, new PartitionKey(UniverseId), cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    public Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken) =>
+        CreateOnceAsync(Get(AdviceContainer), new Envelope<CandidatesDocument>(id, candidates), cancellationToken);
+
+    public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) =>
+        Get(AdviceContainer).UpsertItemAsync(new Envelope<CandidatesDocument>("candidates-latest", candidates), new PartitionKey("candidates-latest"), cancellationToken: cancellationToken);
+
+    private async Task<string> SaveVersionedAsync<T>(string id, T value, string? etag, string conflict, CancellationToken cancellationToken)
+    {
+        var container = Get(StateContainer);
+        var item = new Envelope<T>(id, value);
         try
         {
             var response = etag is null
-                ? await container.CreateItemAsync(item, new PartitionKey(StateId), cancellationToken: cancellationToken).ConfigureAwait(false)
-                : await container.ReplaceItemAsync(item, StateId, new PartitionKey(StateId), new ItemRequestOptions { IfMatchEtag = etag }, cancellationToken).ConfigureAwait(false);
+                ? await container.CreateItemAsync(item, new PartitionKey(id), cancellationToken: cancellationToken).ConfigureAwait(false)
+                : await container.ReplaceItemAsync(item, id, new PartitionKey(id), new ItemRequestOptions { IfMatchEtag = etag }, cancellationToken).ConfigureAwait(false);
             return response.ETag;
         }
         catch (CosmosException e) when (e.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed)
         {
-            throw new StoreConflictException("Another run saved the paper portfolio first: this run's result was dropped.");
+            throw new StoreConflictException(conflict);
         }
     }
 

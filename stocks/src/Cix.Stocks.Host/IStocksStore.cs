@@ -33,6 +33,24 @@ public interface IStocksStore
 
     /// <summary>Replaces <c>advice-latest</c>, the document the dashboard reads.</summary>
     Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken);
+
+    /// <summary>The market-wide search's state: the last session searched and the calls it spent.</summary>
+    Task<Versioned<SearchState>?> GetSearchStateAsync(CancellationToken cancellationToken);
+
+    /// <summary>Saves the search's state if it is still at <paramref name="etag"/> (null: none saved yet).</summary>
+    /// <exception cref="StoreConflictException">Another run saved it first.</exception>
+    Task<string> SaveSearchStateAsync(SearchState state, string? etag, CancellationToken cancellationToken);
+
+    /// <summary>The exchange's symbol list as last fetched; null before the first.</summary>
+    Task<StoredUniverse?> GetUniverseAsync(CancellationToken cancellationToken);
+
+    Task SaveUniverseAsync(StoredUniverse universe, CancellationToken cancellationToken);
+
+    /// <summary>Adds a session's candidates to the history (<c>candidates-YYYY-MM-DD</c>); one already there is left as it is.</summary>
+    Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken);
+
+    /// <summary>Replaces <c>candidates-latest</c>, which the dashboard reads.</summary>
+    Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken);
 }
 
 /// <summary>A store in memory, for tests and dry runs. Values go through JSON, as they would to the database.</summary>
@@ -93,6 +111,50 @@ public sealed class InMemoryStocksStore : IStocksStore
     public Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken)
     {
         _docs["advice/advice-latest"] = JsonSerializer.Serialize(advice, StocksJson.Options);
+        return Task.CompletedTask;
+    }
+
+    private int _searchVersion;
+
+    public Task<Versioned<SearchState>?> GetSearchStateAsync(CancellationToken cancellationToken)
+    {
+        lock (_stateLock)
+        {
+            var state = Read<SearchState>("state/search");
+            return Task.FromResult(state is null ? null : new Versioned<SearchState>(state, _searchVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
+    }
+
+    public Task<string> SaveSearchStateAsync(SearchState state, string? etag, CancellationToken cancellationToken)
+    {
+        lock (_stateLock)
+        {
+            var exists = _docs.ContainsKey("state/search");
+            if (exists ? etag != _searchVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) : etag is not null)
+                throw new StoreConflictException("The search's state changed since it was read.");
+            _docs["state/search"] = JsonSerializer.Serialize(state, StocksJson.Options);
+            _searchVersion++;
+            return Task.FromResult(_searchVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+    }
+
+    public Task<StoredUniverse?> GetUniverseAsync(CancellationToken cancellationToken) => Task.FromResult(Read<StoredUniverse>("state/universe"));
+
+    public Task SaveUniverseAsync(StoredUniverse universe, CancellationToken cancellationToken)
+    {
+        _docs["state/universe"] = JsonSerializer.Serialize(universe, StocksJson.Options);
+        return Task.CompletedTask;
+    }
+
+    public Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken)
+    {
+        _docs.TryAdd($"advice/{id}", JsonSerializer.Serialize(candidates, StocksJson.Options));
+        return Task.CompletedTask;
+    }
+
+    public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken)
+    {
+        _docs["advice/candidates-latest"] = JsonSerializer.Serialize(candidates, StocksJson.Options);
         return Task.CompletedTask;
     }
 }
