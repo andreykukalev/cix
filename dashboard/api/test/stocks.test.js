@@ -155,3 +155,31 @@ test('the host\'s numbers come as decimal strings and read like numbers', () => 
   assert.equal(view.holdings[0].toStop, 0.1);
   for (const bad of ['1e5', '12abc', ' 5', '', '0x10', 'Infinity']) assert.equal(stocksView({ ...ADVICE, capital: bad }, NOW).capital, null, bad);
 });
+
+test('the watchlist lists held, then entry signals, then uptrends nearest their high, then the rest', () => {
+  const w = (symbol, status, lastClose, breakoutHigh, trendAverage) => ({ symbol, status, lastClose, breakoutHigh, trendAverage, currency: 'USD', theme: 'semis' });
+  const view = stocksView({
+    ...ADVICE,
+    watchlist: [
+      w('AAA.US', 'below-trend', '90', '120', '100'),
+      w('BBB.US', 'uptrend', '100', '110', '80'),
+      w('CCC.US', 'uptrend', '100', '102', '80'),
+      w('DDD.US', 'no-data', null, null, null),
+      w('EEE.US', 'breakout', '125', '120', '100'),
+      w('FFF.US', 'held', '50', '55', '40'),
+      w('HHH.US', 'stale-data', '10', '9', '8'),
+      w('III.US', 'too-expensive', '300', '290', '250'),
+      w('JJJ.US', 'uptrend', '100', null, '80'),
+      w('GGG.US', 'sideways', '1', '1', '1'),
+      { symbol: 'bad', status: 'uptrend' },
+    ],
+  }, NOW);
+  assert.deepEqual(view.watchlist.map((x) => x.symbol), ['FFF.US', 'EEE.US', 'CCC.US', 'BBB.US', 'JJJ.US', 'AAA.US', 'III.US', 'HHH.US', 'DDD.US']);
+  const ccc = view.watchlist.find((x) => x.symbol === 'CCC.US');
+  assert.ok(Math.abs(ccc.toBreakout - 0.02) < 1e-12); // 102 / 100 − 1
+  assert.equal(ccc.vsTrend, 0.25); // 100 / 80 − 1
+  assert.ok(Math.abs(view.watchlist.find((x) => x.symbol === 'EEE.US').toBreakout + 0.04) < 1e-12); // already above: 120 / 125 − 1
+  const none = view.watchlist.find((x) => x.symbol === 'DDD.US');
+  assert.deepEqual([none.lastClose, none.toBreakout, none.vsTrend], [null, null, null]);
+  assert.deepEqual(stocksView(ADVICE, NOW).watchlist, []); // advice written before the watchlist existed
+});

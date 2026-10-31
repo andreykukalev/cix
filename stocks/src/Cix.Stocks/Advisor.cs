@@ -94,8 +94,67 @@ public static class Reasons
 /// Stale or missing data never produces an action, only a note; while the benchmark's data is missing, held positions keep
 /// the normal trail and nothing is bought.
 /// </summary>
+/// <summary>Where an instrument stands against the entry rule (<see cref="Advisor.Entry"/>), in the order it is checked.</summary>
+public enum EntryState
+{
+    /// <summary>No bars at all.</summary>
+    NoData,
+
+    /// <summary>The latest bar is older than <see cref="AdvisorSettings.MaxBarAgeDays"/> (or after today).</summary>
+    StaleData,
+
+    /// <summary>One share costs more than <see cref="AdvisorSettings.MaxSharePrice"/> in the base currency.</summary>
+    TooExpensive,
+
+    /// <summary>Too few bars for the averages, the prior high or the ATR.</summary>
+    NotEnoughData,
+
+    /// <summary>The close is at or under the slow average, or the fast average is at or under it.</summary>
+    BelowTrend,
+
+    /// <summary>In an uptrend, but the close isn't above the prior closing high.</summary>
+    Uptrend,
+
+    /// <summary>In an uptrend and above the prior closing high: the entry signal.</summary>
+    Breakout,
+}
+
+/// <summary>
+/// An instrument against the entry rule: its state and, as far as they could be computed, the figures it was judged on.
+/// </summary>
+public sealed record EntryCheck(EntryState State, decimal? Close, decimal? SlowAverage, decimal? FastAverage, decimal? PriorHigh, decimal? Atr);
+
 public static class Advisor
 {
+    /// <summary>
+    /// The entry rule, the one place it is written: fresh bars, a share within the price cap (checked only when
+    /// <paramref name="fxToBase"/> is known), enough history, the close above the slow average with the fast one above it, and
+    /// the close above the prior closing high. The watchlist on the Stocks page shows the same verdicts.
+    /// </summary>
+    public static EntryCheck Entry(IReadOnlyList<Candle> bars, DateOnly today, decimal? fxToBase, AdvisorSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(bars);
+        ArgumentNullException.ThrowIfNull(settings);
+        if (bars.Count == 0)
+            return new(EntryState.NoData, null, null, null, null, null);
+        var close = bars[^1].Close;
+        var slow = TrendIndicators.Sma(bars, settings.SlowSmaDays);
+        var fast = TrendIndicators.Sma(bars, settings.FastSmaDays);
+        var high = TrendIndicators.PriorHighestClose(bars, settings.BreakoutDays);
+        var atr = Indicators.Atr(bars, settings.AtrDays);
+        EntryCheck Check(EntryState state) => new(state, close, slow, fast, high, atr);
+
+        if (!IsFresh(bars, today, settings))
+            return Check(EntryState.StaleData);
+        if (settings.MaxSharePrice is { } maxPrice && fxToBase is { } rate && close * rate > maxPrice)
+            return Check(EntryState.TooExpensive);
+        if (bars.Count < settings.MinBars || slow is null || fast is null || high is null || atr is not > 0)
+            return Check(EntryState.NotEnoughData);
+        if (close <= slow || fast <= slow)
+            return Check(EntryState.BelowTrend);
+        return Check(close > high ? EntryState.Breakout : EntryState.Uptrend);
+    }
+
     public static Advice Evaluate(AdvisorInput input, AdvisorSettings settings)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -233,32 +292,23 @@ public static class Advisor
             var bars = history.Bars;
             if (held.Contains(symbol))
                 continue;
-            if (!IsFresh(bars, input.Today, settings))
+            // Too-expensive is noted on every risk-on run, not only on a breakout, so the owner sees why it is never bought.
+            var entry = Entry(bars, input.Today, FxRate(input, history.Instrument.Currency), settings);
+            var skip = entry.State switch
             {
-                notes.Add(new(symbol, bars.Count == 0 ? Reasons.NoData : Reasons.StaleData));
+                EntryState.NoData => Reasons.NoData,
+                EntryState.StaleData => Reasons.StaleData,
+                EntryState.TooExpensive => Reasons.TooExpensive,
+                EntryState.NotEnoughData => Reasons.NotEnoughData,
+                _ => null,
+            };
+            if (skip is not null)
+            {
+                notes.Add(new(symbol, skip));
                 continue;
             }
 
-            // Noted on every risk-on run, not only on a breakout, so the owner sees why it is never bought.
-            if (settings.MaxSharePrice is { } maxPrice && FxRate(input, history.Instrument.Currency) is { } rate && bars[^1].Close * rate > maxPrice)
-            {
-                notes.Add(new(symbol, Reasons.TooExpensive));
-                continue;
-            }
-
-            if (bars.Count < settings.MinBars
-                || TrendIndicators.Sma(bars, settings.SlowSmaDays) is not { } slow
-                || TrendIndicators.Sma(bars, settings.FastSmaDays) is not { } fast
-                || TrendIndicators.PriorHighestClose(bars, settings.BreakoutDays) is not { } priorHigh
-                || Indicators.Atr(bars, settings.AtrDays) is not { } atr
-                || atr <= 0)
-            {
-                notes.Add(new(symbol, Reasons.NotEnoughData));
-                continue;
-            }
-
-            var close = bars[^1].Close;
-            if (close <= slow || fast <= slow || close <= priorHigh)
+            if (entry is not { State: EntryState.Breakout, Close: { } close, Atr: { } atr })
                 continue;
 
             if (FxRate(input, history.Instrument.Currency) is not { } fx)

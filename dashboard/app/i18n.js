@@ -888,8 +888,9 @@
     Stock: 'Акция',
     Shares: 'Штук',
     'Close price': 'Цена закрытия',
-    'Advice, not orders: CIX can\'t trade on Revolut, so you place each order and stop yourself. Sells and stops come first, then buys. A stop is only ever raised, never lowered. The Paper and Live switch is for crypto: it doesn\'t change this tab.':
-      'Это советы, а не ордера: CIX не может торговать в Revolut, каждый ордер и стоп вы ставите сами. Сначала продажи и стопы, потом покупки. Стоп только поднимается, никогда не опускается. Переключатель «Бумажная» и «Реальная» относится к крипте и на эту вкладку не влияет.',
+    'Advice, not orders: CIX can\'t trade on Revolut, so you place each order and stop yourself. Sells and stops come first, then buys. A stop is only ever raised, never lowered.':
+      'Это советы, а не ордера: CIX не может торговать в Revolut, каждый ордер и стоп вы ставите сами. Сначала продажи и стопы, потом покупки. Стоп только поднимается, никогда не опускается.',
+    'The stocks advisor: one paper portfolio of its own, apart from crypto': 'Советник по акциям: свой бумажный портфель, отдельно от крипты',
     'Holdings and stops': 'Позиции и стопы',
     'Bought at': 'Куплено по',
     'Last close': 'Последнее закрытие',
@@ -942,6 +943,26 @@
     'No holdings recorded.': 'Позиции не записаны.',
     'No notes.': 'Заметок нет.',
     'no stop': 'нет стопа',
+    Watchlist: 'Список наблюдения',
+    'every watched stock at the last close': 'все отслеживаемые акции на последнем закрытии',
+    Theme: 'Тема',
+    '50-day high': '50-дневный максимум',
+    'The highest close of the 50 trading days before the last one: closing above it in an uptrend is the entry signal':
+      'Самое высокое закрытие за 50 торговых дней до последнего: закрытие выше него в восходящем тренде и есть сигнал на вход',
+    'To the high': 'До максимума',
+    'How far the price must rise to close above its 50-day high': 'Насколько цена должна вырасти, чтобы закрыться выше 50-дневного максимума',
+    'vs 200-day': 'К 200-дневной',
+    'How far the last close is above or under the 200-day average': 'Насколько последнее закрытие выше или ниже 200-дневной средней',
+    'An uptrend is a close above the 200-day average with the 50-day average above it. A close above the 50-day high in an uptrend is the entry signal: the advisor buys it unless the market, the cash, the price cap or the theme limit stops it, and the notes say which.':
+      'Восходящий тренд: закрытие выше 200-дневной средней, и 50-дневная средняя выше неё. Закрытие выше 50-дневного максимума в восходящем тренде и есть сигнал на вход: советник покупает, если не мешают рынок, свободные деньги, потолок цены или лимит темы, а что именно помешало, видно в заметках.',
+    Held: 'В портфеле',
+    'Entry signal': 'Сигнал на вход',
+    'Uptrend, under its high': 'Тренд вверх, ниже максимума',
+    'Over your price cap': 'Дороже потолка цены',
+    'Old prices': 'Старые цены',
+    'No uptrend': 'Нет восходящего тренда',
+    above: 'выше',
+    'The advice has no watchlist yet: it comes with the next run.': 'В советах пока нет списка наблюдения: он появится со следующим запуском.',
   }));
 
   /** Engine text with figures in it: [pattern, Russian with $1… for the parts]. */

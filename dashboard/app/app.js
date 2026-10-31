@@ -13,7 +13,7 @@ const POLL_FOR_MS = 15 * 60_000;
 const V = window.CixView;
 const I = window.CixI18n;
 const t = I.t;
-const state = { mode: 'paper', lang: 'ru', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null, tab: 'overview', strategies: null, pairs: null };
+const state = { mode: 'paper', cryptoTab: 'overview', lang: 'ru', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null, tab: 'overview', strategies: null, pairs: null };
 const SIGN_IN = '/.auth/login/aad?post_login_redirect_uri=/';
 
 function el(tag, props = {}, ...children) {
@@ -468,19 +468,22 @@ function signedOut() {
 
 async function refresh() {
   if (state.signedOut) return;
+  // Stocks is a mode of its own (the switch's third button): it reads the stocks advice alone, none of the crypto engine's.
+  if (state.tab === 'stocks') { await refreshStocks(); return; }
   try {
     const view = await getJson(`/api/dashboard?mode=${encodeURIComponent(state.mode)}`);
     if (view.mode !== state.mode) return; // the mode changed while this was loading
     state.view = view;
     state.loadError = null;
-    renderDashboard(view);
+    if (state.tab !== 'stocks') renderDashboard(view); // Stocks opened while this loaded: leaving it renders it
   } catch (error) {
     if (error instanceof SignedOut) { signedOut(); return; }
     state.loadError = error.message;
+    if (state.tab === 'stocks') return;
     banner(t("Couldn't load the dashboard: {error}", { error: error.message }), true);
     document.getElementById('updated').textContent = t('Update failed');
   }
-  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests(), state.tab === 'strategy' ? refreshStrategies() : null, state.tab === 'coins' ? refreshPairs() : null, state.tab === 'stocks' ? refreshStocks() : null]);
+  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests(), state.tab === 'strategy' ? refreshStrategies() : null, state.tab === 'coins' ? refreshPairs() : null]);
 }
 
 /** Everything /api/dashboard feeds, in the page's language: after each refresh, and again when the language changes. */
@@ -1321,11 +1324,35 @@ function renderJournal() {
 
 // --- Tabs ---------------------------------------------------------------------------------------------------------------------
 
+// 'stocks' has no tab: it is the mode switch's third button (Paper | Live | Stocks), and hides the crypto tabs while it shows.
 const TABS = ['overview', 'coins', 'strategy', 'activity', 'requests', 'journal', 'stocks'];
+
+/** The mode switch: Stocks pressed while its panel shows, else the crypto mode. The crypto badges hide with Stocks. */
+function renderModeSwitch() {
+  const stocksShown = state.tab === 'stocks';
+  const pressed = stocksShown ? 'stocks' : state.mode;
+  for (const button of document.querySelectorAll('[data-mode]')) button.setAttribute('aria-pressed', String(button.dataset.mode === pressed));
+  if (!state.signedOut) document.querySelector('.tabs').hidden = stocksShown;
+  document.getElementById('mode-badge').hidden = stocksShown;
+  document.getElementById('strategy-badge').hidden = stocksShown;
+}
+
+/** A press on the mode switch: Stocks opens its panel; Paper or Live goes back to the crypto tab last open, in that mode. */
+function pressMode(mode) {
+  if (state.signedOut) return; // the sign-in banner stays: nothing loads until the owner signs in again
+  if (mode === 'stocks') {
+    if (state.tab !== 'stocks') { setTab('stocks'); window.scrollTo({ top: 0 }); }
+    return;
+  }
+  if (state.tab !== 'stocks') { if (mode !== state.mode) setMode(mode); return; }
+  if (mode !== state.mode) setMode(mode, { load: false });
+  setTab(state.cryptoTab); // loads the crypto view, which wasn't refreshed while Stocks showed
+}
 
 /** Shows one tab's panel. The tab is kept in the address (#coins), so a reload or a bookmark opens the same one. */
 function setTab(tab, { focus = false } = {}) {
   const name = TABS.includes(tab) ? tab : 'overview';
+  if (name !== 'stocks') state.cryptoTab = name;
   for (const button of document.querySelectorAll('[role="tab"]')) {
     const selected = button.dataset.tab === name;
     button.setAttribute('aria-selected', String(selected));
@@ -1335,9 +1362,13 @@ function setTab(tab, { focus = false } = {}) {
   if (!state.signedOut) for (const panel of document.querySelectorAll('.tab-panel')) panel.hidden = panel.id !== `panel-${name}`;
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   const changed = state.tab !== name;
+  const leftStocks = changed && state.tab === 'stocks';
   state.tab = name;
-  if (changed && name === 'strategy') refreshStrategies(); // read only while the tab is open
-  if (changed && name === 'coins') refreshPairs();
+  renderModeSwitch();
+  if (changed && name === 'stocks' && !state.signedOut) banner(null); // the crypto engine's banner doesn't belong to stocks
+  if (leftStocks) refresh(); // the crypto view wasn't refreshed while Stocks showed; this reads the open tab's data too
+  else if (changed && name === 'strategy') refreshStrategies(); // read only while the tab is open
+  else if (changed && name === 'coins') refreshPairs();
   if (changed && name === 'stocks') refreshStocks(); // stocks.js: the stocks advisor's advice, read only (ADR-0023)
   if (changed && name === 'activity' && state.activity) renderVolume(state.activity); // drawn hidden, it had no width
 }
@@ -1400,8 +1431,9 @@ function setLang(lang) {
   translateStatics();
   renderModeBadge();
   renderViewer();
-  if (state.view) renderDashboard(state.view);
-  else if (!state.signedOut && !state.loadError) document.getElementById('updated').textContent = t('Loading…');
+  const crypto = state.tab !== 'stocks'; // Stocks shows none of the crypto engine's banner or update time
+  if (state.view && crypto) renderDashboard(state.view);
+  else if (!state.signedOut && !(state.loadError && crypto)) document.getElementById('updated').textContent = t('Loading…');
   if (state.journal) renderJournal();
   if (state.activity) renderVolume(state.activity);
   if (state.requests) renderRequests(state.requests);
@@ -1411,7 +1443,7 @@ function setLang(lang) {
   if (state.pairsError) renderPairsError();
   if (typeof renderStocks === 'function' && (stocks.answer || stocks.error)) renderStocks(); // stocks.js failing mustn't stop the page
   if (state.signedOut) signedOut();
-  else if (state.loadError) {
+  else if (state.loadError && crypto) {
     banner(t("Couldn't load the dashboard: {error}", { error: state.loadError }), true);
     document.getElementById('updated').textContent = t('Update failed');
   }
@@ -1424,7 +1456,7 @@ function renderModeBadge() {
   badge.className = `badge ${state.mode === 'live' ? 'live' : ''}`;
 }
 
-function setMode(mode) {
+function setMode(mode, { load = true } = {}) {
   state.mode = mode;
   state.view = null;
   state.strategies = null;
@@ -1436,16 +1468,16 @@ function setMode(mode) {
   document.getElementById('volume-chart').replaceChildren();
   state.pairsError = null;
   try { localStorage.setItem('cix-mode', mode); } catch { /* storage may be unavailable */ }
-  for (const button of document.querySelectorAll('[data-mode]')) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+  renderModeSwitch();
   renderModeBadge();
   renderStrategyTile(null); // not the other mode's strategy while this one's loads
-  refresh();
+  if (load) refresh();
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
   let saved = 'paper';
   try { saved = localStorage.getItem('cix-mode') === 'live' ? 'live' : 'paper'; } catch { /* default */ }
-  for (const button of document.querySelectorAll('[data-mode]')) button.addEventListener('click', () => setMode(button.dataset.mode));
+  for (const button of document.querySelectorAll('[data-mode]')) button.addEventListener('click', () => pressMode(button.dataset.mode));
   let lang = null;
   try { lang = localStorage.getItem('cix-lang'); } catch { /* default */ }
   collectStatics(); // before anything renders: only the page's own English words
@@ -1496,6 +1528,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     resized = setTimeout(() => { if (state.activity && state.tab === 'activity') renderVolume(state.activity); }, 200);
   });
   await loadViewer();
-  setMode(saved);
+  setMode(saved, { load: state.tab !== 'stocks' }); // Stocks has read its own already; leaving it loads the crypto view
   state.timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
 });

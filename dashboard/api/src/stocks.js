@@ -18,6 +18,9 @@ const MAX_ROWS = 200;
 
 const ACTION_ORDER = ['sell', 'set-stop', 'raise-stop', 'buy']; // protecting what is held comes before buying
 const REGIMES = new Set(['risk-on', 'risk-off', 'unknown']);
+// The watchlist's statuses (Cix.Stocks.Host.WatchStatus), in the order the page lists them: what is held, what signals an
+// entry tonight, what is in an uptrend under its high, then the rest.
+const WATCH_ORDER = ['held', 'breakout', 'uptrend', 'below-trend', 'too-expensive', 'stale-data', 'not-enough-data', 'no-data'];
 // The same rule as Cix.Stocks.StockSymbol: TICKER.EXCHANGE in capitals.
 const SYMBOL = /^[A-Z0-9][A-Z0-9_-]{0,19}\.[A-Z]{1,10}$/;
 const CODE = /^[a-z][a-z-]{0,39}$/;
@@ -88,6 +91,35 @@ function note(n) {
   return s && reason ? { symbol: s, reason } : null;
 }
 
+function watch(w) {
+  const s = symbol(w?.symbol);
+  const status = WATCH_ORDER.includes(w?.status) ? w.status : null;
+  if (!s || !status) return null;
+  const lastClose = positive(w.lastClose);
+  const breakoutHigh = positive(w.breakoutHigh);
+  const trendAverage = positive(w.trendAverage);
+  return {
+    symbol: s, name: name(w.name), currency: currency(w.currency), theme: code(w.theme), lastClose, lastDay: day(w.lastDay),
+    breakoutHigh, trendAverage,
+    // How far the close must rise to beat its prior high (negative once above it), and how far it is over its trend average.
+    toBreakout: ratio(breakoutHigh, lastClose),
+    vsTrend: ratio(lastClose, trendAverage),
+    status,
+  };
+}
+
+/** Held first, then breakouts, then uptrends nearest their high, then the rest, each in the watchlist's order. */
+function watchOrder(x, y) {
+  const byStatus = WATCH_ORDER.indexOf(x.w.status) - WATCH_ORDER.indexOf(y.w.status);
+  if (byStatus !== 0) return byStatus;
+  if (x.w.status === 'uptrend') {
+    const a = x.w.toBreakout ?? Infinity;
+    const b = y.w.toBreakout ?? Infinity;
+    if (a !== b) return a < b ? -1 : 1;
+  }
+  return x.i - y.i;
+}
+
 /** Weekdays strictly between two UTC days: the closes there have been since asOf, not counting today's. */
 function weekdaysBetween(fromMs, toMs) {
   let n = 0;
@@ -120,6 +152,7 @@ function stocksView(value, now) {
       .map((a, i) => ({ a, i })).sort((x, y) => ACTION_ORDER.indexOf(x.a.kind) - ACTION_ORDER.indexOf(y.a.kind) || x.i - y.i).map((x) => x.a),
     holdings: list(v.holdings).map(holding).filter(Boolean),
     notes: list(v.notes).map(note).filter(Boolean),
+    watchlist: list(v.watchlist).map(watch).filter(Boolean).map((w, i) => ({ w, i })).sort(watchOrder).map((x) => x.w),
   };
 }
 
