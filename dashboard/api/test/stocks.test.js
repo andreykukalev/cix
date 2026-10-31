@@ -16,7 +16,7 @@ const reads = [];
 let latest = null;
 CosmosReader.prototype.readDocument = async function readDocument(container, id) {
   reads.push({ endpoint: this.base, database: this.database, container, id });
-  return latest;
+  return id === 'candidates-latest' ? null : latest;
 };
 Object.assign(process.env, {
   COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('crypto').toString('base64'), COSMOS_DATABASE: 'cix',
@@ -25,7 +25,7 @@ Object.assign(process.env, {
 });
 require('../src/functions/stocks.js');
 Module._load = originalLoad;
-const { stocksView, loadStocks, stocksReader } = require('../src/stocks');
+const { stocksView, candidatesView, loadStocks, stocksReader } = require('../src/stocks');
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const OWNER = b64({ identityProvider: 'aad', userId: 'owner-user-id', userRoles: ['authenticated', 'owner'] });
@@ -70,19 +70,23 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
   const answer = await routes.stocks.handler(request(OWNER), context);
   assert.equal(answer.status, 200);
   assert.equal(answer.headers['cache-control'], 'no-store');
-  assert.deepEqual(reads, [{ endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'advice-latest' }]);
+  assert.deepEqual(reads, [
+    { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'advice-latest' },
+    { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'candidates-latest' },
+  ]);
+  assert.equal(answer.jsonBody.candidates, null);
   assert.equal(answer.jsonBody.configured, true);
   assert.equal(answer.jsonBody.advice.actions.length, 3);
 });
 
 test('without the stocks settings the tab is not set up, and nothing is read', async () => {
   assert.equal(stocksReader({ COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: 'a2V5' }), null);
-  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('no document yet is set up but without advice', async () => {
   const reader = { readDocument: async () => null };
-  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('actions come protective first, in the advisor\'s order within a kind', () => {
@@ -182,4 +186,37 @@ test('the watchlist lists held, then entry signals, then uptrends nearest their 
   const none = view.watchlist.find((x) => x.symbol === 'DDD.US');
   assert.deepEqual([none.lastClose, none.toBreakout, none.vsTrend], [null, null, null]);
   assert.deepEqual(stocksView(ADVICE, NOW).watchlist, []); // advice written before the watchlist existed
+});
+
+test('the market-wide search\'s candidates are checked field by field and keep the host\'s order', () => {
+  const view = candidatesView({
+    asOf: '2026-10-30', generatedAt: '2026-10-31T02:12:00Z', status: 'done', regime: 'risk-on', baseCurrency: 'USD', capital: '10000',
+    listed: '5200', shortlisted: '40',
+    candidates: [
+      { symbol: 'NEW.US', name: 'New Co', venue: 'NASDAQ', status: 'breakout', close: '142.2', breakoutHigh: '142.1', trendAverage: '132.25', stop: '139.2', shares: '14', momentum: '0.31', marketCap: '5000000000' },
+      { symbol: 'NEAR.US', status: 'near-high', close: '100', breakoutHigh: '102', stop: '94', shares: '3' },
+      { symbol: 'BAD.US', status: 'moon', close: '1' },
+      { symbol: 'nope', status: 'breakout', close: '1' },
+      { symbol: 'NOPRICE.US', status: 'breakout', close: 'x' },
+    ],
+  });
+  assert.equal(view.status, 'done');
+  assert.deepEqual([view.listed, view.shortlisted, view.capital], [5200, 40, 10000]);
+  assert.deepEqual(view.candidates.map((c) => c.symbol), ['NEW.US', 'NEAR.US']);
+  const [c, near] = view.candidates;
+  assert.ok(Math.abs(c.amount - 1990.8) < 1e-9); // 14 × 142.2
+  assert.ok(Math.abs(c.toStop - 3 / 142.2) < 1e-12);
+  assert.deepEqual([near.name, near.momentum, near.marketCap], [null, null, null]);
+  assert.ok(Math.abs(near.toBreakout - 0.02) < 1e-12);
+  assert.equal(candidatesView({ status: 'unknown-thing' }).status, null);
+  assert.deepEqual([candidatesView({ listed: '1.5' }).listed, candidatesView({ listed: '-1' }).listed, candidatesView({ listed: 7 }).listed], [null, null, 7]);
+  assert.equal(candidatesView({ status: 'advice-behind' }).status, 'advice-behind');
+  assert.equal(candidatesView(null), null);
+});
+
+test('the answer carries both pages: the advice and the candidates', async () => {
+  const docs = { 'advice-latest': { value: ADVICE }, 'candidates-latest': { value: { status: 'off', candidates: [] } } };
+  const answer = await loadStocks({ readDocument: async (container, id) => docs[id] ?? null }, NOW);
+  assert.equal(answer.advice.asOf, '2026-10-30');
+  assert.equal(answer.candidates.status, 'off');
 });

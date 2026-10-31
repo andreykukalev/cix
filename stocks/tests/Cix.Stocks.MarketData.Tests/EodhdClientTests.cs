@@ -220,4 +220,75 @@ public class EodhdClientTests
         Assert.Throws<ArgumentException>(() => new EodhdClient(new HttpClient { BaseAddress = new Uri("http://eodhd.com/api/") }, Token));
         Assert.Throws<ArgumentException>(() => new EodhdClient(new HttpClient { BaseAddress = new Uri("https://eodhd.com/api") }, Token));
     }
+
+    // The shape of EODHD's documented answer (eodhd.com/financial-apis/bulk-download-api, filter=extended), trimmed.
+    private const string Bulk = """
+        [
+          {"code":"AAPL","exchange_short_name":"US","date":"2026-10-30","open":270.1,"high":272.3,"low":268.9,"close":271.4,"adjusted_close":271.4,
+           "volume":51234567,"name":"Apple Inc","type":"Common Stock","MarketCapitalization":4010000000000,"Beta":1.2,"ema_50d":255.2,
+           "ema_200d":231.7,"hi_250d":275.0,"lo_250d":170.1,"avgvol_14d":50000000,"avgvol_50d":48000000,"avgvol_200d":52000000},
+          {"code":"ZERO","exchange_short_name":"US","date":"2026-10-30","close":0,"adjusted_close":0,"volume":0},
+          {"code":"NOAVG","exchange_short_name":"US","date":"2026-10-30","close":"12.5","adjusted_close":"12.5","volume":"1000",
+           "MarketCapitalization":0,"ema_50d":0,"ema_200d":null,"hi_250d":0,"avgvol_50d":0},
+          {"code":"bad code!","date":"2026-10-30","close":5},
+          {"code":"NODATE","date":"yesterday","close":5}
+        ]
+        """;
+
+    [Fact]
+    public async Task ReadsTheWholeMarketsLastSession()
+    {
+        var (client, handler) = Client(_ => Json(Bulk));
+
+        var rows = await client.GetMarketDayAsync("US", CancellationToken.None);
+
+        var uri = Assert.Single(handler.Requests);
+        Assert.Equal("/api/eod-bulk-last-day/US", uri.AbsolutePath);
+        Assert.Contains("filter=extended", uri.Query, StringComparison.Ordinal);
+        Assert.Contains("fmt=json", uri.Query, StringComparison.Ordinal);
+        Assert.Contains($"api_token={Uri.EscapeDataString(Token)}", uri.Query, StringComparison.Ordinal);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(new MarketRow("AAPL.US", new DateOnly(2026, 10, 30), 271.4m, 51234567m, 4010000000000m, 255.2m, 231.7m, 275.0m, 48000000m), rows[0]);
+        // Zeros and nulls are gaps, not figures.
+        Assert.Equal(new MarketRow("NOAVG.US", new DateOnly(2026, 10, 30), 12.5m, 1000m, null, null, null, null, null), rows[1]);
+    }
+
+    [Fact]
+    public async Task ReadsTheSymbolListOfCommonStocks()
+    {
+        var (client, handler) = Client(_ => Json("""
+            [{"Code":"AAPL","Name":"Apple Inc","Country":"USA","Exchange":"NASDAQ","Currency":"USD","Type":"Common Stock","Isin":"US0378331005"},
+             {"Code":"IBM","Name":"International Business Machines\u0007","Country":"USA","Exchange":"NYSE","Currency":"USD","Type":"Common Stock","Isin":null},
+             {"Code":"no good","Name":"x","Exchange":"NYSE","Type":"Common Stock"}]
+            """));
+
+        var listed = await client.GetListedStocksAsync("US", CancellationToken.None);
+
+        var uri = Assert.Single(handler.Requests);
+        Assert.Equal("/api/exchange-symbol-list/US", uri.AbsolutePath);
+        Assert.Contains("type=common_stock", uri.Query, StringComparison.Ordinal);
+        Assert.Equal([new ListedStock("AAPL.US", "Apple Inc", "NASDAQ", "Common Stock"), new ListedStock("IBM.US", "International Business Machines", "NYSE", "Common Stock")], listed);
+    }
+
+    [Fact]
+    public async Task AFreeKeysRefusalOfTheDownloadNamesTheStatusNotTheUrl()
+    {
+        var (client, _) = Client(_ => Json("""{"error":"plan"}""", HttpStatusCode.Forbidden));
+
+        var e = await Assert.ThrowsAsync<StockDataException>(() => client.GetMarketDayAsync("US", CancellationToken.None));
+
+        Assert.Equal(403, e.StatusCode);
+        Assert.DoesNotContain(Token, e.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("api_token", e.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetMarketDayAsync("us/../x", CancellationToken.None));
+    }
+
+    [Fact]
+    public void ProviderTextLosesFormatCharactersAndIsNeverCutInsideAPair()
+    {
+        Assert.Equal("Apple Inc", EodhdClient.Clean("Ap\u200Bple\u202E Inc\u2028"));
+        Assert.Null(EodhdClient.Clean("\u200E\u0007 "));
+        var emoji = new string('a', 79) + "\U0001F600";
+        Assert.Equal(new string('a', 79), EodhdClient.Clean(emoji));
+    }
 }

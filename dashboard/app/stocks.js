@@ -75,6 +75,43 @@ function watchStatus(status) {
   }
 }
 
+/** The market-wide search's panel (ADR-0025): its status, or the candidates the host ranked. */
+function renderCandidates(c, advice) {
+  const notice = document.getElementById('stocks-candidates-banner');
+  const meta = document.getElementById('stocks-candidates-meta');
+  const say = (text, tone) => {
+    notice.hidden = !text;
+    notice.className = `banner ${tone ?? ''}`;
+    notice.textContent = text ?? '';
+  };
+  const status = c?.status ?? null;
+  if (!stocks.answer || stocks.error) say(null);
+  else if (!c) say(t("The market search hasn't run yet."));
+  else if (status === 'off') say(t("The market search is off: it needs EODHD's paid plan (EOD All World), as the free key can't download the whole market. It is turned on in stocks/config/stocks.json."));
+  else if (status === 'call-budget') say(t("The day's search calls are spent: no search tonight."), 'warn');
+  else if (status === 'data-error') say(t('EODHD refused or failed the whole-market download: no search tonight. A free key is always refused.'), 'bad');
+  else if (status === 'not-ready') say(t("EODHD's download wasn't for the latest session yet: the next run searches again."), 'warn');
+  else if (status === 'advice-behind') say(t("The advice's prices came late, so the search waited for them: the next run searches."), 'warn');
+  else if (status === 'done' && advice?.asOf && c.asOf && c.asOf < advice.asOf) {
+    say(t('These candidates are from the close of {day}, older than the advice: the latest search failed.', { day: c.asOf }), 'warn');
+  }
+  else if (status === 'done' && c.regime === 'risk-off') say(t('Market risk-off: the advisor buys nothing new until it recovers. These are for watching.'), 'bad');
+  else say(null);
+  meta.textContent = status === 'done' && c.asOf
+    ? t('{shortlisted} checked of {listed} stocks, close of {day}', { shortlisted: c.shortlisted ?? '–', listed: c.listed ?? '–', day: c.asOf }) : '';
+  const shown = status === 'done' ? c.candidates : [];
+  rows('stocks-candidates', shown, (x) => [
+    [stockName(x), x.venue ? [' · ', el('span', { class: 'muted small', text: x.venue })] : null],
+    el('span', { class: `badge signal ${x.status === 'breakout' ? 'ok' : ''}`, text: x.status === 'breakout' ? t('Entry signal') : t('Near its high') }),
+    td(stockPrice(x.close, 'USD'), 'num'),
+    td(stockPrice(x.breakoutHigh, 'USD'), 'num'),
+    td(stockPrice(x.stop, 'USD'), 'num'),
+    td(x.shares === null ? '–' : amount(x.shares, 0), 'num'),
+    td(x.amount === null ? '–' : money(x.amount, c.baseCurrency), 'num'),
+    td(el('span', { class: x.momentum === null ? '' : `move ${x.momentum >= 0 ? 'up' : 'down'}`, text: percent(x.momentum) }), 'num'),
+  ], status === 'done' ? t('No stock in the market passes the entry rule tonight.') : advice ? '–' : t('No advice yet.'));
+}
+
 function stockName(item) {
   return [el('span', { class: 'chip', text: item.symbol }), item.name ? [' ', el('span', { class: 'muted small', text: item.name })] : null];
 }
@@ -146,6 +183,8 @@ function renderStocks() {
       : el('span', { class: h.toStop <= 0 ? 'badge bad' : '', text: percent(h.toStop) }), 'num'),
     h.openedOn ?? '–',
   ], t('No holdings recorded.'));
+
+  renderCandidates(stocks.answer?.candidates ?? null, a);
 
   rows('stocks-watchlist', a?.watchlist ?? [], (w) => {
     const [text, tone] = watchStatus(w.status);

@@ -43,6 +43,15 @@ A symbol's currency comes from its exchange (`US` is USD, `XETRA`, `PA`, `AS` an
 
 The run writes to its own database (`cix-stocks`, containers `advice`, `state`, `trades`, `bars`, all with partition key `/id`): the trades and the dated advice (`advice-YYYY-MM-DD`) once each, never changed; the paper portfolio with an ETag, so of two overlapping runs only one saves; then `advice-latest`, which a later run republishes from the dated advice if a failure left it behind. The page shows money to the cent; the portfolio keeps every digit. The EODHD key is read from `/run/secrets/eodhd-api-token` (Key Vault) and is never logged.
 
+### Market-wide search
+
+After the advice, the same run searches the whole US market for candidates (ADR-0025, `MarketSearch` and `Cix.Stocks.Screener`), when `screener.enabled` is set in `config/stocks.json`. It needs EODHD's paid EOD All World plan: the free key can't download the whole market, and the page says the search is off or refused.
+
+1. Its calls are reserved in its own state (`state/search`, `screener.maxCallsPerDay`, 300 by default) before any is made: the whole-market download (100 calls), the symbol list when older than `universeDays` (1 call, kept in `state/universe`), and each shortlisted stock's bars (1 call each at most, `shortlistSize` 40). Calls not made go back.
+2. The shortlist: common stocks on `venues`, priced from `minPrice` to the advisor's `maxSharePrice`, with `minMarketCap` and `minDollarVolume` (50-day average volume times the close), the provider's 50-day EMA over its 200-day and the close over that, within `maxBelowHigh` of the 250-day high; nearest the high first. The watchlist, the holdings and the benchmark are left out.
+3. Each shortlisted stock's own bars go through `Advisor.Entry`, the same rule as the watchlist: a breakout, or an uptrend within `nearHighFraction` of its prior high, is a candidate, sized by the advisor's rules on the paper portfolio's equity (`Advisor.InitialStop`, `Advisor.Sized`). Entry signals first, then momentum, at most `maxCandidates`.
+4. `candidates-YYYY-MM-DD` once, then `candidates-latest`, in the `advice` container. A session already searched isn't searched again (a page a failed run left behind is copied from the dated one); a download for an earlier session (`not-ready`) or a later one than the advice (`advice-behind`) is retried by the next run. Bars stop being fetched 12 minutes into the job, inside its 15-minute timeout, and what was found is listed.
+
 Locally, `EODHD_API_TOKEN=... dotnet run --project stocks/src/Cix.Stocks.Host -- --dry-run` keeps everything in memory and prints the advice. It still spends the key's calls, which the nightly run doesn't know about: with the free key, a dry run the same UTC day leaves the job short.
 
 ## Dashboard
@@ -64,6 +73,17 @@ The host writes one document after each close: id `advice-latest` in the `advice
   "watchlist": [{ "symbol": "EPAM.US", "name": "EPAM Systems", "currency": "USD", "theme": "software", "lastClose": 168.2,
                   "lastDay": "2026-10-30", "breakoutHigh": 190.5, "trendAverage": 181.3,
                   "status": "held | breakout | uptrend | below-trend | not-enough-data | no-data" }]
+}
+```
+
+The route also reads `candidates-latest` (null until the first search):
+
+```json
+{
+  "asOf": "2026-10-30", "generatedAt": "2026-10-31T02:12:00Z", "status": "done | off | call-budget | data-error | not-ready | advice-behind",
+  "regime": "risk-on", "baseCurrency": "USD", "capital": 10000, "listed": 5214, "shortlisted": 40,
+  "candidates": [{ "symbol": "ANET.US", "name": "Arista Networks", "venue": "NYSE", "status": "breakout | near-high", "close": 142.2,
+                   "breakoutHigh": 140.1, "trendAverage": 112.3, "stop": 133.5, "shares": 14, "momentum": 0.42, "marketCap": 180000000000 }]
 }
 ```
 

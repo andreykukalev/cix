@@ -49,6 +49,9 @@ public sealed record StocksConfig
 
     public SimulationSettings Costs { get; init; } = new();
 
+    /// <summary>The market-wide search (ADR-0025): off unless the EODHD key's plan has the whole-market download.</summary>
+    public ScreenerSettings Screener { get; init; } = new();
+
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow, // a misspelt setting fails instead of being ignored
@@ -117,6 +120,10 @@ public sealed record StocksConfig
         if (HistoryDays < (settings.MinBars * 3 / 2) + 10 || HistoryDays > 20_000)
             throw new ArgumentOutOfRangeException(nameof(HistoryDays), HistoryDays, $"Too short for the advisor's {settings.MinBars} bars, or over 20 000.");
         Costs.Validate();
+        Screener.Validate();
+        // The search sizes in the market's currency as if it were the base one: only the US market, in USD, for now.
+        if (Screener.Enabled && !(string.Equals(Screener.Exchange, "US", StringComparison.Ordinal) && string.Equals(BaseCurrency, "USD", StringComparison.Ordinal)))
+            throw new ArgumentException("The market-wide search covers the US market with a USD base currency only.");
         return this;
     }
 

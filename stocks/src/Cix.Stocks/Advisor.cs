@@ -335,24 +335,21 @@ public static class Advisor
                 continue;
             }
 
-            var stop = FloorTo(c.Close - (settings.InitialStopAtr * c.Atr), instrument.PriceTick);
+            var stop = InitialStop(c.Close, c.Atr, instrument.PriceTick, settings);
             if (stop <= 0)
             {
                 notes.Add(new(instrument.Symbol, Reasons.NotEnoughData));
                 continue;
             }
 
-            var riskPerShare = (c.Close - stop + (settings.GapAtr * c.Atr)) * c.Fx;
             var pricePerShare = c.Close * c.Fx;
-            var byRisk = input.Capital * settings.RiskPerTrade / riskPerShare;
-            var byCap = input.Capital * settings.MaxPositionFraction / pricePerShare;
+            var sized = Sized(input.Capital, c.Close, stop, c.Atr, c.Fx, settings);
             var byCash = cash / pricePerShare;
             var theme = instrument.Theme;
             var byTheme = theme is null ? decimal.MaxValue : Math.Max(0m, themeCap - themes.GetValueOrDefault(theme)) / pricePerShare;
-            var quantity = FloorTo(Math.Min(Math.Min(Math.Min(byRisk, byCap), byCash), byTheme), instrument.QuantityStep);
+            var quantity = FloorTo(Math.Min(Math.Min(sized, byCash), byTheme), instrument.QuantityStep);
             if (quantity <= 0)
             {
-                var sized = Math.Min(byRisk, byCap);
                 notes.Add(new(instrument.Symbol, byTheme < Math.Min(sized, byCash) ? Reasons.ThemeLimit : byCash < sized ? Reasons.NoCash : Reasons.TooSmall));
                 continue;
             }
@@ -422,6 +419,22 @@ public static class Advisor
         if (string.Equals(currency, input.BaseCurrency, StringComparison.Ordinal))
             return 1m;
         return input.FxToBase.TryGetValue(currency, out var rate) && rate > 0 ? rate : null;
+    }
+
+    /// <summary>A new position's stop: <see cref="AdvisorSettings.InitialStopAtr"/> ATRs under the close, rounded down to the tick.</summary>
+    public static decimal InitialStop(decimal close, decimal atr, decimal priceTick, AdvisorSettings settings) =>
+        FloorTo(close - (settings.InitialStopAtr * atr), priceTick);
+
+    /// <summary>
+    /// A new position's size before cash, slots and themes, unrounded: the shares whose loss to the stop plus a gap of
+    /// <see cref="AdvisorSettings.GapAtr"/> ATRs is <see cref="AdvisorSettings.RiskPerTrade"/> of the capital, at most
+    /// <see cref="AdvisorSettings.MaxPositionFraction"/> of it in value. Prices in the instrument's currency, capital in the base.
+    /// </summary>
+    public static decimal Sized(decimal capital, decimal close, decimal stop, decimal atr, decimal fxToBase, AdvisorSettings settings)
+    {
+        var riskPerShare = (close - stop + (settings.GapAtr * atr)) * fxToBase;
+        var pricePerShare = close * fxToBase;
+        return Math.Min(capital * settings.RiskPerTrade / riskPerShare, capital * settings.MaxPositionFraction / pricePerShare);
     }
 
     /// <summary>Rounds down to a multiple of <paramref name="step"/>: quantities never exceed the budget, stops never sit above their level.</summary>

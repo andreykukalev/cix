@@ -8,6 +8,10 @@ const { CosmosReader } = require('./cosmos');
 
 const CONTAINER = 'advice';
 const LATEST = 'advice-latest';
+const CANDIDATES = 'candidates-latest'; // the market-wide search's page (ADR-0025), same container
+const SEARCH_STATUSES = new Set(['done', 'off', 'call-budget', 'data-error', 'not-ready', 'advice-behind']);
+const CANDIDATE_STATUSES = new Set(['breakout', 'near-high']);
+const MAX_CANDIDATES = 100;
 const DAY_MS = 24 * 3600 * 1000;
 /**
  * Advice is stale once this many weekday closes have passed without new advice (today's close not counted, as it may not
@@ -52,9 +56,9 @@ const currency = (v) => (typeof v === 'string' && CURRENCY.test(v) ? v : null);
 // A real calendar day: Date.parse rolls 2026-02-30 over to March, so the day must come back unchanged.
 const day = (v) => (typeof v === 'string' && DAY.test(v) && Number.isFinite(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v ? v : null);
 const iso = (v) => (typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null);
-// Control and bidi-override characters out, so a name can't disguise the ticker beside it.
+// Control, format (bidi overrides, zero-width) and line-separator characters out, so a name can't disguise the ticker beside it.
 const name = (v) => {
-  const s = typeof v === 'string' ? v.replace(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/gu, '').trim() : '';
+  const s = typeof v === 'string' ? v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').trim() : '';
   return s ? s.slice(0, 80) : null;
 };
 const list = (v) => (Array.isArray(v) ? v.slice(0, MAX_ROWS) : []);
@@ -120,6 +124,46 @@ function watchOrder(x, y) {
   return x.i - y.i;
 }
 
+function candidate(c) {
+  const s = symbol(c?.symbol);
+  const status = CANDIDATE_STATUSES.has(c?.status) ? c.status : null;
+  const close = positive(c?.close);
+  if (!s || !status || close === null) return null;
+  const breakoutHigh = positive(c.breakoutHigh);
+  const stop = positive(c.stop);
+  const shares = positive(c.shares);
+  return {
+    symbol: s, name: name(c.name), venue: name(c.venue), status, close, breakoutHigh, trendAverage: positive(c.trendAverage), stop, shares,
+    amount: shares !== null ? shares * close : null,
+    momentum: num(c.momentum), marketCap: positive(c.marketCap),
+    toStop: stop !== null ? (close - stop) / close : null,
+    toBreakout: ratio(breakoutHigh, close),
+  };
+}
+
+// A count the host wrote as a decimal string (or a number): a whole number from 0, else a gap.
+const count = (v) => {
+  const n = num(v);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+};
+
+/** The market-wide search's page, every field checked; null when there is none. */
+function candidatesView(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    status: SEARCH_STATUSES.has(value.status) ? value.status : null,
+    asOf: day(value.asOf),
+    generatedAt: iso(value.generatedAt),
+    regime: REGIMES.has(value.regime) ? value.regime : 'unknown',
+    baseCurrency: currency(value.baseCurrency),
+    capital: positive(value.capital),
+    listed: count(value.listed),
+    shortlisted: count(value.shortlisted),
+    // The host ranks them (entry signals first, then momentum): the order is kept.
+    candidates: (Array.isArray(value.candidates) ? value.candidates.slice(0, MAX_CANDIDATES) : []).map(candidate).filter(Boolean),
+  };
+}
+
 /** Weekdays strictly between two UTC days: the closes there have been since asOf, not counting today's. */
 function weekdaysBetween(fromMs, toMs) {
   let n = 0;
@@ -159,9 +203,11 @@ function stocksView(value, now) {
 /** The Stocks tab's answer: whether the stocks database is set up, and the latest advice when there is one. */
 async function loadStocks(reader, now) {
   const generatedAt = new Date(now).toISOString();
-  if (!reader) return { configured: false, advice: null, generatedAt };
-  const doc = await reader.readDocument(CONTAINER, LATEST);
-  return { configured: true, advice: doc ? stocksView(doc.value ?? null, now) : null, generatedAt };
+  if (!reader) return { configured: false, advice: null, candidates: null, generatedAt };
+  const [doc, found] = await Promise.all([reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES)]);
+  return {
+    configured: true, advice: doc ? stocksView(doc.value ?? null, now) : null, candidates: found ? candidatesView(found.value ?? null) : null, generatedAt,
+  };
 }
 
-module.exports = { stocksReader, stocksView, loadStocks, CONTAINER, LATEST, STALE_MISSED_CLOSES };
+module.exports = { stocksReader, stocksView, candidatesView, loadStocks, CONTAINER, LATEST, CANDIDATES, STALE_MISSED_CLOSES };
