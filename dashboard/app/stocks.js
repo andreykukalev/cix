@@ -1,7 +1,8 @@
 'use strict';
-// The Stocks tab (ADR-0023): the stocks advisor's latest advice from /api/stocks, read only. The owner carries it out by
-// hand in Revolut; nothing here sends anything. Kept apart from the crypto tabs: app.js only calls refreshStocks when the
-// tab opens or the page refreshes, and renderStocks when the language changes. Uses app.js's helpers (el, rows, td,
+// The Stocks mode (ADR-0023), the third button of the Paper | Live | Stocks switch: the stocks advisor's latest advice from
+// /api/stocks, read only. The owner carries it out by hand in Revolut; nothing here sends anything. Kept apart from the
+// crypto tabs, which hide while it shows: app.js calls refreshStocks when it opens and on each refresh while it shows (and
+// reads nothing of crypto's then), and renderStocks when the language changes. Uses app.js's helpers (el, rows, td,
 // tile, amount, price, getJson, t) and its state, so it loads after app.js. Every value is written as text, never as HTML.
 
 const stocks = { answer: null, error: null };
@@ -59,6 +60,19 @@ function stockReason(code) {
   }
 }
 
+/** A watched stock's status in words, with its badge tone: green for an entry signal, nothing needs attention here. */
+function watchStatus(status) {
+  switch (status) {
+    case 'held': return [t('Held'), 'pending'];
+    case 'breakout': return [t('Entry signal'), 'ok'];
+    case 'uptrend': return [t('Uptrend, under its high'), 'signal'];
+    case 'below-trend': return [t('No uptrend'), ''];
+    case 'not-enough-data': return [t('Not enough price history'), ''];
+    case 'no-data': return [t('No price data'), ''];
+    default: return [status ?? '–', ''];
+  }
+}
+
 function stockName(item) {
   return [el('span', { class: 'chip', text: item.symbol }), item.name ? [' ', el('span', { class: 'muted small', text: item.name })] : null];
 }
@@ -90,6 +104,12 @@ function renderStocks() {
   } else if (stocks.answer && !a) showBanner(t("The stocks advisor hasn't written any advice yet."));
   else if (a?.stale) showBanner(a.asOf ? t('The advice is old: the latest is for {day}. The stocks advisor may not have run.', { day: a.asOf }) : t("The advice has no date: don't act on it."), 'bad');
   else showBanner(null);
+
+  // In the Stocks mode the header's update time is the stocks read's (refresh reads nothing else there).
+  if (state.tab === 'stocks') {
+    document.getElementById('updated').textContent = stocks.error ? t('Update failed')
+      : stocks.answer ? t('Updated {time}', { time: timeOf(stocks.answer.generatedAt) }) : t('Loading…');
+  }
 
   meta.textContent = a?.asOf && !a.stale && !stocks.error ? t('advice after the close of {day}: carry it out in Revolut at the next open', { day: a.asOf }) : '';
 
@@ -124,6 +144,19 @@ function renderStocks() {
       : el('span', { class: h.toStop <= 0 ? 'badge bad' : '', text: percent(h.toStop) }), 'num'),
     h.openedOn ?? '–',
   ], t('No holdings recorded.'));
+
+  rows('stocks-watchlist', a?.watchlist ?? [], (w) => {
+    const [text, tone] = watchStatus(w.status);
+    return [
+      stockName(w),
+      w.theme ?? '–',
+      td(stockPrice(w.lastClose, w.currency), 'num'),
+      td(stockPrice(w.breakoutHigh, w.currency), 'num'),
+      td(w.toBreakout === null ? '–' : w.toBreakout <= 0 ? t('above') : percent(w.toBreakout), 'num'),
+      td(el('span', { class: w.vsTrend === null ? '' : `move ${w.vsTrend >= 0 ? 'up' : 'down'}`, text: percent(w.vsTrend) }), 'num'),
+      el('span', { class: `badge signal ${tone}`, text }),
+    ];
+  }, a ? t('The advice has no watchlist yet: it comes with the next run.') : t('No advice yet.'));
 
   rows('stocks-notes', a?.notes ?? [], (n) => [stockName(n), td(stockReason(n.reason), 'why')], t('No notes.'));
 }

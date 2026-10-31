@@ -25,6 +25,7 @@
         <div class="segmented" role="group" aria-label="Trading mode">
           <button type="button" data-mode="paper" aria-pressed="true">Paper</button>
           <button type="button" data-mode="live" aria-pressed="false">Live</button>
+          <button type="button" data-mode="stocks" aria-pressed="false" title="The stocks advisor: one paper portfolio of its own, apart from crypto">Stocks</button>
         </div>
         <div class="segmented" role="group" aria-label="Language" title="Language of the whole dashboard; coin tickers and figures stay as they are">
           <button type="button" data-lang="ru" lang="ru" aria-pressed="true">RU</button>
@@ -44,7 +45,6 @@
       <button type="button" role="tab" id="tab-activity" data-tab="activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">▤</span>Activity</button>
       <button type="button" role="tab" id="tab-requests" data-tab="requests" aria-controls="panel-requests" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">⇄</span>Requests</button>
       <button type="button" role="tab" id="tab-journal" data-tab="journal" aria-controls="panel-journal" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">☰</span>Journal</button>
-      <button type="button" role="tab" id="tab-stocks" data-tab="stocks" aria-controls="panel-stocks" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">▲</span>Stocks</button>
     </nav>
   </header>
 
@@ -246,7 +246,7 @@
       </section>
     </div>
 
-    <div class="tab-panel" role="tabpanel" id="panel-stocks" aria-labelledby="tab-stocks" hidden>
+    <div class="tab-panel" id="panel-stocks" aria-label="Stocks" hidden>
       <section class="health" aria-label="Stocks advisor">
         <div class="tiles">
           <article class="tile" id="tile-stocks-market"><h2>Stock market</h2><p class="value">–</p><p class="sub">–</p></article>
@@ -259,12 +259,18 @@
       <section class="panel" aria-labelledby="h-stocks-actions">
         <div class="panel-head"><h2 id="h-stocks-actions">What to do in Revolut</h2><span id="stocks-meta" class="muted small"></span></div>
         <table id="stocks-actions"><thead><tr><th>Action</th><th>Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th>Why</th></tr></thead><tbody></tbody></table>
-        <p class="muted small">Advice, not orders: CIX can't trade on Revolut, so you place each order and stop yourself. Sells and stops come first, then buys. A stop is only ever raised, never lowered. The Paper and Live switch is for crypto: it doesn't change this tab.</p>
+        <p class="muted small">Advice, not orders: CIX can't trade on Revolut, so you place each order and stop yourself. Sells and stops come first, then buys. A stop is only ever raised, never lowered.</p>
       </section>
 
       <section class="panel" aria-labelledby="h-stocks-holdings">
         <div class="panel-head"><h2 id="h-stocks-holdings">Holdings and stops</h2></div>
         <table id="stocks-holdings"><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Bought at</th><th class="num">Last close</th><th class="num">Change</th><th class="num">Stop</th><th class="num" title="How far the price can fall before the stop sells">To the stop</th><th>Opened</th></tr></thead><tbody></tbody></table>
+      </section>
+
+      <section class="panel" aria-labelledby="h-stocks-watchlist">
+        <div class="panel-head"><h2 id="h-stocks-watchlist">Watchlist</h2><span class="muted small">every watched stock at the last close</span></div>
+        <table id="stocks-watchlist"><thead><tr><th>Stock</th><th>Theme</th><th class="num">Last close</th><th class="num" title="The highest close of the 50 trading days before the last one: closing above it in an uptrend is the entry signal">50-day high</th><th class="num" title="How far the price must rise to close above its 50-day high">To the high</th><th class="num" title="How far the last close is above or under the 200-day average">vs 200-day</th><th>Status</th></tr></thead><tbody></tbody></table>
+        <p class="muted small">An uptrend is a close above the 200-day average with the 50-day average above it. A close above the 50-day high in an uptrend is the entry signal: the advisor buys it unless the market, the cash, the price cap or the theme limit stops it, and the notes say which.</p>
       </section>
 
       <section class="panel" aria-labelledby="h-stocks-notes">

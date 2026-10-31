@@ -111,6 +111,46 @@ public class DailyRunTests
     }
 
     [Fact]
+    public async Task Run_TheWatchlistShowsEachStocksTrendAndTheHighItMustBeat()
+    {
+        var s = new Setup();
+
+        await s.RunAsync();
+
+        // XYZ rises 0.1 a day: the close 142.2 beats the prior 50-day high 142.1 (the day before), above its 200-day average
+        // (days 223–422: 100 + 0.1 × 322.5). ABC falls 0.1 a day: its close 157.8 is under the average 200 − 32.25, and its
+        // prior high is the oldest of the 50 closes, 200 − 37.2.
+        Assert.Equal(
+            [
+                new WatchLine("XYZ.US", "XYZ Corp", "USD", "tech", 142.2m, Wednesday, 142.1m, 132.25m, WatchStatus.Breakout),
+                new WatchLine("ABC.US", "ABC Corp", "USD", null, 157.8m, Wednesday, 162.8m, 167.75m, WatchStatus.BelowTrend),
+            ],
+            s.Latest.Watchlist!);
+
+        s.NextDay();
+        await s.RunAsync();
+
+        Assert.Equal(WatchStatus.Held, s.Latest.Watchlist!.Single(w => w.Symbol == "XYZ.US").Status);
+    }
+
+    [Fact]
+    public void WatchStatus_AStockInAnUptrendUnderItsHighIsWatchedAndShortHistoryIsSaidSo()
+    {
+        var item = new WatchItem("XYZ.US", "XYZ Corp", "USD");
+        var settings = new AdvisorSettings();
+        var start = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        Candle Bar(int i, decimal close) => new(start.AddDays(i), close, close, close, close, 1m);
+        // 250 rising closes, then a dip: still above the 200-day average, the 50-day above it, under the prior high.
+        var bars = Enumerable.Range(0, 250).Select(i => Bar(i, 100m + i)).Append(Bar(250, 340m)).ToList();
+
+        Assert.Equal(WatchStatus.Uptrend, WatchStatus.For(item, bars, held: false, settings).Status);
+        Assert.Equal(349m, WatchStatus.For(item, bars, held: false, settings).BreakoutHigh);
+        Assert.Equal(WatchStatus.NotEnoughData, WatchStatus.For(item, bars.Take(150).ToList(), held: false, settings).Status);
+        Assert.Equal(WatchStatus.NoData, WatchStatus.For(item, [], held: false, settings).Status);
+        Assert.Equal(WatchStatus.Held, WatchStatus.For(item, [], held: true, settings).Status);
+    }
+
+    [Fact]
     public async Task Run_ARepeatedRunTheSameNightSpendsNoCallsAndChangesNothing()
     {
         var s = new Setup();

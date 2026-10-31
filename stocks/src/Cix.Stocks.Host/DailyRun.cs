@@ -212,7 +212,8 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
                 h.Quantity, Math.Round(h.AverageCost, 4, MidpointRounding.ToEven), lastClose.TryGetValue(h.Symbol, out var c) ? c : null, h.Stop, h.OpenedOn)).ToList(),
             notes.Distinct().Select(n => new NoteLine(n.Symbol, n.Reason)).ToList(),
             trades,
-            portfolio.Skipped.Select(s => new SkippedLine(s.Day, s.Symbol, StocksJson.Word(s.Kind), s.Reason)).ToList());
+            portfolio.Skipped.Select(s => new SkippedLine(s.Day, s.Symbol, StocksJson.Word(s.Kind), s.Reason)).ToList(),
+            config.Watchlist.Select(w => WatchStatus.For(w, bars.GetValueOrDefault(w.Symbol) ?? [], stillHeld.Contains(w.Symbol), config.AdvisorSettings)).ToList());
 
         // The terms the positions and the pending advice are now in, to recognise the next split or dividend.
         var nextTerms = new Dictionary<string, SymbolTerms>(StringComparer.Ordinal);

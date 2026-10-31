@@ -47,7 +47,7 @@ Locally, `EODHD_API_TOKEN=... dotnet run --project stocks/src/Cix.Stocks.Host --
 
 ## Dashboard
 
-The dashboard's Stocks tab reads `GET /api/stocks` (`dashboard/api/src/stocks.js`), read only and owner only. The route reads the stocks host's own Cosmos DB account, never the crypto engines' databases, through these app settings: `STOCKS_COSMOS_ENDPOINT`, `STOCKS_COSMOS_READONLY_KEY` and `STOCKS_COSMOS_DATABASE` (default `cix-stocks`). Without them, the tab says the advisor isn't connected. `tools/azure/provision-stocks.ps1` sets them, and `provision.ps1` keeps them when it redeploys the dashboard.
+The dashboard's Stocks mode (the third button of its Paper | Live | Stocks switch, which hides the crypto tabs and reads nothing of crypto's) reads `GET /api/stocks` (`dashboard/api/src/stocks.js`), read only and owner only. The route reads the stocks host's own Cosmos DB account, never the crypto engines' databases, through these app settings: `STOCKS_COSMOS_ENDPOINT`, `STOCKS_COSMOS_READONLY_KEY` and `STOCKS_COSMOS_DATABASE` (default `cix-stocks`). Without them, the tab says the advisor isn't connected. `tools/azure/provision-stocks.ps1` sets them, and `provision.ps1` keeps them when it redeploys the dashboard.
 
 The host writes one document after each close: id `advice-latest` in the `advice` container, with partition key `/id`. Its `value` looks like this:
 
@@ -60,8 +60,11 @@ The host writes one document after each close: id `advice-latest` in the `advice
                 "quantity": 4, "referencePrice": 512.3, "stop": 480.1, "reason": "breakout" }],
   "holdings": [{ "symbol": "SAP.XETRA", "name": "SAP", "currency": "EUR", "quantity": 10, "averageCost": 200,
                  "lastClose": 250, "stop": 225, "openedOn": "2026-08-01" }],
-  "notes": [{ "symbol": "NVDA.US", "reason": "max-positions" }]
+  "notes": [{ "symbol": "NVDA.US", "reason": "max-positions" }],
+  "watchlist": [{ "symbol": "EPAM.US", "name": "EPAM Systems", "currency": "USD", "theme": "software", "lastClose": 168.2,
+                  "lastDay": "2026-10-30", "breakoutHigh": 190.5, "trendAverage": 181.3,
+                  "status": "held | breakout | uptrend | below-trend | not-enough-data | no-data" }]
 }
 ```
 
-Numbers are written as decimal strings (`"6200.5"`), so they reach the database exact; the tab reads both. The host also adds `trades` (the paper fills of that run) and `skipped`, which the tab doesn't show yet. Reasons are the advisor's codes (`Cix.Stocks.Reasons`) and the host's (`call-budget`, `data-error`). The tab checks every field, drops what doesn't fit, and marks advice as stale once two weekday closes pass without new advice.
+Numbers are written as decimal strings (`"6200.5"`), so they reach the database exact; the tab reads both. The host also adds `trades` (the paper fills of that run) and `skipped`, which the tab doesn't show yet. `watchlist` has every watched stock: its last close, the closing high of the 50 sessions before it (`breakoutHigh`: a close above it in an uptrend is the entry signal) and the 200-day average (`trendAverage`); advice written before it existed has none, and the tab says the next run brings it. Reasons are the advisor's codes (`Cix.Stocks.Reasons`) and the host's (`call-budget`, `data-error`). The tab checks every field, drops what doesn't fit, and marks advice as stale once two weekday closes pass without new advice.
