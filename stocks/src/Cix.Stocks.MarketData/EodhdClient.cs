@@ -20,6 +20,8 @@ public sealed class EodhdClient : IDailyBarSource
 {
     public static readonly Uri DefaultBaseAddress = new("https://eodhd.com/api/");
 
+    private const decimal MaxPrice = 10_000_000m;
+
     private static readonly JsonSerializerOptions Json = new() { NumberHandling = JsonNumberHandling.AllowReadingFromString };
 
     private readonly HttpClient _http;
@@ -101,6 +103,9 @@ public sealed class EodhdClient : IDailyBarSource
         if (!DateOnly.TryParseExact(row.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day))
             return null;
         if (row is not { Open: > 0, High: > 0, Low: > 0, Close: > 0 } || row.High < row.Low)
+            return null;
+        // No listed share costs ten million: such a row is garbage, and would overflow the averages built on it.
+        if (Math.Max(Math.Max(row.Open.Value, row.High.Value), Math.Max(row.Close.Value, row.AdjustedClose ?? 0m)) > MaxPrice)
             return null;
 
         var close = row.AdjustedClose is > 0 ? row.AdjustedClose.Value : row.Close.Value;

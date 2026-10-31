@@ -13,13 +13,16 @@ public enum InstrumentKind
 /// <param name="Currency">The currency the instrument trades in, for example <c>USD</c>.</param>
 /// <param name="QuantityStep">The smallest quantity the owner can buy: 1 for whole shares, smaller where the broker sells fractions.</param>
 /// <param name="PriceTick">Recommended prices (stops) are rounded to this, down for stops so they never sit above the computed level.</param>
+/// <param name="Theme">A shared risk the instrument belongs to, for example <c>tech</c>: <see cref="AdvisorSettings.MaxThemeFraction"/>
+/// caps what one theme may hold. Null: none.</param>
 public sealed record Instrument(
     string Symbol,
     string Name,
     string Currency,
     InstrumentKind Kind,
     decimal QuantityStep = 1m,
-    decimal PriceTick = 0.01m);
+    decimal PriceTick = 0.01m,
+    string? Theme = null);
 
 public static partial class StockSymbol
 {

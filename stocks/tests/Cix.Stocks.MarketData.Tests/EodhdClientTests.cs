@@ -65,6 +65,19 @@ public class EodhdClientTests
     }
 
     [Fact]
+    public async Task AnAbsurdPriceIsDropped()
+    {
+        var (client, _) = Client(_ => Json("""
+            [{"date":"2026-09-01","open":1,"high":2,"low":1,"close":1,"adjusted_close":1,"volume":10},
+             {"date":"2026-09-02","open":1,"high":20000000,"low":1,"close":1,"volume":10}]
+            """));
+
+        var bar = Assert.Single(await client.GetDailyBarsAsync("XYZ.US", From, To, CancellationToken.None));
+
+        Assert.Equal(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero), bar.Start);
+    }
+
+    [Fact]
     public async Task AdjustsForSplitsAndDividends()
     {
         // A 4:1 split after this bar: EODHD reports the raw close 400 and the adjusted close 100.

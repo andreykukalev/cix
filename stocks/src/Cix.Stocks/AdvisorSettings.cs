@@ -46,6 +46,15 @@ public sealed record AdvisorSettings
 
     public int MaxPositions { get; init; } = 8;
 
+    /// <summary>The most one share may cost, in the base currency: dearer instruments are never bought. Null: no cap.</summary>
+    public decimal? MaxSharePrice { get; init; }
+
+    /// <summary>
+    /// The most the instruments of one <see cref="Instrument.Theme"/> may hold together, as a fraction of the allocation, so
+    /// one shared risk (a sector selling off together) can't take most of the portfolio. 1: no cap.
+    /// </summary>
+    public decimal MaxThemeFraction { get; init; } = 1m;
+
     /// <summary>A stop is only worth moving when it rises by at least this fraction, so the owner isn't asked daily for cents.</summary>
     public decimal MinStopRaiseFraction { get; init; } = 0.005m;
 
@@ -80,6 +89,9 @@ public sealed record AdvisorSettings
         Between(RiskPerTrade, 0.001m, 0.05m, nameof(RiskPerTrade));
         Between(MaxPositionFraction, 0.01m, 1m, nameof(MaxPositionFraction));
         Between(MinStopRaiseFraction, 0m, 0.1m, nameof(MinStopRaiseFraction));
+        Between(MaxThemeFraction, 0.05m, 1m, nameof(MaxThemeFraction));
+        if (MaxSharePrice is { } price && price <= 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxSharePrice), price, "Must be positive.");
         return this;
     }
 
