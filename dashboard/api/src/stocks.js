@@ -34,7 +34,7 @@ function stocksReader(env = process.env) {
 
 // The host writes every number as a string, so decimals reach the database exactly (CLAUDE.md rule 7): a plain decimal
 // string is read like a number, anything else is a gap.
-const NUMBER = /^-?\d{1,15}(\.\d{1,12})?$/;
+const NUMBER = /^-?\d{1,15}(\.\d{1,28})?$/; // C# decimals keep up to 28 digits after the point
 const num = (v) => {
   const n = typeof v === 'number' ? v : typeof v === 'string' && NUMBER.test(v) ? Number(v) : NaN;
   return Number.isFinite(n) ? n : null;

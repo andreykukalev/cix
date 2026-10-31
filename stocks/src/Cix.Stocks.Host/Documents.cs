@@ -13,6 +13,9 @@ public static class HostReasons
 
     /// <summary>EODHD refused or failed the request: the symbol keeps its older bars, if any.</summary>
     public const string DataError = "data-error";
+
+    /// <summary>A split or dividend re-adjusted the history: the held position was moved into the new terms.</summary>
+    public const string Adjusted = "adjusted";
 }
 
 /// <summary>One daily bar as stored: the trading day and its prices, adjusted to the terms of the fetch.</summary>
@@ -26,9 +29,15 @@ public sealed record StoredBar(DateOnly Day, decimal Open, decimal High, decimal
 /// <summary>A symbol's bars from its latest fetch, so a later run that day spends no call on it.</summary>
 public sealed record CachedBars(string Symbol, DateTimeOffset FetchedAt, IReadOnlyList<StoredBar> Bars);
 
+/// <summary>A close saved with the portfolio, to recognise a split or dividend by how the bars' terms moved since.</summary>
+public sealed record StoredClose(DateOnly Day, decimal Close);
+
+/// <summary>Where a held or advised symbol's bars stood at the last run: its last bar, and closes before it.</summary>
+public sealed record SymbolTerms(DateOnly LastBarDay, IReadOnlyList<StoredClose> References);
+
 /// <summary>
 /// The paper portfolio between runs: its cash and positions, the advice of the last close (carried out at the next open),
-/// and the EODHD calls spent on <see cref="CallsDay"/>.
+/// the EODHD calls spent (or reserved) on <see cref="CallsDay"/>, and the terms of each held or advised symbol's bars.
 /// </summary>
 /// <param name="Capital">The starting cash, shown as the allocation.</param>
 public sealed record PaperState(
@@ -39,7 +48,8 @@ public sealed record PaperState(
     DateOnly? LastAdvisedDay,
     IReadOnlyList<Recommendation> Pending,
     DateOnly? CallsDay,
-    int Calls)
+    int Calls,
+    IReadOnlyDictionary<string, SymbolTerms>? Terms = null)
 {
     public static PaperState Start(StocksConfig config) => new(config.BaseCurrency, config.Capital, config.Capital, [], null, [], null, 0);
 }

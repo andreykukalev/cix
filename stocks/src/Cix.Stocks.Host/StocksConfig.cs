@@ -74,6 +74,8 @@ public sealed record StocksConfig
             throw new ArgumentOutOfRangeException(nameof(Capital), Capital, "Must be above 0 and at most 1 000 000.");
         if (Watchlist is not { Count: > 0 and <= 100 })
             throw new ArgumentException("The watchlist needs 1 to 100 instruments.");
+        if (!StockSymbol.IsValid(Benchmark))
+            throw new ArgumentException($"Benchmark symbol '{Benchmark}' isn't TICKER.EXCHANGE.");
         var symbols = new HashSet<string>(StringComparer.Ordinal) { Benchmark };
         foreach (var item in Watchlist)
         {
@@ -93,8 +95,17 @@ public sealed record StocksConfig
 
         foreach (var (currency, rate) in Fx)
         {
-            if (rate <= 0)
-                throw new ArgumentOutOfRangeException(nameof(Fx), rate, $"The {currency} rate must be positive.");
+            if (currency is not { Length: 3 } || !currency.All(char.IsAsciiLetterUpper))
+                throw new ArgumentException($"FX currency '{currency}' isn't a three-letter code.");
+            if (rate <= 0 || rate > 1000m)
+                throw new ArgumentOutOfRangeException(nameof(Fx), rate, $"The {currency} rate must be above 0 and at most 1000.");
+        }
+
+        // Without a rate an instrument would never be sized: say so now rather than skip it every night.
+        foreach (var item in Watchlist.Where(w => !string.Equals(w.Currency, BaseCurrency, StringComparison.Ordinal)))
+        {
+            if (!Fx.ContainsKey(item.Currency))
+                throw new ArgumentException($"{item.Symbol} trades in {item.Currency}: fx needs a {item.Currency} rate to {BaseCurrency}.");
         }
 
         if (MaxCallsPerRun is < 1 or > 1000 || MaxCallsPerDay is < 1 or > 100_000)

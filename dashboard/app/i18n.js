@@ -922,6 +922,7 @@
     'Its theme already holds its share of the budget': 'Её тема уже занимает свою долю бюджета',
     'The day\'s price requests are spent: older prices used': 'Запросы цен на сегодня исчерпаны: взяты прежние цены',
     'The price provider failed: older prices used': 'Поставщик цен не ответил: взяты прежние цены',
+    'A split or dividend: the position was moved into the new prices': 'Сплит или дивиденд: позиция пересчитана в новые цены',
     'Couldn\'t load the stocks advice: {error}': 'Не удалось загрузить советы по акциям: {error}',
     'The stocks advisor isn\'t connected yet. After each market close it will list here what to buy, where to put the stop, and when to raise it or sell.':
       'Советник по акциям ещё не подключён. После каждого закрытия рынка здесь появится, что купить, где поставить стоп и когда его поднять или продать.',

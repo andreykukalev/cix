@@ -18,15 +18,18 @@ public interface IStocksStore
 
     Task<Versioned<PaperState>?> GetStateAsync(CancellationToken cancellationToken);
 
-    /// <summary>Saves the portfolio if it is still at <paramref name="etag"/> (null: none saved yet).</summary>
+    /// <summary>Saves the portfolio if it is still at <paramref name="etag"/> (null: none saved yet), and returns its new version.</summary>
     /// <exception cref="StoreConflictException">Another run saved it first.</exception>
-    Task SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken);
+    Task<string> SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken);
 
     /// <summary>Adds a trade; one already there under the id (a run repeated after a failure) is left as it is.</summary>
     Task AddTradeAsync(string id, TradeLine trade, CancellationToken cancellationToken);
 
     /// <summary>Adds a day's advice to the history; one already there is left as it is.</summary>
     Task AddAdviceAsync(string id, AdviceDocument advice, CancellationToken cancellationToken);
+
+    /// <summary>A day's advice (<c>advice-YYYY-MM-DD</c>) or <c>advice-latest</c>; null when there is none.</summary>
+    Task<AdviceDocument?> GetAdviceAsync(string id, CancellationToken cancellationToken);
 
     /// <summary>Replaces <c>advice-latest</c>, the document the dashboard reads.</summary>
     Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken);
@@ -60,7 +63,7 @@ public sealed class InMemoryStocksStore : IStocksStore
         }
     }
 
-    public Task SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken)
+    public Task<string> SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken)
     {
         lock (_stateLock)
         {
@@ -69,9 +72,8 @@ public sealed class InMemoryStocksStore : IStocksStore
                 throw new StoreConflictException("The paper portfolio changed since it was read.");
             _docs["state/paper"] = JsonSerializer.Serialize(state, StocksJson.Options);
             _stateVersion++;
+            return Task.FromResult(_stateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
-
-        return Task.CompletedTask;
     }
 
     public Task AddTradeAsync(string id, TradeLine trade, CancellationToken cancellationToken)
@@ -85,6 +87,8 @@ public sealed class InMemoryStocksStore : IStocksStore
         _docs.TryAdd($"advice/{id}", JsonSerializer.Serialize(advice, StocksJson.Options));
         return Task.CompletedTask;
     }
+
+    public Task<AdviceDocument?> GetAdviceAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Read<AdviceDocument>($"advice/{id}"));
 
     public Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken)
     {

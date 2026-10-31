@@ -149,6 +149,7 @@ test('the host\'s numbers come as decimal strings and read like numbers', () => 
     holdings: [{ ...ADVICE.holdings[0], quantity: '10', averageCost: '200', lastClose: '250', stop: '225' }],
   }, NOW);
   assert.deepEqual([view.capital, view.cash, view.equity], [10000, 6200.5, 10150.25]);
+  assert.equal(stocksView({ ...ADVICE, cash: '8043.1701250000000000000000001' }, NOW).cash, 8043.170125);
   assert.deepEqual([view.actions[0].quantity, view.actions[0].referencePrice, view.actions[0].stop], [4, 512.3, 480.1]);
   assert.equal(view.holdings[0].change, 0.25);
   assert.equal(view.holdings[0].toStop, 0.1);

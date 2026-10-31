@@ -41,6 +41,10 @@ public class StocksConfigTests
         Assert.Throws<ArgumentException>(() => (good with { Watchlist = [.. good.Watchlist, good.Watchlist[0]] }).Validate());
         Assert.Throws<ArgumentException>(() => (good with { Watchlist = [new("SPY.US", "Benchmark again", "USD")] }).Validate());
         Assert.Throws<ArgumentException>(() => (good with { Watchlist = [new("XYZ.US", "XYZ", "USD", "Big Tech")] }).Validate());
+        Assert.Throws<ArgumentException>(() => (good with { Benchmark = "spy" }).Validate());
+        Assert.Throws<ArgumentException>(() => (good with { Watchlist = [new("SAP.XETRA", "SAP", "EUR")] }).Validate());
+        (good with { Watchlist = [new("SAP.XETRA", "SAP", "EUR")], Fx = new Dictionary<string, decimal> { ["EUR"] = 1.08m } }).Validate();
+        Assert.Throws<ArgumentOutOfRangeException>(() => (good with { Fx = new Dictionary<string, decimal> { ["EUR"] = 0m } }).Validate());
         Assert.Throws<ArgumentOutOfRangeException>(() => (good with { Capital = 0m }).Validate());
         Assert.Throws<ArgumentOutOfRangeException>(() => (good with { HistoryDays = 200 }).Validate());
         Assert.Throws<ArgumentOutOfRangeException>(() => (good with { DataReadyUtc = new TimeOnly(15, 0) }).Validate());

@@ -53,16 +53,16 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
     public async Task<Versioned<PaperState>?> GetStateAsync(CancellationToken cancellationToken) =>
         await ReadAsync<PaperState>(Get(StateContainer), StateId, cancellationToken).ConfigureAwait(false);
 
-    public async Task SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken)
+    public async Task<string> SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken)
     {
         var container = Get(StateContainer);
         var item = new Envelope<PaperState>(StateId, state);
         try
         {
-            if (etag is null)
-                await container.CreateItemAsync(item, new PartitionKey(StateId), cancellationToken: cancellationToken).ConfigureAwait(false);
-            else
-                await container.ReplaceItemAsync(item, StateId, new PartitionKey(StateId), new ItemRequestOptions { IfMatchEtag = etag }, cancellationToken).ConfigureAwait(false);
+            var response = etag is null
+                ? await container.CreateItemAsync(item, new PartitionKey(StateId), cancellationToken: cancellationToken).ConfigureAwait(false)
+                : await container.ReplaceItemAsync(item, StateId, new PartitionKey(StateId), new ItemRequestOptions { IfMatchEtag = etag }, cancellationToken).ConfigureAwait(false);
+            return response.ETag;
         }
         catch (CosmosException e) when (e.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed)
         {
@@ -75,6 +75,9 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
 
     public Task AddAdviceAsync(string id, AdviceDocument advice, CancellationToken cancellationToken) =>
         CreateOnceAsync(Get(AdviceContainer), new Envelope<AdviceDocument>(id, advice), cancellationToken);
+
+    public async Task<AdviceDocument?> GetAdviceAsync(string id, CancellationToken cancellationToken) =>
+        (await ReadAsync<AdviceDocument>(Get(AdviceContainer), id, cancellationToken).ConfigureAwait(false))?.Value;
 
     public Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken) =>
         Get(AdviceContainer).UpsertItemAsync(new Envelope<AdviceDocument>("advice-latest", advice), new PartitionKey("advice-latest"), cancellationToken: cancellationToken);

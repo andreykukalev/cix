@@ -54,6 +54,7 @@ function stockReason(code) {
     case 'theme-limit': return t('Its theme already holds its share of the budget');
     case 'call-budget': return t("The day's price requests are spent: older prices used");
     case 'data-error': return t('The price provider failed: older prices used');
+    case 'adjusted': return t('A split or dividend: the position was moved into the new prices');
     default: return code ?? '–';
   }
 }

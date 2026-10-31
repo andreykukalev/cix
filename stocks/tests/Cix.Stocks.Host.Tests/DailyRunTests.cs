@@ -24,6 +24,12 @@ public sealed class FakeBars : IDailyBarSource
 
     public HashSet<string> Failing { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>A different close (and open) on one day.</summary>
+    public Dictionary<(string Symbol, DateOnly Day), decimal> Override { get; } = [];
+
+    /// <summary>Symbols EODHD answers with no bars at all.</summary>
+    public HashSet<string> Empty { get; } = new(StringComparer.Ordinal);
+
     /// <summary>The provider's adjustment factor per symbol, applied to its whole history (0.5: a two-for-one split).</summary>
     public Dictionary<string, decimal> Factor { get; } = new(StringComparer.Ordinal);
 
@@ -37,9 +43,11 @@ public sealed class FakeBars : IDailyBarSource
             throw new StockDataException($"EODHD answered 402 for {symbol}.", 402);
         var factor = Factor.GetValueOrDefault(symbol, 1m);
         var bars = new List<Candle>();
+        if (Empty.Contains(symbol))
+            return Task.FromResult<IReadOnlyList<Candle>>(bars);
         for (var day = firstDay < Start ? Start : firstDay; day <= lastDay && day <= LastDay; day = day.AddDays(1))
         {
-            var close = Close(symbol, day) * factor;
+            var close = (Override.TryGetValue((symbol, day), out var o) ? o : Close(symbol, day)) * factor;
             bars.Add(new Candle(new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero), close, close + 0.5m, close - 0.5m, close, 1000m));
         }
 
@@ -131,12 +139,14 @@ public class DailyRunTests
         var price = 142.3m * 1.001m;
         var fees = 14m * price * 0.0025m;
         var trade = Assert.Single(s.Latest.Trades);
-        Assert.Equal(new TradeLine(new DateOnly(2026, 10, 29), "XYZ.US", "buy", 14m, price, fees, null, Reasons.Breakout), trade);
+        // The page shows money to the cent; the saved portfolio keeps every digit.
+        Assert.Equal(new TradeLine(new DateOnly(2026, 10, 29), "XYZ.US", "buy", 14m, price, 4.99m, null, Reasons.Breakout), trade);
         Assert.NotNull(s.Store.Read<TradeLine>("trades/2026-10-29-XYZ.US-buy"));
         var holding = Assert.Single(s.Latest.Holdings);
         Assert.Equal(new HoldingLine("XYZ.US", "XYZ Corp", "USD", 14m, price, 142.3m, 139.2m, new DateOnly(2026, 10, 29)), holding);
-        Assert.Equal(10_000m - (14m * price) - fees, s.Latest.Cash);
-        Assert.Equal(s.Latest.Cash + (14m * 142.3m), s.Latest.Equity);
+        Assert.Equal(10_000m - (14m * price) - fees, s.State.Cash);
+        Assert.Equal(Math.Round(s.State.Cash, 2), s.Latest.Cash);
+        Assert.Equal(Math.Round(s.State.Cash + (14m * 142.3m), 2), s.Latest.Equity);
         Assert.Equal(6, s.Source.Calls);
     }
 
@@ -192,7 +202,8 @@ public class DailyRunTests
 
         Assert.DoesNotContain(s.Latest.Trades, t => t.Kind == "stop-out");
         var holding = Assert.Single(s.Latest.Holdings);
-        Assert.Equal((28m, 69.6m, 142.3m * 1.001m / 2), (holding.Quantity, holding.Stop!.Value, holding.AverageCost));
+        Assert.Equal((28m, 69.6m, Math.Round(142.3m * 1.001m / 2, 4)), (holding.Quantity, holding.Stop!.Value, holding.AverageCost));
+        Assert.Equal(142.3m * 1.001m / 2, Assert.Single(s.State.Positions).Holding.AverageCost);
     }
 
     [Fact]
@@ -208,9 +219,96 @@ public class DailyRunTests
 
         await s.RunAsync();
 
-        // 1% of Thursday's close on 14 shares.
-        Assert.Equal(cash + (14m * 142.3m * 0.01m), s.State.Cash);
+        // 1% of the close on 14 shares, from Wednesday's (Thursday's, the newest cached, may have been revised).
+        Assert.Equal(cash + (14m * 142.2m * 0.01m), s.State.Cash);
         Assert.Equal(14m, Assert.Single(s.Latest.Holdings).Quantity);
+        Assert.Contains(new NoteLine("XYZ.US", HostReasons.Adjusted), s.Latest.Notes);
+    }
+
+    [Fact]
+    public async Task Run_AnEmptyAnswerKeepsTheOlderBars()
+    {
+        var s = new Setup();
+        await s.RunAsync();
+        s.NextDay();
+        s.Source.Empty.Add("XYZ.US");
+
+        await s.RunAsync();
+
+        Assert.Contains(new NoteLine("XYZ.US", HostReasons.DataError), s.Latest.Notes);
+        Assert.Equal(365, s.Store.Read<CachedBars>("bars/XYZ.US")!.Bars.Count);
+    }
+
+    [Fact]
+    public async Task Run_APageLeftBehindByAFailedRunIsRepublishedTheSameNight()
+    {
+        var s = new Setup();
+        await s.RunAsync();
+        s.NextDay();
+        var failing = new FaultyStore(s.Store);
+        await Assert.ThrowsAsync<IOException>(() => new DailyRun(s.Config, s.Source, failing, s.Time).RunAsync(CancellationToken.None));
+        Assert.Equal(Wednesday, s.Latest.AsOf);
+
+        s.Time.Now = s.Time.Now.AddHours(1);
+        var report = await s.RunAsync();
+
+        Assert.Equal(RunOutcome.AlreadyAdvised, report.Outcome);
+        Assert.Equal(new DateOnly(2026, 10, 29), s.Latest.AsOf);
+        Assert.Single(s.Latest.Trades);
+    }
+
+    [Fact]
+    public async Task Run_ASplitIsStillRecognisedWhenTheRunThatFetchedItFailed()
+    {
+        var s = new Setup();
+        await s.RunAsync();
+        s.NextDay();
+        await s.RunAsync(); // 14 XYZ, stop 139.2
+        s.NextDay();
+        s.Source.Factor["XYZ.US"] = 0.5m;
+        // The split's bars are cached, then the run fails before the portfolio is saved.
+        await Assert.ThrowsAsync<IOException>(() => new DailyRun(s.Config, s.Source, new FaultyStore(s.Store, failAdvice: true), s.Time).RunAsync(CancellationToken.None));
+        s.Time.Now = s.Time.Now.AddHours(1);
+
+        await s.RunAsync();
+
+        Assert.DoesNotContain(s.Latest.Trades, t => t.Kind == "stop-out");
+        Assert.Equal((28m, 69.6m), (Assert.Single(s.Latest.Holdings).Quantity, s.Latest.Holdings[0].Stop));
+    }
+
+    [Fact]
+    public async Task Run_AHeldSymbolsLateSessionStillHasItsStopChecked()
+    {
+        var s = new Setup();
+        await s.RunAsync();
+        s.NextDay();
+        await s.RunAsync(); // 14 XYZ on Thursday, stop 139.2
+        s.NextDay();
+        var friday = new DateOnly(2026, 10, 30);
+        s.Source.Override[("XYZ.US", friday)] = 130m; // Friday trades under the stop...
+        s.Source.Failing.Add("XYZ.US"); // ...but its bars don't come that night
+        await s.RunAsync();
+        Assert.Empty(s.Latest.Trades);
+        s.NextDay();
+        s.Source.Failing.Clear();
+
+        await s.RunAsync();
+
+        // Friday is caught up: the stop sold at Friday's open, 130, under the stop, less 0.1% slippage.
+        var stopOut = Assert.Single(s.Latest.Trades);
+        Assert.Equal((friday, "stop-out", 14m, 130m * 0.999m), (stopOut.Day, stopOut.Kind, stopOut.Quantity, stopOut.Price));
+        Assert.Empty(s.Latest.Holdings);
+    }
+
+    [Fact]
+    public async Task Run_AnOverlappingRunFailsBeforeSpendingCalls()
+    {
+        var s = new Setup();
+        var racing = new RacingStore(s.Store);
+
+        await Assert.ThrowsAsync<StoreConflictException>(() => new DailyRun(s.Config, s.Source, racing, s.Time).RunAsync(CancellationToken.None));
+
+        Assert.Equal(0, s.Source.Calls);
     }
 
     [Fact]
@@ -238,15 +336,40 @@ public class DailyRunTests
     }
 
     [Fact]
-    public void AdjustmentFactor_ComparesTheLatestCommonClose()
+    public void AdjustmentFactor_NeedsTheSameRatioOnTheSavedDays()
     {
         var day = new DateOnly(2026, 10, 28);
-        StoredBar Stored(DateOnly d, decimal close) => new(d, close, close, close, close, 0m);
-        Candle Fresh(DateOnly d, decimal close) => new(new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero), close, close, close, close, 0m);
+        Candle Bar(DateOnly d, decimal close) => new(new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero), close, close, close, close, 0m);
+        StoredClose[] saved = [new(day.AddDays(-2), 80m), new(day.AddDays(-1), 90m)];
 
-        Assert.Equal((0.5m, 100m), DailyRun.AdjustmentFactor([Stored(day.AddDays(-1), 90m), Stored(day, 100m)], [Fresh(day, 50m), Fresh(day.AddDays(1), 51m)]));
-        Assert.Null(DailyRun.AdjustmentFactor([Stored(day, 100m)], [Fresh(day, 100.01m)]));
-        Assert.Null(DailyRun.AdjustmentFactor([Stored(day, 100m)], [Fresh(day.AddDays(1), 50m)]));
+        // A split halves every bar: the factor, with the latest saved close.
+        Assert.Equal((0.5m, 90m), DailyRun.AdjustmentFactor(saved, [Bar(day.AddDays(-2), 40m), Bar(day.AddDays(-1), 45m), Bar(day, 50m)]));
+        // Days that disagree are a revised bar, not an adjustment; nor is rounding; one day in common is too little.
+        Assert.Null(DailyRun.AdjustmentFactor(saved, [Bar(day.AddDays(-2), 40m), Bar(day.AddDays(-1), 90m)]));
+        Assert.Null(DailyRun.AdjustmentFactor(saved, [Bar(day.AddDays(-2), 80.01m), Bar(day.AddDays(-1), 90.01m)]));
+        Assert.Null(DailyRun.AdjustmentFactor(saved, [Bar(day.AddDays(-1), 45m), Bar(day, 50m)]));
+    }
+
+    /// <summary>The run stops at one write: the dated advice (before the portfolio is saved) or the page (after).</summary>
+    private sealed class FaultyStore(InMemoryStocksStore inner, bool failAdvice = false) : IStocksStore
+    {
+        public Task<CachedBars?> GetBarsAsync(string symbol, CancellationToken cancellationToken) => inner.GetBarsAsync(symbol, cancellationToken);
+
+        public Task SaveBarsAsync(CachedBars bars, CancellationToken cancellationToken) => inner.SaveBarsAsync(bars, cancellationToken);
+
+        public Task<Versioned<PaperState>?> GetStateAsync(CancellationToken cancellationToken) => inner.GetStateAsync(cancellationToken);
+
+        public Task<string> SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken) => inner.SaveStateAsync(state, etag, cancellationToken);
+
+        public Task AddTradeAsync(string id, TradeLine trade, CancellationToken cancellationToken) => inner.AddTradeAsync(id, trade, cancellationToken);
+
+        public Task AddAdviceAsync(string id, AdviceDocument advice, CancellationToken cancellationToken) =>
+            failAdvice ? throw new IOException("connection lost") : inner.AddAdviceAsync(id, advice, cancellationToken);
+
+        public Task<AdviceDocument?> GetAdviceAsync(string id, CancellationToken cancellationToken) => inner.GetAdviceAsync(id, cancellationToken);
+
+        public Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken) =>
+            failAdvice ? inner.SaveLatestAdviceAsync(advice, cancellationToken) : throw new IOException("connection lost");
     }
 
     /// <summary>Another run saves the portfolio between this run's read and its write.</summary>
@@ -263,11 +386,13 @@ public class DailyRunTests
             return state;
         }
 
-        public Task SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken) => inner.SaveStateAsync(state, etag, cancellationToken);
+        public Task<string> SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken) => inner.SaveStateAsync(state, etag, cancellationToken);
 
         public Task AddTradeAsync(string id, TradeLine trade, CancellationToken cancellationToken) => inner.AddTradeAsync(id, trade, cancellationToken);
 
         public Task AddAdviceAsync(string id, AdviceDocument advice, CancellationToken cancellationToken) => inner.AddAdviceAsync(id, advice, cancellationToken);
+
+        public Task<AdviceDocument?> GetAdviceAsync(string id, CancellationToken cancellationToken) => inner.GetAdviceAsync(id, cancellationToken);
 
         public Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken) => inner.SaveLatestAdviceAsync(advice, cancellationToken);
     }

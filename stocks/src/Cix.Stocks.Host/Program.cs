@@ -54,7 +54,13 @@ internal static class StocksHost
         }
 
         // No request logging on this client: the key travels in the URL.
-        using var http = new HttpClient { BaseAddress = EodhdClient.DefaultBaseAddress, Timeout = TimeSpan.FromSeconds(30) };
+        // Redirects are refused (the key would follow them), and a year of bars is about 40 KB: 4 MB is plenty.
+        using var http = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false })
+        {
+            BaseAddress = EodhdClient.DefaultBaseAddress,
+            Timeout = TimeSpan.FromSeconds(30),
+            MaxResponseContentBufferSize = 4 * 1024 * 1024,
+        };
         var source = new EodhdClient(http, key);
         try
         {
@@ -68,16 +74,21 @@ internal static class StocksHost
                 return 0;
             }
 
-            var endpoint = Env("STOCKS_COSMOS_ENDPOINT") ?? throw new ArgumentException("STOCKS_COSMOS_ENDPOINT isn't set.");
-            var clientId = Env("AZURE_CLIENT_ID") ?? throw new ArgumentException("AZURE_CLIENT_ID (the job's managed identity) isn't set.");
-            using var store = CosmosStocksStore.WithManagedIdentity(new Uri(endpoint), Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
+            if (Env("STOCKS_COSMOS_ENDPOINT") is not { } endpoint || !Uri.TryCreate(endpoint, UriKind.Absolute, out var endpointUri))
+            {
+                Console.Error.WriteLine("Configuration: STOCKS_COSMOS_ENDPOINT isn't set to a URL.");
+                return 2;
+            }
+
+            if (Env("AZURE_CLIENT_ID") is not { } clientId)
+            {
+                Console.Error.WriteLine("Configuration: AZURE_CLIENT_ID (the job's managed identity) isn't set.");
+                return 2;
+            }
+
+            using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
             Print(await new DailyRun(config, source, store, TimeProvider.System).RunAsync(cancel.Token));
             return 0;
-        }
-        catch (ArgumentException e)
-        {
-            Console.Error.WriteLine($"Configuration: {e.Message}");
-            return 2;
         }
         catch (OperationCanceledException) when (cancel.IsCancellationRequested)
         {
