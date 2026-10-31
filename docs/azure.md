@@ -366,6 +366,28 @@ Live goes first, so if it refuses, paper is left as it was.
 
 The local emulator is reset differently: `docker compose down -v` removes its volume.
 
+## Stocks advisory
+
+The stocks advisor's nightly run (ADR-0023, `stocks/README.md`) lives in its own resource group, `rg-cix-stocks`, apart from CIX's: its own serverless Cosmos DB account (database `cix-stocks`), Key Vault (the EODHD key), identity, logs, Container Apps environment and a scheduled job. The job only reads EODHD and writes its own database; it never trades, and nothing of the crypto engines, their databases or their deploys changes. There is one stocks environment: the paper portfolio carries out every piece of advice, and the owner follows it by hand in Revolut.
+
+Settings are in `infra/stocks/stocks.json` (no secrets): the region, the schedule (cron in UTC, `0 2 * * 2-6`: 02:00 Tuesday to Saturday, after `dataReadyUtc`), the budget, the CIX environment whose registry holds the image (`registryEnvironment`, dev: the job may only pull from it) and the one whose dashboard shows the Stocks tab (`dashboardEnvironment`).
+
+```powershell
+.\tools\azure\provision-stocks.ps1 -WhatIfOnly   # preview only
+.\tools\azure\provision-stocks.ps1 -RunNow       # set up, then one run straight away
+```
+
+The script, with a preview and a confirmation for each step:
+1. deploys `infra/stocks/main.bicep`;
+2. stores the EODHD key in the vault from a hidden prompt (or `-EodhdKeyFile <path>`), never shown or put on a command line; a stored key is kept unless you pass `-ReplaceKey`;
+3. builds the image in the dev registry from the commit you have checked out (only the stocks sources, never uncommitted changes), tagged `cix-stocks:<commit>-<UTC time>` and locked, and deploys the digest the build itself reports, never one looked up by tag (CI's deploy identity can push to that registry); skipped when the job runs that commit's image already, and `-KeepImage` redeploys the image the job runs;
+4. deploys the job with that image, by digest;
+5. gives the dashboard the stocks database's read-only key (`STOCKS_COSMOS_*` settings, never printed); `provision.ps1` keeps them when it redeploys the dashboard. The read-only key reads every container of the stocks account (advice, the paper portfolio, its trades and cached bars), and nothing else: the account holds only stocks data. To rotate it, `az cosmosdb keys regenerate --key-kind primaryReadonly` on the account, then run the script again.
+
+Run it again after a change under `stocks/` merges (`git pull` first) to deploy the new image: CI builds and tests the stocks code but deploys nothing of it. The run's log is in the Azure portal: `caj-cix-stocks-daily`, Execution history. The vault's name comes from the group's: after deleting `rg-cix-stocks`, purge the deleted vault (or wait the 7 days it is kept) before running the script again.
+
+What it costs, at one run a night: the Cosmos DB account is serverless (billed per request and GB, cents a month), the job runs a minute or two at 0.25 vCPU within the Container Apps free grant, Key Vault is a few cents, logs are capped at 0.05 GB a day, and an image build is a few cents of registry build time. A budget of 5 a month on the group emails your sign-in address at 80%.
+
 ## Limits
 
 - **One free-tier account per subscription** (see costs), which is why it is shared.

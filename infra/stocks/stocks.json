@@ -1,0 +1,15 @@
+{
+  "$comment": "Settings for the stocks advisory's Azure resources (infra/stocks/main.bicep), read by tools/azure/provision-stocks.ps1. No secrets here: the EODHD key goes to the vault from the script's prompt or a file. The image is pulled from the CIX registry of registryEnvironment (infra/environments/<name>.json). schedule is a cron expression in UTC; it must start after stocks/config/stocks.json's dataReadyUtc.",
+  "subscriptionId": "",
+  "resourceGroup": "rg-cix-stocks",
+  "location": "polandcentral",
+  "namePrefix": "cix",
+  "registryEnvironment": "dev",
+  "dashboardEnvironment": "dev",
+  "schedule": "0 2 * * 2-6",
+  "monthlyBudget": 5,
+  "budgetStartDate": "2026-11-01",
+  "tags": {
+    "purpose": "cix-stocks-advisory"
+  }
+}
