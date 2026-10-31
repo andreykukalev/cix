@@ -958,6 +958,8 @@
     Held: 'В портфеле',
     'Entry signal': 'Сигнал на вход',
     'Uptrend, under its high': 'Тренд вверх, ниже максимума',
+    'Over your price cap': 'Дороже потолка цены',
+    'Old prices': 'Старые цены',
     'No uptrend': 'Нет восходящего тренда',
     above: 'выше',
     'The advice has no watchlist yet: it comes with the next run.': 'В советах пока нет списка наблюдения: он появится со следующим запуском.',

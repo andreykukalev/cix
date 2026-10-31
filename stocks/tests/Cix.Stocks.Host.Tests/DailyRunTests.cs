@@ -134,20 +134,31 @@ public class DailyRunTests
     }
 
     [Fact]
-    public void WatchStatus_AStockInAnUptrendUnderItsHighIsWatchedAndShortHistoryIsSaidSo()
+    public void WatchStatus_GivesTheAdvisorsEntryVerdictForEachWatchedStock()
     {
         var item = new WatchItem("XYZ.US", "XYZ Corp", "USD");
         var settings = new AdvisorSettings();
         var start = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        Candle Bar(int i, decimal close) => new(start.AddDays(i), close, close, close, close, 1m);
-        // 250 rising closes, then a dip: still above the 200-day average, the 50-day above it, under the prior high.
+        Candle Bar(int i, decimal close) => new(start.AddDays(i), close, close + 0.5m, close - 0.5m, close, 1m);
+        // 250 rising closes, then a dip: still above the 200-day average, the 50-day above it, under the prior high 349.
         var bars = Enumerable.Range(0, 250).Select(i => Bar(i, 100m + i)).Append(Bar(250, 340m)).ToList();
+        var today = DateOnly.FromDateTime(start.AddDays(250).UtcDateTime);
+        string Status(IReadOnlyList<Candle> b, bool held = false, DateOnly? on = null, decimal? fx = 1m, AdvisorSettings? with = null) =>
+            WatchStatus.For(item, b, held, on ?? today, fx, with ?? settings).Status;
 
-        Assert.Equal(WatchStatus.Uptrend, WatchStatus.For(item, bars, held: false, settings).Status);
-        Assert.Equal(349m, WatchStatus.For(item, bars, held: false, settings).BreakoutHigh);
-        Assert.Equal(WatchStatus.NotEnoughData, WatchStatus.For(item, bars.Take(150).ToList(), held: false, settings).Status);
-        Assert.Equal(WatchStatus.NoData, WatchStatus.For(item, [], held: false, settings).Status);
-        Assert.Equal(WatchStatus.Held, WatchStatus.For(item, [], held: true, settings).Status);
+        var uptrend = WatchStatus.For(item, bars, held: false, today, 1m, settings);
+        Assert.Equal((WatchStatus.Uptrend, 349m, 340m, today), (uptrend.Status, uptrend.BreakoutHigh!.Value, uptrend.LastClose!.Value, uptrend.LastDay!.Value));
+        Assert.Equal(WatchStatus.Breakout, Status([.. bars.SkipLast(1), Bar(250, 360m)]));
+        // A rally after a long fall: the close is over the 200-day average but the 50-day is still under it.
+        var turning = Enumerable.Range(0, 240).Select(i => Bar(i, 400m - i)).Concat(Enumerable.Range(240, 11).Select(i => Bar(i, 160m + (40m * (i - 239))))).ToList();
+        Assert.Equal(WatchStatus.BelowTrend, Status(turning));
+        // The advisor's other checks, in its order: old bars, the price cap, short history; held comes first.
+        Assert.Equal(WatchStatus.StaleData, Status(bars, on: today.AddDays(settings.MaxBarAgeDays + 1)));
+        Assert.Equal(WatchStatus.TooExpensive, Status(bars, with: settings with { MaxSharePrice = 300m }));
+        Assert.Equal(WatchStatus.Uptrend, Status(bars, fx: null, with: settings with { MaxSharePrice = 300m })); // no rate: the cap can't be judged
+        Assert.Equal(WatchStatus.NotEnoughData, Status(bars.Take(150).ToList(), on: DateOnly.FromDateTime(start.AddDays(149).UtcDateTime)));
+        Assert.Equal(WatchStatus.NoData, Status([]));
+        Assert.Equal(WatchStatus.Held, Status([], held: true));
     }
 
     [Fact]

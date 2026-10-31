@@ -167,11 +167,14 @@ test('the watchlist lists held, then entry signals, then uptrends nearest their 
       w('DDD.US', 'no-data', null, null, null),
       w('EEE.US', 'breakout', '125', '120', '100'),
       w('FFF.US', 'held', '50', '55', '40'),
+      w('HHH.US', 'stale-data', '10', '9', '8'),
+      w('III.US', 'too-expensive', '300', '290', '250'),
+      w('JJJ.US', 'uptrend', '100', null, '80'),
       w('GGG.US', 'sideways', '1', '1', '1'),
       { symbol: 'bad', status: 'uptrend' },
     ],
   }, NOW);
-  assert.deepEqual(view.watchlist.map((x) => x.symbol), ['FFF.US', 'EEE.US', 'CCC.US', 'BBB.US', 'AAA.US', 'DDD.US']);
+  assert.deepEqual(view.watchlist.map((x) => x.symbol), ['FFF.US', 'EEE.US', 'CCC.US', 'BBB.US', 'JJJ.US', 'AAA.US', 'III.US', 'HHH.US', 'DDD.US']);
   const ccc = view.watchlist.find((x) => x.symbol === 'CCC.US');
   assert.ok(Math.abs(ccc.toBreakout - 0.02) < 1e-12); // 102 / 100 − 1
   assert.equal(ccc.vsTrend, 0.25); // 100 / 80 − 1

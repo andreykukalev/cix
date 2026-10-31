@@ -18,9 +18,9 @@ const MAX_ROWS = 200;
 
 const ACTION_ORDER = ['sell', 'set-stop', 'raise-stop', 'buy']; // protecting what is held comes before buying
 const REGIMES = new Set(['risk-on', 'risk-off', 'unknown']);
-// The watchlist's statuses (Cix.Stocks.Host.WatchStatus), in the order the tab lists them: what is held, what signals an
+// The watchlist's statuses (Cix.Stocks.Host.WatchStatus), in the order the page lists them: what is held, what signals an
 // entry tonight, what is in an uptrend under its high, then the rest.
-const WATCH_ORDER = ['held', 'breakout', 'uptrend', 'below-trend', 'not-enough-data', 'no-data'];
+const WATCH_ORDER = ['held', 'breakout', 'uptrend', 'below-trend', 'too-expensive', 'stale-data', 'not-enough-data', 'no-data'];
 // The same rule as Cix.Stocks.StockSymbol: TICKER.EXCHANGE in capitals.
 const SYMBOL = /^[A-Z0-9][A-Z0-9_-]{0,19}\.[A-Z]{1,10}$/;
 const CODE = /^[a-z][a-z-]{0,39}$/;
@@ -113,8 +113,9 @@ function watchOrder(x, y) {
   const byStatus = WATCH_ORDER.indexOf(x.w.status) - WATCH_ORDER.indexOf(y.w.status);
   if (byStatus !== 0) return byStatus;
   if (x.w.status === 'uptrend') {
-    const nearer = (x.w.toBreakout ?? Infinity) - (y.w.toBreakout ?? Infinity);
-    if (Number.isFinite(nearer) && nearer !== 0) return nearer;
+    const a = x.w.toBreakout ?? Infinity;
+    const b = y.w.toBreakout ?? Infinity;
+    if (a !== b) return a < b ? -1 : 1;
   }
   return x.i - y.i;
 }

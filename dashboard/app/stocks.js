@@ -60,13 +60,15 @@ function stockReason(code) {
   }
 }
 
-/** A watched stock's status in words, with its badge tone: green for an entry signal, nothing needs attention here. */
+/** A watched stock's status in words, with its badge tone: green for an entry signal, orange for prices that are too old. */
 function watchStatus(status) {
   switch (status) {
     case 'held': return [t('Held'), 'pending'];
     case 'breakout': return [t('Entry signal'), 'ok'];
     case 'uptrend': return [t('Uptrend, under its high'), 'signal'];
     case 'below-trend': return [t('No uptrend'), ''];
+    case 'too-expensive': return [t('Over your price cap'), ''];
+    case 'stale-data': return [t('Old prices'), 'warn'];
     case 'not-enough-data': return [t('Not enough price history'), ''];
     case 'no-data': return [t('No price data'), ''];
     default: return [status ?? '–', ''];
@@ -152,7 +154,7 @@ function renderStocks() {
       w.theme ?? '–',
       td(stockPrice(w.lastClose, w.currency), 'num'),
       td(stockPrice(w.breakoutHigh, w.currency), 'num'),
-      td(w.toBreakout === null ? '–' : w.toBreakout <= 0 ? t('above') : percent(w.toBreakout), 'num'),
+      td(w.toBreakout === null ? '–' : w.toBreakout < 0 ? t('above') : percent(w.toBreakout), 'num'),
       td(el('span', { class: w.vsTrend === null ? '' : `move ${w.vsTrend >= 0 ? 'up' : 'down'}`, text: percent(w.vsTrend) }), 'num'),
       el('span', { class: `badge signal ${tone}`, text }),
     ];

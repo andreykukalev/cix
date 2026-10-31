@@ -78,7 +78,7 @@ public sealed record AdviceDocument(
     IReadOnlyList<WatchLine>? Watchlist = null);
 
 /// <summary>
-/// One watched stock as the advisor sees it, for the Stocks tab's watchlist: its last close, the closing high it must beat
+/// One watched stock as the advisor sees it, for the Stocks page's watchlist: its last close, the closing high it must beat
 /// for an entry (<see cref="AdvisorSettings.BreakoutDays"/> days before it), the trend average it must stay above
 /// (<see cref="AdvisorSettings.SlowSmaDays"/> days), and a status (<see cref="WatchStatus"/>).
 /// </summary>
@@ -86,41 +86,42 @@ public sealed record WatchLine(
     string Symbol, string? Name, string? Currency, string? Theme, decimal? LastClose, DateOnly? LastDay, decimal? BreakoutHigh,
     decimal? TrendAverage, string Status);
 
-/// <summary>The watchlist's statuses, as the document writes them.</summary>
+/// <summary>The watchlist's statuses, as the document writes them: <see cref="Advisor.Entry"/>'s verdicts, or held.</summary>
 public static class WatchStatus
 {
     /// <summary>The paper portfolio holds it: its stop is in the holdings.</summary>
     public const string Held = "held";
 
-    /// <summary>In an uptrend and above its prior closing high: an entry signal (bought unless a cap or the market stops it).</summary>
+    /// <summary>An entry signal: bought unless the market, the cash, a slot or the theme limit stops it (the notes say which).</summary>
     public const string Breakout = "breakout";
 
-    /// <summary>In an uptrend (above the trend average, the fast average above it), under its prior high: the one to watch.</summary>
+    /// <summary>In an uptrend, under its prior closing high: the one to watch.</summary>
     public const string Uptrend = "uptrend";
 
     /// <summary>Under its trend average, or the fast average under it: no entry until the trend turns.</summary>
     public const string BelowTrend = "below-trend";
 
+    public const string TooExpensive = "too-expensive";
+    public const string StaleData = "stale-data";
     public const string NotEnoughData = "not-enough-data";
     public const string NoData = "no-data";
 
-    public static WatchLine For(WatchItem item, IReadOnlyList<Candle> bars, bool held, AdvisorSettings settings)
+    public static WatchLine For(WatchItem item, IReadOnlyList<Candle> bars, bool held, DateOnly today, decimal? fxToBase, AdvisorSettings settings)
     {
         ArgumentNullException.ThrowIfNull(item);
-        ArgumentNullException.ThrowIfNull(bars);
-        ArgumentNullException.ThrowIfNull(settings);
-        if (bars.Count == 0)
-            return new(item.Symbol, item.Name, item.Currency, item.Theme, null, null, null, null, held ? Held : NoData);
-        var close = bars[^1].Close;
-        var slow = TrendIndicators.Sma(bars, settings.SlowSmaDays);
-        var fast = TrendIndicators.Sma(bars, settings.FastSmaDays);
-        var high = TrendIndicators.PriorHighestClose(bars, settings.BreakoutDays);
-        var status = held ? Held
-            : slow is null || fast is null || high is null ? NotEnoughData
-            : close > slow && fast > slow ? (close > high ? Breakout : Uptrend)
-            : BelowTrend;
-        return new(item.Symbol, item.Name, item.Currency, item.Theme, close, TrendIndicators.TradingDay(bars[^1]), high,
-            slow is { } s ? Math.Round(s, 4, MidpointRounding.ToEven) : null, status);
+        var entry = Advisor.Entry(bars, today, fxToBase, settings);
+        var status = held ? Held : entry.State switch
+        {
+            EntryState.Breakout => Breakout,
+            EntryState.Uptrend => Uptrend,
+            EntryState.BelowTrend => BelowTrend,
+            EntryState.TooExpensive => TooExpensive,
+            EntryState.StaleData => StaleData,
+            EntryState.NotEnoughData => NotEnoughData,
+            _ => NoData,
+        };
+        return new(item.Symbol, item.Name, item.Currency, item.Theme, entry.Close, bars.Count > 0 ? TrendIndicators.TradingDay(bars[^1]) : null,
+            entry.PriorHigh, entry.SlowAverage is { } s ? Math.Round(s, 4, MidpointRounding.ToEven) : null, status);
     }
 }
 

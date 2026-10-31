@@ -1339,6 +1339,7 @@ function renderModeSwitch() {
 
 /** A press on the mode switch: Stocks opens its panel; Paper or Live goes back to the crypto tab last open, in that mode. */
 function pressMode(mode) {
+  if (state.signedOut) return; // the sign-in banner stays: nothing loads until the owner signs in again
   if (mode === 'stocks') {
     if (state.tab !== 'stocks') { setTab('stocks'); window.scrollTo({ top: 0 }); }
     return;
@@ -1364,7 +1365,7 @@ function setTab(tab, { focus = false } = {}) {
   const leftStocks = changed && state.tab === 'stocks';
   state.tab = name;
   renderModeSwitch();
-  if (changed && name === 'stocks') banner(null); // the crypto engine's banner doesn't belong to stocks
+  if (changed && name === 'stocks' && !state.signedOut) banner(null); // the crypto engine's banner doesn't belong to stocks
   if (leftStocks) refresh(); // the crypto view wasn't refreshed while Stocks showed; this reads the open tab's data too
   else if (changed && name === 'strategy') refreshStrategies(); // read only while the tab is open
   else if (changed && name === 'coins') refreshPairs();
@@ -1527,6 +1528,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     resized = setTimeout(() => { if (state.activity && state.tab === 'activity') renderVolume(state.activity); }, 200);
   });
   await loadViewer();
-  setMode(saved);
+  setMode(saved, { load: state.tab !== 'stocks' }); // Stocks has read its own already; leaving it loads the crypto view
   state.timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
 });
