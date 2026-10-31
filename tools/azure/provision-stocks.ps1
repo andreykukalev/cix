@@ -219,6 +219,7 @@ function Build-StocksImage([string]$Registry, [string]$RunningDigest) {
 
   $tag = "$commit-$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss'))"
   Confirm-Step "Build ${Repository}:$($commit.Substring(0, 12)) in $Registry (a minute or two, a few cents of registry build time)?"
+  Write-CixInfo 'Building in the registry (a minute or two; its log is shown only if it fails)...'
   $dir = New-PrivateFolder
   try {
     $zip = Join-Path $dir 'source.zip'
@@ -226,20 +227,28 @@ function Build-StocksImage([string]$Registry, [string]$RunningDigest) {
     Invoke-CixNative { & git -C $Root archive --format=zip -o $zip $commit -- @ImageSources }
     if ($LASTEXITCODE -ne 0) { throw "git archive failed for commit $commit." }
     Expand-Archive -Path $zip -DestinationPath $context
-    $queued = Invoke-CixAz @('acr', 'build', '--registry', $Registry, '--image', "${Repository}:$tag", '--file', 'stocks/Dockerfile',
-      '--platform', 'linux/amd64', '--no-wait', '--only-show-errors', '-o', 'json', $context) | ConvertFrom-CixJson
+    # --no-logs waits for the build and returns the finished run, with the digest it pushed (--no-wait returns nothing at
+    # all, and the streamed log returns no run).
+    try {
+      $run = Invoke-CixAz @('acr', 'build', '--registry', $Registry, '--image', "${Repository}:$tag", '--file', 'stocks/Dockerfile',
+        '--platform', 'linux/amd64', '--no-logs', '--only-show-errors', '-o', 'json', $context) | ConvertFrom-CixJson
+    }
+    catch {
+      $message = "$($_.Exception.Message)"
+      if ($message -match "run with ID '([A-Za-z0-9]{1,32})'") {
+        # The build's log. It carries characters a Windows console code page can't print, which stops az: UTF-8.
+        $failedRun = $Matches[1]
+        $savedEncoding = $env:PYTHONIOENCODING
+        $env:PYTHONIOENCODING = 'utf-8'
+        try { Invoke-CixNative { & az acr task logs --registry $Registry --run-id $failedRun --only-show-errors | Out-Host } }
+        finally { $env:PYTHONIOENCODING = $savedEncoding }
+      }
+      throw "The image build failed; nothing was deployed. $message"
+    }
   }
   finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
-  $runId = if ($queued -and $queued.PSObject.Properties['runId']) { "$($queued.runId)" } else { '' }
-  if ($runId -notmatch '^[A-Za-z0-9]{1,32}$') { throw 'The registry queued the build but returned no run ID; nothing was deployed.' }
-
-  # The build's log, until it ends. It carries characters a Windows console code page can't print, which stops az: UTF-8.
-  $savedEncoding = $env:PYTHONIOENCODING
-  $env:PYTHONIOENCODING = 'utf-8'
-  try { Invoke-CixNative { & az acr task logs --registry $Registry --run-id $runId --only-show-errors | Out-Host } }
-  finally { $env:PYTHONIOENCODING = $savedEncoding }
-  $run = Invoke-CixAz @('acr', 'task', 'show-run', '--registry', $Registry, '--run-id', $runId, '-o', 'json') | ConvertFrom-CixJson
-  if (-not $run -or -not $run.PSObject.Properties['status'] -or "$($run.status)" -ne 'Succeeded') { throw "The image build (run $runId) didn't succeed (see its log above); nothing was deployed." }
+  $runId = if ($run -and $run.PSObject.Properties['runId']) { "$($run.runId)" } else { '?' }
+  if (-not $run -or -not $run.PSObject.Properties['status'] -or "$($run.status)" -ne 'Succeeded') { throw "The image build (run $runId) didn't succeed; nothing was deployed. Its log: az acr task logs --registry $Registry --run-id $runId" }
   $images = @(@(if ($run.PSObject.Properties['outputImages']) { $run.outputImages }) | Where-Object { $_ -and "$($_.repository)" -eq $Repository -and "$($_.tag)" -match "^$commit-\d{14}$" })
   if ($images.Count -ne 1 -or "$($images[0].digest)" -cnotmatch '^sha256:[0-9a-f]{64}$') { throw "The build (run $runId) reported no $Repository image; nothing was deployed." }
   $digest = "$($images[0].digest)"
@@ -318,7 +327,7 @@ if ((Test-VaultSecretWithRetry -Vault $vault) -and -not $ReplaceKey) { Write-Cix
 else {
   Confirm-Step "Store the EODHD key in $vault as ${SecretName}?"
   Set-EodhdKey -Vault $vault
-  Write-CixInfo 'Stored. It was not shown or written anywhere else; a running job picks up a new key within 30 minutes.'
+  Write-CixInfo 'Stored. It was not shown or written anywhere else; the next run uses it.'
 }
 
 Write-CixStep "Step 3 of 5: the job's image ($registry)"
