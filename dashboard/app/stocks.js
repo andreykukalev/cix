@@ -50,6 +50,10 @@ function stockReason(code) {
     case 'max-positions': return t('All position slots are taken');
     case 'check-holding': return t('Check the recorded stop: two closes are already under it');
     case 'duplicate-holding': return t('Recorded twice: check the holdings');
+    case 'too-expensive': return t('A share costs more than your price cap');
+    case 'theme-limit': return t('Its theme already holds its share of the budget');
+    case 'call-budget': return t("The day's price requests are spent: older prices used");
+    case 'data-error': return t('The price provider failed: older prices used');
     default: return code ?? '–';
   }
 }

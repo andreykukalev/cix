@@ -3,9 +3,11 @@
     <Project Path="src/Cix.Stocks/Cix.Stocks.csproj" />
     <Project Path="src/Cix.Stocks.MarketData/Cix.Stocks.MarketData.csproj" />
     <Project Path="src/Cix.Stocks.Backtest/Cix.Stocks.Backtest.csproj" />
+    <Project Path="src/Cix.Stocks.Host/Cix.Stocks.Host.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Cix.Stocks.Tests/Cix.Stocks.Tests.csproj" />
     <Project Path="tests/Cix.Stocks.MarketData.Tests/Cix.Stocks.MarketData.Tests.csproj" />
+    <Project Path="tests/Cix.Stocks.Host.Tests/Cix.Stocks.Host.Tests.csproj" />
   </Folder>
 </Solution>

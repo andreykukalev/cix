@@ -246,4 +246,28 @@ public class PaperPortfolioTests
 
         Assert.Throws<ArgumentOutOfRangeException>(() => settings.Validate());
     }
+
+    [Fact]
+    public void ASavedPortfolioPicksUpWithItsPositionsAndCost()
+    {
+        var saved = Bought();
+
+        var restored = new PaperPortfolio("USD", saved.Cash, saved.Positions, [Xyz], new Dictionary<string, decimal>(), Costs);
+        restored.ExecuteDay(Day2, Bars(Bar(Day2, 110m, 111m, 109m, 110m)), [new(ActionKind.Sell, Xyz.Symbol, 10m, 110m, 90m, Reasons.TrendBroken)]);
+
+        // Sold 10 at 110 × 0.99 = 108.9: 1089 less commission 1.089, against the cost of 1010 + 1.01.
+        var sell = Assert.Single(restored.Trades);
+        Assert.Equal(1089m - 1.089m - 1011.01m, sell.ProfitBase);
+        Assert.Empty(restored.Positions);
+    }
+
+    [Fact]
+    public void ASavedPortfolioWithAnEmptyOrRepeatedPositionIsRefused()
+    {
+        var position = Assert.Single(Bought().Positions);
+
+        Assert.Throws<ArgumentException>(() => new PaperPortfolio("USD", 0m, [position, position], [Xyz], new Dictionary<string, decimal>(), Costs));
+        Assert.Throws<ArgumentException>(() => new PaperPortfolio(
+            "USD", 0m, [position with { Holding = position.Holding with { Quantity = 0m } }], [Xyz], new Dictionary<string, decimal>(), Costs));
+    }
 }

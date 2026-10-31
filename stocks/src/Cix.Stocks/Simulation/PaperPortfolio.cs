@@ -54,6 +54,9 @@ public enum TradeKind
 public sealed record PaperTrade(
     DateOnly Day, string Symbol, TradeKind Kind, decimal Quantity, decimal Price, decimal FeesBase, decimal? ProfitBase, string Reason);
 
+/// <summary>A paper position: what the owner would hold, and what it cost in the base currency, fees included.</summary>
+public sealed record PaperPosition(Holding Holding, decimal CostBase);
+
 /// <summary>Why a recommendation wasn't carried out the next day.</summary>
 public sealed record SkippedAction(DateOnly Day, string Symbol, ActionKind Kind, string Reason);
 
@@ -78,15 +81,21 @@ public sealed class PaperPortfolio
     private readonly SimulationSettings _settings;
     private readonly Dictionary<string, Instrument> _instruments;
     private readonly IReadOnlyDictionary<string, decimal> _fxToBase;
-    private readonly Dictionary<string, Position> _positions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, PaperPosition> _positions = new(StringComparer.Ordinal);
     private readonly List<PaperTrade> _trades = [];
     private readonly List<SkippedAction> _skipped = [];
-
-    private sealed record Position(Holding Holding, decimal CostBase);
 
     public PaperPortfolio(
         string baseCurrency, decimal cash, IEnumerable<Instrument> instruments, IReadOnlyDictionary<string, decimal> fxToBase,
         SimulationSettings settings)
+        : this(baseCurrency, cash, [], instruments, fxToBase, settings)
+    {
+    }
+
+    /// <summary>A portfolio picked up where a saved one left off, with its cash and positions.</summary>
+    public PaperPortfolio(
+        string baseCurrency, decimal cash, IEnumerable<PaperPosition> positions, IEnumerable<Instrument> instruments,
+        IReadOnlyDictionary<string, decimal> fxToBase, SimulationSettings settings)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baseCurrency);
         ArgumentOutOfRangeException.ThrowIfNegative(cash);
@@ -95,11 +104,19 @@ public sealed class PaperPortfolio
         _instruments = instruments.ToDictionary(i => i.Symbol, StringComparer.Ordinal);
         _fxToBase = fxToBase;
         _settings = settings.Validate();
+        foreach (var position in positions)
+        {
+            if (position.Holding.Quantity <= 0 || position.CostBase < 0 || !_positions.TryAdd(position.Holding.Symbol, position))
+                throw new ArgumentException($"The saved position in {position.Holding.Symbol} is empty, negative or twice.", nameof(positions));
+        }
     }
 
     public decimal Cash { get; private set; }
 
     public IReadOnlyList<Holding> Holdings => _positions.Values.Select(p => p.Holding).OrderBy(h => h.Symbol, StringComparer.Ordinal).ToList();
+
+    /// <summary>The positions with their cost, to save and pick up again.</summary>
+    public IReadOnlyList<PaperPosition> Positions => _positions.Values.OrderBy(p => p.Holding.Symbol, StringComparer.Ordinal).ToList();
 
     public IReadOnlyList<PaperTrade> Trades => _trades;
 
@@ -210,7 +227,7 @@ public sealed class PaperPortfolio
         var value = quantity * price * fx;
         var fees = Fees(action.Symbol, value);
         Cash -= value + fees;
-        _positions[action.Symbol] = new Position(new Holding(action.Symbol, quantity, price, action.Stop, day), value + fees);
+        _positions[action.Symbol] = new PaperPosition(new Holding(action.Symbol, quantity, price, action.Stop, day), value + fees);
         _trades.Add(new PaperTrade(day, action.Symbol, TradeKind.Buy, quantity, price, fees, null, action.Reason));
     }
 

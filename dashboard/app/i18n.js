@@ -918,6 +918,10 @@
     'All position slots are taken': 'Все слоты под позиции заняты',
     'Check the recorded stop: two closes are already under it': 'Проверьте записанный стоп: уже два закрытия ниже него',
     'Recorded twice: check the holdings': 'Записана дважды: проверьте позиции',
+    'A share costs more than your price cap': 'Акция дороже вашего потолка цены',
+    'Its theme already holds its share of the budget': 'Её тема уже занимает свою долю бюджета',
+    'The day\'s price requests are spent: older prices used': 'Запросы цен на сегодня исчерпаны: взяты прежние цены',
+    'The price provider failed: older prices used': 'Поставщик цен не ответил: взяты прежние цены',
     'Couldn\'t load the stocks advice: {error}': 'Не удалось загрузить советы по акциям: {error}',
     'The stocks advisor isn\'t connected yet. After each market close it will list here what to buy, where to put the stop, and when to raise it or sell.':
       'Советник по акциям ещё не подключён. После каждого закрытия рынка здесь появится, что купить, где поставить стоп и когда его поднять или продать.',

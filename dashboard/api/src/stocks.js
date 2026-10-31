@@ -32,8 +32,17 @@ function stocksReader(env = process.env) {
   });
 }
 
-const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-const positive = (v) => (num(v) !== null && v > 0 ? v : null);
+// The host writes every number as a string, so decimals reach the database exactly (CLAUDE.md rule 7): a plain decimal
+// string is read like a number, anything else is a gap.
+const NUMBER = /^-?\d{1,15}(\.\d{1,12})?$/;
+const num = (v) => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && NUMBER.test(v) ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : null;
+};
+const positive = (v) => {
+  const n = num(v);
+  return n !== null && n > 0 ? n : null;
+};
 const symbol = (v) => (typeof v === 'string' && SYMBOL.test(v) ? v : null);
 const code = (v) => (typeof v === 'string' && CODE.test(v) ? v : null);
 const currency = (v) => (typeof v === 'string' && CURRENCY.test(v) ? v : null);

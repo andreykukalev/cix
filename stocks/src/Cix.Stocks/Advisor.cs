@@ -375,6 +375,6 @@ public static class Advisor
     }
 
     /// <summary>Rounds down to a multiple of <paramref name="step"/>: quantities never exceed the budget, stops never sit above their level.</summary>
-    internal static decimal FloorTo(decimal value, decimal step) =>
+    public static decimal FloorTo(decimal value, decimal step) =>
         step <= 0 ? value : Math.Floor(value / step) * step;
 }

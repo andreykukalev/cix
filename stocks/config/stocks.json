@@ -1,0 +1,33 @@
+// The stocks advisor's daily run (stocks/src/Cix.Stocks.Host). No secrets here: the EODHD key comes from Key Vault.
+// The free EODHD key allows 20 calls a day and one year of bars: 14 instruments plus the benchmark is 15 calls.
+{
+  "baseCurrency": "USD",
+  "capital": 10000,
+  "benchmark": "SPY.US",
+  "historyDays": 365,
+  "maxCallsPerRun": 18,
+  "maxCallsPerDay": 18,
+  "dataReadyUtc": "01:00:00",
+  "advisor": {
+    // The owner's cap on one share's price, in the base currency: dearer ones are noted "too-expensive" every day.
+    "maxSharePrice": 200,
+    // At most 40% of the allocation in one theme (two positions at the 20% cap), so one sector selloff can't take most of it.
+    "maxThemeFraction": 0.4
+  },
+  "watchlist": [
+    { "symbol": "EPAM.US", "name": "EPAM Systems", "currency": "USD", "theme": "software" },
+    { "symbol": "NIO.US", "name": "NIO", "currency": "USD", "theme": "china-ev" },
+    { "symbol": "CYRX.US", "name": "Cryoport", "currency": "USD", "theme": "life-sciences" },
+    { "symbol": "AMD.US", "name": "Advanced Micro Devices", "currency": "USD", "theme": "semis" },
+    { "symbol": "INTC.US", "name": "Intel", "currency": "USD", "theme": "semis" },
+    { "symbol": "MU.US", "name": "Micron Technology", "currency": "USD", "theme": "semis" },
+    { "symbol": "QCOM.US", "name": "Qualcomm", "currency": "USD", "theme": "semis" },
+    { "symbol": "CSCO.US", "name": "Cisco Systems", "currency": "USD", "theme": "networking" },
+    { "symbol": "UBER.US", "name": "Uber Technologies", "currency": "USD", "theme": "internet" },
+    { "symbol": "PYPL.US", "name": "PayPal", "currency": "USD", "theme": "fintech" },
+    { "symbol": "SOFI.US", "name": "SoFi Technologies", "currency": "USD", "theme": "fintech" },
+    { "symbol": "SHOP.US", "name": "Shopify", "currency": "USD", "theme": "software" },
+    { "symbol": "DDOG.US", "name": "Datadog", "currency": "USD", "theme": "software" },
+    { "symbol": "NET.US", "name": "Cloudflare", "currency": "USD", "theme": "software" }
+  ]
+}
