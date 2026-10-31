@@ -1615,8 +1615,7 @@ $newStocks = @{
   'deployment sub create'   = "{`"properties`":{`"outputs`":{`"cosmosAccountName`":{`"value`":`"cosmos-cix-stocks-x`"},`"cosmosEndpoint`":{`"value`":`"$stocksEndpoint`"},`"databaseName`":{`"value`":`"cix-stocks`"},`"keyVaultName`":{`"value`":`"kvcixstocksx`"},`"registryName`":{`"value`":`"crcixdevabc123`"},`"jobName`":{`"value`":`"caj-cix-stocks-daily`"}}}}"
   'keyvault secret list'    = '[]'
   'group show'              = '{"name":"rg-cix-stocks","tags":{"cix-component":"stocks"}}'
-  'acr build'               = '{"runId":"ca1"}'
-  'acr task show-run'       = "{`"runId`":`"ca1`",`"status`":`"Succeeded`",`"outputImages`":[{`"registry`":`"crcixdevabc123.azurecr.io`",`"repository`":`"cix-stocks`",`"tag`":`"$stocksHead-20261031120000`",`"digest`":`"$stocksDigest`"}]}"
+  'acr build'               = "{`"runId`":`"ca1`",`"status`":`"Succeeded`",`"outputImages`":[{`"registry`":`"crcixdevabc123.azurecr.io`",`"repository`":`"cix-stocks`",`"tag`":`"$stocksHead-20261031120000`",`"digest`":`"$stocksDigest`"}]}"
   'resource show'           = $stocksJobId
   'staticwebapp show'       = '/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev'
   'rest'                    = '{"properties":{"COSMOS_ENDPOINT":"https://cosmos-shared-x.documents.azure.com:443/"}}'
@@ -1642,8 +1641,8 @@ Check 'provision-stocks.ps1 (-Yes) first run: deploys, stores the key unseen, bu
   if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 2) { throw "expected two deployments (resources, then the job): $($r.Calls)" }
   if ($r.Calls -notmatch 'keyvault secret set --vault-name kvcixstocksx --name eodhd-api-token --file ') { throw "the key wasn't stored from a file: $($r.Calls)" }
   if ($r.Output.Contains($fakeEodhdKey) -or $r.Calls.Contains($fakeEodhdKey)) { throw 'the EODHD key was printed or put on a command line' }
-  if ($r.Calls -notmatch "acr build --registry crcixdevabc123 --image cix-stocks:$stocksHead-\d{14} --file stocks/Dockerfile ") { throw "the commit's image wasn't built in the dev registry: $($r.Calls)" }
-  if ($r.Calls -notmatch 'acr task show-run --registry crcixdevabc123 --run-id ca1') { throw 'the digest should come from the build run' }
+  if ($r.Calls -notmatch "acr build --registry crcixdevabc123 --image cix-stocks:$stocksHead-\d{14} --file stocks/Dockerfile .*--no-logs ") { throw "the commit's image wasn't built in the dev registry, waiting for the run: $($r.Calls)" }
+  if ($r.Calls -match '--no-wait') { throw 'az acr build --no-wait prints no run, so there is no digest to deploy' }
   if ($r.Calls -match 'acr repository show ') { throw 'looked the image up by tag, which anyone with push rights could move' }
   if ($r.Calls -notmatch "acr repository update --name crcixdevabc123 --image cix-stocks:$stocksHead-20261031120000 --write-enabled false --delete-enabled false") { throw 'the built tag was not locked' }
   if ($r.Calls -notmatch 'cosmosdb keys list --resource-group rg-cix-stocks --name cosmos-cix-stocks-x --type read-only-keys') { throw 'the dashboard should get the read-only key of the stocks account only' }
@@ -1679,6 +1678,13 @@ Check 'provision-stocks.ps1 rebuilds when the job runs another commit''s image' 
   if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
   if ($r.Calls -notmatch 'acr build ') { throw 'did not build the new commit' }
   if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 2) { throw "expected the job to be redeployed: $($r.Calls)" }
+}
+
+Check 'provision-stocks.ps1 deploys nothing when the image build fails' {
+  $r = Invoke-ProvisionStocks @{ 'acr build' = '{"runId":"ca2","status":"Failed","outputImages":[]}' }
+  if (-not $r.Error -or -not $r.Error.Contains("didn't succeed")) { throw "got: $($r.Error)" }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 1) { throw "the job was deployed anyway: $($r.Calls)" }
+  if ($r.Calls -match 'acr repository update') { throw 'locked a failed build' }
 }
 
 Check 'provision-stocks.ps1 refuses a resource group that is not the stocks advisory''s' {
