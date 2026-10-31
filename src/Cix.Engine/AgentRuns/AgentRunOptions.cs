@@ -150,6 +150,9 @@ public sealed class AgentRunOptions
     /// </summary>
     public int RiskOffRecheckMinutes { get; set; } = 20;
 
+    /// <summary>At most this many risk-off rechecks a UTC day, for this engine.</summary>
+    public int MaxRiskOffRechecksPerDay { get; set; } = 8;
+
     /// <summary>The owner's Run now button: an analyst run at least this long after the last one of any kind.</summary>
     public int AnalystNowCooldownMinutes { get; set; } = 30;
 
@@ -207,6 +210,8 @@ public sealed class AgentRunOptions
             throw new InvalidOperationException("AgentRuns:AnalystNowCooldownMinutes must be between 10 and 720: each run spends the owner's Claude usage.");
         if (RiskOffRecheckMinutes is < 0 or > 60)
             throw new InvalidOperationException("AgentRuns:RiskOffRecheckMinutes must be between 0 (off) and 60.");
+        if (MaxRiskOffRechecksPerDay is < 1 or > 24)
+            throw new InvalidOperationException("AgentRuns:MaxRiskOffRechecksPerDay must be between 1 and 24: each run spends the owner's Claude usage.");
         if (MaxAnalystNowPerDay is < 1 or > 24)
             throw new InvalidOperationException("AgentRuns:MaxAnalystNowPerDay must be between 1 and 24: each run spends the owner's Claude usage.");
         Positive(ClaimTimeoutMinutes, nameof(ClaimTimeoutMinutes));

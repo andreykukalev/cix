@@ -41,6 +41,23 @@ public sealed class MarketAnalystTests
     }
 
     [Fact]
+    public async Task RiskOff_LastsAtMostTheSpecsRiskOffHours_OtherViewsTheirValidHours()
+    {
+        var tools = new ToolRig(ToolRig.Observer with { AllowedTools = ["scan_market"] }, analyst: ToolRig.AnalystSpec with
+        {
+            Parameters = new Dictionary<string, JsonElement> { ["riskOffHours"] = JsonSerializer.SerializeToElement(3) },
+        });
+        tools.Header(ToolServerOptions.AgentHeader, "analyst");
+
+        await tools.Analyst.RecordMarketView("risk-off", "Exchange outage reported widely.", Sources, validHours: 12, cancellationToken: CancellationToken.None);
+        Assert.Equal(TimeSpan.FromHours(3), tools.Views.Current!.ValidUntil - tools.Views.Current.RecordedAt);
+        await tools.Analyst.RecordMarketView("risk-off", "Exchange outage reported widely.", Sources, validHours: 2, cancellationToken: CancellationToken.None);
+        Assert.Equal(TimeSpan.FromHours(2), tools.Views.Current!.ValidUntil - tools.Views.Current.RecordedAt);
+        await tools.Analyst.RecordMarketView("neutral", "Calm again after the outage.", [], validHours: 6, cancellationToken: CancellationToken.None);
+        Assert.Equal(TimeSpan.FromHours(6), tools.Views.Current!.ValidUntil - tools.Views.Current.RecordedAt);
+    }
+
+    [Fact]
     public async Task ViewExpires_AndThenNoLongerBlocks()
     {
         var tools = Analyst();

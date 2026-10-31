@@ -93,6 +93,9 @@ public sealed record AgentRunState
     /// <summary>Analyst runs the owner asked for today.</summary>
     public int OwnerAnalystRuns { get; init; }
 
+    /// <summary>Risk-off rechecks queued today.</summary>
+    public int RiskOffRechecks { get; init; }
+
     /// <summary>At most one run of each kind at a time, like the jobs (<c>maxExecutions: 1</c>).</summary>
     public IReadOnlyList<AgentRun> InFlight { get; init; } = [];
 
@@ -186,6 +189,9 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
         var s = Apply(RollDay(state, now), run, AgentRunOutcome.NotRun, now);
         if (run.Kind != AgentRunKind.Analyst)
             return s;
+        // A recheck that never left isn't queued again for the same view.
+        if (run.Purpose == AgentRunPurpose.Recheck)
+            return s;
         // An analyst run that never left doesn't hold back the owner's next press, and the owner's own doesn't count.
         s = s with { LastAnalystRun = null };
         return run.Purpose == AgentRunPurpose.Owner ? s with { OwnerAnalystRuns = Math.Max(0, s.OwnerAnalystRuns - 1) } : s;
@@ -232,7 +238,7 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
     private static AgentRunState RollDay(AgentRunState s, DateTimeOffset now)
     {
         var today = DateOnly.FromDateTime(now.UtcDateTime);
-        return today == s.Day ? s : s with { Day = today, Runs = 0, Refunds = 0, RequestRuns = 0, RequestRefunds = 0, OwnerAnalystRuns = 0 };
+        return today == s.Day ? s : s with { Day = today, Runs = 0, Refunds = 0, RequestRuns = 0, RequestRefunds = 0, OwnerAnalystRuns = 0, RiskOffRechecks = 0 };
     }
 
     // Owner requests first: the owner is waiting, and each request expires in the engine if it isn't answered in time.
@@ -327,17 +333,19 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
     }
 
     // A risk-off view gets one more look shortly before it ends, so a shock that has passed doesn't keep buys paused until the
-    // next slot, and one still going on is renewed without a gap. Once per view: any analyst run in that lead counts.
+    // next slot, and one still going on is renewed without a gap. Once per view: any analyst run in that lead counts. Not when
+    // the next slot is within a cooldown of the view's end, and at most a few a day, since each run spends the owner's Claude
+    // usage and a misled analyst could record short risk-off views over and over.
     private AgentRunState RecheckRiskOff(AgentRunState s, AgentRunInputs inputs, DateTimeOffset now, List<AgentRun> dispatch)
     {
-        if (options.RiskOffRecheck <= TimeSpan.Zero || inputs.RiskOffUntil is not { } until)
+        if (options.RiskOffRecheck <= TimeSpan.Zero || inputs.RiskOffUntil is not { } until || s.RiskOffRechecks >= options.MaxRiskOffRechecksPerDay)
             return s;
         var from = until - options.RiskOffRecheck;
-        if (now < from || now >= until || (s.LastAnalystRun is { } last && last >= from))
+        if (now < from || now >= until || (s.LastAnalystRun is { } last && last >= from) || s.NextAnalyst <= until + options.AnalystNowCooldown)
             return s;
         var run = new AgentRun(AgentRun.NewId(AgentRunKind.Analyst, now), AgentRunKind.Analyst, AgentRunPurpose.Recheck, string.Empty, now);
         dispatch.Add(run);
-        return s with { LastAnalystRun = now, InFlight = [.. s.InFlight, run] };
+        return s with { LastAnalystRun = now, RiskOffRechecks = s.RiskOffRechecks + 1, InFlight = [.. s.InFlight, run] };
     }
 
     private AgentRunState Apply(AgentRunState s, AgentRun run, AgentRunOutcome outcome, DateTimeOffset now)
