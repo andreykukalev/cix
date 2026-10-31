@@ -434,6 +434,53 @@ public class AdvisorTests
     }
 
     [Fact]
+    public void Evaluate_AShareDearerThanTheCapIsNotedNotBought()
+    {
+        // 124.9 USD × 0.9 = 112.41 EUR a share, over the 100 EUR cap.
+        var advice = Advisor.Evaluate(Input(), Settings with { MaxSharePrice = 100m });
+
+        Assert.Empty(advice.Actions);
+        Assert.Equal([new AdvisorNote("XYZ.US", Reasons.TooExpensive)], advice.Notes);
+        Assert.Single(Advisor.Evaluate(Input(), Settings with { MaxSharePrice = 112.41m }).Actions);
+    }
+
+    [Fact]
+    public void Evaluate_AThemeCapLimitsTheSize()
+    {
+        var tech = Xyz with { Theme = "tech" };
+
+        var advice = Advisor.Evaluate(Input(watchlist: [new PriceHistory(tech, Line(100m, 0.1m))]), Settings with { MaxThemeFraction = 0.1m });
+
+        // 10% of 10000 EUR is 1000 EUR for the theme: 1000 / 112.41 = 8.9 shares, under the 17 the position cap allows.
+        Assert.Equal(8m, Assert.Single(advice.Actions).Quantity);
+    }
+
+    [Fact]
+    public void Evaluate_AThemeAtItsCapTakesNoMoreAndBuysInOneRunCount()
+    {
+        var abc = new Instrument("ABC.US", "ABC", "USD", InstrumentKind.Stock, Theme: "tech");
+        var xyz = Xyz with { Theme = "tech" };
+        var watchlist = new[] { new PriceHistory(abc, Line(100m, 0.1m)), new PriceHistory(xyz, Line(100m, 0.1m)) };
+        var settings = Settings with { MaxThemeFraction = 0.15m };
+
+        // 1500 EUR for the theme. Equal momentum, so ABC first: 1500 / 112.41 = 13 shares (1461.33 EUR); XYZ has 38.67 left.
+        var advice = Advisor.Evaluate(Input(watchlist: watchlist), settings);
+        var buy = Assert.Single(advice.Actions);
+        Assert.Equal(("ABC.US", 13m), (buy.Symbol, buy.Quantity));
+        Assert.Contains(new AdvisorNote("XYZ.US", Reasons.ThemeLimit), advice.Notes);
+
+        // Holding 14 ABC (14 × 112.41 = 1573.74 EUR) already passes the cap: XYZ isn't bought.
+        var held = Advisor.Evaluate(Input(watchlist: watchlist, holdings: [new Holding("ABC.US", 14m, 110m, 100m, Today.AddDays(-49))]), settings);
+        Assert.DoesNotContain(held.Actions, a => a.Kind == ActionKind.Buy);
+        Assert.Contains(new AdvisorNote("XYZ.US", Reasons.ThemeLimit), held.Notes);
+
+        // Without a theme the same holding doesn't stop XYZ.
+        var untagged = new[] { new PriceHistory(abc with { Theme = null }, Line(100m, 0.1m)), new PriceHistory(xyz, Line(100m, 0.1m)) };
+        var free = Advisor.Evaluate(Input(watchlist: untagged, holdings: [new Holding("ABC.US", 14m, 110m, 100m, Today.AddDays(-49))]), settings);
+        Assert.Contains(free.Actions, a => a.Kind == ActionKind.Buy && a.Symbol == "XYZ.US");
+    }
+
+    [Fact]
     public void Evaluate_BadInputIsRefused()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => Advisor.Evaluate(Input(capital: 0m), Settings));
@@ -442,5 +489,7 @@ public class AdvisorTests
         Assert.Throws<ArgumentException>(() => Advisor.Evaluate(Input(), Settings with { BenchmarkSymbol = "spx" }));
         Assert.Throws<ArgumentOutOfRangeException>(() => Advisor.Evaluate(Input(), Settings with { RiskPerTrade = 0.2m }));
         Assert.Throws<ArgumentOutOfRangeException>(() => Advisor.Evaluate(Input(), Settings with { RiskOffTrailingStopAtr = 4m }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Advisor.Evaluate(Input(), Settings with { MaxSharePrice = 0m }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Advisor.Evaluate(Input(), Settings with { MaxThemeFraction = 0.01m }));
     }
 }

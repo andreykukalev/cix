@@ -76,6 +76,8 @@ public static class Reasons
     public const string MaxPositions = "max-positions";
     public const string CheckHolding = "check-holding";
     public const string DuplicateHolding = "duplicate-holding";
+    public const string TooExpensive = "too-expensive";
+    public const string ThemeLimit = "theme-limit";
 }
 
 /// <summary>
@@ -237,6 +239,13 @@ public static class Advisor
                 continue;
             }
 
+            // Noted on every risk-on run, not only on a breakout, so the owner sees why it is never bought.
+            if (settings.MaxSharePrice is { } maxPrice && FxRate(input, history.Instrument.Currency) is { } rate && bars[^1].Close * rate > maxPrice)
+            {
+                notes.Add(new(symbol, Reasons.TooExpensive));
+                continue;
+            }
+
             if (bars.Count < settings.MinBars
                 || TrendIndicators.Sma(bars, settings.SlowSmaDays) is not { } slow
                 || TrendIndicators.Sma(bars, settings.FastSmaDays) is not { } fast
@@ -265,6 +274,8 @@ public static class Advisor
         var slots = settings.MaxPositions - held.Count;
         if (Budget(input, histories, notes) is not { } cash)
             return;
+        var themes = ThemeHoldings(input, histories);
+        var themeCap = input.Capital * settings.MaxThemeFraction;
         foreach (var c in candidates.OrderByDescending(c => c.Momentum).ThenBy(c => c.History.Instrument.Symbol, StringComparer.Ordinal))
         {
             var instrument = c.History.Instrument;
@@ -286,15 +297,20 @@ public static class Advisor
             var byRisk = input.Capital * settings.RiskPerTrade / riskPerShare;
             var byCap = input.Capital * settings.MaxPositionFraction / pricePerShare;
             var byCash = cash / pricePerShare;
-            var quantity = FloorTo(Math.Min(Math.Min(byRisk, byCap), byCash), instrument.QuantityStep);
+            var theme = instrument.Theme;
+            var byTheme = theme is null ? decimal.MaxValue : Math.Max(0m, themeCap - themes.GetValueOrDefault(theme)) / pricePerShare;
+            var quantity = FloorTo(Math.Min(Math.Min(Math.Min(byRisk, byCap), byCash), byTheme), instrument.QuantityStep);
             if (quantity <= 0)
             {
-                notes.Add(new(instrument.Symbol, byCash < Math.Min(byRisk, byCap) ? Reasons.NoCash : Reasons.TooSmall));
+                var sized = Math.Min(byRisk, byCap);
+                notes.Add(new(instrument.Symbol, byTheme < Math.Min(sized, byCash) ? Reasons.ThemeLimit : byCash < sized ? Reasons.NoCash : Reasons.TooSmall));
                 continue;
             }
 
             actions.Add(new(ActionKind.Buy, instrument.Symbol, quantity, c.Close, stop, Reasons.Breakout));
             cash -= quantity * pricePerShare;
+            if (theme is not null)
+                themes[theme] = themes.GetValueOrDefault(theme) + (quantity * pricePerShare);
             slots--;
         }
     }
@@ -324,6 +340,23 @@ public static class Advisor
         }
 
         return Math.Max(0m, Math.Min(input.Cash, input.Capital - invested));
+    }
+
+    /// <summary>What each theme holds now, at the last close in the base currency; holdings that can't be valued count nothing.</summary>
+    private static Dictionary<string, decimal> ThemeHoldings(AdvisorInput input, IEnumerable<PriceHistory> histories)
+    {
+        var bySymbol = histories.ToDictionary(h => h.Instrument.Symbol, StringComparer.Ordinal);
+        var themes = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        foreach (var holding in input.Holdings.Where(h => h.Quantity > 0).DistinctBy(h => h.Symbol, StringComparer.Ordinal))
+        {
+            if (!bySymbol.TryGetValue(holding.Symbol, out var history) || history.Instrument.Theme is not { } theme)
+                continue;
+            var price = history.Bars.Count > 0 ? history.Bars[^1].Close : holding.AverageCost;
+            if (FxRate(input, history.Instrument.Currency) is { } fx)
+                themes[theme] = themes.GetValueOrDefault(theme) + (holding.Quantity * price * fx);
+        }
+
+        return themes;
     }
 
     private static bool IsFresh(IReadOnlyList<Candle> bars, DateOnly today, AdvisorSettings settings)
