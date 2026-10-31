@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
+using Cix.Domain.Scanning;
+using Cix.Engine.Analysis;
 using Cix.Engine.Journal;
 using Cix.Engine.Manual;
 using Cix.Engine.Persistence;
@@ -80,10 +82,15 @@ public interface IAgentRunSignals
     AgentRunInputs Read();
 }
 
-/// <summary>The scanner's latest signals and the owner's waiting requests: what the shell loops read from <c>/signals</c>.</summary>
-public sealed class EngineAgentRunSignals(MarketScanService scanner, ManualRequestService requests) : IAgentRunSignals
+/// <summary>
+/// The scanner's latest signals and the owner's waiting requests: what the shell loops read from <c>/signals</c>. Also when a
+/// risk-off market view ends, for its recheck.
+/// </summary>
+public sealed class EngineAgentRunSignals(MarketScanService scanner, ManualRequestService requests, MarketViewStore views) : IAgentRunSignals
 {
-    public AgentRunInputs Read() => new(scanner.Latest is not null, scanner.SignalDriven, scanner.SignalKey, requests.AgentKey);
+    public AgentRunInputs Read() => new(
+        scanner.Latest is not null, scanner.SignalDriven, scanner.SignalKey, requests.AgentKey,
+        views.Current is { Regime: MarketRegime.RiskOff } view ? view.ValidUntil : null);
 }
 
 /// <summary>

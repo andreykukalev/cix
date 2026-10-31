@@ -71,7 +71,7 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
   - `docker compose logs analyst` shows the run itself.
   - The `market-view` entries in the journal (Data Explorer) show its summary and sources.
   - The engine's scan lines show `risk-off (market view)` or `news` when it is in effect.
-- **Its rules:** `strategies/analyst.v3.json` (ADR-0007); v2 added the highlights shown in the dashboard's market briefing, and v3 writes the summary and highlights in Russian as well.
+- **Its rules:** `strategies/analyst.v4.json` (ADR-0007); v2 added the highlights shown in the dashboard's market briefing, v3 writes the summary and highlights in Russian as well, and v4 keeps risk-off short (3 hours) and for market-wide shocks only.
 
 ## When Claude isn't available
 
