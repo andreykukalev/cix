@@ -91,4 +91,4 @@ app.http('balance-history', {
   }),
 });
 
-module.exports = { handle };
+module.exports = { handle, cached };

@@ -19,7 +19,7 @@ function inRussian(fn) {
 /** The literal texts app.js and view.js pass to t(). */
 function literalKeys() {
   const keys = new Set();
-  for (const file of ['app.js', 'view.js']) {
+  for (const file of ['app.js', 'view.js', 'stocks.js']) {
     const source = read(file);
     for (const m of source.matchAll(/\bt\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/g)) {
       keys.add((m[1] ?? m[2]).replace(/\\(['"])/g, '$1'));
@@ -49,7 +49,7 @@ function staticTexts() {
 
 const marks = (text) => [...String(text).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
 
-test('every word app.js and view.js show has its Russian', () => {
+test('every word app.js, view.js and stocks.js show has its Russian', () => {
   const keys = literalKeys();
   assert.ok(keys.length > 150, 'the scan found the texts');
   assert.deepEqual(keys.filter((k) => !I.has(k)), []);
