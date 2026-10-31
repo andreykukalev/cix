@@ -63,7 +63,10 @@ function stockPrice(value, currency) {
 }
 
 function percent(value) {
-  return value === null || value === undefined ? '–' : `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`;
+  if (value === null || value === undefined) return '–';
+  const rounded = Math.round(value * 1000) / 10;
+  const text = Math.abs(rounded).toLocaleString(I.locale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  return `${rounded > 0 ? '+' : rounded < 0 ? '−' : ''}${text}%`;
 }
 
 function renderStocks() {
@@ -83,10 +86,10 @@ function renderStocks() {
   else if (a?.stale) showBanner(a.asOf ? t('The advice is old: the latest is for {day}. The stocks advisor may not have run.', { day: a.asOf }) : t("The advice has no date: don't act on it."), 'bad');
   else showBanner(null);
 
-  meta.textContent = a?.asOf && !a.stale ? t('advice after the close of {day}: carry it out in Revolut at the next open', { day: a.asOf }) : '';
+  meta.textContent = a?.asOf && !a.stale && !stocks.error ? t('advice after the close of {day}: carry it out in Revolut at the next open', { day: a.asOf }) : '';
 
   const regime = a?.regime ?? null;
-  tile('tile-stocks-market', { 'risk-on': 'ok', 'risk-off': 'bad', unknown: 'bad' }[regime] ?? '',
+  tile('tile-stocks-market', { 'risk-on': 'ok', 'risk-off': 'bad', unknown: 'warn' }[regime] ?? '',
     regime === 'risk-on' ? t('Risk-on') : regime === 'risk-off' ? t('Risk-off') : regime ? t('Unknown') : '–',
     regime === 'risk-on' ? t('{benchmark} above its 200-day average: entries allowed', { benchmark: a.benchmark ?? '–' })
       : regime === 'risk-off' ? t('{benchmark} under its 200-day average: no new entries, tighter stops', { benchmark: a.benchmark ?? '–' })
@@ -102,7 +105,7 @@ function renderStocks() {
     td(x.quantity === null ? '–' : amount(x.quantity, 0), 'num'),
     td(stockPrice(x.referencePrice, x.currency), 'num'),
     td(stockPrice(x.stop, x.currency), 'num'),
-    stockReason(x.reason),
+    td(stockReason(x.reason), 'why'),
   ], a ? t('Nothing to do: hold what you have, with its stops.') : t('No advice yet.'));
 
   rows('stocks-holdings', a?.holdings ?? [], (h) => [
@@ -117,5 +120,5 @@ function renderStocks() {
     h.openedOn ?? '–',
   ], t('No holdings recorded.'));
 
-  rows('stocks-notes', a?.notes ?? [], (n) => [stockName(n), stockReason(n.reason)], t('No notes.'));
+  rows('stocks-notes', a?.notes ?? [], (n) => [stockName(n), td(stockReason(n.reason), 'why')], t('No notes.'));
 }

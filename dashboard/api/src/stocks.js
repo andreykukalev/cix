@@ -9,8 +9,11 @@ const { CosmosReader } = require('./cosmos');
 const CONTAINER = 'advice';
 const LATEST = 'advice-latest';
 const DAY_MS = 24 * 3600 * 1000;
-/** Advice older than this many days is stale: a long weekend is three days without a close, a holiday makes four. */
-const STALE_DAYS = 4;
+/**
+ * Advice is stale once this many weekday closes have passed without new advice (today's close not counted, as it may not
+ * have happened yet): one missing close can be a holiday, two mean the host has stopped.
+ */
+const STALE_MISSED_CLOSES = 2;
 const MAX_ROWS = 200;
 
 const ACTION_ORDER = ['sell', 'set-stop', 'raise-stop', 'buy']; // protecting what is held comes before buying
@@ -34,9 +37,14 @@ const positive = (v) => (num(v) !== null && v > 0 ? v : null);
 const symbol = (v) => (typeof v === 'string' && SYMBOL.test(v) ? v : null);
 const code = (v) => (typeof v === 'string' && CODE.test(v) ? v : null);
 const currency = (v) => (typeof v === 'string' && CURRENCY.test(v) ? v : null);
-const day = (v) => (typeof v === 'string' && DAY.test(v) && Number.isFinite(Date.parse(v)) ? v : null);
+// A real calendar day: Date.parse rolls 2026-02-30 over to March, so the day must come back unchanged.
+const day = (v) => (typeof v === 'string' && DAY.test(v) && Number.isFinite(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v ? v : null);
 const iso = (v) => (typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null);
-const name = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 80) : null);
+// Control and bidi-override characters out, so a name can't disguise the ticker beside it.
+const name = (v) => {
+  const s = typeof v === 'string' ? v.replace(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/gu, '').trim() : '';
+  return s ? s.slice(0, 80) : null;
+};
 const list = (v) => (Array.isArray(v) ? v.slice(0, MAX_ROWS) : []);
 const ratio = (a, b) => (a !== null && b !== null && b !== 0 ? a / b - 1 : null);
 
@@ -71,6 +79,16 @@ function note(n) {
   return s && reason ? { symbol: s, reason } : null;
 }
 
+/** Weekdays strictly between two UTC days: the closes there have been since asOf, not counting today's. */
+function weekdaysBetween(fromMs, toMs) {
+  let n = 0;
+  for (let d = fromMs + DAY_MS; d < toMs; d += DAY_MS) {
+    const w = new Date(d).getUTCDay();
+    if (w !== 0 && w !== 6) n += 1;
+  }
+  return n;
+}
+
 /** What the Stocks tab shows from the advisor's document, every field checked. */
 function stocksView(value, now) {
   const v = value && typeof value === 'object' ? value : {};
@@ -80,7 +98,8 @@ function stocksView(value, now) {
   return {
     asOf,
     ageDays,
-    stale: ageDays === null || ageDays > STALE_DAYS,
+    // A day in the future is as wrong as a missing one (a clock or host bug).
+    stale: ageDays === null || ageDays < 0 || weekdaysBetween(Date.parse(asOf), today) >= STALE_MISSED_CLOSES,
     generatedAt: iso(v.generatedAt),
     regime: REGIMES.has(v.regime) ? v.regime : 'unknown',
     benchmark: symbol(v.benchmark),
@@ -103,4 +122,4 @@ async function loadStocks(reader, now) {
   return { configured: true, advice: doc ? stocksView(doc.value ?? null, now) : null, generatedAt };
 }
 
-module.exports = { stocksReader, stocksView, loadStocks, CONTAINER, LATEST, STALE_DAYS };
+module.exports = { stocksReader, stocksView, loadStocks, CONTAINER, LATEST, STALE_MISSED_CLOSES };

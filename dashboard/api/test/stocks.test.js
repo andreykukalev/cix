@@ -97,12 +97,27 @@ test('holdings carry the change since entry and the room to the stop', () => {
   assert.equal(h.openedOn, '2026-08-01');
 });
 
-test('advice ages by calendar day and goes stale after four', () => {
+test('advice goes stale once two weekday closes pass without new advice', () => {
   assert.deepEqual([stocksView(ADVICE, NOW).ageDays, stocksView(ADVICE, NOW).stale], [0, false]);
-  const friday = { ...ADVICE, asOf: '2026-10-30' };
-  assert.equal(stocksView(friday, Date.parse('2026-11-02T22:00:00Z')).stale, false); // Monday evening, before the host ran
-  assert.equal(stocksView(friday, Date.parse('2026-11-04T08:00:00Z')).stale, true);
+  const at = (asOf, now) => stocksView({ ...ADVICE, asOf }, Date.parse(now)).stale;
+  // Friday's advice: fresh over the weekend and on Tuesday (Monday may be a holiday), stale on Wednesday.
+  assert.equal(at('2026-10-30', '2026-11-02T22:00:00Z'), false);
+  assert.equal(at('2026-10-30', '2026-11-03T22:00:00Z'), false);
+  assert.equal(at('2026-10-30', '2026-11-04T08:00:00Z'), true);
+  // Tuesday's advice: Thursday is one missed close, Friday two.
+  assert.equal(at('2026-10-27', '2026-10-29T12:00:00Z'), false);
+  assert.equal(at('2026-10-27', '2026-10-30T12:00:00Z'), true);
   assert.equal(stocksView({ ...ADVICE, asOf: 'yesterday' }, NOW).stale, true);
+});
+
+test('a date that isn\'t real, or is in the future, is not fresh advice', () => {
+  assert.equal(stocksView({ ...ADVICE, asOf: '2026-02-30' }, NOW).asOf, null);
+  assert.equal(stocksView({ ...ADVICE, asOf: '2026-11-02' }, NOW).stale, true);
+});
+
+test('a name loses control and bidi-override characters', () => {
+  const [a] = stocksView({ ...ADVICE, actions: [{ ...ADVICE.actions[0], name: 'Micro\u202Esoft\u0007 ' }] }, NOW).actions;
+  assert.equal(a.name, 'Microsoft');
 });
 
 test('a malformed document gives gaps, not errors or markup', () => {

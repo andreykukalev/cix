@@ -1409,7 +1409,7 @@ function setLang(lang) {
   if (state.strategiesError) renderStrategiesError();
   if (state.pairs) renderPairs(state.pairs);
   if (state.pairsError) renderPairsError();
-  if (stocks.answer || stocks.error) renderStocks();
+  if (typeof renderStocks === 'function' && (stocks.answer || stocks.error)) renderStocks(); // stocks.js failing mustn't stop the page
   if (state.signedOut) signedOut();
   else if (state.loadError) {
     banner(t("Couldn't load the dashboard: {error}", { error: state.loadError }), true);
