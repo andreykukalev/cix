@@ -22,6 +22,9 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource
 
     private const decimal MaxPrice = 10_000_000m;
 
+    /// <summary>More rows than any exchange lists (the US download is about 50,000): a broken or hostile answer.</summary>
+    private const int MaxRows = 200_000;
+
     private static readonly JsonSerializerOptions Json = new() { NumberHandling = JsonNumberHandling.AllowReadingFromString };
 
     private readonly HttpClient _http;
@@ -106,12 +109,16 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource
     {
         if (!IsExchange(exchange))
             throw new ArgumentException("The exchange must be an EODHD exchange code, for example US.", nameof(exchange));
-        var rows = await GetJsonAsync<BulkRow[]>(
+        var result = new List<MarketRow>();
+        var count = 0;
+        await foreach (var row in GetJsonRowsAsync<BulkRow>(
             $"eod-bulk-last-day/{exchange}?filter=extended&fmt=json&api_token={Uri.EscapeDataString(_apiToken)}", $"the {exchange} download", cancellationToken)
-            .ConfigureAwait(false);
-        var result = new List<MarketRow>(rows.Length);
-        foreach (var row in rows)
+            .ConfigureAwait(false))
         {
+            if (++count > MaxRows)
+                throw new StockDataException($"EODHD's answer for the {exchange} download has over {MaxRows} rows.");
+            if (row is null)
+                continue;
             if (row.Code is not { Length: > 0 and <= 20 } code || !DateOnly.TryParseExact(row.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day))
                 continue;
             var symbol = $"{code}.{exchange}";
@@ -130,13 +137,15 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource
     {
         if (!IsExchange(exchange))
             throw new ArgumentException("The exchange must be an EODHD exchange code, for example US.", nameof(exchange));
-        var rows = await GetJsonAsync<SymbolRow[]>(
+        var result = new List<ListedStock>();
+        var count = 0;
+        await foreach (var row in GetJsonRowsAsync<SymbolRow>(
             $"exchange-symbol-list/{exchange}?type=common_stock&fmt=json&api_token={Uri.EscapeDataString(_apiToken)}", $"the {exchange} symbol list", cancellationToken)
-            .ConfigureAwait(false);
-        var result = new List<ListedStock>(rows.Length);
-        foreach (var row in rows)
+            .ConfigureAwait(false))
         {
-            if (row.Code is not { Length: > 0 and <= 20 } code || $"{code}.{exchange}" is var symbol && !StockSymbol.IsValid(symbol))
+            if (++count > MaxRows)
+                throw new StockDataException($"EODHD's answer for the {exchange} symbol list has over {MaxRows} rows.");
+            if (row?.Code is not { Length: > 0 and <= 20 } code || $"{code}.{exchange}" is var symbol && !StockSymbol.IsValid(symbol))
                 continue;
             result.Add(new(symbol, Clean(row.Name) ?? code, Clean(row.Exchange) ?? "", Clean(row.Type) ?? ""));
         }
@@ -148,39 +157,73 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource
 
     private static decimal? Positive(decimal? value) => value is > 0 and < 1e15m ? value : null;
 
-    private static string? Clean(string? text)
+    /// <summary>
+    /// Provider text without control, format (bidi overrides, zero-width) or line-separator characters, at most 80 UTF-16
+    /// units and never cut inside a surrogate pair: it is shown on the page and, later, read by the analyst.
+    /// </summary>
+    internal static string? Clean(string? text)
     {
-        var s = new string((text ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
-        return s.Length == 0 ? null : s.Length > 80 ? s[..80] : s;
+        var s = new string((text ?? "").Where(c => char.GetUnicodeCategory(c) is not (
+            System.Globalization.UnicodeCategory.Control or System.Globalization.UnicodeCategory.Format
+            or System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator)).ToArray()).Trim();
+        if (s.Length > 80)
+            s = s[..(char.IsHighSurrogate(s[79]) ? 79 : 80)].TrimEnd();
+        return s.Length == 0 ? null : s;
     }
 
-    /// <summary>One GET whose answer is a JSON array; failures as <see cref="StockDataException"/>, never with the URL.</summary>
-    private async Task<T> GetJsonAsync<T>(string path, string what, CancellationToken cancellationToken) where T : class
+    /// <summary>
+    /// One GET whose answer is a JSON array. The body is buffered (up to the client's MaxResponseContentBufferSize), then read
+    /// row by row, so the rows are never one huge array besides it; failures as <see cref="StockDataException"/>, never with
+    /// the URL.
+    /// </summary>
+    private async IAsyncEnumerable<T?> GetJsonRowsAsync<T>(string path, string what, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        HttpResponseMessage response;
         try
         {
-            using var response = await _http.GetAsync(new Uri(path, UriKind.Relative), cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.OK)
-                throw new StockDataException($"EODHD answered {(int)response.StatusCode} for {what}.", (int)response.StatusCode);
-            await using var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            return await JsonSerializer.DeserializeAsync<T>(body, Json, cancellationToken).ConfigureAwait(false)
-                   ?? throw new StockDataException($"EODHD's answer for {what} is empty.");
-        }
-        catch (JsonException)
-        {
-            throw new StockDataException($"EODHD's answer for {what} isn't the expected list.");
+            response = await _http.GetAsync(new Uri(path, UriKind.Relative), cancellationToken).ConfigureAwait(false);
         }
         catch (HttpRequestException e)
         {
             throw new StockDataException($"EODHD couldn't be reached for {what} ({e.HttpRequestError}).");
         }
-        catch (IOException e)
-        {
-            throw new StockDataException($"EODHD's answer for {what} was cut off ({e.GetType().Name}).");
-        }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             throw new StockDataException($"EODHD timed out for {what}.");
+        }
+
+        using (response)
+        {
+            if (response.StatusCode != HttpStatusCode.OK)
+                throw new StockDataException($"EODHD answered {(int)response.StatusCode} for {what}.", (int)response.StatusCode);
+            var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            await using (body.ConfigureAwait(false))
+            {
+                var rows = JsonSerializer.DeserializeAsyncEnumerable<T>(body, Json, cancellationToken).GetAsyncEnumerator(cancellationToken);
+                await using (rows.ConfigureAwait(false))
+                {
+                    while (true)
+                    {
+                        T? row;
+                        try
+                        {
+                            if (!await rows.MoveNextAsync().ConfigureAwait(false))
+                                break;
+                            row = rows.Current;
+                        }
+                        catch (JsonException)
+                        {
+                            throw new StockDataException($"EODHD's answer for {what} isn't the expected list.");
+                        }
+                        catch (IOException e)
+                        {
+                            throw new StockDataException($"EODHD's answer for {what} was cut off ({e.GetType().Name}).");
+                        }
+
+                        yield return row;
+                    }
+                }
+            }
         }
     }
 

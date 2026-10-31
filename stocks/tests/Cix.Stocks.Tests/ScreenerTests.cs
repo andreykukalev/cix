@@ -93,6 +93,8 @@ public class ScreenerTests
         Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(250, step: -0.1m), Day, 10_000m, advisor, Settings));
         Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(150), Day, 10_000m, advisor, Settings));
         Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(250), Day.AddDays(30), 10_000m, advisor, Settings));
+        // A capital whose 1% can't buy one share at the risk: not listed with zero shares.
+        Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(250), Day, 500m, advisor, Settings));
     }
 
     [Fact]

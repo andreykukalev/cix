@@ -9,7 +9,7 @@ const { CosmosReader } = require('./cosmos');
 const CONTAINER = 'advice';
 const LATEST = 'advice-latest';
 const CANDIDATES = 'candidates-latest'; // the market-wide search's page (ADR-0025), same container
-const SEARCH_STATUSES = new Set(['done', 'off', 'call-budget', 'data-error', 'not-ready']);
+const SEARCH_STATUSES = new Set(['done', 'off', 'call-budget', 'data-error', 'not-ready', 'advice-behind']);
 const CANDIDATE_STATUSES = new Set(['breakout', 'near-high']);
 const MAX_CANDIDATES = 100;
 const DAY_MS = 24 * 3600 * 1000;
@@ -56,9 +56,9 @@ const currency = (v) => (typeof v === 'string' && CURRENCY.test(v) ? v : null);
 // A real calendar day: Date.parse rolls 2026-02-30 over to March, so the day must come back unchanged.
 const day = (v) => (typeof v === 'string' && DAY.test(v) && Number.isFinite(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v ? v : null);
 const iso = (v) => (typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null);
-// Control and bidi-override characters out, so a name can't disguise the ticker beside it.
+// Control, format (bidi overrides, zero-width) and line-separator characters out, so a name can't disguise the ticker beside it.
 const name = (v) => {
-  const s = typeof v === 'string' ? v.replace(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/gu, '').trim() : '';
+  const s = typeof v === 'string' ? v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').trim() : '';
   return s ? s.slice(0, 80) : null;
 };
 const list = (v) => (Array.isArray(v) ? v.slice(0, MAX_ROWS) : []);
@@ -141,6 +141,12 @@ function candidate(c) {
   };
 }
 
+// A count the host wrote as a decimal string (or a number): a whole number from 0, else a gap.
+const count = (v) => {
+  const n = num(v);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+};
+
 /** The market-wide search's page, every field checked; null when there is none. */
 function candidatesView(value) {
   if (!value || typeof value !== 'object') return null;
@@ -151,8 +157,8 @@ function candidatesView(value) {
     regime: REGIMES.has(value.regime) ? value.regime : 'unknown',
     baseCurrency: currency(value.baseCurrency),
     capital: positive(value.capital),
-    listed: Number.isInteger(value.listed) && value.listed >= 0 ? value.listed : null,
-    shortlisted: Number.isInteger(value.shortlisted) && value.shortlisted >= 0 ? value.shortlisted : null,
+    listed: count(value.listed),
+    shortlisted: count(value.shortlisted),
     // The host ranks them (entry signals first, then momentum): the order is kept.
     candidates: (Array.isArray(value.candidates) ? value.candidates.slice(0, MAX_CANDIDATES) : []).map(candidate).filter(Boolean),
   };

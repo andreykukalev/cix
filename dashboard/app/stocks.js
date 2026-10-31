@@ -91,6 +91,10 @@ function renderCandidates(c, advice) {
   else if (status === 'call-budget') say(t("The day's search calls are spent: no search tonight."), 'warn');
   else if (status === 'data-error') say(t('EODHD refused or failed the whole-market download: no search tonight. A free key is always refused.'), 'bad');
   else if (status === 'not-ready') say(t("EODHD's download wasn't for the latest session yet: the next run searches again."), 'warn');
+  else if (status === 'advice-behind') say(t("The advice's prices came late, so the search waited for them: the next run searches."), 'warn');
+  else if (status === 'done' && advice?.asOf && c.asOf && c.asOf < advice.asOf) {
+    say(t('These candidates are from the close of {day}, older than the advice: the latest search failed.', { day: c.asOf }), 'warn');
+  }
   else if (status === 'done' && c.regime === 'risk-off') say(t('Market risk-off: the advisor buys nothing new until it recovers. These are for watching.'), 'bad');
   else say(null);
   meta.textContent = status === 'done' && c.asOf

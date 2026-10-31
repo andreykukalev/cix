@@ -121,6 +121,9 @@ public sealed record StocksConfig
             throw new ArgumentOutOfRangeException(nameof(HistoryDays), HistoryDays, $"Too short for the advisor's {settings.MinBars} bars, or over 20 000.");
         Costs.Validate();
         Screener.Validate();
+        // The search sizes in the market's currency as if it were the base one: only the US market, in USD, for now.
+        if (Screener.Enabled && !(string.Equals(Screener.Exchange, "US", StringComparison.Ordinal) && string.Equals(BaseCurrency, "USD", StringComparison.Ordinal)))
+            throw new ArgumentException("The market-wide search covers the US market with a USD base currency only.");
         return this;
     }
 

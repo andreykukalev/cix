@@ -961,12 +961,14 @@
     'Over your price cap': 'Дороже потолка цены',
     'Old prices': 'Старые цены',
     'Candidates from the whole market': 'Кандидаты со всего рынка',
-    'Shares by the advisor\'s rules: 1% of the capital at risk to the stop, at most 20% of it in one stock':
-      'Количество по правилам советника: риск до стопа 1% капитала, не больше 20% капитала в одной акции',
+    'Shares by the advisor\'s rules: the loss to the stop, plus a gap, is 1% of the capital, and at most 20% of it goes into one stock':
+      'Количество по правилам советника: убыток до стопа с запасом на гэп составляет 1% капитала, и не больше 20% капитала в одну акцию',
     '6 months': '6 месяцев',
-    'The change over the last 126 sessions, about six months: the advisor\'s ranking': 'Изменение за последние 126 сессий, примерно полгода: по нему советник ранжирует',
-    'US common stocks on the main exchanges, from your price cap down to 5, worth 2 billion or more and traded for 20 million a day, that pass the same entry rule as the watchlist: entry signals first, then uptrends within 3% of their high. Not in the watchlist or the holdings. You choose: nothing here is bought by itself.':
-      'Обыкновенные акции США на основных биржах, по цене от 5 до вашего потолка, капитализацией от 2 миллиардов и оборотом от 20 миллионов в день, которые проходят то же правило входа, что и список наблюдения: сначала сигналы на вход, потом восходящие тренды в пределах 3% от максимума. Без акций из списка наблюдения и позиций. Выбираете вы: само ничего не покупается.',
+    'The change over about six months: the advisor\'s ranking': 'Изменение примерно за полгода: по нему советник ранжирует',
+    'Large, liquid US common stocks on the main exchanges, up to your price cap, that pass the same entry rule as the watchlist: entry signals first, then uptrends just under their high. Not in the watchlist or the holdings. You choose: nothing here is bought by itself.':
+      'Крупные ликвидные обыкновенные акции США на основных биржах, до вашего потолка цены, которые проходят то же правило входа, что и список наблюдения: сначала сигналы на вход, потом восходящие тренды чуть ниже максимума. Без акций из списка наблюдения и позиций. Выбираете вы: само ничего не покупается.',
+    'The advice\'s prices came late, so the search waited for them: the next run searches.': 'Цены для советов пришли с опозданием, поиск их дождётся: искать будет следующий запуск.',
+    'These candidates are from the close of {day}, older than the advice: the latest search failed.': 'Эти кандидаты по закрытию {day}, старше советов: последний поиск не удался.',
     'The market search hasn\'t run yet.': 'Поиск по рынку ещё не запускался.',
     'The market search is off: it needs EODHD\'s paid plan (EOD All World), as the free key can\'t download the whole market. It is turned on in stocks/config/stocks.json.':
       'Поиск по рынку выключен: нужен платный тариф EODHD (EOD All World), бесплатный ключ не скачивает весь рынок. Включается в stocks/config/stocks.json.',

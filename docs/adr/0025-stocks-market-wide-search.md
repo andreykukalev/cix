@@ -13,12 +13,12 @@ EODHD's free key has no whole-market download (`eod-bulk-last-day`: "Bulk downlo
 
 After each nightly advice, the stocks host runs a market-wide search (`MarketSearch`, `Cix.Stocks.Screener`), off until `screener.enabled` is set in `stocks/config/stocks.json`:
 
-1. **Shortlist** from the whole market's last session (100 calls) and the symbol list (1 call, refetched weekly): common stocks on NYSE, NASDAQ and NYSE MKT, priced from 5 to the owner's price cap, worth 2 billion or more, traded for 20 million a day, in an uptrend by EODHD's EMAs and within 15% of their 250-day high. Nearest the high first, at most 40, never one already watched or held.
+1. **Shortlist** from the whole market's last session (100 calls) and the symbol list (1 call, refetched weekly): common stocks on NYSE, NASDAQ and NYSE MKT (or AMEX, as EODHD may name it), priced from 5 to the owner's price cap, worth 2 billion or more, traded for 20 million a day, in an uptrend by EODHD's EMAs and within 15% of their 250-day high. Nearest the high first, at most 40, never one already watched or held.
 2. **The advisor's own rule** on each shortlisted stock's year of bars (1 call each, or the cache): `Advisor.Entry`, the single place the entry rule lives, also used for the watchlist. A breakout, or an uptrend within 3% of its prior high, is a candidate.
-3. **Sized by the advisor's rules** on the paper portfolio's equity: the stop is 3 ATR under the close, risk 1% of the capital, at most 20% in one stock. The analyst will choose among the candidates but never computes a sum: money stays in code and `decimal`.
+3. **Sized by the advisor's rules** on the paper portfolio's equity: the stop is 3 ATR under the close, the loss to it plus a 1-ATR gap is 1% of the capital, at most 20% in one stock; a stock the capital can't buy one share of isn't listed. The analyst will choose among the candidates but never computes a sum: money stays in code and `decimal`.
 4. **Written** to `candidates-latest` (and once to `candidates-YYYY-MM-DD`) in the stocks database. The Stocks page shows them, and a status when the search is off, out of calls, refused or early.
 
-The search keeps its own call budget (`screener.maxCallsPerDay`, 300 by default) in its own state document, reserved before any call, like the daily run. It never changes the paper portfolio and never places an order.
+The search keeps its own call budget (`screener.maxCallsPerDay`, 300 by default) in its own state document, reserved before any call, like the daily run. It only searches when EODHD's download is for the advised session, judges each candidate on that session's close, stops fetching bars 12 minutes into the job (its timeout is 15), and republishes a page a failed run left behind. It never changes the paper portfolio and never places an order.
 
 ## Alternatives considered
 

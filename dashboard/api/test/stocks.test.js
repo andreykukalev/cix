@@ -191,7 +191,7 @@ test('the watchlist lists held, then entry signals, then uptrends nearest their 
 test('the market-wide search\'s candidates are checked field by field and keep the host\'s order', () => {
   const view = candidatesView({
     asOf: '2026-10-30', generatedAt: '2026-10-31T02:12:00Z', status: 'done', regime: 'risk-on', baseCurrency: 'USD', capital: '10000',
-    listed: 5200, shortlisted: 40,
+    listed: '5200', shortlisted: '40',
     candidates: [
       { symbol: 'NEW.US', name: 'New Co', venue: 'NASDAQ', status: 'breakout', close: '142.2', breakoutHigh: '142.1', trendAverage: '132.25', stop: '139.2', shares: '14', momentum: '0.31', marketCap: '5000000000' },
       { symbol: 'NEAR.US', status: 'near-high', close: '100', breakoutHigh: '102', stop: '94', shares: '3' },
@@ -209,6 +209,8 @@ test('the market-wide search\'s candidates are checked field by field and keep t
   assert.deepEqual([near.name, near.momentum, near.marketCap], [null, null, null]);
   assert.ok(Math.abs(near.toBreakout - 0.02) < 1e-12);
   assert.equal(candidatesView({ status: 'unknown-thing' }).status, null);
+  assert.deepEqual([candidatesView({ listed: '1.5' }).listed, candidatesView({ listed: '-1' }).listed, candidatesView({ listed: 7 }).listed], [null, null, 7]);
+  assert.equal(candidatesView({ status: 'advice-behind' }).status, 'advice-behind');
   assert.equal(candidatesView(null), null);
 });
 

@@ -23,6 +23,9 @@ public static class SearchStatus
 
     /// <summary>EODHD's download isn't for the advised session yet.</summary>
     public const string NotReady = "not-ready";
+
+    /// <summary>EODHD's download is for a later session than the advice (its bars came late): the next run searches.</summary>
+    public const string AdviceBehind = "advice-behind";
 }
 
 /// <summary>One candidate as the Stocks page shows it. <see cref="Status"/> is <c>breakout</c> or <c>near-high</c>.</summary>
@@ -41,11 +44,21 @@ public sealed record CandidatesDocument(
 /// <summary>
 /// The market-wide search (ADR-0025), after the daily run has advised a close: EODHD's whole-market download (100 calls),
 /// the symbol list when it is older than <see cref="ScreenerSettings.UniverseDays"/> (1 call), then each shortlisted stock's
-/// bars (1 call each, or the cache). Its calls are reserved in its own state before any is made, so an overlapping run fails
-/// on the version instead of spending them twice. It never touches the paper portfolio and never places an order.
+/// bars (1 call each, or the cache). Its calls are reserved in its own state, under its version, before any is made: two
+/// runs reserving at once conflict, and a later run counts the earlier one's calls. A provider failure gives back the calls
+/// not made; any other failure keeps the whole reservation, erring on the side of the key's limit. Bars are fetched only
+/// until <c>deadline</c>, so the job ends inside its timeout with what it found. It never touches the paper portfolio and
+/// never places an order.
 /// </summary>
-public sealed class MarketSearch(StocksConfig config, IMarketSource market, IDailyBarSource source, IStocksStore store, TimeProvider time)
+public sealed class MarketSearch(
+    StocksConfig config, IMarketSource market, IDailyBarSource source, IStocksStore store, TimeProvider time, DateTimeOffset? deadline = null)
 {
+    /// <summary>The universe document's largest size: Cosmos DB refuses an item over 2 MB.</summary>
+    private const int MaxUniverseBytes = 1_800_000;
+
+    /// <summary>The most stocks kept in the universe document: about 1.5 MB, under Cosmos DB's 2 MB item limit.</summary>
+    public const int MaxUniverse = 15_000;
+
     public async Task<CandidatesDocument?> RunAsync(CancellationToken cancellationToken)
     {
         var settings = config.Screener;
@@ -68,7 +81,18 @@ public sealed class MarketSearch(StocksConfig config, IMarketSource market, IDai
         var saved = await store.GetSearchStateAsync(cancellationToken).ConfigureAwait(false);
         var state = saved?.Value ?? new SearchState(null, null, 0);
         if (state.LastDay is { } last && last >= advice.AsOf)
-            return null; // this session is searched: the page stands
+        {
+            // Searched already. A run that failed after saving its state but before the page left the page behind: copy it.
+            var latest = await store.GetCandidatesAsync("candidates-latest", cancellationToken).ConfigureAwait(false);
+            if (latest?.AsOf is not { } shown || shown < last)
+            {
+                var dated = await store.GetCandidatesAsync(DatedId(last), cancellationToken).ConfigureAwait(false);
+                if (dated is not null)
+                    await store.SaveLatestCandidatesAsync(dated, cancellationToken).ConfigureAwait(false);
+            }
+
+            return null;
+        }
 
         // The calls: the download, the symbol list when due, and each shortlisted stock's bars at most.
         var universe = await store.GetUniverseAsync(cancellationToken).ConfigureAwait(false);
@@ -92,10 +116,18 @@ public sealed class MarketSearch(StocksConfig config, IMarketSource market, IDai
             if (universeDue)
             {
                 used++;
-                var listed = await market.GetListedStocksAsync(settings.Exchange, cancellationToken).ConfigureAwait(false);
+                // Only what the search can use is kept: the whole list, over-the-counter venues included, would not fit one document.
+                var venues = settings.Venues.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var listed = (await market.GetListedStocksAsync(settings.Exchange, cancellationToken).ConfigureAwait(false))
+                    .Where(l => venues.Contains(l.Venue) && string.Equals(l.Type, settings.Type, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
                 if (listed.Count == 0)
-                    throw new StockDataException("EODHD's symbol list came back empty.");
+                    throw new StockDataException("EODHD's symbol list has no stock on the screener's venues.");
+                if (listed.Count > MaxUniverse)
+                    throw new StockDataException($"EODHD's symbol list has {listed.Count} stocks on the screener's venues, over {MaxUniverse}.");
                 universe = new StoredUniverse(today, listed);
+                if (System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(universe, StocksJson.Options).Length > MaxUniverseBytes)
+                    throw new StockDataException("EODHD's symbol list is too large to keep in one document.");
                 await store.SaveUniverseAsync(universe, cancellationToken).ConfigureAwait(false);
             }
 
@@ -110,13 +142,15 @@ public sealed class MarketSearch(StocksConfig config, IMarketSource market, IDai
             return failed;
         }
 
-        // The download is for the advised session, or the provider hasn't updated yet: then the next run searches again.
-        if (rows.Count == 0 || rows.Max(r => r.Day) < advice.AsOf)
+        // The download must be for the advised session: older, the provider hasn't updated yet; newer, the advice's own bars
+        // came late. Either way the next run searches again.
+        var marketDay = rows.Count == 0 ? (DateOnly?)null : rows.Max(r => r.Day);
+        if (marketDay != advice.AsOf)
         {
             await GiveBackAsync(used).ConfigureAwait(false);
-            var early = Page(SearchStatus.NotReady);
-            await store.SaveLatestCandidatesAsync(early, cancellationToken).ConfigureAwait(false);
-            return early;
+            var wait = Page(marketDay > advice.AsOf ? SearchStatus.AdviceBehind : SearchStatus.NotReady);
+            await store.SaveLatestCandidatesAsync(wait, cancellationToken).ConfigureAwait(false);
+            return wait;
         }
 
         var bySymbol = universe!.Stocks.DistinctBy(s => s.Symbol, StringComparer.Ordinal).ToDictionary(s => s.Symbol, StringComparer.Ordinal);
@@ -128,6 +162,8 @@ public sealed class MarketSearch(StocksConfig config, IMarketSource market, IDai
         var found = new List<Candidate>();
         foreach (var row in shortlist)
         {
+            if (deadline is { } end && time.GetUtcNow() >= end)
+                break; // out of time: list what was found
             var cached = await store.GetBarsAsync(row.Symbol, cancellationToken).ConfigureAwait(false);
             IReadOnlyList<Cix.Domain.Exchange.Candle> bars;
             if (cached is { } c && c.FetchedAt >= cutoff)
@@ -152,7 +188,9 @@ public sealed class MarketSearch(StocksConfig config, IMarketSource market, IDai
             }
 
             var listed = bySymbol[row.Symbol];
-            if (Screener.Evaluate(row.Symbol, listed.Name, listed.Venue, row.MarketCap, bars, today, advice.Equity, config.AdvisorSettings, settings) is { } candidate)
+            // Judged on the advised session only: a stock whose own bars lag would be judged on an older close.
+            if (Screener.Evaluate(row.Symbol, listed.Name, listed.Venue, row.MarketCap, bars, today, advice.Equity, config.AdvisorSettings, settings) is { } candidate
+                && candidate.Day == advice.AsOf)
                 found.Add(candidate);
         }
 
@@ -160,7 +198,7 @@ public sealed class MarketSearch(StocksConfig config, IMarketSource market, IDai
             c.Symbol, c.Name, c.Venue, c.State == EntryState.Breakout ? "breakout" : "near-high", c.Close, c.PriorHigh, c.SlowAverage, c.Stop,
             c.Shares, c.Momentum, c.MarketCap)).ToList();
         var page = Page(SearchStatus.Done, bySymbol.Count, shortlist.Count, lines);
-        await store.AddCandidatesAsync(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"candidates-{advice.AsOf:yyyy-MM-dd}"), page, cancellationToken).ConfigureAwait(false);
+        await store.AddCandidatesAsync(DatedId(advice.AsOf), page, cancellationToken).ConfigureAwait(false);
         state = state with { LastDay = advice.AsOf, Calls = calls + used };
         await store.SaveSearchStateAsync(state, etag, cancellationToken).ConfigureAwait(false);
         await store.SaveLatestCandidatesAsync(page, cancellationToken).ConfigureAwait(false);
@@ -173,4 +211,6 @@ public sealed class MarketSearch(StocksConfig config, IMarketSource market, IDai
             etag = await store.SaveSearchStateAsync(state, etag, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private static string DatedId(DateOnly day) => string.Create(System.Globalization.CultureInfo.InvariantCulture, $"candidates-{day:yyyy-MM-dd}");
 }

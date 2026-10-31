@@ -49,6 +49,9 @@ public interface IStocksStore
     /// <summary>Adds a session's candidates to the history (<c>candidates-YYYY-MM-DD</c>); one already there is left as it is.</summary>
     Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken);
 
+    /// <summary>A session's candidates (<c>candidates-YYYY-MM-DD</c>) or <c>candidates-latest</c>; null when there is none.</summary>
+    Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken);
+
     /// <summary>Replaces <c>candidates-latest</c>, which the dashboard reads.</summary>
     Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken);
 }
@@ -151,6 +154,8 @@ public sealed class InMemoryStocksStore : IStocksStore
         _docs.TryAdd($"advice/{id}", JsonSerializer.Serialize(candidates, StocksJson.Options));
         return Task.CompletedTask;
     }
+
+    public Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Read<CandidatesDocument>($"advice/{id}"));
 
     public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken)
     {

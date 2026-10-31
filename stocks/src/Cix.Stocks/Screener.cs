@@ -150,6 +150,8 @@ public static class Screener
         if (stop <= 0)
             return null;
         var shares = Advisor.FloorTo(Advisor.Sized(capital, close, stop, atr, 1m, advisor), 1m);
+        if (shares <= 0)
+            return null; // the capital's risk can't buy one share: the advisor would note it too small
         var from = bars[Math.Max(0, bars.Count - 1 - advisor.MomentumDays)].Close;
         return new(symbol, name, venue, TrendIndicators.TradingDay(bars[^1]), entry.State, close, high, Math.Round(slow, 4, MidpointRounding.ToEven),
             Math.Round(atr, 4, MidpointRounding.ToEven), stop, shares, Math.Round(Indicators.Change(from, close) ?? 0m, 4, MidpointRounding.ToEven), marketCap);

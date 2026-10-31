@@ -22,6 +22,8 @@ internal static class StocksHost
 
     public static async Task<int> RunAsync(string[] args)
     {
+        // The job's replicaTimeout is 15 minutes: the search stops fetching bars after 12 and lists what it found.
+        var deadline = TimeProvider.System.GetUtcNow().AddMinutes(12);
         using var cancel = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
         {
@@ -64,12 +66,12 @@ internal static class StocksHost
             MaxResponseContentBufferSize = 4 * 1024 * 1024,
         };
         var source = new EodhdClient(http, key);
-        // The whole-market download is tens of megabytes: its own client, with room for it.
+        // The whole-market download is 20 to 40 MB: its own client, with room for it but not for much more (the job has 0.5 GiB).
         using var bulkHttp = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false })
         {
             BaseAddress = EodhdClient.DefaultBaseAddress,
             Timeout = TimeSpan.FromSeconds(180),
-            MaxResponseContentBufferSize = 128 * 1024 * 1024,
+            MaxResponseContentBufferSize = 64 * 1024 * 1024,
         };
         var market = new EodhdClient(bulkHttp, key);
         try
@@ -79,7 +81,7 @@ internal static class StocksHost
                 var memory = new InMemoryStocksStore();
                 var report = await new DailyRun(config, source, memory, TimeProvider.System).RunAsync(cancel.Token);
                 Print(report);
-                Print(await new MarketSearch(config, market, source, memory, TimeProvider.System).RunAsync(cancel.Token));
+                Print(await new MarketSearch(config, market, source, memory, TimeProvider.System, deadline).RunAsync(cancel.Token));
                 foreach (var id in new[] { "advice/advice-latest", "advice/candidates-latest" })
                 {
                     if (memory.Documents.TryGetValue(id, out var page))
@@ -103,7 +105,7 @@ internal static class StocksHost
 
             using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
             Print(await new DailyRun(config, source, store, TimeProvider.System).RunAsync(cancel.Token));
-            Print(await new MarketSearch(config, market, source, store, TimeProvider.System).RunAsync(cancel.Token));
+            Print(await new MarketSearch(config, market, source, store, TimeProvider.System, deadline).RunAsync(cancel.Token));
             return 0;
         }
         catch (OperationCanceledException) when (cancel.IsCancellationRequested)

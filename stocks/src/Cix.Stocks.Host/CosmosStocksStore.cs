@@ -78,12 +78,22 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
         }
         catch (CosmosException e) when (e.StatusCode == HttpStatusCode.NotFound)
         {
-            await container.CreateItemAsync(item, new PartitionKey(UniverseId), cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await container.CreateItemAsync(item, new PartitionKey(UniverseId), cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            catch (CosmosException c) when (c.StatusCode == HttpStatusCode.Conflict)
+            {
+                // Another run created it meanwhile, from the same list: theirs stands.
+            }
         }
     }
 
     public Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken) =>
         CreateOnceAsync(Get(AdviceContainer), new Envelope<CandidatesDocument>(id, candidates), cancellationToken);
+
+    public async Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken) =>
+        (await ReadAsync<CandidatesDocument>(Get(AdviceContainer), id, cancellationToken).ConfigureAwait(false))?.Value;
 
     public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) =>
         Get(AdviceContainer).UpsertItemAsync(new Envelope<CandidatesDocument>("candidates-latest", candidates), new PartitionKey("candidates-latest"), cancellationToken: cancellationToken);

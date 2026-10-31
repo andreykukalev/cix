@@ -432,6 +432,8 @@ public class DailyRunTests
 
         public Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken) => inner.AddCandidatesAsync(id, candidates, cancellationToken);
 
+        public Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken) => inner.GetCandidatesAsync(id, cancellationToken);
+
         public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
     }
 
@@ -468,6 +470,8 @@ public class DailyRunTests
         public Task SaveUniverseAsync(StoredUniverse universe, CancellationToken cancellationToken) => inner.SaveUniverseAsync(universe, cancellationToken);
 
         public Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken) => inner.AddCandidatesAsync(id, candidates, cancellationToken);
+
+        public Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken) => inner.GetCandidatesAsync(id, cancellationToken);
 
         public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
     }

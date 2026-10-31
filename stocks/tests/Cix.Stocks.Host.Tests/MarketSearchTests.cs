@@ -59,11 +59,15 @@ public class MarketSearchTests
             ]);
         }
 
+        public IStocksStore? SearchStore { get; set; }
+
+        public DateTimeOffset? Deadline { get; set; }
+
         public async Task<CandidatesDocument?> RunAsync(bool advise = true)
         {
             if (advise)
                 await new DailyRun(Config, Source, Store, Time).RunAsync(CancellationToken.None);
-            return await new MarketSearch(Config, Market, Source, Store, Time).RunAsync(CancellationToken.None);
+            return await new MarketSearch(Config, Market, Source, SearchStore ?? Store, Time, Deadline).RunAsync(CancellationToken.None);
         }
 
         public SearchState? State => Store.Read<SearchState>("state/search");
@@ -90,8 +94,10 @@ public class MarketSearchTests
         var watchlistCalls = s.Source.Calls;
         var page = await s.RunAsync(advise: false);
 
-        // XYZ is watched already, DOWN's 50-day EMA is under its 200-day, PINK trades over the counter: NEW alone is fetched.
-        Assert.Equal((SearchStatus.Done, Wednesday, 4, 1), (page!.Status, page.AsOf, page.Listed, page.Shortlisted));
+        // PINK trades over the counter (not kept in the list), XYZ is watched already, DOWN's 50-day EMA is under its 200-day:
+        // NEW alone is fetched.
+        Assert.Equal((SearchStatus.Done, Wednesday, 3, 1), (page!.Status, page.AsOf, page.Listed, page.Shortlisted));
+        Assert.DoesNotContain(s.Store.Read<StoredUniverse>("state/universe")!.Stocks, l => l.Symbol == "PINK.US");
         // Stop 142.2 − 3 ATR (1) = 139.2; 1% of 10 000 over 3 + 1 is 25 shares, the 20% cap 2000 / 142.2 is 14.
         var line = Assert.Single(page.Candidates);
         Assert.Equal(new CandidateLine("NEW.US", "New Co", "NASDAQ", "breakout", 142.2m, 142.1m, 132.25m, 139.2m, 14m, line.Momentum, 5e9m), line);
@@ -168,5 +174,114 @@ public class MarketSearchTests
         s.Market.Rows.Clear();
         s.Market.Rows.Add(Row("NEW.US"));
         Assert.Equal(SearchStatus.Done, (await s.RunAsync(advise: false))!.Status);
+    }
+
+    [Fact]
+    public async Task Run_ADownloadForALaterSessionThanTheAdviceWaitsForTheAdvice()
+    {
+        var s = new Setup();
+        s.Market.Rows.Clear();
+        s.Market.Rows.Add(Row("NEW.US", Wednesday.AddDays(1)));
+
+        var page = await s.RunAsync();
+
+        Assert.Equal(SearchStatus.AdviceBehind, page!.Status);
+        Assert.Null(s.State!.LastDay);
+    }
+
+    [Fact]
+    public async Task Run_CachedBarsSpendNoCallAndAFailedFetchIsCountedAndSkipped()
+    {
+        var s = new Setup();
+        s.Market.Rows.Add(Row("FAIL.US"));
+        s.Market.Listed.Add(new("FAIL.US", "Fail Co", "NYSE", "Common Stock"));
+        s.Source.Failing.Add("FAIL.US");
+        await new DailyRun(s.Config, s.Source, s.Store, s.Time).RunAsync(CancellationToken.None);
+        await s.Store.SaveBarsAsync(new CachedBars("NEW.US", ThursdayRun, (await s.Source.GetDailyBarsAsync("NEW.US", Wednesday.AddDays(-400), Wednesday, CancellationToken.None)).Select(StoredBar.From).ToList()), CancellationToken.None);
+        var before = s.Source.Calls;
+
+        var page = await s.RunAsync(advise: false);
+
+        Assert.Equal(["NEW.US"], page!.Candidates.Select(c => c.Symbol));
+        Assert.Equal(1, s.Source.Calls - before); // FAIL's failed fetch; NEW from the cache
+        Assert.Equal(102, s.State!.Calls); // the list (1), the download (100) and FAIL's failed fetch
+    }
+
+    [Fact]
+    public async Task Run_PastTheDeadlineNoMoreBarsAreFetched()
+    {
+        var s = new Setup { Deadline = ThursdayRun };
+
+        var page = await s.RunAsync();
+
+        Assert.Equal((SearchStatus.Done, 1, 0), (page!.Status, page.Shortlisted, page.Candidates.Count));
+    }
+
+    [Fact]
+    public async Task Run_APageLeftBehindByAFailedRunIsCopiedFromTheDatedOne()
+    {
+        var s = new Setup();
+        await s.RunAsync();
+        // A run that saved its state and the dated page, then failed before the latest one: an older page is shown.
+        var latest = s.Store.Read<CandidatesDocument>("advice/candidates-latest")!;
+        await s.Store.SaveLatestCandidatesAsync(latest with { AsOf = Wednesday.AddDays(-1) }, CancellationToken.None);
+
+        Assert.Null(await s.RunAsync(advise: false));
+
+        Assert.Equal(Wednesday, s.Store.Read<CandidatesDocument>("advice/candidates-latest")!.AsOf);
+        Assert.Equal(101, s.Market.Calls);
+    }
+
+    [Fact]
+    public async Task Run_TwoRunsReservingAtOnceConflict()
+    {
+        var s = new Setup();
+        await new DailyRun(s.Config, s.Source, s.Store, s.Time).RunAsync(CancellationToken.None);
+        s.SearchStore = new RacingSearchStore(s.Store);
+
+        await Assert.ThrowsAsync<StoreConflictException>(() => s.RunAsync(advise: false));
+        Assert.Equal(0, s.Market.Calls);
+    }
+
+    /// <summary>Another run reserves the search's calls between this run's read and its reservation.</summary>
+    private sealed class RacingSearchStore(InMemoryStocksStore inner) : IStocksStore
+    {
+        public async Task<Versioned<SearchState>?> GetSearchStateAsync(CancellationToken cancellationToken)
+        {
+            var state = await inner.GetSearchStateAsync(cancellationToken);
+            await inner.SaveSearchStateAsync(new SearchState(null, new DateOnly(2026, 10, 29), 141), state?.ETag, cancellationToken);
+            return state;
+        }
+
+        public Task<string> SaveSearchStateAsync(SearchState state, string? etag, CancellationToken cancellationToken) => inner.SaveSearchStateAsync(state, etag, cancellationToken);
+        public Task<CachedBars?> GetBarsAsync(string symbol, CancellationToken cancellationToken) => inner.GetBarsAsync(symbol, cancellationToken);
+        public Task SaveBarsAsync(CachedBars bars, CancellationToken cancellationToken) => inner.SaveBarsAsync(bars, cancellationToken);
+        public Task<Versioned<PaperState>?> GetStateAsync(CancellationToken cancellationToken) => inner.GetStateAsync(cancellationToken);
+        public Task<string> SaveStateAsync(PaperState state, string? etag, CancellationToken cancellationToken) => inner.SaveStateAsync(state, etag, cancellationToken);
+        public Task AddTradeAsync(string id, TradeLine trade, CancellationToken cancellationToken) => inner.AddTradeAsync(id, trade, cancellationToken);
+        public Task AddAdviceAsync(string id, AdviceDocument advice, CancellationToken cancellationToken) => inner.AddAdviceAsync(id, advice, cancellationToken);
+        public Task<AdviceDocument?> GetAdviceAsync(string id, CancellationToken cancellationToken) => inner.GetAdviceAsync(id, cancellationToken);
+        public Task SaveLatestAdviceAsync(AdviceDocument advice, CancellationToken cancellationToken) => inner.SaveLatestAdviceAsync(advice, cancellationToken);
+        public Task<StoredUniverse?> GetUniverseAsync(CancellationToken cancellationToken) => inner.GetUniverseAsync(cancellationToken);
+        public Task SaveUniverseAsync(StoredUniverse universe, CancellationToken cancellationToken) => inner.SaveUniverseAsync(universe, cancellationToken);
+        public Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken) => inner.AddCandidatesAsync(id, candidates, cancellationToken);
+        public Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken) => inner.GetCandidatesAsync(id, cancellationToken);
+        public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
+    }
+
+    [Fact]
+    public void Config_TheSearchSizesInUsdOnly()
+    {
+        var eur = () => new StocksConfig
+        {
+            BaseCurrency = "EUR",
+            Capital = 10_000m,
+            Benchmark = "VTI.US",
+            Fx = new Dictionary<string, decimal> { ["USD"] = 0.9m },
+            Watchlist = [new("XYZ.US", "XYZ Corp", "USD")],
+            Screener = new ScreenerSettings { Enabled = true },
+        }.Validate();
+
+        Assert.Throws<ArgumentException>(eur);
     }
 }

@@ -282,4 +282,13 @@ public class EodhdClientTests
         Assert.DoesNotContain("api_token", e.Message, StringComparison.Ordinal);
         await Assert.ThrowsAsync<ArgumentException>(() => client.GetMarketDayAsync("us/../x", CancellationToken.None));
     }
+
+    [Fact]
+    public void ProviderTextLosesFormatCharactersAndIsNeverCutInsideAPair()
+    {
+        Assert.Equal("Apple Inc", EodhdClient.Clean("Ap\u200Bple\u202E Inc\u2028"));
+        Assert.Null(EodhdClient.Clean("\u200E\u0007 "));
+        var emoji = new string('a', 79) + "\U0001F600";
+        Assert.Equal(new string('a', 79), EodhdClient.Clean(emoji));
+    }
 }
