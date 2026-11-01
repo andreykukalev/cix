@@ -985,8 +985,10 @@
     'a day bought is after the day it was sent': 'день покупки позже дня отправки',
     "it couldn't be read": 'его не удалось прочитать',
     'A portfolio change is waiting for the next run, but the page cannot read it.': 'Изменение портфеля ждёт следующего запуска, но страница не может его прочитать.',
-    'Sent {when}: capital {capital}, {count} holdings. The next nightly run, after the US close, applies it.':
-      'Отправлено {when}: капитал {capital}, позиций: {count}. Применится на следующем ночном запуске, после закрытия американского рынка.',
+    'Sent {when}: capital {capital}, {count} holdings. The next run after a US close applies it: {next}.':
+      'Отправлено {when}: капитал {capital}, позиций: {count}. Применится на следующем запуске после закрытия американского рынка: {next}.',
+    'Change requested: capital {capital}, from {next}': 'Запрошено изменение: капитал {capital}, с {next}',
+    'A change is waiting for the next run': 'Изменение ждёт следующего запуска',
     'The last portfolio you sent was refused: {reason}. Edit it and save again.': 'Последний отправленный портфель не принят: {reason}. Исправьте его и сохраните снова.',
     'Enter your capital and what you hold at Revolut, so the advice is for your real account. Until then the advice below is for the paper portfolio only.':
       'Укажите капитал и то, что у вас есть в Revolut, чтобы советы были для вашего реального счёта. Пока советы ниже только для бумажного портфеля.',
