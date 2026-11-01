@@ -165,6 +165,21 @@ function refusalReason(code) {
   }
 }
 
+/**
+ * When the next stocks run starts: 02:00 UTC, Tuesday to Saturday, each after a US close (infra/stocks/main.bicep's
+ * schedule). A US holiday has no close, so its run applies nothing and the one after does.
+ */
+function nextStocksRun(now = new Date()) {
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 2));
+  while (d <= now || d.getUTCDay() < 2) d.setUTCDate(d.getUTCDate() + 1);
+  return d;
+}
+
+/** A run's start in the owner's own time: "Tue, 3 Nov, 03:00". */
+function runTime(d) {
+  return d.toLocaleString(I.locale(), { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
 /** The portfolio sent and not yet applied: the newest the page knows of, its own last send included. */
 function waitingPortfolio(a) {
   const seen = Math.max(a?.owner?.appliedSequence ?? 0, a?.refusal?.sequence ?? 0);
@@ -186,9 +201,10 @@ function renderOwner(a) {
   if (!configured) say(null);
   else if (waiting?.unreadable) say(t('A portfolio change is waiting for the next run, but the page cannot read it.'), 'warn');
   else if (waiting) {
-    say(t('Sent {when}: capital {capital}, {count} holdings. The next nightly run, after the US close, applies it.', {
+    say(t('Sent {when}: capital {capital}, {count} holdings. The next run after a US close applies it: {next}.', {
       when: new Date(waiting.submittedAt).toLocaleString(I.locale()), capital: money(waiting.capital, 'USD'), count: waiting.holdings.length,
-    }));
+      next: runTime(nextStocksRun()),
+    }), 'warn');
   } else if (a?.refusal) say(t('The last portfolio you sent was refused: {reason}. Edit it and save again.', { reason: refusalReason(a.refusal.reason) }), 'bad');
   else if (!o) say(t('Enter your capital and what you hold at Revolut, so the advice is for your real account. Until then the advice below is for the paper portfolio only.'));
   else say(null);
@@ -239,14 +255,20 @@ function renderStocks() {
         : regime ? t('no fresh benchmark data: no new entries') : '–');
   tile('tile-stocks-advice', !a ? '' : a.stale ? 'bad' : 'ok', a?.asOf ?? '–',
     a?.generatedAt ? t('written {ago}', { ago: ago(a.generatedAt) }) : t('no advice yet'));
-  // The owner's real portfolio once there is one (free cash plus the holdings at the close), the paper one before.
+  // The owner's real portfolio once there is one (free cash plus the holdings at the close), the paper one before; a
+  // change sent and not yet applied marks the tile, so its figures aren't taken for the new ones.
   const o = a?.owner ?? null;
+  const waiting = waitingPortfolio(a);
+  const requested = waiting && !waiting.unreadable
+    ? el('span', { class: 'line', text: t('Change requested: capital {capital}, from {next}', { capital: money(waiting.capital, 'USD'), next: runTime(nextStocksRun()) }) })
+    : waiting ? el('span', { class: 'line', text: t('A change is waiting for the next run') }) : null;
+  const tone = waiting ? 'warn' : '';
   if (o) {
-    tile('tile-stocks-account', '', o.value !== null && o.cash !== null ? money(o.cash + o.value, 'USD') : '–',
-      [t('allocation {amount}', { amount: money(o.capital, 'USD') }), ' · ', t('cash {amount}', { amount: money(o.cash, 'USD') })]);
+    tile('tile-stocks-account', tone, o.value !== null && o.cash !== null ? money(o.cash + o.value, 'USD') : '–',
+      [t('allocation {amount}', { amount: money(o.capital, 'USD') }), ' · ', t('cash {amount}', { amount: money(o.cash, 'USD') }), requested]);
   } else {
-    tile('tile-stocks-account', '', a?.equity !== null && a?.equity !== undefined ? money(a.equity, a.baseCurrency) : '–',
-      a ? [t('allocation {amount}', { amount: money(a.capital, a.baseCurrency) }), ' · ', t('cash {amount}', { amount: money(a.cash, a.baseCurrency) })] : '–');
+    tile('tile-stocks-account', tone, a?.equity !== null && a?.equity !== undefined ? money(a.equity, a.baseCurrency) : '–',
+      a ? [t('allocation {amount}', { amount: money(a.capital, a.baseCurrency) }), ' · ', t('cash {amount}', { amount: money(a.cash, a.baseCurrency) }), requested] : '–');
   }
 
   renderOwner(a);
