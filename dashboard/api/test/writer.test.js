@@ -41,6 +41,17 @@ test('signs in with client credentials for the account and creates the item with
   assert.ok(!('x-ms-documentdb-is-upsert' in create.init.headers), 'create only, never upsert');
 });
 
+test('the stocks database\'s requests are partitioned by id', async () => {
+  const f = fakeFetch([{ status: 200, body: { access_token: 'tok', expires_in: 3600 } }, { status: 201 }]);
+  const stocks = new RequestWriter({
+    endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', tenantId: TENANT, clientId: 'app-id', clientSecret: SECRET, fetchImpl: f,
+    partitionKeyOf: (doc) => doc.id,
+  });
+  assert.equal(await stocks.create({ id: 'portfolio-3', value: {} }), 'created');
+  assert.equal(f.calls[1].url, 'https://stocks.documents.azure.com/dbs/cix-stocks/colls/requests/docs');
+  assert.equal(f.calls[1].init.headers['x-ms-documentdb-partitionkey'], '["portfolio-3"]');
+});
+
 test('reuses the token until five minutes before it expires', async () => {
   let t = Date.parse('2026-10-26T13:00:00Z');
   const f = fakeFetch([

@@ -16,7 +16,7 @@ const reads = [];
 let latest = null;
 CosmosReader.prototype.readDocument = async function readDocument(container, id) {
   reads.push({ endpoint: this.base, database: this.database, container, id });
-  return id === 'candidates-latest' ? null : latest;
+  return id === 'advice-latest' ? latest : null;
 };
 Object.assign(process.env, {
   COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('crypto').toString('base64'), COSMOS_DATABASE: 'cix',
@@ -73,6 +73,8 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
   assert.deepEqual(reads, [
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'advice-latest' },
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'candidates-latest' },
+    // The owner's portfolio submissions waiting for the next run: none.
+    { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'requests', id: 'portfolio-1' },
   ]);
   assert.equal(answer.jsonBody.candidates, null);
   assert.equal(answer.jsonBody.configured, true);
@@ -81,12 +83,12 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
 
 test('without the stocks settings the tab is not set up, and nothing is read', async () => {
   assert.equal(stocksReader({ COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: 'a2V5' }), null);
-  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, pending: null, generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('no document yet is set up but without advice', async () => {
   const reader = { readDocument: async () => null };
-  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, pending: null, generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('actions come protective first, in the advisor\'s order within a kind', () => {
@@ -220,3 +222,44 @@ test('the answer carries both pages: the advice and the candidates', async () =>
   assert.equal(answer.advice.asOf, '2026-10-30');
   assert.equal(answer.candidates.status, 'off');
 });
+
+const OWNER_SECTION = {
+  capital: '5000', cash: '3300', invested: '1700', value: '2133', appliedSequence: '2', updatedAt: '2026-10-28T18:00:00Z',
+  actions: [
+    { kind: 'buy', symbol: 'XYZ.US', currency: 'USD', quantity: '7', referencePrice: '142.2', stop: '139.2', reason: 'breakout' },
+    { kind: 'set-stop', symbol: 'OWN.US', name: 'Own Inc', currency: 'USD', quantity: '5', referencePrice: '142.2', stop: '139.2', reason: 'no-stop' },
+  ],
+  holdings: [{ symbol: 'OWN.US', name: 'Own Inc', currency: 'USD', quantity: '5', averageCost: '100', lastClose: '142.2', openedOn: '2026-09-01' }],
+  notes: [{ symbol: 'OWN.US', reason: 'data-error' }],
+};
+
+test('the owner\'s real portfolio is checked like the paper one, protective actions first', () => {
+  const view = stocksView({ ...ADVICE, owner: OWNER_SECTION, refusal: { sequence: '3', reason: 'capital' } }, NOW);
+  assert.equal(view.owner.capital, 5000);
+  assert.equal(view.owner.appliedSequence, 2);
+  assert.deepEqual(view.owner.actions.map((a) => `${a.kind} ${a.symbol}`), ['set-stop OWN.US', 'buy XYZ.US']);
+  assert.equal(view.owner.holdings[0].change, 0.42199999999999993); // 142.2 / 100 − 1
+  assert.equal(view.owner.holdings[0].stop, null);
+  assert.deepEqual(view.owner.notes, [{ symbol: 'OWN.US', reason: 'data-error' }]);
+  assert.deepEqual(view.refusal, { sequence: 3, reason: 'capital' });
+  // None, or one without a capital: no section.
+  assert.equal(stocksView(ADVICE, NOW).owner, null);
+  assert.equal(stocksView({ ...ADVICE, owner: { ...OWNER_SECTION, capital: '0' } }, NOW).owner, null);
+  assert.equal(stocksView({ ...ADVICE, refusal: { sequence: '0', reason: 'capital' } }, NOW).refusal, null);
+});
+
+test('a portfolio sent since the last run is shown as waiting, from the first number the host has not seen', async () => {
+  const docs = {
+    'advice-latest': { value: { ...ADVICE, owner: OWNER_SECTION, refusal: { sequence: 3, reason: 'capital' } } },
+    'portfolio-4': { value: { sequence: 4, submittedAt: '2026-10-30T19:00:00Z', capital: '4000', holdings: [] } },
+    'portfolio-5': { value: { sequence: 5, submittedAt: '2026-10-30T20:00:00Z', capital: '3000', holdings: [{ symbol: 'OWN.US', quantity: '5', averageCost: '100' }] } },
+  };
+  const asked = [];
+  const reader = { readDocument: async (container, id) => { asked.push(`${container}/${id}`); return docs[id] ?? null; } };
+  const answer = await loadStocks(reader, NOW);
+  assert.deepEqual(asked.filter((a) => a.startsWith('requests/')), ['requests/portfolio-4', 'requests/portfolio-5', 'requests/portfolio-6']);
+  assert.equal(answer.pending.sequence, 5);
+  assert.equal(answer.pending.capital, '3000');
+  assert.deepEqual(answer.pending.holdings, [{ symbol: 'OWN.US', name: null, quantity: '5', averageCost: '100', stop: null, openedOn: null }]);
+});
+

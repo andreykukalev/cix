@@ -74,6 +74,22 @@ public class MarketSearchTests
     }
 
     [Fact]
+    public async Task Run_WithTheOwnersPortfolioSizesOnItsCapitalAndLeavesOutWhatTheOwnerHolds()
+    {
+        var s = new Setup();
+        s.Market.Rows.Add(Row("MINE.US"));
+        s.Market.Listed.Add(new("MINE.US", "Mine Co", "NYSE", "Common Stock"));
+        s.Store.Submit(new PortfolioSubmission(1, ThursdayRun.AddHours(-8), 5_000m, [new("MINE.US", null, 3m, 100m, null, null)]));
+
+        var page = await s.RunAsync();
+
+        // MINE is the owner's (advised in their section), so NEW alone: 1% of 5000 over 3 + 1 is 12 shares, the cap 1000 / 142.2 is 7.
+        var line = Assert.Single(page!.Candidates);
+        Assert.Equal(("NEW.US", 7m), (line.Symbol, line.Shares));
+        Assert.Equal(5_000m, page.Capital);
+    }
+
+    [Fact]
     public async Task Run_OffSaysSoAndCallsNothing()
     {
         var s = new Setup { Config = Config(enabled: false) };
@@ -267,6 +283,12 @@ public class MarketSearchTests
         public Task AddCandidatesAsync(string id, CandidatesDocument candidates, CancellationToken cancellationToken) => inner.AddCandidatesAsync(id, candidates, cancellationToken);
         public Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken) => inner.GetCandidatesAsync(id, cancellationToken);
         public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
+
+        public Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken) => inner.GetOwnerStateAsync(cancellationToken);
+
+        public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);
+
+        public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken) => inner.GetPortfolioSubmissionAsync(sequence, cancellationToken);
     }
 
     [Fact]

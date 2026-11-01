@@ -5,6 +5,7 @@
 // shows, so a malformed document gives gaps, not a broken page. Without the stocks settings the tab says it isn't set up.
 
 const { CosmosReader } = require('./cosmos');
+const { pendingPortfolio, firstUnseen } = require('./portfolio');
 
 const CONTAINER = 'advice';
 const LATEST = 'advice-latest';
@@ -174,6 +175,39 @@ function weekdaysBetween(fromMs, toMs) {
   return n;
 }
 
+const sortActions = (items) => list(items).map(action).filter(Boolean)
+  .map((a, i) => ({ a, i })).sort((x, y) => ACTION_ORDER.indexOf(x.a.kind) - ACTION_ORDER.indexOf(y.a.kind) || x.i - y.i).map((x) => x.a);
+
+// A submission number the host wrote: a whole number from 1, else a gap.
+const sequence = (v) => {
+  const n = num(v);
+  return Number.isInteger(n) && n >= 1 ? n : null;
+};
+
+/** The owner's real portfolio as the host advised it (ADR-0026); null when there is none yet. */
+function ownerView(o) {
+  if (!o || typeof o !== 'object') return null;
+  const capital = positive(o.capital);
+  if (capital === null) return null;
+  return {
+    capital,
+    cash: num(o.cash),
+    invested: num(o.invested),
+    value: num(o.value),
+    appliedSequence: sequence(o.appliedSequence),
+    updatedAt: iso(o.updatedAt),
+    actions: sortActions(o.actions),
+    holdings: list(o.holdings).map(holding).filter(Boolean),
+    notes: list(o.notes).map(note).filter(Boolean),
+  };
+}
+
+function refusalView(r) {
+  const n = sequence(r?.sequence);
+  const reason = code(r?.reason);
+  return n && reason ? { sequence: n, reason } : null;
+}
+
 /** What the Stocks tab shows from the advisor's document, every field checked. */
 function stocksView(value, now) {
   const v = value && typeof value === 'object' ? value : {};
@@ -192,21 +226,24 @@ function stocksView(value, now) {
     capital: positive(v.capital),
     cash: num(v.cash),
     equity: positive(v.equity),
-    actions: list(v.actions).map(action).filter(Boolean)
-      .map((a, i) => ({ a, i })).sort((x, y) => ACTION_ORDER.indexOf(x.a.kind) - ACTION_ORDER.indexOf(y.a.kind) || x.i - y.i).map((x) => x.a),
+    actions: sortActions(v.actions),
     holdings: list(v.holdings).map(holding).filter(Boolean),
     notes: list(v.notes).map(note).filter(Boolean),
     watchlist: list(v.watchlist).map(watch).filter(Boolean).map((w, i) => ({ w, i })).sort(watchOrder).map((x) => x.w),
+    owner: ownerView(v.owner),
+    refusal: refusalView(v.refusal),
   };
 }
 
 /** The Stocks tab's answer: whether the stocks database is set up, and the latest advice when there is one. */
 async function loadStocks(reader, now) {
   const generatedAt = new Date(now).toISOString();
-  if (!reader) return { configured: false, advice: null, candidates: null, generatedAt };
+  if (!reader) return { configured: false, advice: null, candidates: null, pending: null, generatedAt };
   const [doc, found] = await Promise.all([reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES)]);
+  const advice = doc ? stocksView(doc.value ?? null, now) : null;
+  const { newest } = await pendingPortfolio(reader, firstUnseen(advice));
   return {
-    configured: true, advice: doc ? stocksView(doc.value ?? null, now) : null, candidates: found ? candidatesView(found.value ?? null) : null, generatedAt,
+    configured: true, advice, candidates: found ? candidatesView(found.value ?? null) : null, pending: newest, generatedAt,
   };
 }
 
