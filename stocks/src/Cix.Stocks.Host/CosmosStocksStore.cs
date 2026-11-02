@@ -14,6 +14,9 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
 {
     public const string DefaultDatabase = "cix-stocks";
     public const string AdviceContainer = "advice";
+
+    /// <summary>The Claude analyst's brief and analyses (ADR-0027): its own container, so the analyst can't write the advice.</summary>
+    public const string AnalysisContainer = "analysis";
     public const string StateContainer = "state";
     public const string TradesContainer = "trades";
     public const string BarsContainer = "bars";
@@ -103,13 +106,19 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
         Get(AdviceContainer).UpsertItemAsync(new Envelope<CandidatesDocument>("candidates-latest", candidates), new PartitionKey("candidates-latest"), cancellationToken: cancellationToken);
 
     public Task AddAnalysisAsync(string id, AnalysisDocument analysis, CancellationToken cancellationToken) =>
-        CreateOnceAsync(Get(AdviceContainer), new Envelope<AnalysisDocument>(id, analysis), cancellationToken);
+        CreateOnceAsync(Get(AnalysisContainer), new Envelope<AnalysisDocument>(id, analysis), cancellationToken);
 
     public async Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken) =>
-        (await ReadAsync<AnalysisDocument>(Get(AdviceContainer), id, cancellationToken).ConfigureAwait(false))?.Value;
+        (await ReadAsync<AnalysisDocument>(Get(AnalysisContainer), id, cancellationToken).ConfigureAwait(false))?.Value;
+
+    public async Task<AnalystBrief?> GetBriefAsync(CancellationToken cancellationToken) =>
+        (await ReadAsync<AnalystBrief>(Get(AnalysisContainer), "brief-latest", cancellationToken).ConfigureAwait(false))?.Value;
+
+    public Task SaveBriefAsync(AnalystBrief brief, CancellationToken cancellationToken) =>
+        Get(AnalysisContainer).UpsertItemAsync(new Envelope<AnalystBrief>("brief-latest", brief), new PartitionKey("brief-latest"), cancellationToken: cancellationToken);
 
     public Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken) =>
-        Get(AdviceContainer).UpsertItemAsync(new Envelope<AnalysisDocument>("analysis-latest", analysis), new PartitionKey("analysis-latest"), cancellationToken: cancellationToken);
+        Get(AnalysisContainer).UpsertItemAsync(new Envelope<AnalysisDocument>("analysis-latest", analysis), new PartitionKey("analysis-latest"), cancellationToken: cancellationToken);
 
     public async Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken) =>
         await ReadAsync<OwnerState>(Get(StateContainer), OwnerStateId, cancellationToken).ConfigureAwait(false);

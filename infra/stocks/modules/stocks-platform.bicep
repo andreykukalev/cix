@@ -4,7 +4,8 @@
 //   - a Container Apps environment: Consumption, no VNet (none is needed, and one would cost a load balancer and an IP), public
 //     network access disabled. The job only calls out (EODHD, Cosmos DB);
 //   - Key Vault (RBAC) for the EODHD key, which the owner sets (provision-stocks.ps1); the job reads that secret alone;
-//   - the job's user-assigned identity;
+//   - the job's user-assigned identity, and the Claude analyst's (ADR-0027), which reads the advice and writes its own
+//     analysis container only, and never reaches the EODHD key;
 //   - the Cosmos DB account (serverless), the cix-stocks database and its containers. Nothing queries them, so nothing is
 //     indexed: every read is by id. The job signs in with its identity and has a data role on each container with only what it
 //     does there, never delete; trades are append-only. Account keys can't change databases or containers (metadata writes
@@ -80,6 +81,13 @@ resource jobIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-3
   tags: tags
 }
 
+// The Claude analyst's own identity (ADR-0027): the Claude token and its analysis container, never the EODHD key.
+resource analystIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: names.analystIdentity
+  location: location
+  tags: tags
+}
+
 // The owner (provision-stocks.ps1 passes the signed-in user's object ID) sets and rotates the EODHD key.
 resource ownerSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(ownerObjectId)) {
   name: guid(vault.id, ownerObjectId, keyVaultSecretsOfficer)
@@ -122,13 +130,15 @@ resource database 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-11-15
 var item = 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items'
 var metadata = 'Microsoft.DocumentDB/databaseAccounts/readMetadata'
 
-// What the job does in each container (Cix.Stocks.Host.CosmosStocksStore), and the dashboard reads advice-latest.
+// What the job does in each container (Cix.Stocks.Host.CosmosStocksStore), and the dashboard reads advice-latest and
+// analysis-latest.
 var containers = [
   { name: 'advice', role: 'writer', actions: [metadata, '${item}/read', '${item}/create', '${item}/upsert'] } // dated advice once, advice-latest upserted
   { name: 'state', role: 'writer', actions: [metadata, '${item}/read', '${item}/create', '${item}/replace'] } // the portfolio, with ETags
   { name: 'trades', role: 'appender', actions: [metadata, '${item}/create'] } // append-only: created once, never read back
   { name: 'bars', role: 'cache', actions: [metadata, '${item}/read', '${item}/upsert'] }
   { name: 'requests', role: 'reader', actions: [metadata, '${item}/read'] } // the owner's portfolio submissions, from the dashboard
+  { name: 'analysis', role: 'briefer', actions: [metadata, '${item}/read', '${item}/upsert'] } // brief-latest upserted; reads analysis-latest
 ]
 
 resource stores 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = [
@@ -176,6 +186,57 @@ resource assignments 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2
   }
 ]
 
+// The Claude analyst reads the advice (to check the brief is for the latest close), and reads the brief and saves its
+// analysis in its own container: it can't change the advice the owner trades from, and never deletes.
+var adviceScope = '${cosmos.id}/dbs/${stocksDatabase}/colls/advice'
+var analysisScope = '${cosmos.id}/dbs/${stocksDatabase}/colls/analysis'
+
+resource analystReadRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-11-15' = {
+  parent: cosmos
+  name: guid(cosmos.id, stocksDatabase, 'cix-stocks-analyst', 'advice')
+  dependsOn: [assignments] // one role change on the account at a time
+  properties: {
+    roleName: 'CIX stocks analyst advice reader'
+    type: 'CustomRole'
+    assignableScopes: [adviceScope]
+    permissions: [{ dataActions: [metadata, '${item}/read'] }]
+  }
+}
+
+resource analystReadAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
+  parent: cosmos
+  dependsOn: [analystReadRole]
+  name: guid(cosmos.id, stocksDatabase, analystIdentity.id, 'advice')
+  properties: {
+    roleDefinitionId: analystReadRole.id
+    principalId: analystIdentity.properties.principalId
+    scope: adviceScope
+  }
+}
+
+resource analystRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-11-15' = {
+  parent: cosmos
+  name: guid(cosmos.id, stocksDatabase, 'cix-stocks-analyst', 'analysis')
+  dependsOn: [analystReadAssignment]
+  properties: {
+    roleName: 'CIX stocks analyst analysis writer'
+    type: 'CustomRole'
+    assignableScopes: [analysisScope]
+    permissions: [{ dataActions: [metadata, '${item}/read', '${item}/create', '${item}/upsert'] }]
+  }
+}
+
+resource analystAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
+  parent: cosmos
+  dependsOn: [analystRole]
+  name: guid(cosmos.id, stocksDatabase, analystIdentity.id, 'analysis')
+  properties: {
+    roleDefinitionId: analystRole.id
+    principalId: analystIdentity.properties.principalId
+    scope: analysisScope
+  }
+}
+
 // The dashboard's writer identity may create items in the requests container: the owner's portfolio submissions, which the
 // job checks before applying them. It can't read, change or delete anything in this account.
 var requestsScope = '${cosmos.id}/dbs/${stocksDatabase}/colls/requests'
@@ -183,7 +244,7 @@ var requestsScope = '${cosmos.id}/dbs/${stocksDatabase}/colls/requests'
 resource writerRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-11-15' = if (!empty(writerPrincipalId)) {
   parent: cosmos
   name: guid(cosmos.id, stocksDatabase, 'cix-dashboard-writer', 'requests')
-  dependsOn: [assignments] // after the job's: one role change on the account at a time
+  dependsOn: [analystAssignment] // after the jobs': one role change on the account at a time
   properties: {
     roleName: 'CIX dashboard stocks portfolio writer'
     type: 'CustomRole'
@@ -227,3 +288,4 @@ output cosmosEndpoint string = cosmos.properties.documentEndpoint
 output databaseName string = stocksDatabase
 output keyVaultName string = vault.name
 output jobPrincipalId string = jobIdentity.properties.principalId
+output analystPrincipalId string = analystIdentity.properties.principalId

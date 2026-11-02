@@ -8,7 +8,9 @@ func stocksNames(namePrefix string, resourceGroupId string) object => {
   vault: take('kv${namePrefix}stocks${take(uniqueString(resourceGroupId), 6)}', 24)
   cosmos: take('cosmos-${namePrefix}-stocks-${take(uniqueString(resourceGroupId), 6)}', 44)
   identity: 'id-${namePrefix}-stocks-job'
+  analystIdentity: 'id-${namePrefix}-stocks-analyst'
   job: take('caj-${namePrefix}-stocks-daily', 32)
+  analystJob: take('caj-${namePrefix}-stocks-analyst', 32)
   budget: 'budget-${namePrefix}-stocks'
 }
 
@@ -19,3 +21,7 @@ var stocksDatabase = 'cix-stocks'
 @export()
 @description('Where the EODHD key is kept in the vault, and the file the job reads it from.')
 var eodhdSecret = 'eodhd-api-token'
+
+@export()
+@description('Where the owner\'s Claude token is kept in the vault (ADR-0027): the analyst job alone reads it.')
+var claudeSecret = 'claude-token'

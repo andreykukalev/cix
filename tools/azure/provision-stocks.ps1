@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Sets up the stocks advisory in Azure (ADR-0023): its own resource group, Cosmos DB account, Key Vault and nightly job, and
-  the dashboard's Stocks tab. Nothing of the crypto engines changes.
+  Sets up the stocks advisory in Azure (ADR-0023): its own resource group, Cosmos DB account, Key Vault, nightly job and Claude
+  analyst job (ADR-0027), and the dashboard's Stocks tab. Nothing of the crypto engines changes.
 
 .DESCRIPTION
   Reads infra/stocks/stocks.json and, after a preview and your confirmation of each step:
@@ -13,15 +13,21 @@
        submissions in the stocks database's requests container, and nothing else there (ADR-0026);
     2. stores the EODHD key in that vault, from -EodhdKeyFile or a hidden prompt (never echoed, never on a command line);
        a key already there is kept unless you pass -ReplaceKey;
-    3. builds the job's image from the commit you have checked out (git HEAD, not uncommitted changes) in that registry, as
+    3. stores your Claude token in that vault as claude-token, for the Claude analyst: from -ClaudeTokenFile, else
+       secrets/claude_token (tools/setup-secrets.ps1 writes it), else a hidden prompt; never echoed, never on a command line.
+       A token already there is kept unless you pass -ReplaceClaudeToken (after renewing it). Without one, the analyst job
+       isn't deployed and the Stocks page shows the rules' advice alone;
+    4. builds the jobs' image from the commit you have checked out (git HEAD, not uncommitted changes) in that registry, as
        cix-stocks:<commit>-<UTC time>, locked, and takes its digest from the build itself; skipped when the job runs that
        commit's image already. -KeepImage redeploys the image the job runs now instead;
-    4. deploys the nightly job with that image, by digest;
-    5. gives the dashboard of dashboardEnvironment the stocks database's read-only key (STOCKS_COSMOS_* settings, never
+    5. deploys the nightly job and the analyst job with that image, by digest (with -KeepImage, a new analyst job isn't
+       deployed: the running image may be from before it). The analyst job has its own identity, which reads the Claude
+       token and the advice, and writes its own analysis container only; the nightly run writes its brief;
+    6. gives the dashboard of dashboardEnvironment the stocks database's read-only key (STOCKS_COSMOS_* settings, never
        printed), so its Stocks tab shows the advice;
-    6. with -RunNow, starts one run of the job straight away.
+    7. with -RunNow, starts one run of the nightly job straight away; with -RunAnalystNow, one run of the analyst.
 
-  The job only reads EODHD and writes its own database; it never trades. Running this again changes only what differs.
+  The jobs only read EODHD and the web, ask Claude, and write their own database; they never trade. Running this again changes only what differs.
   Needs: the Azure CLI, git, and rights to create resource groups and role assignments in the subscription.
 
 .EXAMPLE
@@ -36,6 +42,9 @@ param(
   [ValidatePattern('^[0-9a-fA-F-]{36}$')][string]$SubscriptionId,
   [string]$EodhdKeyFile,
   [switch]$ReplaceKey,
+  [string]$ClaudeTokenFile,
+  [switch]$ReplaceClaudeToken,
+  [switch]$RunAnalystNow,
   [switch]$KeepImage,
   [switch]$RunNow,
   [switch]$WhatIfOnly,
@@ -50,14 +59,21 @@ $Template = Join-CixPath $Root 'infra' 'stocks' 'main.bicep'
 $SettingsPath = Join-CixPath $Root 'infra' 'stocks' 'stocks.json'
 $Repository = 'cix-stocks'
 $SecretName = 'eodhd-api-token' # infra/stocks/modules/stocks-names.bicep
+$ClaudeSecretName = 'claude-token' # the same file
 # What the image is built from (stocks/Dockerfile): only these, from the commit, never the rest of the working folder.
-$ImageSources = @('Directory.Build.props', 'src/Cix.Domain', 'stocks/src', 'stocks/config', 'stocks/Dockerfile')
+$ImageSources = @('Directory.Build.props', 'src/Cix.Domain', 'stocks/src', 'stocks/config', 'stocks/analyst', 'stocks/Dockerfile', 'tools/trader/agent-common.sh')
 $OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 
 function Confirm-Step([string]$Question) {
   if ($Yes) { return }
   $answer = Read-Host "    $Question [y/N]"
   if ($answer -notmatch '^(y|yes)$') { Write-CixWarn 'Stopped: not confirmed (type y to go ahead). Nothing more was changed.'; exit 1 }
+}
+
+# A yes/no question where no is a fine answer too (not a stop). With -Yes it's no: nothing is typed in for you.
+function Test-Answer([string]$Question) {
+  if ($Yes) { return $false }
+  return (Read-Host "    $Question [y/N]") -match '^(y|yes)$'
 }
 
 function Read-StocksSettings {
@@ -78,6 +94,14 @@ function Read-StocksSettings {
   if ("$($s.schedule)" -notmatch '^[0-9*,/-]+( [0-9*,/-]+){4}$') { throw "${SettingsPath}: schedule must be a five-field cron expression in UTC." }
   if (-not ($s.monthlyBudget -is [int] -or $s.monthlyBudget -is [long]) -or $s.monthlyBudget -lt 1) { throw "${SettingsPath}: monthlyBudget must be a positive whole number." }
   if ("$($s.budgetStartDate)" -notmatch '^\d{4}-\d{2}-01$') { throw "${SettingsPath}: budgetStartDate must be the first of a month (YYYY-MM-01)." }
+  # The Claude analyst's settings (ADR-0027), with defaults for a settings file from before it.
+  $defaults = @{ analystSchedule = '40 2,6 * * 2-6'; analystModel = 'opus'; claudeCodeVersion = '2.1.316'; claudeTokenExpires = '' }
+  foreach ($key in $defaults.Keys) { if (-not $s.ContainsKey($key) -or $null -eq $s[$key]) { $s[$key] = $defaults[$key] } }
+  if ("$($s.analystSchedule)" -notmatch '^[0-9*,/-]+( [0-9*,/-]+){4}$') { throw "${SettingsPath}: analystSchedule must be a five-field cron expression in UTC." }
+  if ("$($s.analystModel)" -cnotmatch '^[a-z0-9][a-z0-9.-]{1,63}(\[1m\])?$') { throw "${SettingsPath}: analystModel must be a lowercase model alias or name, like opus or sonnet." }
+  if ("$($s.claudeCodeVersion)" -notmatch '^(latest|\d{1,4}\.\d{1,4}\.\d{1,4})$') { throw "${SettingsPath}: claudeCodeVersion must be latest or a version like 2.1.0." }
+  if ($s.claudeTokenExpires -is [datetime]) { $s.claudeTokenExpires = $s.claudeTokenExpires.ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) }
+  if ("$($s.claudeTokenExpires)" -notmatch '^(\d{4}-\d{2}-\d{2})?$') { throw "${SettingsPath}: claudeTokenExpires must be a date like 2027-10-23, or empty." }
   if (-not $s.ContainsKey('tags') -or -not $s.tags) { $s['tags'] = @{} }
   if ($s.tags -isnot [hashtable]) { throw "${SettingsPath}: tags must be an object." }
   return $s
@@ -92,6 +116,10 @@ function Invoke-StocksDeployment([string]$Digest, [switch]$WhatIf) {
     registryName              = $registry
     imageDigest               = $Digest
     schedule                  = $stocks.schedule
+    analystSchedule           = $stocks.analystSchedule
+    analystEnabled            = [bool]$analystEnabled
+    analystModel              = $stocks.analystModel
+    claudeTokenExpires        = $tokenExpires
     ownerObjectId             = $me.Id
     monthlyBudget             = $stocks.monthlyBudget
     budgetStartDate           = $stocks.budgetStartDate
@@ -206,6 +234,39 @@ function Test-VaultSecretWithRetry([string]$Vault) {
   }
 }
 
+function Test-ClaudeToken([string]$Token) { return $Token -match '^sk-ant-[A-Za-z0-9_-]{20,400}$' }
+
+function Set-ClaudeToken([string]$Vault) {
+  # The same way as the EODHD key: the trimmed, checked value goes to the vault as UTF-8 from a private file, never shown.
+  $dir = New-PrivateFolder
+  $source = Join-Path $dir 'claude'
+  $plain = $null
+  try {
+    $file = if ($ClaudeTokenFile) { $ClaudeTokenFile } else { $LocalClaudeToken }
+    if ($file -and (Test-Path $file -PathType Leaf)) {
+      $plain = "$(Get-Content $file -Raw)".Trim()
+      if (-not (Test-ClaudeToken $plain)) { throw "$file doesn't hold one Claude setup token or API key (sk-ant-..., on one line); nothing was stored." }
+    }
+    else {
+      if ($ClaudeTokenFile) { throw "No file $ClaudeTokenFile." }
+      Write-CixInfo "Paste your Claude setup token ('claude setup-token' prints it; sk-ant-...) and press Enter. It is not shown."
+      $secure = Read-Host '    Claude token' -AsSecureString
+      $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+      try { $plain = "$([Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr))".Trim() }
+      finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr); $secure = $null }
+      if (-not (Test-ClaudeToken $plain)) { throw "That doesn't look like a Claude setup token or API key (sk-ant-...); nothing was stored." }
+    }
+    [IO.File]::WriteAllText($source, $plain, (New-Object System.Text.UTF8Encoding $false))
+    $plain = $null
+    try { Set-CixVaultSecretFromFile -Vault $Vault -Name $ClaudeSecretName -Path $source }
+    catch { throw "Couldn't store the Claude token in $Vault as $ClaudeSecretName. If a deleted secret of that name is kept for recovery, recover or purge it in the Azure portal (the vault, Secrets, Manage deleted secrets), then run this again." }
+  }
+  finally {
+    $plain = $null
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Get-JobImageDigest([string]$JobId, [string]$Server) {
   # The digest the job runs now, or '' when there is no job yet. Generic az calls: containerapp needs an extension.
   if (-not $JobId) { return '' }
@@ -253,7 +314,7 @@ function Build-StocksImage([string]$Registry, [string]$RunningDigest) {
     # all, and the streamed log returns no run).
     try {
       $run = Invoke-CixAz @('acr', 'build', '--registry', $Registry, '--image', "${Repository}:$tag", '--file', 'stocks/Dockerfile',
-        '--platform', 'linux/amd64', '--no-logs', '--only-show-errors', '-o', 'json', $context) | ConvertFrom-CixJson
+        '--build-arg', "CLAUDE_CODE_VERSION=$($stocks.claudeCodeVersion)", '--platform', 'linux/amd64', '--no-logs', '--only-show-errors', '-o', 'json', $context) | ConvertFrom-CixJson
     }
     catch {
       $message = "$($_.Exception.Message)"
@@ -299,7 +360,7 @@ $appName = "stapp-$($dashboardEnv.namePrefix)-$($dashboardEnv.environmentName)"
 Write-CixInfo "Resource group:  $($stocks.resourceGroup) in $($stocks.location)"
 Write-CixInfo "Image registry:  the '$($registryEnv.environmentName)' environment's, in $($registryEnv.resourceGroup) (pull only)"
 Write-CixInfo "Dashboard:       $appName"
-Write-CixInfo "Schedule (UTC):  $($stocks.schedule)"
+Write-CixInfo "Schedule (UTC):  $($stocks.schedule); the Claude analyst at $($stocks.analystSchedule)"
 
 Write-CixStep 'Signing in'
 $null = Connect-CixAzure -Settings $stocks -SubscriptionId $SubscriptionId
@@ -312,6 +373,7 @@ Assert-CixAppsRegion -Settings @{ agents = @{ location = $stocks.location }; pat
 
 # What exists already: a job keeps running its image through the first step.
 $jobId = ''
+$analystJobId = ''
 $budgetExists = $false
 if ((Invoke-CixAz @('group', 'exists', '--name', $stocks.resourceGroup)) -eq 'true') {
   # Only a group this script made: the template sets the group's tags, which other CIX scripts rely on in their own groups.
@@ -321,6 +383,8 @@ if ((Invoke-CixAz @('group', 'exists', '--name', $stocks.resourceGroup)) -eq 'tr
   $all = @(Invoke-CixAz @('resource', 'list', '--resource-group', $stocks.resourceGroup, '-o', 'json') | ConvertFrom-CixJson)
   $jobs = @($all | Where-Object { "$($_.type)" -eq 'Microsoft.App/jobs' -and "$($_.name)" -eq "caj-$($stocks.namePrefix)-stocks-daily" })
   if ($jobs.Count -eq 1) { $jobId = "$($jobs[0].id)" }
+  $analystJobs = @($all | Where-Object { "$($_.type)" -eq 'Microsoft.App/jobs' -and "$($_.name)" -eq "caj-$($stocks.namePrefix)-stocks-analyst" })
+  if ($analystJobs.Count -eq 1) { $analystJobId = "$($analystJobs[0].id)" }
   $budgets = @(Invoke-CixAz @('consumption', 'budget', 'list', '--resource-group', $stocks.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
   $budgetExists = @($budgets | Where-Object { $_.PSObject.Properties['name'] -and $_.name -eq "budget-$($stocks.namePrefix)-stocks" }).Count -gt 0
 }
@@ -335,8 +399,25 @@ $writerPrincipal = Find-WriterPrincipal
 if ($writerPrincipal) { Write-CixInfo "Dashboard writer: cix-dashboard-writer-$($dashboardEnv.environmentName), to be allowed to create portfolio submissions only." }
 else { Write-CixWarn "No dashboard writer found on ${appName}: the Stocks page can't send your portfolio. Run setup-dashboard-requests.ps1 -Environment $($dashboardEnv.environmentName), then this again." }
 if ($KeepImage -and -not $currentDigest) { throw '-KeepImage: there is no job yet to keep the image of; run this without it.' }
+# The Claude token: stocks.json's expiry, else the registry environment's (the same token the crypto agents use).
+# CIX_SECRETS_DIR moves it (the tests point it at an empty folder, so they never read your token).
+$SecretsDir = if ($env:CIX_SECRETS_DIR) { $env:CIX_SECRETS_DIR } else { Join-CixPath $Root 'secrets' }
+$LocalClaudeToken = Join-Path $SecretsDir 'claude_token'
+if ("$($stocks.claudeCodeVersion)" -eq 'latest') { Write-CixWarn "claudeCodeVersion is latest in ${SettingsPath}: each image build takes whatever Claude Code is newest. Pin a version (like 2.1.316) to choose when it changes." }
+if ($ReplaceClaudeToken -and $Yes -and -not $ClaudeTokenFile -and -not (Test-Path $LocalClaudeToken -PathType Leaf)) { throw '-ReplaceClaudeToken with -Yes needs the new token in a file: pass -ClaudeTokenFile, or put it in secrets/claude_token.' }
+$tokenExpires = "$($stocks.claudeTokenExpires)"
+if (-not $tokenExpires -and $registryEnv.ContainsKey('agents') -and $registryEnv.agents -is [hashtable] -and $registryEnv.agents.ContainsKey('claudeTokenExpires')) { $tokenExpires = "$($registryEnv.agents.claudeTokenExpires)" }
+if ($tokenExpires -notmatch '^(\d{4}-\d{2}-\d{2})?$') { $tokenExpires = '' }
+# Until step 3 has looked in the vault, the analyst job stays as it is: deployed when it exists already and its token is
+# still in the vault (a template that names a missing token fails, and step 3 could then never store it again).
+$analystEnabled = $false
+if ($analystJobId) {
+  $vaults = @($all | Where-Object { "$($_.type)" -eq 'Microsoft.KeyVault/vaults' })
+  $analystEnabled = $vaults.Count -eq 1 -and (Test-CixVaultSecret -Vault "$($vaults[0].name)" -Name $ClaudeSecretName)
+  if (-not $analystEnabled) { Write-CixWarn "The analyst job's Claude token isn't in the vault: step 3 stores it, and step 5 deploys the analyst again." }
+}
 
-Write-CixStep "Step 1 of 5: the stocks resources ($($stocks.resourceGroup))"
+Write-CixStep "Step 1 of 6: the stocks resources ($($stocks.resourceGroup))"
 Invoke-StocksDeployment -Digest $currentDigest -WhatIf | Out-Null
 if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed. (The job appears once an image is built and the key is stored.)'; return }
 Confirm-Step "Deploy the stocks resources to $($stocks.resourceGroup) (and pull access to $registry)?"
@@ -347,7 +428,7 @@ $cosmosEndpoint = "$($outputs.cosmosEndpoint.value)"
 $database = "$($outputs.databaseName.value)"
 Write-CixInfo "Deployed: Cosmos DB $cosmosName (serverless, database $database), Key Vault $vault."
 
-Write-CixStep "Step 2 of 5: the EODHD key ($vault)"
+Write-CixStep "Step 2 of 6: the EODHD key ($vault)"
 if ((Test-VaultSecretWithRetry -Vault $vault) -and -not $ReplaceKey) { Write-CixInfo 'Stored already (pass -ReplaceKey to replace it).' }
 else {
   Confirm-Step "Store the EODHD key in $vault as ${SecretName}?"
@@ -355,22 +436,47 @@ else {
   Write-CixInfo 'Stored. It was not shown or written anywhere else; the next run uses it.'
 }
 
-Write-CixStep "Step 3 of 5: the job's image ($registry)"
+Write-CixStep "Step 3 of 6: the Claude token for the analyst ($vault)"
+$hasToken = Test-CixVaultSecret -Vault $vault -Name $ClaudeSecretName
+if ($hasToken -and -not $ReplaceClaudeToken) { Write-CixInfo 'Stored already (pass -ReplaceClaudeToken after renewing it).' }
+elseif (-not $hasToken -and -not $ClaudeTokenFile -and -not (Test-Path $LocalClaudeToken -PathType Leaf) -and -not (Test-Answer 'No Claude token file (secrets/claude_token). Type the token in now?')) {
+  Write-CixWarn "No Claude token stored (pass -ClaudeTokenFile, or run tools/setup-secrets.ps1 for secrets/claude_token): the analyst job isn't deployed, and the Stocks page shows the rules' advice alone."
+}
+else {
+  Confirm-Step "Store your Claude token in $vault as $ClaudeSecretName (it shares your Claude usage limit with the crypto agents)?"
+  Set-ClaudeToken -Vault $vault
+  $hasToken = $true
+  Write-CixInfo 'Stored. It was not shown or written anywhere else; the analyst''s next run uses it.'
+}
+$analystEnabled = [bool]$hasToken
+if ($analystEnabled -and $KeepImage -and -not $analystJobId) {
+  Write-CixWarn "-KeepImage: the image the job runs may be from before the analyst, so the analyst isn't deployed now. Run this without -KeepImage to build an image with it."
+  $analystEnabled = $false
+}
+
+Write-CixStep "Step 4 of 6: the jobs' image ($registry)"
 $digest = if ($KeepImage) { Write-CixInfo "Keeping the image the job runs: $Repository@$currentDigest"; $currentDigest } else { Build-StocksImage -Registry $registry -RunningDigest $currentDigest }
 
-Write-CixStep 'Step 4 of 5: the nightly job'
-if ($digest -eq $currentDigest -and $jobId) { Write-CixInfo "The job runs $Repository@$digest already." }
+Write-CixStep 'Step 5 of 6: the nightly job and the Claude analyst'
+if ($digest -eq $currentDigest -and $jobId -and ($analystEnabled -eq [bool]$analystJobId)) { Write-CixInfo "The jobs run $Repository@$digest already." }
 else {
   Invoke-StocksDeployment -Digest $digest -WhatIf | Out-Null
-  Confirm-Step "Deploy the nightly job with $Repository@$($digest.Substring(0, 19))... (runs at '$($stocks.schedule)' UTC)?"
+  $what = if ($analystEnabled) { "the nightly job and the Claude analyst (at '$($stocks.schedule)' and '$($stocks.analystSchedule)' UTC)" } else { "the nightly job (at '$($stocks.schedule)' UTC)" }
+  Confirm-Step "Deploy $what with $Repository@$($digest.Substring(0, 19))...?"
   $outputs = Invoke-StocksDeployment -Digest $digest
   $jobName = "$($outputs.jobName.value)"
   if (-not $jobName) { throw 'The deployment returned no job name.' }
   $jobId = "$(Invoke-CixAz @('resource', 'show', '--resource-group', $stocks.resourceGroup, '--resource-type', 'Microsoft.App/jobs', '--name', $jobName, '--query', 'id', '-o', 'tsv'))".Trim()
   Write-CixInfo "Deployed $jobName."
+  $analystJobName = if ($outputs.PSObject.Properties['analystJobName']) { "$($outputs.analystJobName.value)" } else { '' }
+  if ($analystEnabled) {
+    if (-not $analystJobName) { throw 'The deployment returned no analyst job name.' }
+    $analystJobId = "$(Invoke-CixAz @('resource', 'show', '--resource-group', $stocks.resourceGroup, '--resource-type', 'Microsoft.App/jobs', '--name', $analystJobName, '--query', 'id', '-o', 'tsv'))".Trim()
+    Write-CixInfo "Deployed $analystJobName."
+  }
 }
 
-Write-CixStep "Step 5 of 5: the dashboard's Stocks tab ($appName)"
+Write-CixStep "Step 6 of 6: the dashboard's Stocks tab ($appName)"
 $siteId = "$(Invoke-CixNative { & az staticwebapp show --name $appName --resource-group $dashboardEnv.resourceGroup --query id -o tsv --only-show-errors 2>$null })".Trim()
 if ($LASTEXITCODE -ne 0 -or $siteId -notmatch '^/subscriptions/') { Write-CixWarn "$appName not found in $($dashboardEnv.resourceGroup); run provision.ps1 -Environment $($dashboardEnv.environmentName), then this again." }
 else {
@@ -399,6 +505,18 @@ if ($RunNow) {
   Write-CixInfo 'Started. In two or three minutes the Stocks tab shows the advice; the run''s log is in the Azure portal (the job, Execution history).'
 }
 
+if ($RunAnalystNow) {
+  Write-CixStep 'A Claude analyst run now'
+  if (-not $analystJobId) { Write-CixWarn 'There is no analyst job (no Claude token in the vault): nothing was started.' }
+  elseif ($RunNow) { Write-CixWarn 'Not started: the analyst needs the brief the run just started writes. Run this again with -RunAnalystNow once that run has finished (its Execution history in the portal), or let the schedule run it.' }
+  else {
+    Confirm-Step 'Start one run of the Claude analyst now (it uses your Claude usage; it needs the brief the nightly run writes)?'
+    Invoke-CixAz @('rest', '--method', 'post', '--url', "https://management.azure.com$analystJobId/start?api-version=2025-01-01", '--only-show-errors', '-o', 'none') | Out-Null
+    Write-CixInfo 'Started. In five to fifteen minutes the Stocks page shows Claude''s view; the run''s log is in the Azure portal (the analyst job, Execution history).'
+  }
+}
+
 Write-CixStep 'Done'
 Write-CixInfo "The job runs at '$($stocks.schedule)' UTC, after each US session, and writes the advice the Stocks tab shows."
-Write-CixInfo 'It only reads EODHD and writes its own database: you carry the advice out in Revolut yourself.'
+if ($analystEnabled) { Write-CixInfo "The Claude analyst runs at '$($stocks.analystSchedule)' UTC and adds its view of each night's advice." }
+Write-CixInfo 'They only read EODHD and the web and write their own database: you carry the advice out in Revolut yourself.'

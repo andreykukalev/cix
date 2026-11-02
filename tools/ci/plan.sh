@@ -68,6 +68,7 @@ for f in "${files[@]}"; do
   case "$f" in
     stocks/*.md) ;;
     stocks/*|src/Cix.Domain/*|Directory.Build.props|global.json|NuGet.config|.editorconfig) stocks=true ;;
+    tools/trader/agent-common.sh) stocks=true ;; # copied into the stocks image for the Claude analyst (ADR-0027)
   esac
   case "$f" in
     .github/workflows/*|tools/ci/*) ci_changed=true ;;
@@ -79,6 +80,8 @@ for f in "${files[@]}"; do
     infra/*) azure=true; windows=true; dashboard=true ;;
     dashboard/*) azure=true; dashboard=true ;;
     docs/*|*.md|.claude/skills/*|.gitleaks.toml|.gitignore|.gitattributes|LICENSE) ;;
+    # The stocks Claude analyst's shell script: linted with the agent loops, and read by the Azure scripts' tests.
+    stocks/analyst/*) containers=true; azure=true ;;
     # The stocks advisory (ADR-0023): its own job (above), outside the engine's and the agents' images, so it never deploys them.
     stocks/*) ;;
     *) echo "::notice::Unclassified change ($f): running everything."; unknown=true ;;

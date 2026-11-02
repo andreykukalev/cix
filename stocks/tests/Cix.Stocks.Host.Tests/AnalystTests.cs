@@ -150,6 +150,67 @@ public class AnalystTests
         Assert.NotNull(await Build(await Then(store, Advice(Friday.AddDays(3))), news)); // Monday's close is new
     }
 
+    [Fact]
+    public async Task TheAnalystTakesTheStoredBriefOnlyForTheLatestAdviceAndOnlyUntilItIsAnalysed()
+    {
+        var (store, news) = await StoreWith(Advice(Friday));
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None)); // no brief yet
+
+        await store.SaveBriefAsync((await Build(store, news))!, CancellationToken.None);
+        Assert.Equal(Friday, (await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None))?.AsOf);
+
+        await store.SaveLatestAnalysisAsync(AnalysisDocument.Missing(Friday, Night, AnalysisDocument.NotRun, "usage-limit"), CancellationToken.None);
+        Assert.NotNull(await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None)); // the second slot tries again
+
+        await store.SaveLatestAnalysisAsync(Done(Friday), CancellationToken.None);
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None));
+
+        // Monday's advice without Monday's brief (its news failed): Friday's brief isn't analysed for it.
+        await store.SaveLatestAdviceAsync(Advice(Friday.AddDays(3)), CancellationToken.None);
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None));
+    }
+
+    /// <summary>News that takes a minute a request, on the test's clock.</summary>
+    private sealed class SlowNews(INewsSource inner, MutableTime time) : INewsSource
+    {
+        public Task<IReadOnlyList<NewsItem>> GetNewsAsync(string symbol, DateOnly from, int limit, CancellationToken cancellationToken)
+        {
+            time.Now = time.Now.AddMinutes(1);
+            return inner.GetNewsAsync(symbol, from, limit, cancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task TheNightlyBriefStopsFetchingNewsAtItsTimeAndIsSavedWithWhatItHas()
+    {
+        var (store, news) = await StoreWith(Advice(Friday, Owner()), Candidates(Friday, "CAND.US"));
+        var time = new MutableTime(Night);
+        var line = await new AnalystBriefing(store, new SlowNews(news, time), time).WriteAsync(Night.AddMinutes(2), CancellationToken.None);
+
+        var brief = await store.GetBriefAsync(CancellationToken.None);
+        Assert.NotNull(brief);
+        Assert.Equal(["KEEP.US", "OWN.US"], brief.News.Keys.Order(StringComparer.Ordinal)); // the holdings first
+        Assert.Equal(["NEW.US", "CAND.US"], brief.NewsSkipped); // not fetched: out of time
+        Assert.Contains("news on 2", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ANightlyBriefThatFailsIsALogLineAndNoBrief()
+    {
+        var (store, _) = await StoreWith(Advice(Friday, Owner()));
+        var line = await new AnalystBriefing(store, new BrokenNews(), new MutableTime(Night)).WriteAsync(Night.AddMinutes(5), CancellationToken.None);
+
+        Assert.StartsWith("Analyst brief failed (the advice stands): HttpRequestException", line, StringComparison.Ordinal);
+        Assert.Null(await store.GetBriefAsync(CancellationToken.None));
+        Assert.Equal("Analyst brief: nothing new to analyse.", await new AnalystBriefing(new InMemoryStocksStore(), new BrokenNews(), new MutableTime(Night)).WriteAsync(Night, CancellationToken.None));
+    }
+
+    private sealed class BrokenNews : INewsSource
+    {
+        public Task<IReadOnlyList<NewsItem>> GetNewsAsync(string symbol, DateOnly from, int limit, CancellationToken cancellationToken) =>
+            throw new HttpRequestException("connection reset");
+    }
+
     private static async Task<InMemoryStocksStore> Then(InMemoryStocksStore store, AdviceDocument advice)
     {
         await store.SaveLatestAdviceAsync(advice, CancellationToken.None);
@@ -302,14 +363,14 @@ public class AnalystTests
         var store = new InMemoryStocksStore();
         var notRun = AnalysisDocument.Missing(Friday, Night, AnalysisDocument.NotRun, "usage-limit");
         Assert.True(await AnalysisRecord.SaveAsync(store, notRun, CancellationToken.None));
-        Assert.False(store.Documents.ContainsKey("advice/analysis-2026-10-30")); // only a done analysis is kept by date
+        Assert.False(store.Documents.ContainsKey("analysis/analysis-2026-10-30")); // only a done analysis is kept by date
 
         Assert.True(await AnalysisRecord.SaveAsync(store, Done(Friday), CancellationToken.None));
-        Assert.True(store.Documents.ContainsKey("advice/analysis-2026-10-30"));
+        Assert.True(store.Documents.ContainsKey("analysis/analysis-2026-10-30"));
 
         Assert.False(await AnalysisRecord.SaveAsync(store, notRun with { GeneratedAt = Night.AddHours(1) }, CancellationToken.None));
         Assert.False(await AnalysisRecord.SaveAsync(store, Done(Friday.AddDays(-1)), CancellationToken.None));
-        Assert.Equal(AnalysisDocument.Done, store.Read<AnalysisDocument>("advice/analysis-latest")!.Status);
+        Assert.Equal(AnalysisDocument.Done, store.Read<AnalysisDocument>("analysis/analysis-latest")!.Status);
 
         // A run that overlapped the done one read the latest before it was saved: the dated copy still stops it.
         await store.SaveLatestAnalysisAsync(notRun, CancellationToken.None);
@@ -317,7 +378,7 @@ public class AnalystTests
 
         var monday = AnalysisDocument.Missing(Friday.AddDays(3), Night.AddDays(3), AnalysisDocument.Refused, "unreadable");
         Assert.True(await AnalysisRecord.SaveAsync(store, monday, CancellationToken.None));
-        Assert.Equal(AnalysisDocument.Refused, store.Read<AnalysisDocument>("advice/analysis-latest")!.Status);
+        Assert.Equal(AnalysisDocument.Refused, store.Read<AnalysisDocument>("analysis/analysis-latest")!.Status);
     }
 
     [Fact]

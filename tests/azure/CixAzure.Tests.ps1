@@ -1627,12 +1627,17 @@ function Invoke-ProvisionStocks([hashtable]$Overrides = @{}, [hashtable]$Argumen
   New-Item -ItemType Directory -Path $keyDir | Out-Null
   $keyFile = Join-Path $keyDir 'eodhd.txt'
   [IO.File]::WriteAllText($keyFile, "$fakeEodhdKey`n")
+  # An empty secrets folder: the script never finds (or reads) the token setup-secrets.ps1 wrote on this machine.
+  $secretsDir = Join-Path $keyDir 'secrets'
+  New-Item -ItemType Directory -Path $secretsDir | Out-Null
+  $before = $env:CIX_SECRETS_DIR
+  $env:CIX_SECRETS_DIR = $secretsDir
   try {
     return Invoke-WithFakeAz @{ GroupExists = 'true'; Extra = $extra } {
       & (Join-Path $azureTools 'provision-stocks.ps1') -EodhdKeyFile $keyFile @Arguments
     }
   }
-  finally { Remove-Item $keyDir -Recurse -Force -ErrorAction SilentlyContinue }
+  finally { $env:CIX_SECRETS_DIR = $before; Remove-Item $keyDir -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 Check 'provision-stocks.ps1 (-Yes) first run: deploys, stores the key unseen, builds the commit, deploys the job, gives the dashboard read access' {
@@ -1724,6 +1729,124 @@ Check 'provision-stocks.ps1 -WhatIfOnly previews and changes nothing' {
   if ($r.Error) { throw "failed: $($r.Error)" }
   if ($r.Calls -notmatch 'deployment sub what-if') { throw 'no preview' }
   foreach ($call in 'deployment sub create', 'keyvault secret set', 'acr build', 'rest --method put') { if ($r.Calls.Contains($call)) { throw "called $call" } }
+}
+
+Check 'the stocks analyst template: its own identity, the Claude token alone, and no EODHD key' {
+  $job = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'stocks' 'modules' 'stocks-analyst-job.bicep'))
+  if ($job -notmatch "keyVaultUrl: '\$\{vault\.properties\.vaultUri\}secrets/\$\{claudeSecret\}'") { throw 'the Claude token should come from the vault' }
+  if ($job -match 'listKeys') { throw 'the analyst gets an account key; it signs in with its identity' }
+  if ($job -match 'initContainers' -or $job -cmatch 'eodhd' -or $job -cmatch '\bsecretName\b') { throw 'the analyst job should never reach the EODHD key (the nightly run writes the brief)' }
+  if ($job -notmatch 'names\.analystIdentity' -or $job -match 'names\.jobIdentity') { throw 'the analyst should run as its own identity, not the nightly job''s' }
+  if (([regex]::Matches($job, "secretRef:")).Count -ne 1) { throw 'the analyst should get one secret, the Claude token' }
+  if ($job -notmatch 'replicaRetryLimit: 0') { throw 'a failed analyst run should not be retried at once (it records why; the next slot tries again)' }
+  $platform = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'stocks' 'modules' 'stocks-platform.bicep'))
+  $role = $platform.Substring($platform.IndexOf('resource analystRole'), $platform.IndexOf('resource analystAssignment') - $platform.IndexOf('resource analystRole'))
+  if ($role -match 'delete' -or $role -notmatch 'assignableScopes: \[analysisScope\]') { throw 'the analyst should write its own analysis container alone, without delete' }
+  $read = $platform.Substring($platform.IndexOf('resource analystReadRole'), $platform.IndexOf('resource analystReadAssignment') - $platform.IndexOf('resource analystReadRole'))
+  if ($read -notmatch 'assignableScopes: \[adviceScope\]' -or $read -match '/create|/upsert|/replace|/delete') { throw 'the analyst should only read the advice the owner trades from' }
+  $run = [IO.File]::ReadAllText((Join-CixPath $repo 'stocks' 'analyst' 'run.sh'))
+  if ($run -notmatch 'denied="Bash,Read,Edit,Write' -or $run -notmatch '--strict-mcp-config' -or $run -notmatch '--tools "WebSearch,WebFetch"') { throw 'Claude should have web search and fetch alone: no shell, file or MCP tools' }
+  if ($run -notmatch 'host=\(env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY ') { throw 'the host processes should not get the Claude token' }
+}
+
+$fakeClaudeToken = (@('sk', 'ant', 'oat01') -join '-') + '-' + ('x9' * 20) # built at run time; never in output or on a command line
+function Invoke-ProvisionStocksWithToken([hashtable]$Overrides = @{}, [string]$Token = $fakeClaudeToken, [hashtable]$Arguments = @{ Yes = $true }) {
+  $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-test-$([guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Path $dir | Out-Null
+  $file = Join-Path $dir 'claude_token'
+  [IO.File]::WriteAllText($file, "$Token`n")
+  try { return Invoke-ProvisionStocks $Overrides ($Arguments + @{ ClaudeTokenFile = $file }) }
+  finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+$withAnalyst = $newStocks['deployment sub create'].Replace('"jobName"', '"analystJobName":{"value":"caj-cix-stocks-analyst"},"jobName"')
+
+Check 'provision-stocks.ps1 stores the Claude token unseen and deploys the analyst job with the image and the pinned Claude Code' {
+  $r = Invoke-ProvisionStocksWithToken @{ 'deployment sub create' = $withAnalyst }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -notmatch 'keyvault secret set --vault-name kvcixstocksx --name claude-token --file ') { throw "the token wasn't stored from a file: $($r.Calls)" }
+  if ($r.Output.Contains($fakeClaudeToken) -or $r.Calls.Contains($fakeClaudeToken)) { throw 'the Claude token was printed or put on a command line' }
+  if ($r.Calls -notmatch 'acr build .*--build-arg CLAUDE_CODE_VERSION=2\.1\.316 ') { throw "Claude Code's version wasn't passed to the build: $($r.Calls)" }
+  if (($r.Output -replace '\s+', ' ') -notmatch 'Deployed caj-cix-stocks-analyst') { throw "the analyst job wasn't deployed: $($r.Output)" }
+  if ($r.Calls -match '/start\?') { throw 'started a run without -RunNow or -RunAnalystNow' }
+}
+
+Check 'provision-stocks.ps1 refuses a Claude token file that holds something else, and stores nothing' {
+  $r = Invoke-ProvisionStocksWithToken @{} 'not-a-token value'
+  if (-not $r.Error -or -not $r.Error.Contains("doesn't hold one Claude setup token")) { throw "got: $($r.Error)" }
+  if ($r.Calls -match 'name claude-token') { throw 'stored it anyway' }
+  if ($r.Error.Contains('not-a-token')) { throw 'the file''s content was shown' }
+}
+
+Check 'provision-stocks.ps1 without a Claude token deploys the nightly job alone, and says so' {
+  $r = Invoke-ProvisionStocks
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -match 'name claude-token') { throw 'stored a token it was not given' }
+  if (($r.Output -replace '\s+', ' ') -notmatch "the analyst job isn't deployed") { throw "no warning: $($r.Output)" }
+}
+
+Check 'provision-stocks.ps1 keeps a Claude token already in the vault, and deploys the analyst once it is there' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'         = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"}]"
+    'resource show'         = $job
+    'keyvault secret list'  = '[{"name":"eodhd-api-token"},{"name":"claude-token"}]'
+    'acr repository show'   = "{`"digest`":`"$stocksDigest`",`"tags`":[`"$stocksHead-20261030120000`"]}"
+    'deployment sub create' = $withAnalyst
+  }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -match 'keyvault secret set') { throw 'replaced a secret without being asked' }
+  if ($r.Calls -match 'acr build') { throw 'rebuilt the image the job runs already' }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 2) { throw "the analyst job should be deployed with the running image: $($r.Calls)" }
+}
+
+Check 'provision-stocks.ps1 -ReplaceClaudeToken -Yes without a token file stops before changing anything' {
+  $r = Invoke-ProvisionStocks @{} @{ Yes = $true; ReplaceClaudeToken = $true }
+  if (-not $r.Error -or -not $r.Error.Contains('needs the new token in a file')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match 'deployment sub create|keyvault secret set') { throw "changed something first: $($r.Calls)" }
+}
+
+Check 'provision-stocks.ps1 -KeepImage does not deploy a new analyst on an image that may be from before it' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'         = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"}]"
+    'resource show'         = $job
+    'keyvault secret list'  = '[{"name":"eodhd-api-token"},{"name":"claude-token"}]'
+    'deployment sub create' = $withAnalyst
+  } @{ Yes = $true; KeepImage = $true }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -notmatch "the analyst isn't deployed now") { throw "no warning: $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -match 'Deployed caj-cix-stocks-analyst') { throw 'deployed the analyst on the kept image' }
+}
+
+$analystJobId = $stocksJobId.Replace('caj-cix-stocks-daily', 'caj-cix-stocks-analyst')
+$withBothJobs = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"},{`"id`":`"$analystJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-analyst`"},{`"id`":`"/x/vault`",`"type`":`"Microsoft.KeyVault/vaults`",`"name`":`"kvcixstocksx`"}]"
+
+Check 'provision-stocks.ps1 recovers an analyst whose Claude token was deleted: no analyst until the token is back' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'        = $withBothJobs
+    'resource show'        = $job
+    'keyvault secret list' = '[{"name":"eodhd-api-token"}]'
+    'acr repository show'  = "{`"digest`":`"$stocksDigest`",`"tags`":[`"$stocksHead-20261030120000`"]}"
+  }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -notmatch "Claude token isn't in the vault") { throw "no warning: $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -match 'Deployed caj-cix-stocks-analyst') { throw 'deployed the analyst without its token' }
+}
+
+Check 'provision-stocks.ps1 -RunNow -RunAnalystNow starts the nightly run alone, since the analyst needs its brief' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'         = $withBothJobs
+    'resource show'         = $job
+    'keyvault secret list'  = '[{"name":"eodhd-api-token"},{"name":"claude-token"}]'
+    'acr repository show'   = "{`"digest`":`"$stocksDigest`",`"tags`":[`"$stocksHead-20261030120000`"]}"
+    'deployment sub create' = $withAnalyst
+  } @{ Yes = $true; RunNow = $true; RunAnalystNow = $true }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -notmatch 'caj-cix-stocks-daily/start\?') { throw "the nightly run wasn't started: $($r.Calls)" }
+  if ($r.Calls -match 'caj-cix-stocks-analyst/start\?') { throw 'started the analyst before its brief exists' }
+  if (($r.Output -replace '\s+', ' ') -notmatch 'once that run has finished') { throw "no explanation: $($r.Output)" }
 }
 
 Check 'provision.ps1 keeps the Stocks tab''s settings through a dashboard deployment' {
