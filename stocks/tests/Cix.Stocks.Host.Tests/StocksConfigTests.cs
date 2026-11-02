@@ -7,13 +7,15 @@ public class StocksConfigTests
     private static string Shipped => Path.Combine(AppContext.BaseDirectory, "config", "stocks.json");
 
     [Fact]
-    public void TheShippedConfigurationFitsTheFreeKey()
+    public void TheShippedConfigurationFitsThePaidKey()
     {
         var config = StocksConfig.Load(Shipped);
 
         // One call per instrument and one for the benchmark, under the free key's 20 a day.
-        Assert.True(config.Watchlist.Count + 1 <= config.MaxCallsPerRun);
-        Assert.True(config.MaxCallsPerDay < 20);
+        // Every watched stock, the benchmark and the most holdings the owner can enter, fetched each night.
+        Assert.True(config.Watchlist.Count + 1 + OwnerPortfolio.MaxHoldings <= config.MaxCallsPerRun);
+        Assert.True(config.Screener.Enabled);
+        Assert.True(config.MaxCallsPerDay + config.Screener.MaxCallsPerDay <= 1_000); // of the plan's 100 000 a day
         Assert.Equal(("USD", 200m, "SPY.US"), (config.BaseCurrency, config.AdvisorSettings.MaxSharePrice, config.AdvisorSettings.BenchmarkSymbol));
         Assert.All(config.Watchlist, w => Assert.NotNull(w.Theme));
     }
