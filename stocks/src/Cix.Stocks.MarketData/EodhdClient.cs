@@ -181,13 +181,18 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource, INewsSource
                 || Clean(row.Title, 200) is not { } title)
                 continue;
             var source = Uri.TryCreate(row.Link, UriKind.Absolute, out var link) && link.Scheme is "https" or "http"
-                ? Clean(link.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? link.Host[4..] : link.Host) : null;
-            var polarity = row.Sentiment?.Polarity is { } p && p is >= -1m and <= 1m ? Math.Round(p, 3, MidpointRounding.ToEven) : (decimal?)null;
+                ? Clean(link.IdnHost.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? link.IdnHost[4..] : link.IdnHost) : null; // punycode: no look-alike letters
+            var polarity = Polarity(row.Sentiment) is { } p && p is >= -1m and <= 1m ? Math.Round(p, 3, MidpointRounding.ToEven) : (decimal?)null;
             result.Add(new(published.ToUniversalTime(), title, Clean(row.Content, 300), source, polarity));
         }
 
         return result;
     }
+
+    // The sentiment's polarity when it is an object with a number there; any other shape only loses the polarity, not the row.
+    private static decimal? Polarity(JsonElement? sentiment) =>
+        sentiment is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty("polarity", out var p) && p.ValueKind == JsonValueKind.Number
+        && p.TryGetDecimal(out var value) ? value : null;
 
     private static bool IsExchange(string exchange) => exchange is { Length: > 0 and <= 10 } && exchange.All(char.IsAsciiLetterUpper);
 
@@ -199,8 +204,8 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource, INewsSource
     /// </summary>
     internal static string? Clean(string? text, int max = 80)
     {
-        // Line breaks and tabs become spaces (an article's text has them); runs of spaces become one.
-        var kept = (text ?? "").Select(c => c is '\n' or '\r' or '\t' ? ' ' : c).Where(c => char.GetUnicodeCategory(c) is not (
+        // Line breaks, tabs and other whitespace become spaces (an article's text has them); runs of spaces become one.
+        var kept = (text ?? "").Select(c => char.IsWhiteSpace(c) ? ' ' : c).Where(c => char.GetUnicodeCategory(c) is not (
             System.Globalization.UnicodeCategory.Control or System.Globalization.UnicodeCategory.Format
             or System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator));
         var s = string.Join(' ', new string(kept.ToArray()).Split(' ', StringSplitOptions.RemoveEmptyEntries));
@@ -307,9 +312,7 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource, INewsSource
         [property: JsonPropertyName("title")] string? Title,
         [property: JsonPropertyName("content")] string? Content,
         [property: JsonPropertyName("link")] string? Link,
-        [property: JsonPropertyName("sentiment")] NewsSentiment? Sentiment);
-
-    internal sealed record NewsSentiment([property: JsonPropertyName("polarity")] decimal? Polarity);
+        [property: JsonPropertyName("sentiment")] JsonElement? Sentiment);
 
     internal sealed record SymbolRow(
         [property: JsonPropertyName("Code")] string? Code,

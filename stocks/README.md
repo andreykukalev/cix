@@ -65,9 +65,9 @@ After the advice, the same run searches the whole US market for candidates (ADR-
 
 After the run, the analyst job (ADR-0027) asks Claude what it makes of the night's advice, using the host for everything that touches the database or EODHD:
 
-1. `--brief <file>` writes the brief: the owner's holdings (the paper portfolio's before he sends his) with the rules' action on each, the rules' buys, the search's candidates of the same close, and EODHD news (5 items of the last 7 days) on up to 30 of those stocks; a stock whose news failed is listed in `newsMissing`. Exit 3: nothing to analyse (no advice, or its close is already analysed).
+1. `--brief <file>` writes the brief: the owner's holdings (the paper portfolio's before he sends his) with the rules' action on each, the rules' buys, the search's candidates of the same close, and EODHD news (5 items of the last 7 days) on up to 30 of those stocks (`newsMissing`: failed; `newsSkipped`: past the 30). Sizes are fractions of the capital (`weight`, `cashWeight`), never amounts: the brief sits beside untrusted news in a session that can search the web. Exit 3: nothing to analyse (no advice, or its close is already analysed).
 2. Claude reads it and answers with one JSON object: `{ market, marketRu, holdings: [{ symbol, action: hold | sell-half | sell-all | add, reason, reasonRu, earnings }], picks: [{ symbol, rank, reason, reasonRu, earnings }], skips: [{ symbol, reason, reasonRu, earnings }] }`.
-3. `--accept <brief> <answer>` checks the answer against the brief (`AnalystAnswer.Check`) and saves it; `--not-run <brief> <reason>` saves that Claude didn't run (`usage-limit`, `credentials`, `timeout`, `failed`). Both need only `STOCKS_COSMOS_ENDPOINT` and `AZURE_CLIENT_ID`, not the EODHD key. A done analysis is kept as `analysis-YYYY-MM-DD` once and as `analysis-latest`; a failed run never replaces a done one of the same close.
+3. `--accept <brief> <answer>` checks the answer against the brief (`AnalystAnswer.Check`: a malformed line is dropped and counted; an answer that isn't the object is `refused` as `unreadable`, and one with no line for the holdings, or none at all, as `empty`) and saves it; `--not-run <brief> <reason>` saves that Claude didn't run (`usage-limit`, `credentials`, `timeout`, `failed`). Both need only `STOCKS_COSMOS_ENDPOINT` and `AZURE_CLIENT_ID`, not the EODHD key. A done analysis is kept as `analysis-YYYY-MM-DD` once and as `analysis-latest`; a failed run never replaces a done one of the same close, and a brief for a close after the latest advice is refused.
 
 Claude's view never changes an amount or a stop: it can only advise less risk.
 
@@ -116,7 +116,7 @@ And `analysis-latest` (null until the analyst's first run):
 ```json
 {
   "asOf": "2026-10-30", "generatedAt": "2026-10-31T02:45:00Z", "status": "done | refused | not-run",
-  "reason": "usage-limit | credentials | timeout | failed | unreadable", "market": "…", "marketRu": "…", "dropped": 1,
+  "reason": "usage-limit | credentials | timeout | failed | unreadable | empty", "market": "…", "marketRu": "…", "dropped": 1,
   "holdings": [{ "symbol": "EPAM.US", "action": "hold | sell-half | sell-all | add", "reason": "…", "reasonRu": "…", "earnings": "2026-11-06" }],
   "picks": [{ "symbol": "ANET.US", "rank": 1, "reason": "…", "reasonRu": "…", "earnings": null }],
   "skips": [{ "symbol": "APP.US", "reason": "…", "reasonRu": "…", "earnings": null }]

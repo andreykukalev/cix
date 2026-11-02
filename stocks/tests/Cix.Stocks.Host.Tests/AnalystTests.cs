@@ -64,20 +64,23 @@ public class AnalystTests
         Assert.Equal(Friday, brief.AsOf);
         Assert.Equal(Night, brief.GeneratedAt);
         Assert.True(brief.RealPortfolio);
-        Assert.Equal(20_000m, brief.Capital);
-        Assert.Equal(2_000m, brief.Cash);
+        // Sizes as fractions of the 20,000 capital, never amounts: 2,000 cash; 10 shares bought at 100, now 110.
+        Assert.Equal(0.1m, brief.CashWeight);
         Assert.Collection(brief.Holdings,
-            h => Assert.Equal(("OWN.US", "sell", "stop-hit"), (h.Symbol, h.RuleAction, h.RuleReason)),
+            h => Assert.Equal(("OWN.US", "sell", "stop-hit", 0.1m, 0.055m), (h.Symbol, h.RuleAction, h.RuleReason, h.Change, h.Weight)),
             h => Assert.Equal(("KEEP.US", (string?)null), (h.Symbol, h.RuleAction)));
         var buy = Assert.Single(brief.Buys);
-        Assert.Equal(("NEW.US", 5m, 50m, 45m), (buy.Symbol, buy.Quantity, buy.Price, buy.Stop));
+        Assert.Equal(("NEW.US", 50m, 45m, 0.012m), (buy.Symbol, buy.Price, buy.Stop, buy.Weight)); // 5 × 50 / 20,000 = 0.0125
         Assert.Equal(["CAND.US", "NEW.US"], brief.Candidates.Select(c => c.Symbol));
+        Assert.Equal(0.05m, brief.Candidates[0].Weight); // 50 shares at 20
+        Assert.DoesNotContain("20000", JsonSerializer.Serialize(brief, StocksJson.Options), StringComparison.Ordinal);
 
         // Holdings first, then buys, then candidates; a stock named twice is asked about once; a failure is listed as missing.
         Assert.Equal(["OWN.US", "KEEP.US", "NEW.US", "CAND.US"], news.Asked.Select(a => a.Symbol));
         Assert.All(news.Asked, a => Assert.Equal((Friday.AddDays(-7), 5), (a.From, a.Limit)));
         Assert.Equal(["CAND.US", "NEW.US", "OWN.US"], brief.News.Keys.Order(StringComparer.Ordinal));
         Assert.Equal(["KEEP.US"], brief.NewsMissing);
+        Assert.Empty(brief.NewsSkipped);
     }
 
     [Fact]
@@ -89,7 +92,7 @@ public class AnalystTests
 
         Assert.NotNull(brief);
         Assert.False(brief.RealPortfolio);
-        Assert.Equal((10_000m, 4_000m), (brief.Capital, brief.Cash));
+        Assert.Equal(0.4m, brief.CashWeight);
         Assert.Equal(["PAPER.US"], brief.Holdings.Select(h => h.Symbol));
         Assert.Equal(["PAPERBUY.US"], brief.Buys.Select(b => b.Symbol));
         Assert.Empty(brief.Candidates);
@@ -97,7 +100,27 @@ public class AnalystTests
     }
 
     [Fact]
-    public async Task NewsIsFetchedForAtMostThirtyStocksAndTheRestAreMissing()
+    public async Task ASymbolTheNewsSourceRefusesIsMissingNotAFailedBrief()
+    {
+        var (store, _) = await StoreWith(Advice(Friday));
+        var news = new FakeNews();
+        news.Failing.Add("PAPER.US");
+        var refusing = new RefusingNews(news, "PAPERBUY.US");
+
+        var brief = await new AnalystBriefing(store, refusing, new MutableTime(Night)).BuildAsync(CancellationToken.None);
+
+        Assert.NotNull(brief);
+        Assert.Equal(["PAPER.US", "PAPERBUY.US"], brief.NewsMissing);
+    }
+
+    private sealed class RefusingNews(INewsSource inner, string symbol) : INewsSource
+    {
+        public Task<IReadOnlyList<NewsItem>> GetNewsAsync(string s, DateOnly from, int limit, CancellationToken cancellationToken) =>
+            s == symbol ? throw new ArgumentException("The symbol must be TICKER.EXCHANGE.") : inner.GetNewsAsync(s, from, limit, cancellationToken);
+    }
+
+    [Fact]
+    public async Task NewsIsFetchedForAtMostThirtyStocksAndTheRestAreSkipped()
     {
         var symbols = Enumerable.Range(1, 35).Select(i => $"C{i:00}.US").ToArray();
         var (store, news) = await StoreWith(Advice(Friday), Candidates(Friday, symbols));
@@ -107,8 +130,9 @@ public class AnalystTests
         Assert.NotNull(brief);
         Assert.Equal(AnalystBriefing.MaxNewsSymbols, news.Asked.Count);
         Assert.Equal(AnalystBriefing.MaxNewsSymbols, brief.News.Count);
-        Assert.Equal(37 - AnalystBriefing.MaxNewsSymbols, brief.NewsMissing.Count); // the paper holding, its buy and 35 candidates
-        Assert.Equal("C35.US", brief.NewsMissing[^1]);
+        Assert.Empty(brief.NewsMissing);
+        Assert.Equal(37 - AnalystBriefing.MaxNewsSymbols, brief.NewsSkipped.Count); // the paper holding, its buy and 35 candidates
+        Assert.Equal("C35.US", brief.NewsSkipped[^1]);
     }
 
     [Fact]
@@ -135,12 +159,12 @@ public class AnalystTests
     private static AnalysisDocument Done(DateOnly asOf) => new(asOf, Night, AnalysisDocument.Done, null, "calm", [], [], [], 0);
 
     private static AnalystBrief Brief() => new(
-        Friday, Night, "risk-on", "VTI.US", true, 20_000m, 2_000m,
-        [new("OWN.US", "Own", 10m, 100m, 110m, 90m, new DateOnly(2026, 9, 1), null, null),
-         new("KEEP.US", "Keep", 5m, 50m, 55m, 45m, new DateOnly(2026, 9, 1), "raise-stop", "trail")],
-        [new("NEW.US", "New", 5m, 50m, 45m, "breakout")],
-        [new("CAND.US", "Cand", "breakout", 20m, 19m, 18m, 50m, 0.25m), new("MORE.US", "More", "breakout", 20m, 19m, 18m, 50m, 0.2m)],
-        new Dictionary<string, IReadOnlyList<NewsItem>>(), []);
+        Friday, Night, "risk-on", "VTI.US", true, 0.1m,
+        [new("OWN.US", "Own", 110m, 0.1m, 0.055m, 90m, new DateOnly(2026, 9, 1), null, null),
+         new("KEEP.US", "Keep", 55m, 0.1m, 0.014m, 45m, new DateOnly(2026, 9, 1), "raise-stop", "trail")],
+        [new("NEW.US", "New", 50m, 45m, 0.012m, "breakout")],
+        [new("CAND.US", "Cand", "breakout", 20m, 19m, 18m, 0.05m, 0.25m), new("MORE.US", "More", "breakout", 20m, 19m, 18m, 0.05m, 0.2m)],
+        new Dictionary<string, IReadOnlyList<NewsItem>>(), [], []);
 
     [Fact]
     public void AnAnswerIsKeptOnlyForTheBriefsStocksAndAllowedActions()
@@ -193,11 +217,11 @@ public class AnalystTests
     [Fact]
     public void AtMostFivePicksAreKeptAndTextIsCleanedAndCut()
     {
-        var candidates = Enumerable.Range(1, 7).Select(i => new BriefCandidate($"C{i}.US", null, "breakout", 20m, 19m, 18m, 50m, 0.2m)).ToList();
+        var candidates = Enumerable.Range(1, 7).Select(i => new BriefCandidate($"C{i}.US", null, "breakout", 20m, 19m, 18m, 0.05m, 0.2m)).ToList();
         var brief = Brief() with { Candidates = candidates };
         var picks = string.Join(",", candidates.Select((c, i) => $$"""{ "symbol": "{{c.Symbol}}", "rank": "{{i + 1}}", "reason": "r{{i}}" }"""));
         var longReason = "‮evil​ " + new string('é', 700);
-        var answer = $$"""{ "market": {{JsonSerializer.Serialize(longReason)}}, "picks": [{{picks}}], "earnings": "ignored" }""";
+        var answer = $$"""{ "market": {{JsonSerializer.Serialize(longReason)}}, "holdings": [{ "symbol": "OWN.US", "action": "hold", "reason": "ok" }], "picks": [{{picks}}], "earnings": "ignored" }""";
 
         var analysis = AnalystAnswer.Check(brief, answer, Night);
 
@@ -207,7 +231,7 @@ public class AnalystTests
         Assert.NotNull(analysis.Market);
         Assert.StartsWith("evil é", analysis.Market);
         Assert.Equal(600, analysis.Market.Length);
-        Assert.Empty(analysis.Holdings);
+        Assert.Single(analysis.Holdings);
         Assert.Empty(analysis.Skips);
     }
 
@@ -215,7 +239,6 @@ public class AnalystTests
     [InlineData("")]
     [InlineData("I couldn't finish the analysis.")]
     [InlineData("{ not json }")]
-    [InlineData("""{ "picks": [ { "symbol": "NEW.US", "rank": "first" } ] }""")]
     [InlineData("""{ "market": { "a": { "b": { "c": { "d": { "e": { "f": { "g": { "h": 1 } } } } } } } } }""")]
     [InlineData("[1, 2]")]
     public void AnAnswerThatIsntTheObjectIsRefused(string answer)
@@ -226,6 +249,43 @@ public class AnalystTests
         Assert.Equal(Friday, analysis.AsOf);
         Assert.Empty(analysis.Holdings);
         Assert.Empty(analysis.Picks);
+    }
+
+    [Theory]
+    [InlineData("{}", "unreadable")]
+    [InlineData("""{ "error": "I couldn't read the news." }""", "unreadable")]
+    [InlineData("""{ "type": "result", "is_error": true, "result": "Claude usage limit reached" }""", "unreadable")]
+    [InlineData("""{ "holdings": "none" }""", "unreadable")]
+    [InlineData("""{ "holdings": [ { "symbol": "OWN.US", "action": "hold", "reason": 5 }, "OWN.US", { "symbol": "ELSE.US" } ], "picks": [] }""", "empty")]
+    [InlineData("""{ "market": "Calm.", "holdings": [], "picks": [ { "symbol": "NEW.US", "rank": 1, "reason": "Fine." } ] }""", "empty")]
+    public void AnAnswerWithNothingForTheBriefIsRefusedNotAnEmptyDone(string answer, string reason)
+    {
+        var analysis = AnalystAnswer.Check(Brief(), answer, Night);
+
+        Assert.Equal((AnalysisDocument.Refused, reason), (analysis.Status, analysis.Reason));
+    }
+
+    [Fact]
+    public void AMalformedLineIsDroppedNotTheAnswerAndAFenceIsPreferred()
+    {
+        const string answer = """
+            ```json
+            { "holdings": [ { "symbol": "OWN.US", "action": "hold", "reason": "Fine.", "earnings": 20261105 },
+                            { "symbol": "KEEP.US", "action": "hold", "reason": ["a", "b"] } ],
+              "picks": [ { "symbol": "CAND.US", "rank": 1.5, "reason": "Half a rank." },
+                         { "symbol": "MORE.US", "reason": "Unranked, so last." },
+                         { "symbol": "NEW.US", "rank": "1", "reason": "Ranked as text." } ] }
+            ```
+            Hope this helps :}
+            """;
+
+        var analysis = AnalystAnswer.Check(Brief(), answer, Night);
+
+        Assert.Equal(AnalysisDocument.Done, analysis.Status);
+        var holding = Assert.Single(analysis.Holdings);
+        Assert.Equal(("OWN.US", (DateOnly?)null), (holding.Symbol, holding.Earnings));
+        Assert.Equal(["NEW.US", "MORE.US"], analysis.Picks.Select(p => p.Symbol));
+        Assert.Equal(2, analysis.Dropped);
     }
 
     [Fact]
@@ -251,6 +311,10 @@ public class AnalystTests
         Assert.False(await AnalysisRecord.SaveAsync(store, Done(Friday.AddDays(-1)), CancellationToken.None));
         Assert.Equal(AnalysisDocument.Done, store.Read<AnalysisDocument>("advice/analysis-latest")!.Status);
 
+        // A run that overlapped the done one read the latest before it was saved: the dated copy still stops it.
+        await store.SaveLatestAnalysisAsync(notRun, CancellationToken.None);
+        Assert.False(await AnalysisRecord.SaveAsync(store, notRun with { Reason = "timeout" }, CancellationToken.None));
+
         var monday = AnalysisDocument.Missing(Friday.AddDays(3), Night.AddDays(3), AnalysisDocument.Refused, "unreadable");
         Assert.True(await AnalysisRecord.SaveAsync(store, monday, CancellationToken.None));
         Assert.Equal(AnalysisDocument.Refused, store.Read<AnalysisDocument>("advice/analysis-latest")!.Status);
@@ -272,6 +336,6 @@ public class AnalystTests
         Assert.Equal(brief.Candidates, back.Candidates);
         Assert.Equal(-0.25m, back.News["OWN.US"][0].Polarity);
         Assert.Equal(["NEW.US"], back.NewsMissing);
-        Assert.Contains("\"capital\":\"20000\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"cashWeight\":\"0.1\"", json, StringComparison.Ordinal);
     }
 }

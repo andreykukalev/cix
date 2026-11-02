@@ -1,32 +1,40 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace Cix.Stocks.Host;
 
-/// <summary>One holding as the analyst sees it, with what the rules advise for it tonight (if anything).</summary>
-/// <param name="RuleAction">The rule advisor's action on it tonight (<c>sell</c>, <c>set-stop</c>, <c>raise-stop</c>, <c>buy</c>), or null.</param>
+/// <summary>
+/// One holding as the analyst sees it, with what the rules advise for it tonight (if anything). Sizes are fractions of the
+/// capital, never amounts: the brief sits beside untrusted news in a session that can search the web, so the owner's money
+/// stays out of it.
+/// </summary>
+/// <param name="Change">The gain since it was bought, as a fraction (0.12 is +12%).</param>
+/// <param name="Weight">Its value at the last close (the cost when there is none) as a fraction of the capital.</param>
+/// <param name="RuleAction">The rule advisor's action on it tonight (<c>sell</c>, <c>set-stop</c>, <c>raise-stop</c>), or null.</param>
 public sealed record BriefHolding(
-    string Symbol, string? Name, decimal Quantity, decimal AverageCost, decimal? LastClose, decimal? Stop, DateOnly OpenedOn,
+    string Symbol, string? Name, decimal? LastClose, decimal? Change, decimal Weight, decimal? Stop, DateOnly OpenedOn,
     string? RuleAction, string? RuleReason);
 
-/// <summary>A buy the rules advise tonight, sized by them.</summary>
-public sealed record BriefBuy(string Symbol, string? Name, decimal Quantity, decimal Price, decimal? Stop, string Reason);
+/// <summary>A buy the rules advise tonight, sized by them (<paramref name="Weight"/>: its amount as a fraction of the capital).</summary>
+public sealed record BriefBuy(string Symbol, string? Name, decimal Price, decimal? Stop, decimal Weight, string Reason);
 
-/// <summary>A stock the market-wide search found tonight, sized by the rules.</summary>
-public sealed record BriefCandidate(string Symbol, string? Name, string Status, decimal Close, decimal BreakoutHigh, decimal Stop, decimal Shares, decimal Momentum);
+/// <summary>A stock the market-wide search found tonight, sized by the rules (<paramref name="Weight"/> as for a buy).</summary>
+public sealed record BriefCandidate(string Symbol, string? Name, string Status, decimal Close, decimal BreakoutHigh, decimal Stop, decimal Weight, decimal Momentum);
 
 /// <summary>
 /// What the stocks analyst reads (ADR-0027): the night's advice for the owner's real portfolio (the paper one before the
 /// owner sent theirs), the search's candidates, and recent news on each of those stocks. Built by the host, so Claude needs
 /// no key and no database; written to a file the analyst job hands to Claude.
 /// </summary>
-/// <param name="RealPortfolio">The holdings and cash are the owner's real ones; otherwise the paper portfolio's.</param>
+/// <param name="RealPortfolio">The holdings are the owner's real ones; otherwise the paper portfolio's.</param>
+/// <param name="CashWeight">Free cash as a fraction of the capital.</param>
+/// <param name="NewsMissing">Stocks whose news couldn't be fetched.</param>
+/// <param name="NewsSkipped">Stocks past <see cref="AnalystBriefing.MaxNewsSymbols"/>, whose news wasn't asked for.</param>
 public sealed record AnalystBrief(
-    DateOnly AsOf, DateTimeOffset GeneratedAt, string Regime, string Benchmark, bool RealPortfolio, decimal Capital, decimal Cash,
+    DateOnly AsOf, DateTimeOffset GeneratedAt, string Regime, string Benchmark, bool RealPortfolio, decimal CashWeight,
     IReadOnlyList<BriefHolding> Holdings, IReadOnlyList<BriefBuy> Buys, IReadOnlyList<BriefCandidate> Candidates,
-    IReadOnlyDictionary<string, IReadOnlyList<NewsItem>> News, IReadOnlyList<string> NewsMissing);
+    IReadOnlyDictionary<string, IReadOnlyList<NewsItem>> News, IReadOnlyList<string> NewsMissing, IReadOnlyList<string> NewsSkipped);
 
 /// <summary>The analyst's word on one holding.</summary>
 /// <param name="Action"><c>hold</c>, <c>sell-half</c>, <c>sell-all</c> or <c>add</c> (<see cref="AnalystActions"/>).</param>
@@ -101,43 +109,43 @@ public sealed class AnalystBriefing(IStocksStore store, INewsSource news, TimePr
 
         var candidates = await store.GetCandidatesAsync("candidates-latest", cancellationToken).ConfigureAwait(false);
         var owner = advice.Owner;
+        var capital = owner?.Capital ?? advice.Capital;
+        if (capital <= 0)
+            return null;
+        decimal Part(decimal amount) => Math.Round(amount / capital, 3, MidpointRounding.ToEven);
+
         var actions = owner?.Actions ?? advice.Actions;
         var holdings = (owner?.Holdings ?? advice.Holdings).Select(h =>
         {
             var rule = actions.FirstOrDefault(a => a.Symbol == h.Symbol && a.Kind != "buy");
-            return new BriefHolding(h.Symbol, h.Name, h.Quantity, h.AverageCost, h.LastClose, h.Stop, h.OpenedOn, rule?.Kind, rule?.Reason);
+            var change = h.LastClose is { } close && h.AverageCost > 0 ? Math.Round(close / h.AverageCost - 1, 3, MidpointRounding.ToEven) : (decimal?)null;
+            return new BriefHolding(h.Symbol, h.Name, h.LastClose, change, Part(h.Quantity * (h.LastClose ?? h.AverageCost)), h.Stop, h.OpenedOn, rule?.Kind, rule?.Reason);
         }).ToList();
         var buys = actions.Where(a => a.Kind == "buy")
-            .Select(a => new BriefBuy(a.Symbol, a.Name, a.Quantity, a.ReferencePrice, a.Stop, a.Reason)).ToList();
+            .Select(a => new BriefBuy(a.Symbol, a.Name, a.ReferencePrice, a.Stop, Part(a.Quantity * a.ReferencePrice), a.Reason)).ToList();
         var found = candidates is { AsOf: { } day } && day == advice.AsOf
-            ? candidates.Candidates.Select(c => new BriefCandidate(c.Symbol, c.Name, c.Status, c.Close, c.BreakoutHigh, c.Stop, c.Shares, c.Momentum)).ToList()
+            ? candidates.Candidates.Select(c => new BriefCandidate(c.Symbol, c.Name, c.Status, c.Close, c.BreakoutHigh, c.Stop, Part(c.Shares * c.Close), c.Momentum)).ToList()
             : [];
 
         var symbols = holdings.Select(h => h.Symbol).Concat(buys.Select(b => b.Symbol)).Concat(found.Select(c => c.Symbol))
             .Distinct(StringComparer.Ordinal).ToList();
         var articles = new Dictionary<string, IReadOnlyList<NewsItem>>(StringComparer.Ordinal);
         var missing = new List<string>();
-        foreach (var symbol in symbols)
+        foreach (var symbol in symbols.Take(MaxNewsSymbols))
         {
-            if (articles.Count + missing.Count >= MaxNewsSymbols)
-            {
-                missing.Add(symbol);
-                continue;
-            }
-
             try
             {
                 articles[symbol] = await news.GetNewsAsync(symbol, advice.AsOf.AddDays(-NewsDays), NewsPerSymbol, cancellationToken).ConfigureAwait(false);
             }
-            catch (StockDataException)
+            catch (Exception e) when (e is StockDataException or ArgumentException)
             {
                 missing.Add(symbol);
             }
         }
 
         return new AnalystBrief(
-            advice.AsOf, time.GetUtcNow(), advice.Regime, advice.Benchmark, owner is not null, owner?.Capital ?? advice.Capital,
-            owner?.Cash ?? advice.Cash, holdings, buys, found, articles, missing);
+            advice.AsOf, time.GetUtcNow(), advice.Regime, advice.Benchmark, owner is not null, Part(owner?.Cash ?? advice.Cash),
+            holdings, buys, found, articles, missing, symbols.Skip(MaxNewsSymbols).ToList());
     }
 }
 
@@ -157,12 +165,18 @@ public static class AnalysisRecord
         if (latest is not null && (latest.AsOf > analysis.AsOf
                                    || (latest.AsOf == analysis.AsOf && latest.Status == AnalysisDocument.Done && analysis.Status != AnalysisDocument.Done)))
             return false;
+        // A run overlapping this one may have saved a done analysis since: its dated copy says so.
+        if (analysis.Status != AnalysisDocument.Done
+            && await store.GetAnalysisAsync(DatedId(analysis.AsOf), cancellationToken).ConfigureAwait(false) is { Status: AnalysisDocument.Done })
+            return false;
 
         if (analysis.Status == AnalysisDocument.Done)
-            await store.AddAnalysisAsync($"analysis-{analysis.AsOf:yyyy-MM-dd}", analysis, cancellationToken).ConfigureAwait(false);
+            await store.AddAnalysisAsync(DatedId(analysis.AsOf), analysis, cancellationToken).ConfigureAwait(false);
         await store.SaveLatestAnalysisAsync(analysis, cancellationToken).ConfigureAwait(false);
         return true;
     }
+
+    public static string DatedId(DateOnly asOf) => string.Create(CultureInfo.InvariantCulture, $"analysis-{asOf:yyyy-MM-dd}");
 }
 
 /// <summary>Reads and checks the analyst's answer against its brief.</summary>
@@ -180,81 +194,123 @@ public static class AnalystAnswer
     private const int MaxReason = 400;
     private const int MaxMarket = 600;
 
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
-    {
-        NumberHandling = JsonNumberHandling.AllowReadingFromString,
-        MaxDepth = 8,
-    };
-
     /// <summary>
-    /// The analysis an answer makes: the JSON object in Claude's final text (the first <c>{</c> to the last <c>}</c>, as it
-    /// may wrap it in words or a code fence), each line kept only when it names a stock of the brief, an allowed action and a
-    /// reason. An answer that isn't such an object is <c>refused</c> (<c>unreadable</c>), never an exception.
+    /// The analysis an answer makes: the JSON object in Claude's final text (inside a <c>```json</c> fence when there is one,
+    /// else the first <c>{</c> to the last <c>}</c>), each line kept only when it names a stock of the brief, an allowed
+    /// action and a reason; a line of another shape is dropped and counted, not the whole answer. An answer that isn't such
+    /// an object, or has no <c>holdings</c> or <c>picks</c> list, is <c>refused</c> (<c>unreadable</c>); one that keeps no
+    /// line for the brief's holdings, or none at all for a brief with stocks in it, is refused as <c>empty</c>: an empty
+    /// "done" would read as Claude finding nothing wrong. Never an exception.
     /// </summary>
-    public static AnalysisDocument Check(AnalystBrief brief, string answer, DateTimeOffset now)
+    public static AnalysisDocument Check(AnalystBrief brief, string? answer, DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(brief);
-        Raw? raw = null;
-        var start = answer?.IndexOf('{', StringComparison.Ordinal) ?? -1;
-        var end = answer?.LastIndexOf('}') ?? -1;
-        if (answer is not null && start >= 0 && end > start && Encoding.UTF8.GetByteCount(answer) <= MaxBytes)
+        AnalysisDocument Refuse(string reason) => AnalysisDocument.Missing(brief.AsOf, now, AnalysisDocument.Refused, reason);
+
+        if (answer is null || Encoding.UTF8.GetByteCount(answer) > MaxBytes || ObjectText(answer) is not { } json)
+            return Refuse("unreadable");
+        JsonDocument document;
+        try
         {
-            try
-            {
-                raw = JsonSerializer.Deserialize<Raw>(answer[start..(end + 1)], Json);
-            }
-            catch (JsonException)
-            {
-            }
+            document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 8 });
+        }
+        catch (JsonException)
+        {
+            return Refuse("unreadable");
         }
 
-        if (raw is null)
-            return AnalysisDocument.Missing(brief.AsOf, now, AnalysisDocument.Refused, "unreadable");
-
-        var dropped = 0;
-        var held = brief.Holdings.Select(h => h.Symbol).ToHashSet(StringComparer.Ordinal);
-        var buyable = brief.Buys.Select(b => b.Symbol).Concat(brief.Candidates.Select(c => c.Symbol)).ToHashSet(StringComparer.Ordinal);
-
-        var holdings = new List<HoldingView>();
-        foreach (var h in raw.Holdings ?? [])
+        using (document)
         {
-            if (h?.Symbol is not { } symbol || !held.Contains(symbol) || holdings.Any(x => x.Symbol == symbol)
-                || h.Action is not { } action || !AnalystActions.All.Contains(action) || Text(h.Reason, MaxReason) is not { } reason)
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || (Lines(root, "holdings") is null && Lines(root, "picks") is null))
+                return Refuse("unreadable");
+
+            var dropped = 0;
+            var held = brief.Holdings.Select(h => h.Symbol).ToHashSet(StringComparer.Ordinal);
+            var buyable = brief.Buys.Select(b => b.Symbol).Concat(brief.Candidates.Select(c => c.Symbol)).ToHashSet(StringComparer.Ordinal);
+
+            var holdings = new List<HoldingView>();
+            foreach (var h in Lines(root, "holdings") ?? [])
             {
-                dropped++;
-                continue;
+                if (Str(h, "symbol") is not { } symbol || !held.Contains(symbol) || holdings.Any(x => x.Symbol == symbol)
+                    || Str(h, "action") is not { } action || !AnalystActions.All.Contains(action) || Text(Str(h, "reason"), MaxReason) is not { } reason)
+                {
+                    dropped++;
+                    continue;
+                }
+
+                holdings.Add(new(symbol, action, reason, Earnings(Str(h, "earnings"), brief.AsOf), Text(Str(h, "reasonRu"), MaxReason)));
             }
 
-            holdings.Add(new(symbol, action, reason, Earnings(h.Earnings, brief.AsOf), Text(h.ReasonRu, MaxReason)));
-        }
-
-        var picks = new List<PickView>();
-        foreach (var p in (raw.Picks ?? []).Where(p => p is not null).OrderBy(p => p!.Rank ?? int.MaxValue))
-        {
-            if (p!.Symbol is not { } symbol || !buyable.Contains(symbol) || picks.Any(x => x.Symbol == symbol) || picks.Count == MaxPicks
-                || Text(p.Reason, MaxReason) is not { } reason)
+            // Ranked as the analyst ranked them (unranked last, in its order); a rank that isn't a whole number drops the line.
+            var ranked = (Lines(root, "picks") ?? []).Select((p, i) => (Line: p, Rank: Rank(p), Order: i)).ToList();
+            dropped += ranked.Count(r => r.Rank is null);
+            var picks = new List<PickView>();
+            foreach (var (p, _, _) in ranked.Where(r => r.Rank is not null).OrderBy(r => r.Rank).ThenBy(r => r.Order))
             {
-                dropped++;
-                continue;
+                if (Str(p, "symbol") is not { } symbol || !buyable.Contains(symbol) || picks.Any(x => x.Symbol == symbol) || picks.Count == MaxPicks
+                    || Text(Str(p, "reason"), MaxReason) is not { } reason)
+                {
+                    dropped++;
+                    continue;
+                }
+
+                picks.Add(new(symbol, picks.Count + 1, reason, Earnings(Str(p, "earnings"), brief.AsOf), Text(Str(p, "reasonRu"), MaxReason))); // ranks 1, 2, …
             }
 
-            picks.Add(new(symbol, picks.Count + 1, reason, Earnings(p.Earnings, brief.AsOf), Text(p.ReasonRu, MaxReason))); // ranks 1, 2, … in the analyst's order
-        }
-
-        var skips = new List<SkipView>();
-        foreach (var s in raw.Skips ?? [])
-        {
-            if (s?.Symbol is not { } symbol || !buyable.Contains(symbol) || picks.Any(x => x.Symbol == symbol) || skips.Any(x => x.Symbol == symbol)
-                || skips.Count == MaxSkips || Text(s.Reason, MaxReason) is not { } reason)
+            var skips = new List<SkipView>();
+            foreach (var k in Lines(root, "skips") ?? [])
             {
-                dropped++;
-                continue;
+                if (Str(k, "symbol") is not { } symbol || !buyable.Contains(symbol) || picks.Any(x => x.Symbol == symbol) || skips.Any(x => x.Symbol == symbol)
+                    || skips.Count == MaxSkips || Text(Str(k, "reason"), MaxReason) is not { } reason)
+                {
+                    dropped++;
+                    continue;
+                }
+
+                skips.Add(new(symbol, reason, Earnings(Str(k, "earnings"), brief.AsOf), Text(Str(k, "reasonRu"), MaxReason)));
             }
 
-            skips.Add(new(symbol, reason, Earnings(s.Earnings, brief.AsOf), Text(s.ReasonRu, MaxReason)));
+            if ((held.Count > 0 && holdings.Count == 0) || (buyable.Count > 0 && holdings.Count + picks.Count + skips.Count == 0))
+                return Refuse("empty");
+
+            return new(brief.AsOf, now, AnalysisDocument.Done, null, Text(Str(root, "market"), MaxMarket), holdings, picks, skips, dropped,
+                Text(Str(root, "marketRu"), MaxMarket));
+        }
+    }
+
+    /// <summary>The JSON object's text: a <c>```json</c> fence's contents when there is one, then its first <c>{</c> to its last <c>}</c>.</summary>
+    private static string? ObjectText(string answer)
+    {
+        var text = answer;
+        var fence = answer.IndexOf("```json", StringComparison.OrdinalIgnoreCase);
+        if (fence >= 0)
+        {
+            var body = fence + "```json".Length;
+            var close = answer.IndexOf("```", body, StringComparison.Ordinal);
+            text = close >= 0 ? answer[body..close] : answer[body..];
         }
 
-        return new(brief.AsOf, now, AnalysisDocument.Done, null, Text(raw.Market, MaxMarket), holdings, picks, skips, dropped, Text(raw.MarketRu, MaxMarket));
+        var start = text.IndexOf('{', StringComparison.Ordinal);
+        var end = text.LastIndexOf('}');
+        return start >= 0 && end > start ? text[start..(end + 1)] : null;
+    }
+
+    private static IEnumerable<JsonElement>? Lines(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var list) && list.ValueKind == JsonValueKind.Array ? list.EnumerateArray().ToList() : null;
+
+    /// <summary>A line's text field, or null when the line isn't an object or the field isn't a string.</summary>
+    private static string? Str(JsonElement line, string name) =>
+        line.ValueKind == JsonValueKind.Object && line.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>A pick's rank: a whole number from 1, as a number or a string; <see cref="int.MaxValue"/> when absent; null when malformed.</summary>
+    private static int? Rank(JsonElement line)
+    {
+        if (line.ValueKind != JsonValueKind.Object || !line.TryGetProperty("rank", out var rank) || rank.ValueKind == JsonValueKind.Null)
+            return int.MaxValue;
+        if (rank.ValueKind == JsonValueKind.Number && rank.TryGetInt32(out var n) && n >= 1)
+            return n;
+        return rank.ValueKind == JsonValueKind.String && int.TryParse(rank.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out var m) && m >= 1 ? m : null;
     }
 
     private static DateOnly? Earnings(string? value, DateOnly asOf) =>
@@ -284,12 +340,4 @@ public static class AnalystAnswer
             return null;
         return string.Concat(collapsed.EnumerateRunes().Take(max).Select(r => r.ToString())).TrimEnd();
     }
-
-    private sealed record Raw(string? Market, string? MarketRu, IReadOnlyList<RawHolding?>? Holdings, IReadOnlyList<RawPick?>? Picks, IReadOnlyList<RawSkip?>? Skips);
-
-    private sealed record RawHolding(string? Symbol, string? Action, string? Reason, string? Earnings, string? ReasonRu);
-
-    private sealed record RawPick(string? Symbol, int? Rank, string? Reason, string? Earnings, string? ReasonRu);
-
-    private sealed record RawSkip(string? Symbol, string? Reason, string? Earnings, string? ReasonRu);
 }

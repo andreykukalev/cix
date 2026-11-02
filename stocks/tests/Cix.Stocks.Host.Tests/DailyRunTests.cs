@@ -438,9 +438,7 @@ public class DailyRunTests
 
         public Task AddAnalysisAsync(string id, AnalysisDocument analysis, CancellationToken cancellationToken) => inner.AddAnalysisAsync(id, analysis, cancellationToken);
 
-
         public Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken) => inner.GetAnalysisAsync(id, cancellationToken);
-
 
         public Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken) => inner.SaveLatestAnalysisAsync(analysis, cancellationToken);
 
@@ -491,9 +489,7 @@ public class DailyRunTests
 
         public Task AddAnalysisAsync(string id, AnalysisDocument analysis, CancellationToken cancellationToken) => inner.AddAnalysisAsync(id, analysis, cancellationToken);
 
-
         public Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken) => inner.GetAnalysisAsync(id, cancellationToken);
-
 
         public Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken) => inner.SaveLatestAnalysisAsync(analysis, cancellationToken);
 

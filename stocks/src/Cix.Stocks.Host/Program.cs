@@ -125,7 +125,7 @@ internal static class StocksHost
 
                 await File.WriteAllTextAsync(briefFile, JsonSerializer.Serialize(brief, StocksJson.Options), cancel.Token);
                 Console.WriteLine($"Analyst brief for {brief.AsOf:yyyy-MM-dd}: {brief.Holdings.Count} holdings, {brief.Buys.Count} buys, " +
-                                  $"{brief.Candidates.Count} candidates, news on {brief.News.Count} ({brief.NewsMissing.Count} missing).");
+                                  $"{brief.Candidates.Count} candidates, news on {brief.News.Count} ({brief.NewsMissing.Count} failed, {brief.NewsSkipped.Count} past the cap).");
                 return 0;
             }
 
@@ -206,11 +206,26 @@ internal static class StocksHost
             analysis = AnalystAnswer.Check(brief, answer, now);
         }
 
-        using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
-        if (!await AnalysisRecord.SaveAsync(store, analysis, cancellationToken))
+        try
         {
-            Console.WriteLine($"Analyst: {analysis.Status} for {analysis.AsOf:yyyy-MM-dd} not saved: a done or later analysis is already saved.");
-            return analysis.Status == AnalysisDocument.Done ? 0 : 1;
+            using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
+            // The brief is the host's own file, but a close after the latest advice would block every real one until then.
+            if (await store.GetAdviceAsync("advice-latest", cancellationToken) is not { } advice || brief.AsOf > advice.AsOf)
+            {
+                Console.Error.WriteLine($"Analyst: the brief's close {brief.AsOf:yyyy-MM-dd} isn't one the host advised.");
+                return 2;
+            }
+
+            if (!await AnalysisRecord.SaveAsync(store, analysis, cancellationToken))
+            {
+                Console.WriteLine($"Analyst: {analysis.Status} for {analysis.AsOf:yyyy-MM-dd} not saved: a done or later analysis is already saved.");
+                return analysis.Status == AnalysisDocument.Done ? 0 : 1;
+            }
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"Analyst: saving failed: {e.GetType().Name}: {e.Message}");
+            return 1;
         }
 
         Console.WriteLine($"Analyst: {analysis.Status}{(analysis.Reason is { } r ? $" ({r})" : "")} for {analysis.AsOf:yyyy-MM-dd}: " +
