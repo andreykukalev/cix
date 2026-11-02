@@ -25,7 +25,7 @@ Object.assign(process.env, {
 });
 require('../src/functions/stocks.js');
 Module._load = originalLoad;
-const { stocksView, candidatesView, loadStocks, stocksReader } = require('../src/stocks');
+const { stocksView, candidatesView, analysisView, loadStocks, stocksReader } = require('../src/stocks');
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const OWNER = b64({ identityProvider: 'aad', userId: 'owner-user-id', userRoles: ['authenticated', 'owner'] });
@@ -73,6 +73,7 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
   assert.deepEqual(reads, [
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'advice-latest' },
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'candidates-latest' },
+    { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'analysis-latest' },
     // The owner's portfolio submissions waiting for the next run: none.
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'requests', id: 'portfolio-1' },
   ]);
@@ -83,12 +84,12 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
 
 test('without the stocks settings the tab is not set up, and nothing is read', async () => {
   assert.equal(stocksReader({ COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: 'a2V5' }), null);
-  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, pending: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, analysis: null, pending: null, generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('no document yet is set up but without advice', async () => {
   const reader = { readDocument: async () => null };
-  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, pending: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, analysis: null, pending: null, generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('actions come protective first, in the advisor\'s order within a kind', () => {
@@ -263,3 +264,46 @@ test('a portfolio sent since the last run is shown as waiting, from the first nu
   assert.deepEqual(answer.pending.holdings, [{ symbol: 'OWN.US', name: null, quantity: '5', averageCost: '100', stop: null, openedOn: null }]);
 });
 
+
+const ANALYSIS = {
+  asOf: '2026-10-30', generatedAt: '2026-10-31T02:40:00Z', status: 'done', market: 'Calm\nbefore the Fed.', dropped: '2',
+  holdings: [
+    { symbol: 'SAP.XETRA', action: 'sell-half', reason: 'Guidance cut.', reasonRu: 'Прогноз снижен.', earnings: '2026-11-05' },
+    { symbol: 'SAP.XETRA', action: 'hold', reason: 'A second line for it.' },
+    { symbol: 'ASML.AS', action: 'buy-more', reason: 'Not an action.' },
+    { symbol: 'msft', action: 'hold', reason: 'Not a symbol.' },
+  ],
+  picks: [
+    { symbol: 'MSFT.US', rank: '1', reason: 'Clean \u202Ebreakout.', earnings: '2026-02-30' },
+    { symbol: 'NVDA.US', rank: '2', reason: '   ' },
+    { symbol: 'NEW.US', rank: '3', reason: 'x'.repeat(500) },
+  ],
+  skips: [{ symbol: 'NEAR.US', reason: 'Lawsuit pending.' }],
+};
+
+test('the analyst\'s view is checked line by line: allowed actions, real symbols and days, cleaned and cut text', () => {
+  const view = analysisView(ANALYSIS);
+  assert.equal(view.status, 'done');
+  assert.equal(view.market, 'Calm before the Fed.');
+  assert.equal(view.dropped, 2);
+  assert.deepEqual(view.holdings, [{ symbol: 'SAP.XETRA', action: 'sell-half', reason: 'Guidance cut.', reasonRu: 'Прогноз снижен.', earnings: '2026-11-05' }]);
+  assert.deepEqual(view.picks.map((p) => [p.symbol, p.rank, p.earnings]), [['MSFT.US', 1, null], ['NEW.US', 2, null]]);
+  assert.equal(view.picks[0].reason, 'Clean breakout.');
+  assert.equal(view.picks[1].reason.length, 400);
+  assert.deepEqual(view.skips, [{ symbol: 'NEAR.US', reason: 'Lawsuit pending.', reasonRu: null, earnings: null }]);
+  assert.deepEqual(analysisView({ status: 'not-run', reason: 'usage-limit', asOf: '2026-10-30' }),
+    { asOf: '2026-10-30', generatedAt: null, status: 'not-run', reason: 'usage-limit', market: null, marketRu: null, holdings: [], picks: [], skips: [], dropped: null });
+  assert.equal(analysisView({ status: 'thinking' }), null);
+  assert.equal(analysisView('done'), null);
+  assert.equal(analysisView({ status: 'done', picks: Array.from({ length: 9 }, (_, i) => ({ symbol: `P${i}.US`, reason: 'r' })) }).picks.length, 5);
+});
+
+test('the answer says whether Claude\'s view is of the advice\'s close', async () => {
+  const docs = { 'advice-latest': { value: ADVICE }, 'analysis-latest': { value: ANALYSIS } };
+  const reader = { readDocument: async (container, id) => docs[id] ?? null };
+  assert.equal((await loadStocks(reader, NOW)).analysis.current, true);
+  docs['analysis-latest'] = { value: { ...ANALYSIS, asOf: '2026-10-29' } };
+  assert.equal((await loadStocks(reader, NOW)).analysis.current, false);
+  delete docs['advice-latest'];
+  assert.equal((await loadStocks(reader, NOW)).analysis.current, false);
+});

@@ -110,7 +110,115 @@ function renderCandidates(c, advice) {
     td(x.shares === null ? '–' : amount(x.shares, 0), 'num'),
     td(x.amount === null ? '–' : money(x.amount, c.baseCurrency), 'num'),
     td(el('span', { class: x.momentum === null ? '' : `move ${x.momentum >= 0 ? 'up' : 'down'}`, text: percent(x.momentum) }), 'num'),
+    analystMark(x.symbol),
   ], status === 'done' ? t('No stock in the market passes the entry rule tonight.') : advice ? '–' : t('No advice yet.'));
+}
+
+// --- Claude's view (ADR-0027): the analyst's word on the holdings, and its picks among the buys and candidates ----------
+
+/** Claude's view when it is of the advice's close and done; null otherwise (the rules' advice stands alone). */
+function currentAnalysis() {
+  const v = stocks.answer?.analysis ?? null;
+  return v && v.current && v.status === 'done' ? v : null;
+}
+
+/** A candidate's mark from Claude: its pick rank, or left out (the reason a hover away), or nothing. */
+function analystMark(symbol) {
+  const v = currentAnalysis();
+  const pick = v?.picks.find((p) => p.symbol === symbol);
+  if (pick) return el('span', { class: 'badge ok', title: pick.reason, text: t('Pick {rank}', { rank: pick.rank }) });
+  const skip = v?.skips.find((k) => k.symbol === symbol);
+  if (skip) return el('span', { class: 'badge bad', title: skip.reason, text: t('Left out') });
+  return '–';
+}
+
+function analystAction(action) {
+  switch (action) {
+    case 'hold': return [t('Hold'), 'ok'];
+    case 'sell-half': return [t('Sell half'), 'bad'];
+    case 'sell-all': return [t('Sell all'), 'bad'];
+    case 'add': return [t('Add more'), 'signal'];
+    default: return [action ?? '–', ''];
+  }
+}
+
+/** Why Claude's view is missing, or is not of this close: what the banner says, and its tone. */
+function analysisNotice(v, advice) {
+  if (!stocks.answer?.configured || stocks.error || !advice) return [null];
+  if (!v) return [t("Claude hasn't looked at this advice yet: it runs after the nightly advice. Until then the rules' advice stands.")];
+  if (!v.current) {
+    return [t("Claude's view is of the close of {day}, older than the advice: tonight's run hasn't finished or didn't run. The rules' advice stands.", { day: v.asOf ?? '–' }), 'warn'];
+  }
+  if (v.status === 'refused') return [t("Claude's answer couldn't be read, so it was left out: the rules' advice stands."), 'warn'];
+  if (v.status === 'not-run') {
+    switch (v.reason) {
+      case 'usage-limit': return [t("Claude limit: Claude didn't run for this close, so the rules' advice stands."), 'warn'];
+      case 'credentials': return [t("Claude couldn't sign in: the token in the stocks Key Vault is missing or expired. The rules' advice stands."), 'bad'];
+      case 'timeout': return [t("Claude's run took too long and was stopped: the rules' advice stands."), 'warn'];
+      default: return [t("Claude's run failed: the rules' advice stands."), 'warn'];
+    }
+  }
+  return [null];
+}
+
+/** Days from today (the owner's) to an earnings day, or null. */
+function daysTo(dayText) {
+  if (!dayText) return null;
+  return Math.round((Date.parse(dayText) - Date.parse(localToday())) / (24 * 3600 * 1000));
+}
+
+/** An earnings report this close or soon is worth a card: within this many days. */
+const EARNINGS_SOON_DAYS = 14;
+
+function earningsCell(dayText) {
+  const n = daysTo(dayText);
+  if (n === null) return '–';
+  return el('span', { class: n >= 0 && n <= EARNINGS_SOON_DAYS ? 'badge warn' : '', text: dayText });
+}
+
+function renderAnalysis(advice) {
+  const v = stocks.answer?.analysis ?? null;
+  const done = currentAnalysis();
+  const [text, tone] = analysisNotice(v, advice);
+  const notice = document.getElementById('stocks-analysis-banner');
+  notice.hidden = !text;
+  notice.className = `banner ${tone ?? ''}`;
+  notice.textContent = text ?? '';
+  document.getElementById('stocks-analysis-meta').textContent = v?.asOf
+    ? [t('close of {day}, written {ago}', { day: v.asOf, ago: ago(v.generatedAt) }),
+      done?.dropped ? t('lines left out as outside the advice: {count}', { count: done.dropped }) : null].filter(Boolean).join(' · ')
+    : '';
+
+  // Red cards on top: what Claude would sell; orange: a held stock reporting earnings soon.
+  const cards = [];
+  for (const h of done?.holdings ?? []) {
+    const soon = daysTo(h.earnings);
+    if (h.action === 'sell-half' || h.action === 'sell-all') {
+      const [label] = analystAction(h.action);
+      cards.push(el('li', { class: 'card risk' },
+        el('div', { class: 'head' }, el('span', { class: 'badge bad', text: label }), el('span', { class: 'chip', text: h.symbol }),
+          h.earnings ? el('span', { class: 'muted small', text: t('earnings {day}', { day: h.earnings }) }) : null),
+        el('p', { class: 'detail' }, says(h.reason, h.reasonRu))));
+    } else if (soon !== null && soon >= 0 && soon <= EARNINGS_SOON_DAYS) {
+      cards.push(el('li', { class: 'card watch' },
+        el('div', { class: 'head' }, el('span', { class: 'badge warn', text: t('Earnings {day}', { day: h.earnings }) }), el('span', { class: 'chip', text: h.symbol })),
+        el('p', { class: 'detail' }, says(h.reason, h.reasonRu))));
+    }
+  }
+  const list = document.getElementById('stocks-analysis-cards');
+  list.hidden = cards.length === 0;
+  list.replaceChildren(...cards);
+
+  document.getElementById('stocks-analysis-body').hidden = !done;
+  const market = document.getElementById('stocks-analysis-market');
+  market.replaceChildren(done?.market ? says(done.market, done.marketRu) : '');
+  rows('stocks-analysis-holdings', done?.holdings ?? [], (h) => {
+    const [label, cls] = analystAction(h.action);
+    return [stockName(h), el('span', { class: `badge ${cls}`, text: label }), earningsCell(h.earnings), td(says(h.reason, h.reasonRu), 'why')];
+  }, t('No holdings to look at.'));
+  rows('stocks-analysis-picks', done?.picks ?? [], (p) => [td(String(p.rank), 'num'), stockName(p), earningsCell(p.earnings), td(says(p.reason, p.reasonRu), 'why')],
+    t('No pick tonight: Claude would buy none of them.'));
+  rows('stocks-analysis-skips', done?.skips ?? [], (k) => [stockName(k), earningsCell(k.earnings), td(says(k.reason, k.reasonRu), 'why')], t('Nothing left out.'));
 }
 
 function stockName(item) {
@@ -271,6 +379,7 @@ function renderStocks() {
       a ? [t('allocation {amount}', { amount: money(a.capital, a.baseCurrency) }), ' · ', t('cash {amount}', { amount: money(a.cash, a.baseCurrency) }), requested] : '–');
   }
 
+  renderAnalysis(a);
   renderOwner(a);
 
   rows('stocks-actions', a?.actions ?? [], actionCells, a ? t('Nothing to do: hold what you have, with its stops.') : t('No advice yet.'));

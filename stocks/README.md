@@ -61,6 +61,16 @@ After the advice, the same run searches the whole US market for candidates (ADR-
 3. Each shortlisted stock's own bars go through `Advisor.Entry`, the same rule as the watchlist: a breakout, or an uptrend within `nearHighFraction` of its prior high, is a candidate, sized by the advisor's rules on the owner's capital (the paper portfolio's equity before he sends one) (`Advisor.InitialStop`, `Advisor.Sized`). Entry signals first, then momentum, at most `maxCandidates`.
 4. `candidates-YYYY-MM-DD` once, then `candidates-latest`, in the `advice` container. A session already searched isn't searched again (a page a failed run left behind is copied from the dated one); a download for an earlier session (`not-ready`) or a later one than the advice (`advice-behind`) is retried by the next run. Bars stop being fetched 12 minutes into the job, inside its 15-minute timeout, and what was found is listed.
 
+### Claude analyst
+
+After the run, the analyst job (ADR-0027) asks Claude what it makes of the night's advice, using the host for everything that touches the database or EODHD:
+
+1. `--brief <file>` writes the brief: the owner's holdings (the paper portfolio's before he sends his) with the rules' action on each, the rules' buys, the search's candidates of the same close, and EODHD news (5 items of the last 7 days) on up to 30 of those stocks; a stock whose news failed is listed in `newsMissing`. Exit 3: nothing to analyse (no advice, or its close is already analysed).
+2. Claude reads it and answers with one JSON object: `{ market, marketRu, holdings: [{ symbol, action: hold | sell-half | sell-all | add, reason, reasonRu, earnings }], picks: [{ symbol, rank, reason, reasonRu, earnings }], skips: [{ symbol, reason, reasonRu, earnings }] }`.
+3. `--accept <brief> <answer>` checks the answer against the brief (`AnalystAnswer.Check`) and saves it; `--not-run <brief> <reason>` saves that Claude didn't run (`usage-limit`, `credentials`, `timeout`, `failed`). Both need only `STOCKS_COSMOS_ENDPOINT` and `AZURE_CLIENT_ID`, not the EODHD key. A done analysis is kept as `analysis-YYYY-MM-DD` once and as `analysis-latest`; a failed run never replaces a done one of the same close.
+
+Claude's view never changes an amount or a stop: it can only advise less risk.
+
 Locally, `EODHD_API_TOKEN=... dotnet run --project stocks/src/Cix.Stocks.Host -- --dry-run` keeps everything in memory and prints the advice. It still spends the key's calls, which the nightly run doesn't know about: with the free key, a dry run the same UTC day leaves the job short.
 
 ## Dashboard
@@ -100,5 +110,19 @@ The route also reads `candidates-latest` (null until the first search):
                    "breakoutHigh": 140.1, "trendAverage": 112.3, "stop": 133.5, "shares": 14, "momentum": 0.42, "marketCap": 180000000000 }]
 }
 ```
+
+And `analysis-latest` (null until the analyst's first run):
+
+```json
+{
+  "asOf": "2026-10-30", "generatedAt": "2026-10-31T02:45:00Z", "status": "done | refused | not-run",
+  "reason": "usage-limit | credentials | timeout | failed | unreadable", "market": "…", "marketRu": "…", "dropped": 1,
+  "holdings": [{ "symbol": "EPAM.US", "action": "hold | sell-half | sell-all | add", "reason": "…", "reasonRu": "…", "earnings": "2026-11-06" }],
+  "picks": [{ "symbol": "ANET.US", "rank": 1, "reason": "…", "reasonRu": "…", "earnings": null }],
+  "skips": [{ "symbol": "APP.US", "reason": "…", "reasonRu": "…", "earnings": null }]
+}
+```
+
+The route adds `current`: whether the analysis is of the advice's close. The page shows Claude's view only then; otherwise it says why the rules' advice stands alone.
 
 Numbers are written as decimal strings (`"6200.5"`), so they reach the database exact; the tab reads both. The host also adds `trades` (the paper fills of that run) and `skipped`, which the tab doesn't show yet. `watchlist` has every watched stock: its last close, the closing high of the 50 sessions before it (`breakoutHigh`: a close above it in an uptrend is the entry signal) and the 200-day average (`trendAverage`); advice written before it existed has none, and the tab says the next run brings it. Reasons are the advisor's codes (`Cix.Stocks.Reasons`) and the host's (`call-budget`, `data-error`). The tab checks every field, drops what doesn't fit, and marks advice as stale once two weekday closes pass without new advice.

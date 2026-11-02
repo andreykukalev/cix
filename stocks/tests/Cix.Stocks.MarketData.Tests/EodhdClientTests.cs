@@ -53,6 +53,44 @@ public class EodhdClientTests
     }
 
     [Fact]
+    public async Task ReadsTheNewsCleanedAndAsksForItWithTheKeyEscaped()
+    {
+        var body = """
+            [
+              {"date":"2026-10-30T20:15:00+00:00","title":"Micron \u202Ebeats\nestimates","content":"Line one.\n\nLine two\u200B here.","link":"https://www.reuters.com/markets/micron","symbols":["MU.US"],"sentiment":{"polarity":0.9876,"neg":0,"neu":0.1,"pos":0.9}},
+              {"date":"not a date","title":"Dropped"},
+              {"date":"2026-10-29T10:00:00Z","title":"","content":"no title"},
+              {"date":"2026-10-29T09:00:00Z","title":"No link, odd sentiment","link":"javascript:alert(1)","sentiment":{"polarity":7}}
+            ]
+            """;
+        var (client, handler) = Client(_ => Json(body));
+
+        var news = await client.GetNewsAsync("MU.US", new DateOnly(2026, 10, 23), 5, CancellationToken.None);
+
+        Assert.Equal(2, news.Count);
+        Assert.Equal(new NewsItem(new DateTimeOffset(2026, 10, 30, 20, 15, 0, TimeSpan.Zero), "Micron beats estimates", "Line one. Line two here.", "reuters.com", 0.988m), news[0]);
+        Assert.Equal((null, null), (news[1].Source, news[1].Polarity));
+        var query = handler.Requests.Single().Query;
+        Assert.Contains("s=MU.US", query, StringComparison.Ordinal);
+        Assert.Contains("from=2026-10-23&limit=5", query, StringComparison.Ordinal);
+        Assert.Contains("api_token=test%2Btok%2Fen", query, StringComparison.Ordinal);
+        Assert.Equal("/api/news", handler.Requests.Single().AbsolutePath);
+    }
+
+    [Fact]
+    public async Task NewsIsCutAtTheLimitAndARefusalSaysSoWithoutTheKey()
+    {
+        var rows = string.Join(",", Enumerable.Range(0, 8).Select(i => $$"""{"date":"2026-10-30T0{{i}}:00:00Z","title":"t{{i}}"}"""));
+        var (client, _) = Client(_ => Json($"[{rows}]"));
+        Assert.Equal(3, (await client.GetNewsAsync("MU.US", new DateOnly(2026, 10, 23), 3, CancellationToken.None)).Count);
+
+        var (refusing, _) = Client(_ => Json("{}", HttpStatusCode.Forbidden));
+        var error = await Assert.ThrowsAsync<StockDataException>(() => refusing.GetNewsAsync("MU.US", new DateOnly(2026, 10, 23), 3, CancellationToken.None));
+        Assert.DoesNotContain("tok", error.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.GetNewsAsync("MU.US", new DateOnly(2026, 10, 23), 21, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task AsksForDailyJsonBarsInTheRangeWithTheKeyEscaped()
     {
         var (client, handler) = Client(_ => Json("[]"));
