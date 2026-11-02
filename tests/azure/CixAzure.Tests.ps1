@@ -1766,7 +1766,7 @@ Check 'provision-stocks.ps1 stores the Claude token unseen and deploys the analy
   if ($r.Calls -notmatch 'keyvault secret set --vault-name kvcixstocksx --name claude-token --file ') { throw "the token wasn't stored from a file: $($r.Calls)" }
   if ($r.Output.Contains($fakeClaudeToken) -or $r.Calls.Contains($fakeClaudeToken)) { throw 'the Claude token was printed or put on a command line' }
   if ($r.Calls -notmatch 'acr build .*--build-arg CLAUDE_CODE_VERSION=2\.1\.316 ') { throw "Claude Code's version wasn't passed to the build: $($r.Calls)" }
-  if ($r.Output -notmatch 'Deployed caj-cix-stocks-analyst') { throw "the analyst job wasn't deployed: $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -notmatch 'Deployed caj-cix-stocks-analyst') { throw "the analyst job wasn't deployed: $($r.Output)" }
   if ($r.Calls -match '/start\?') { throw 'started a run without -RunNow or -RunAnalystNow' }
 }
 
@@ -1781,7 +1781,7 @@ Check 'provision-stocks.ps1 without a Claude token deploys the nightly job alone
   $r = Invoke-ProvisionStocks
   if ($r.Error) { throw "failed: $($r.Error)" }
   if ($r.Calls -match 'name claude-token') { throw 'stored a token it was not given' }
-  if ($r.Output -notmatch "the analyst job isn't deployed") { throw "no warning: $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -notmatch "the analyst job isn't deployed") { throw "no warning: $($r.Output)" }
 }
 
 Check 'provision-stocks.ps1 keeps a Claude token already in the vault, and deploys the analyst once it is there' {
@@ -1814,8 +1814,8 @@ Check 'provision-stocks.ps1 -KeepImage does not deploy a new analyst on an image
     'deployment sub create' = $withAnalyst
   } @{ Yes = $true; KeepImage = $true }
   if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
-  if ($r.Output -notmatch "the analyst isn't deployed now") { throw "no warning: $($r.Output)" }
-  if ($r.Output -match 'Deployed caj-cix-stocks-analyst') { throw 'deployed the analyst on the kept image' }
+  if (($r.Output -replace '\s+', ' ') -notmatch "the analyst isn't deployed now") { throw "no warning: $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -match 'Deployed caj-cix-stocks-analyst') { throw 'deployed the analyst on the kept image' }
 }
 
 $analystJobId = $stocksJobId.Replace('caj-cix-stocks-daily', 'caj-cix-stocks-analyst')
@@ -1830,8 +1830,8 @@ Check 'provision-stocks.ps1 recovers an analyst whose Claude token was deleted: 
     'acr repository show'  = "{`"digest`":`"$stocksDigest`",`"tags`":[`"$stocksHead-20261030120000`"]}"
   }
   if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
-  if ($r.Output -notmatch "Claude token isn't in the vault") { throw "no warning: $($r.Output)" }
-  if ($r.Output -match 'Deployed caj-cix-stocks-analyst') { throw 'deployed the analyst without its token' }
+  if (($r.Output -replace '\s+', ' ') -notmatch "Claude token isn't in the vault") { throw "no warning: $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -match 'Deployed caj-cix-stocks-analyst') { throw 'deployed the analyst without its token' }
 }
 
 Check 'provision-stocks.ps1 -RunNow -RunAnalystNow starts the nightly run alone, since the analyst needs its brief' {
@@ -1846,7 +1846,7 @@ Check 'provision-stocks.ps1 -RunNow -RunAnalystNow starts the nightly run alone,
   if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
   if ($r.Calls -notmatch 'caj-cix-stocks-daily/start\?') { throw "the nightly run wasn't started: $($r.Calls)" }
   if ($r.Calls -match 'caj-cix-stocks-analyst/start\?') { throw 'started the analyst before its brief exists' }
-  if ($r.Output -notmatch 'once that run has finished') { throw "no explanation: $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -notmatch 'once that run has finished') { throw "no explanation: $($r.Output)" }
 }
 
 Check 'provision.ps1 keeps the Stocks tab''s settings through a dashboard deployment' {
