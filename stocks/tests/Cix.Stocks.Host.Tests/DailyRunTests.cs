@@ -436,6 +436,12 @@ public class DailyRunTests
 
         public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
 
+        public Task AddAnalysisAsync(string id, AnalysisDocument analysis, CancellationToken cancellationToken) => inner.AddAnalysisAsync(id, analysis, cancellationToken);
+
+        public Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken) => inner.GetAnalysisAsync(id, cancellationToken);
+
+        public Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken) => inner.SaveLatestAnalysisAsync(analysis, cancellationToken);
+
         public Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken) => inner.GetOwnerStateAsync(cancellationToken);
 
         public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);
@@ -480,6 +486,12 @@ public class DailyRunTests
         public Task<CandidatesDocument?> GetCandidatesAsync(string id, CancellationToken cancellationToken) => inner.GetCandidatesAsync(id, cancellationToken);
 
         public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) => inner.SaveLatestCandidatesAsync(candidates, cancellationToken);
+
+        public Task AddAnalysisAsync(string id, AnalysisDocument analysis, CancellationToken cancellationToken) => inner.AddAnalysisAsync(id, analysis, cancellationToken);
+
+        public Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken) => inner.GetAnalysisAsync(id, cancellationToken);
+
+        public Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken) => inner.SaveLatestAnalysisAsync(analysis, cancellationToken);
 
         public Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken) => inner.GetOwnerStateAsync(cancellationToken);
 

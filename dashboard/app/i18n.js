@@ -1034,6 +1034,38 @@
     'No uptrend': 'Нет восходящего тренда',
     above: 'выше',
     'The advice has no watchlist yet: it comes with the next run.': 'В советах пока нет списка наблюдения: он появится со следующим запуском.',
+    // --- Claude's view on the Stocks page (ADR-0027) ---
+    "Claude's view": 'Мнение Claude',
+    "Claude reads the news on each stock after the nightly advice. It can only advise less risk: the shares and stops stay the rules'.":
+      'Claude читает новости по каждой акции после ночных советов. Он может советовать только меньший риск: количество акций и стопы остаются по правилам.',
+    "Picks among tonight's buys and candidates": 'Выбор среди сегодняшних покупок и кандидатов',
+    'Left out': 'Не брать',
+    'Claude says': 'Claude советует',
+    Earnings: 'Отчётность',
+    Claude: 'Claude',
+    "Claude's view of it: a pick and its rank, or left out": 'Мнение Claude: выбор и его место или «не брать»',
+    'Pick {rank}': 'Выбор {rank}',
+    Hold: 'Держать',
+    'Sell half': 'Продать половину',
+    'Sell all': 'Продать всё',
+    'Add more': 'Докупить',
+    "Claude hasn't looked at this advice yet: it runs after the nightly advice. Until then the rules' advice stands.":
+      'Claude ещё не смотрел эти советы: он запускается после ночных советов. До тех пор действуют советы по правилам.',
+    "Claude's view is of the close of {day}, older than the advice: tonight's run hasn't finished or didn't run. The rules' advice stands.":
+      'Мнение Claude по закрытию {day}, старше советов: сегодняшний запуск ещё не закончился или не прошёл. Действуют советы по правилам.',
+    "Claude's answer couldn't be read, so it was left out: the rules' advice stands.": 'Ответ Claude не удалось прочитать, он отброшен: действуют советы по правилам.',
+    "Claude limit: Claude didn't run for this close, so the rules' advice stands.": 'Лимит Claude: по этому закрытию Claude не запускался, действуют советы по правилам.',
+    "Claude couldn't sign in: the token in the stocks Key Vault is missing or expired. The rules' advice stands.":
+      'Claude не смог войти: токена в Key Vault акций нет или он истёк. Действуют советы по правилам.',
+    "Claude's run took too long and was stopped: the rules' advice stands.": 'Запуск Claude шёл слишком долго и был остановлен: действуют советы по правилам.',
+    "Claude's run failed: the rules' advice stands.": 'Запуск Claude не удался: действуют советы по правилам.',
+    'close of {day}, written {ago}': 'закрытие {day}, написано {ago}',
+    'lines left out as outside the advice: {count}': 'отброшено строк вне советов: {count}',
+    'earnings {day}': 'отчётность {day}',
+    'Earnings {day}': 'Отчётность {day}',
+    'No holdings to look at.': 'Позиций для разбора нет.',
+    'No pick tonight: Claude would buy none of them.': 'Сегодня без выбора: Claude не стал бы покупать ни одну.',
+    'Nothing left out.': 'Ничего не отброшено.',
   }));
 
   /** Engine text with figures in it: [pattern, Russian with $1… for the parts]. */

@@ -102,6 +102,15 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
     public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken) =>
         Get(AdviceContainer).UpsertItemAsync(new Envelope<CandidatesDocument>("candidates-latest", candidates), new PartitionKey("candidates-latest"), cancellationToken: cancellationToken);
 
+    public Task AddAnalysisAsync(string id, AnalysisDocument analysis, CancellationToken cancellationToken) =>
+        CreateOnceAsync(Get(AdviceContainer), new Envelope<AnalysisDocument>(id, analysis), cancellationToken);
+
+    public async Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken) =>
+        (await ReadAsync<AnalysisDocument>(Get(AdviceContainer), id, cancellationToken).ConfigureAwait(false))?.Value;
+
+    public Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken) =>
+        Get(AdviceContainer).UpsertItemAsync(new Envelope<AnalysisDocument>("analysis-latest", analysis), new PartitionKey("analysis-latest"), cancellationToken: cancellationToken);
+
     public async Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken) =>
         await ReadAsync<OwnerState>(Get(StateContainer), OwnerStateId, cancellationToken).ConfigureAwait(false);
 

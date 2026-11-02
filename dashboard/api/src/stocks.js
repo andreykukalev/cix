@@ -10,6 +10,13 @@ const { pendingPortfolio, firstUnseen } = require('./portfolio');
 const CONTAINER = 'advice';
 const LATEST = 'advice-latest';
 const CANDIDATES = 'candidates-latest'; // the market-wide search's page (ADR-0025), same container
+const ANALYSIS = 'analysis-latest'; // the Claude analyst's view of the latest close (ADR-0027), same container
+const ANALYSIS_STATUSES = new Set(['done', 'refused', 'not-run']);
+const ANALYST_ACTIONS = new Set(['hold', 'sell-half', 'sell-all', 'add']);
+const MAX_PICKS = 5;
+const MAX_SKIPS = 30;
+const MAX_REASON = 400;
+const MAX_MARKET = 600;
 const SEARCH_STATUSES = new Set(['done', 'off', 'call-budget', 'data-error', 'not-ready', 'advice-behind']);
 const CANDIDATE_STATUSES = new Set(['breakout', 'near-high']);
 const MAX_CANDIDATES = 100;
@@ -61,6 +68,12 @@ const iso = (v) => (typeof v === 'string' && v.length <= 40 && Number.isFinite(D
 const name = (v) => {
   const s = typeof v === 'string' ? v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').trim() : '';
   return s ? s.slice(0, 80) : null;
+};
+// The analyst's words: the same characters out as a name (and private-use ones), whitespace collapsed, cut by code points.
+const text = (v, max) => {
+  if (typeof v !== 'string') return null;
+  const s = v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cs}]/gu, ' ').replace(/\s+/gu, ' ').trim();
+  return s ? Array.from(s).slice(0, max).join('').trimEnd() : null;
 };
 const list = (v) => (Array.isArray(v) ? v.slice(0, MAX_ROWS) : []);
 const ratio = (a, b) => (a !== null && b !== null && b !== 0 ? a / b - 1 : null);
@@ -165,6 +178,41 @@ function candidatesView(value) {
   };
 }
 
+function analystLine(v, extra) {
+  const s = symbol(v?.symbol);
+  const reason = text(v?.reason, MAX_REASON);
+  return s && reason ? { symbol: s, ...extra, reason, reasonRu: text(v.reasonRu, MAX_REASON), earnings: day(v.earnings) } : null;
+}
+
+const firstOnly = (items) => items.filter((x, i) => items.findIndex((y) => y.symbol === x.symbol) === i);
+
+/**
+ * The Claude analyst's view of a close (ADR-0027), every field checked; null when there is none. The host already checked
+ * it against the night's brief: this keeps the page safe from a document that is malformed all the same.
+ */
+function analysisView(value) {
+  if (!value || typeof value !== 'object') return null;
+  const status = ANALYSIS_STATUSES.has(value.status) ? value.status : null;
+  if (!status) return null;
+  const holdings = list(value.holdings)
+    .map((h) => (ANALYST_ACTIONS.has(h?.action) ? analystLine(h, { action: h.action }) : null)).filter(Boolean);
+  const picks = (Array.isArray(value.picks) ? value.picks.slice(0, MAX_PICKS) : [])
+    .map((p, i) => analystLine(p, { rank: i + 1 })).filter(Boolean).map((p, i) => ({ ...p, rank: i + 1 }));
+  const skips = (Array.isArray(value.skips) ? value.skips.slice(0, MAX_SKIPS) : []).map((k) => analystLine(k, {})).filter(Boolean);
+  return {
+    asOf: day(value.asOf),
+    generatedAt: iso(value.generatedAt),
+    status,
+    reason: code(value.reason),
+    market: text(value.market, MAX_MARKET),
+    marketRu: text(value.marketRu, MAX_MARKET),
+    holdings: firstOnly(holdings),
+    picks: firstOnly(picks),
+    skips: firstOnly(skips),
+    dropped: count(value.dropped),
+  };
+}
+
 /** Weekdays strictly between two UTC days: the closes there have been since asOf, not counting today's. */
 function weekdaysBetween(fromMs, toMs) {
   let n = 0;
@@ -238,13 +286,22 @@ function stocksView(value, now) {
 /** The Stocks tab's answer: whether the stocks database is set up, and the latest advice when there is one. */
 async function loadStocks(reader, now) {
   const generatedAt = new Date(now).toISOString();
-  if (!reader) return { configured: false, advice: null, candidates: null, pending: null, generatedAt };
-  const [doc, found] = await Promise.all([reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES)]);
+  if (!reader) return { configured: false, advice: null, candidates: null, analysis: null, pending: null, generatedAt };
+  const [doc, found, analysed] = await Promise.all([
+    reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES), reader.readDocument(CONTAINER, ANALYSIS),
+  ]);
   const advice = doc ? stocksView(doc.value ?? null, now) : null;
   const { newest } = await pendingPortfolio(reader, firstUnseen(advice));
+  const analysis = analysed ? analysisView(analysed.value ?? null) : null;
   return {
-    configured: true, advice, candidates: found ? candidatesView(found.value ?? null) : null, pending: newest, generatedAt,
+    configured: true,
+    advice,
+    candidates: found ? candidatesView(found.value ?? null) : null,
+    // Claude's view of an earlier close than the advice's says nothing about tonight's: the page shows it as behind.
+    analysis: analysis ? { ...analysis, current: !!advice?.asOf && analysis.asOf === advice.asOf } : null,
+    pending: newest,
+    generatedAt,
   };
 }
 
-module.exports = { stocksReader, stocksView, candidatesView, loadStocks, CONTAINER, LATEST, CANDIDATES, STALE_MISSED_CLOSES };
+module.exports = { stocksReader, stocksView, candidatesView, analysisView, loadStocks, CONTAINER, LATEST, CANDIDATES, ANALYSIS, STALE_MISSED_CLOSES };

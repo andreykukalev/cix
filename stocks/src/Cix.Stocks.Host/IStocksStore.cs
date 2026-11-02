@@ -55,6 +55,15 @@ public interface IStocksStore
     /// <summary>Replaces <c>candidates-latest</c>, which the dashboard reads.</summary>
     Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken);
 
+    /// <summary>Adds a close's analysis to the history (<c>analysis-YYYY-MM-DD</c>); one already there is left as it is.</summary>
+    Task AddAnalysisAsync(string id, AnalysisDocument analysis, CancellationToken cancellationToken);
+
+    /// <summary>A close's analysis (<c>analysis-YYYY-MM-DD</c>) or <c>analysis-latest</c>; null when there is none.</summary>
+    Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken);
+
+    /// <summary>Replaces <c>analysis-latest</c>, which the dashboard reads.</summary>
+    Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken);
+
     /// <summary>The owner's real portfolio as the last run left it (ADR-0026); null before the first submission was applied.</summary>
     Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken);
 
@@ -220,6 +229,20 @@ public sealed class InMemoryStocksStore : IStocksStore
     public Task SaveLatestCandidatesAsync(CandidatesDocument candidates, CancellationToken cancellationToken)
     {
         _docs["advice/candidates-latest"] = JsonSerializer.Serialize(candidates, StocksJson.Options);
+        return Task.CompletedTask;
+    }
+
+    public Task AddAnalysisAsync(string id, AnalysisDocument analysis, CancellationToken cancellationToken)
+    {
+        _docs.TryAdd($"advice/{id}", JsonSerializer.Serialize(analysis, StocksJson.Options));
+        return Task.CompletedTask;
+    }
+
+    public Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Read<AnalysisDocument>($"advice/{id}"));
+
+    public Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken)
+    {
+        _docs["advice/analysis-latest"] = JsonSerializer.Serialize(analysis, StocksJson.Options);
         return Task.CompletedTask;
     }
 

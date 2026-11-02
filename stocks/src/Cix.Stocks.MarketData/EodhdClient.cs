@@ -16,7 +16,7 @@ namespace Cix.Stocks.MarketData;
 /// (don't register it with <c>IHttpClientFactory</c>'s default logging).
 /// </para>
 /// </summary>
-public sealed class EodhdClient : IDailyBarSource, IMarketSource
+public sealed class EodhdClient : IDailyBarSource, IMarketSource, INewsSource
 {
     public static readonly Uri DefaultBaseAddress = new("https://eodhd.com/api/");
 
@@ -153,6 +153,47 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource
         return result;
     }
 
+    /// <summary>The most articles one request asks for: the analyst reads a handful per stock.</summary>
+    public const int MaxNews = 20;
+
+    /// <summary>
+    /// The newest articles about a stock (<c>GET /api/news?s={SYMBOL}&amp;from=...&amp;limit=...</c>): 5 calls each, on every plan.
+    /// Rows without a date or a title are dropped; the title is cut at 200 characters and the summary at 300, both cleaned
+    /// like every provider text (<see cref="Clean(string?, int)"/>), and the source is the link's host only.
+    /// </summary>
+    public async Task<IReadOnlyList<NewsItem>> GetNewsAsync(string symbol, DateOnly from, int limit, CancellationToken cancellationToken)
+    {
+        if (!StockSymbol.IsValid(symbol))
+            throw new ArgumentException("The symbol must be TICKER.EXCHANGE, for example AAPL.US.", nameof(symbol));
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, MaxNews);
+        var path = string.Create(CultureInfo.InvariantCulture,
+            $"news?s={Uri.EscapeDataString(symbol)}&from={from:yyyy-MM-dd}&limit={limit}&offset=0&fmt=json&api_token={Uri.EscapeDataString(_apiToken)}");
+        var result = new List<NewsItem>();
+        var count = 0;
+        await foreach (var row in GetJsonRowsAsync<NewsRow>(path, $"the news on {symbol}", cancellationToken).ConfigureAwait(false))
+        {
+            if (++count > MaxNews * 5)
+                throw new StockDataException($"EODHD's answer for the news on {symbol} has far more rows than asked for.");
+            if (result.Count == limit || row is null)
+                continue;
+            if (!DateTimeOffset.TryParse(row.Date, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var published)
+                || Clean(row.Title, 200) is not { } title)
+                continue;
+            var source = Uri.TryCreate(row.Link, UriKind.Absolute, out var link) && link.Scheme is "https" or "http"
+                ? Clean(link.IdnHost.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? link.IdnHost[4..] : link.IdnHost) : null; // punycode: no look-alike letters
+            var polarity = Polarity(row.Sentiment) is { } p && p is >= -1m and <= 1m ? Math.Round(p, 3, MidpointRounding.ToEven) : (decimal?)null;
+            result.Add(new(published.ToUniversalTime(), title, Clean(row.Content, 300), source, polarity));
+        }
+
+        return result;
+    }
+
+    // The sentiment's polarity when it is an object with a number there; any other shape only loses the polarity, not the row.
+    private static decimal? Polarity(JsonElement? sentiment) =>
+        sentiment is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty("polarity", out var p) && p.ValueKind == JsonValueKind.Number
+        && p.TryGetDecimal(out var value) ? value : null;
+
     private static bool IsExchange(string exchange) => exchange is { Length: > 0 and <= 10 } && exchange.All(char.IsAsciiLetterUpper);
 
     private static decimal? Positive(decimal? value) => value is > 0 and < 1e15m ? value : null;
@@ -161,13 +202,15 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource
     /// Provider text without control, format (bidi overrides, zero-width) or line-separator characters, at most 80 UTF-16
     /// units and never cut inside a surrogate pair: it is shown on the page and, later, read by the analyst.
     /// </summary>
-    internal static string? Clean(string? text)
+    internal static string? Clean(string? text, int max = 80)
     {
-        var s = new string((text ?? "").Where(c => char.GetUnicodeCategory(c) is not (
+        // Line breaks, tabs and other whitespace become spaces (an article's text has them); runs of spaces become one.
+        var kept = (text ?? "").Select(c => char.IsWhiteSpace(c) ? ' ' : c).Where(c => char.GetUnicodeCategory(c) is not (
             System.Globalization.UnicodeCategory.Control or System.Globalization.UnicodeCategory.Format
-            or System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator)).ToArray()).Trim();
-        if (s.Length > 80)
-            s = s[..(char.IsHighSurrogate(s[79]) ? 79 : 80)].TrimEnd();
+            or System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator));
+        var s = string.Join(' ', new string(kept.ToArray()).Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        if (s.Length > max)
+            s = s[..(char.IsHighSurrogate(s[max - 1]) ? max - 1 : max)].TrimEnd();
         return s.Length == 0 ? null : s;
     }
 
@@ -263,6 +306,13 @@ public sealed class EodhdClient : IDailyBarSource, IMarketSource
         [property: JsonPropertyName("ema_200d")] decimal? Ema200,
         [property: JsonPropertyName("hi_250d")] decimal? High250,
         [property: JsonPropertyName("avgvol_50d")] decimal? AverageVolume50);
+
+    internal sealed record NewsRow(
+        [property: JsonPropertyName("date")] string? Date,
+        [property: JsonPropertyName("title")] string? Title,
+        [property: JsonPropertyName("content")] string? Content,
+        [property: JsonPropertyName("link")] string? Link,
+        [property: JsonPropertyName("sentiment")] JsonElement? Sentiment);
 
     internal sealed record SymbolRow(
         [property: JsonPropertyName("Code")] string? Code,
