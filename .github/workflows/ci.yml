@@ -174,7 +174,7 @@ jobs:
         run: |
           set -o pipefail
           shellcheck -x -f gcc tools/trader/run-trader.sh tools/trader/run-analyst.sh tools/trader/agent-common.sh \
-            tools/trader/agent-job.sh tools/ci/deploy-agents.sh tools/ci/agents-tip.sh \
+            tools/trader/agent-job.sh tools/ci/deploy-agents.sh tools/ci/agents-tip.sh stocks/analyst/run.sh \
             | sed -E 's/^([^:]+):([0-9]+):[0-9]+: (.*)$/::error file=\1,line=\2::\3/'
 
       - name: Agent job mode (Azure), against a mock engine, queues and identity endpoint
@@ -249,7 +249,7 @@ jobs:
       - name: Bicep builds and lints cleanly
         run: |
           az bicep install
-          for f in infra/main.bicep infra/shared/main.bicep; do
+          for f in infra/main.bicep infra/shared/main.bicep infra/stocks/main.bicep; do
             az bicep build --file "$f" --stdout > /dev/null
             az bicep lint --file "$f"
           done

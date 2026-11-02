@@ -1,7 +1,7 @@
 'use strict';
 // The Stocks tab's read (ADR-0023): the stocks advisor's latest advice, from the stocks host's own Cosmos DB account in its
 // own resource group, never the crypto engines' databases. The host writes one document, `advice-latest` in the `advice`
-// container, after each close (stocks/README.md has its shape); this module checks every field and keeps only what the tab
+// container, after each close (and the Claude analyst `analysis-latest` in `analysis`) (stocks/README.md has its shape); this module checks every field and keeps only what the tab
 // shows, so a malformed document gives gaps, not a broken page. Without the stocks settings the tab says it isn't set up.
 
 const { CosmosReader } = require('./cosmos');
@@ -10,7 +10,8 @@ const { pendingPortfolio, firstUnseen } = require('./portfolio');
 const CONTAINER = 'advice';
 const LATEST = 'advice-latest';
 const CANDIDATES = 'candidates-latest'; // the market-wide search's page (ADR-0025), same container
-const ANALYSIS = 'analysis-latest'; // the Claude analyst's view of the latest close (ADR-0027), same container
+const ANALYSIS = 'analysis-latest'; // the Claude analyst's view of the latest close (ADR-0027), in its own container
+const ANALYSIS_CONTAINER = 'analysis';
 const ANALYSIS_STATUSES = new Set(['done', 'refused', 'not-run']);
 const ANALYST_ACTIONS = new Set(['hold', 'sell-half', 'sell-all', 'add']);
 const MAX_PICKS = 5;
@@ -288,7 +289,7 @@ async function loadStocks(reader, now) {
   const generatedAt = new Date(now).toISOString();
   if (!reader) return { configured: false, advice: null, candidates: null, analysis: null, pending: null, generatedAt };
   const [doc, found, analysed] = await Promise.all([
-    reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES), reader.readDocument(CONTAINER, ANALYSIS),
+    reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES), reader.readDocument(ANALYSIS_CONTAINER, ANALYSIS),
   ]);
   const advice = doc ? stocksView(doc.value ?? null, now) : null;
   const { newest } = await pendingPortfolio(reader, firstUnseen(advice));

@@ -19,6 +19,9 @@ param imageDigest string
 @description('Cron expression, UTC.')
 param schedule string
 
+@description('Whether the run also writes the Claude analyst\'s brief, with the news (ADR-0027): when the analyst job is deployed.')
+param writeBrief bool = false
+
 var names = stocksNames(namePrefix, resourceGroup().id)
 var keyVaultSecretsUser = '4633458b-17de-408a-b874-0445c86b69e6'
 
@@ -89,6 +92,7 @@ resource job 'Microsoft.App/jobs@2025-01-01' = {
             { name: 'STOCKS_COSMOS_ENDPOINT', value: cosmos.properties.documentEndpoint }
             { name: 'STOCKS_COSMOS_DATABASE', value: stocksDatabase }
             { name: 'AZURE_CLIENT_ID', value: jobIdentity.properties.clientId }
+            { name: 'STOCKS_ANALYST_BRIEF', value: writeBrief ? '1' : '0' }
           ]
           // The key as a file, where the host looks for it (/run/secrets/eodhd-api-token).
           volumeMounts: [{ volumeName: 'secrets', mountPath: '/run/secrets' }]

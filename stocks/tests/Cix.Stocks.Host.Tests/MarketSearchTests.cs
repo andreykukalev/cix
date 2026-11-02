@@ -289,6 +289,10 @@ public class MarketSearchTests
 
         public Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken) => inner.SaveLatestAnalysisAsync(analysis, cancellationToken);
 
+        public Task<AnalystBrief?> GetBriefAsync(CancellationToken cancellationToken) => inner.GetBriefAsync(cancellationToken);
+
+        public Task SaveBriefAsync(AnalystBrief brief, CancellationToken cancellationToken) => inner.SaveBriefAsync(brief, cancellationToken);
+
         public Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken) => inner.GetOwnerStateAsync(cancellationToken);
 
         public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);

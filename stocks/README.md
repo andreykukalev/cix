@@ -41,7 +41,7 @@ A symbol's currency comes from its exchange (`US` is USD, `XETRA`, `PA`, `AS` an
 4. The previous close's advice is carried out in the paper portfolio at the next session's open (sells, then stops, then buys), and the stops are checked on every session since, including a held symbol's sessions whose bars came a night late.
 5. The advisor runs on the latest close, sized on the portfolio's equity, within the owner's caps: `maxSharePrice` (dearer shares are noted `too-expensive`) and `maxThemeFraction` per watchlist theme (`theme-limit`; a holding the same advice sells still counts that night). A close already advised is never carried out twice.
 
-The run writes to its own database (`cix-stocks`, containers `advice`, `state`, `trades`, `bars`, all with partition key `/id`; it only reads `requests`): the trades and the dated advice (`advice-YYYY-MM-DD`) once each, never changed; the paper portfolio with an ETag, so of two overlapping runs only one saves; then `advice-latest`, which a later run republishes from the dated advice if a failure left it behind. The page shows money to the cent; the portfolio keeps every digit. The EODHD key is read from `/run/secrets/eodhd-api-token` (Key Vault) and is never logged.
+The run writes to its own database (`cix-stocks`, containers `advice`, `state`, `trades`, `bars`, and `analysis` for the Claude analyst, all with partition key `/id`; it only reads `requests`): the trades and the dated advice (`advice-YYYY-MM-DD`) once each, never changed; the paper portfolio with an ETag, so of two overlapping runs only one saves; then `advice-latest`, which a later run republishes from the dated advice if a failure left it behind. The page shows money to the cent; the portfolio keeps every digit. The EODHD key is read from `/run/secrets/eodhd-api-token` (Key Vault) and is never logged.
 
 ### The owner's real portfolio
 
@@ -63,11 +63,13 @@ After the advice, the same run searches the whole US market for candidates (ADR-
 
 ### Claude analyst
 
-After the run, the analyst job (ADR-0027) asks Claude what it makes of the night's advice, using the host for everything that touches the database or EODHD:
+When the analyst job is deployed (`STOCKS_ANALYST_BRIEF=1`), the nightly run ends by writing the brief for Claude (ADR-0027); the analyst job then asks Claude what it makes of the night's advice, using the host for everything that touches the database:
 
-1. `--brief <file>` writes the brief: the owner's holdings (the paper portfolio's before he sends his) with the rules' action on each, the rules' buys, the search's candidates of the same close, and EODHD news (5 items of the last 7 days) on up to 30 of those stocks (`newsMissing`: failed; `newsSkipped`: past the 30). Sizes are fractions of the capital (`weight`, `cashWeight`), never amounts: the brief sits beside untrusted news in a session that can search the web. Exit 3: nothing to analyse (no advice, or its close is already analysed).
+1. The nightly run saves the brief as `brief-latest` in the `analysis` container, also when the search failed (a brief it couldn't write leaves the advice as it is): the owner's holdings (the paper portfolio's before he sends his) with the rules' action on each, the rules' buys, the search's candidates of the same close, and EODHD news (5 items of the last 7 days) on up to 30 of those stocks (`newsMissing`: failed; `newsSkipped`: past the 30, or not fetched in time: news stops a minute after the search's deadline). Sizes are fractions of the capital (`weight`, `cashWeight`), never amounts: the brief sits beside untrusted news in a session that can search the web. Nothing new to analyse (no advice, or its close is already analysed): no brief. The analyst job's `--brief <file>` copies `brief-latest` to the file when it's for the latest advice and not yet analysed, and exits 3 otherwise.
 2. Claude reads it and answers with one JSON object: `{ market, marketRu, holdings: [{ symbol, action: hold | sell-half | sell-all | add, reason, reasonRu, earnings }], picks: [{ symbol, rank, reason, reasonRu, earnings }], skips: [{ symbol, reason, reasonRu, earnings }] }`.
-3. `--accept <brief> <answer>` checks the answer against the brief (`AnalystAnswer.Check`: a malformed line is dropped and counted; an answer that isn't the object is `refused` as `unreadable`, and one with no line for the holdings, or none at all, as `empty`) and saves it; `--not-run <brief> <reason>` saves that Claude didn't run (`usage-limit`, `credentials`, `timeout`, `failed`). Both need only `STOCKS_COSMOS_ENDPOINT` and `AZURE_CLIENT_ID`, not the EODHD key. A done analysis is kept as `analysis-YYYY-MM-DD` once and as `analysis-latest`; a failed run never replaces a done one of the same close, and a brief for a close after the latest advice is refused.
+3. `--accept <brief> <answer>` checks the answer against the brief (`AnalystAnswer.Check`: a malformed line is dropped and counted; an answer that isn't the object is `refused` as `unreadable`, and one with no line for the holdings, or none at all, as `empty`) and saves it; `--not-run <brief> <reason>` saves that Claude didn't run (`usage-limit`, `credentials`, `timeout`, `failed`). These three need only `STOCKS_COSMOS_ENDPOINT` and `AZURE_CLIENT_ID`, never the EODHD key. A done analysis is kept as `analysis-YYYY-MM-DD` once and as `analysis-latest`, in the `analysis` container; a failed run never replaces a done one of the same close, and a brief for a close after the latest advice is refused.
+
+In Azure this is the analyst job (`caj-cix-stocks-analyst`, `stocks/analyst/run.sh`), with its own identity: it reads the Claude token and no other secret, reads the `advice` container and writes its own `analysis` container alone, so it can't change the advice. `run.sh` takes the brief (`--brief`), runs Claude Code with the owner's Claude token (the host processes never get it): web search, and page fetches from listed sites only, no shell, files or MCP servers; then `--accept` or `--not-run`. `instructions.md` is Claude's brief on the brief. `provision-stocks.ps1` stores the token and deploys it (see `docs/azure.md`, "Stocks advisory").
 
 Claude's view never changes an amount or a stop: it can only advise less risk.
 
@@ -111,7 +113,7 @@ The route also reads `candidates-latest` (null until the first search):
 }
 ```
 
-And `analysis-latest` (null until the analyst's first run):
+And `analysis-latest` in the `analysis` container (null until the analyst's first run):
 
 ```json
 {

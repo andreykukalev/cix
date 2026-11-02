@@ -49,7 +49,7 @@ public sealed record PickView(string Symbol, int Rank, string Reason, DateOnly? 
 public sealed record SkipView(string Symbol, string Reason, DateOnly? Earnings, string? ReasonRu = null);
 
 /// <summary>
-/// The analyst's verdict on one close (<c>analysis-latest</c> in the advice container; stocks/README.md has the contract),
+/// The analyst's verdict on one close (<c>analysis-latest</c> in the analysis container; stocks/README.md has the contract),
 /// checked against the brief: only stocks the brief named, only the actions it allows, text cleaned and cut. The amounts and
 /// stops stay the rule advisor's: the analyst can only advise less risk (skip, sell sooner), never a bigger position.
 /// </summary>
@@ -95,10 +95,25 @@ public sealed class AnalystBriefing(IStocksStore store, INewsSource news, TimePr
     public const int NewsDays = 7;
 
     /// <summary>
-    /// The brief for the latest advice, or null when there is no advice, or the analyst already answered for its close (a
-    /// second scheduled run that night has nothing to do). A stock whose news can't be fetched is listed as missing.
+    /// The stored brief (<c>brief-latest</c>, written by the nightly run) when it is for the latest advice and that close
+    /// isn't analysed yet; null otherwise: an older brief says nothing about tonight's advice.
     /// </summary>
-    public async Task<AnalystBrief?> BuildAsync(CancellationToken cancellationToken)
+    public static async Task<AnalystBrief?> ToAnalyseAsync(IStocksStore store, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        if (await store.GetBriefAsync(cancellationToken).ConfigureAwait(false) is not { } brief
+            || await store.GetAdviceAsync("advice-latest", cancellationToken).ConfigureAwait(false) is not { } advice || brief.AsOf != advice.AsOf)
+            return null;
+        var done = await store.GetAnalysisAsync("analysis-latest", cancellationToken).ConfigureAwait(false);
+        return done is { Status: AnalysisDocument.Done } && done.AsOf >= brief.AsOf ? null : brief;
+    }
+
+    /// <summary>
+    /// The brief for the latest advice, or null when there is no advice, or the analyst already answered for its close (a
+    /// second scheduled run that night has nothing to do). A stock whose news can't be fetched is listed as missing; from
+    /// <paramref name="newsUntil"/> on, no more news is fetched and the rest are listed as skipped.
+    /// </summary>
+    public async Task<AnalystBrief?> BuildAsync(CancellationToken cancellationToken, DateTimeOffset? newsUntil = null)
     {
         var advice = await store.GetAdviceAsync("advice-latest", cancellationToken).ConfigureAwait(false);
         if (advice is null)
@@ -131,8 +146,12 @@ public sealed class AnalystBriefing(IStocksStore store, INewsSource news, TimePr
             .Distinct(StringComparer.Ordinal).ToList();
         var articles = new Dictionary<string, IReadOnlyList<NewsItem>>(StringComparer.Ordinal);
         var missing = new List<string>();
+        var asked = 0;
         foreach (var symbol in symbols.Take(MaxNewsSymbols))
         {
+            if (newsUntil is { } until && time.GetUtcNow() >= until)
+                break;
+            asked++;
             try
             {
                 articles[symbol] = await news.GetNewsAsync(symbol, advice.AsOf.AddDays(-NewsDays), NewsPerSymbol, cancellationToken).ConfigureAwait(false);
@@ -145,7 +164,28 @@ public sealed class AnalystBriefing(IStocksStore store, INewsSource news, TimePr
 
         return new AnalystBrief(
             advice.AsOf, time.GetUtcNow(), advice.Regime, advice.Benchmark, owner is not null, Part(owner?.Cash ?? advice.Cash),
-            holdings, buys, found, articles, missing, symbols.Skip(MaxNewsSymbols).ToList());
+            holdings, buys, found, articles, missing, symbols.Skip(asked).ToList());
+    }
+
+    /// <summary>
+    /// The nightly run's last step when the analyst is deployed: builds the brief for the advice just written and saves it as
+    /// <c>brief-latest</c>, fetching news until <paramref name="until"/> (inside the job's timeout; each request is bounded by
+    /// the client's own timeout). Never fails the run: what happened comes back as a line for the log, and the advice stands.
+    /// </summary>
+    public async Task<string> WriteAsync(DateTimeOffset until, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (await BuildAsync(cancellationToken, until).ConfigureAwait(false) is not { } brief)
+                return "Analyst brief: nothing new to analyse.";
+            await store.SaveBriefAsync(brief, cancellationToken).ConfigureAwait(false);
+            return $"Analyst brief for {brief.AsOf:yyyy-MM-dd}: {brief.Holdings.Count} holdings, {brief.Buys.Count} buys, " +
+                   $"{brief.Candidates.Count} candidates, news on {brief.News.Count} ({brief.NewsMissing.Count} failed, {brief.NewsSkipped.Count} not fetched).";
+        }
+        catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            return $"Analyst brief failed (the advice stands): {e.GetType().Name}: {e.Message}";
+        }
     }
 }
 

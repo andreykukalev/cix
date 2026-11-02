@@ -73,7 +73,7 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
   assert.deepEqual(reads, [
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'advice-latest' },
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'candidates-latest' },
-    { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'analysis-latest' },
+    { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'analysis', id: 'analysis-latest' },
     // The owner's portfolio submissions waiting for the next run: none.
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'requests', id: 'portfolio-1' },
   ]);

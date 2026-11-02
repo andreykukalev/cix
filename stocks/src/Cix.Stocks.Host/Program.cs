@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Cix.Stocks;
@@ -11,10 +12,12 @@ using Cix.Stocks.MarketData;
 //   database       STOCKS_COSMOS_ENDPOINT, STOCKS_COSMOS_DATABASE (default cix-stocks), AZURE_CLIENT_ID (managed identity)
 // After the advice, the market-wide search (ADR-0025) runs when config/stocks.json turns it on: its failure fails the run,
 // but the advice is saved by then.
+// With STOCKS_ANALYST_BRIEF=1 (the analyst job is deployed), the run then writes the Claude analyst's brief with the news
+// (brief-latest, ADR-0027), even when the search failed; its failure is logged and leaves the advice as it is.
 // `--dry-run` keeps everything in memory and prints the advice instead: it still spends EODHD calls.
-// The stocks analyst job (ADR-0027) runs the same image with one of:
-//   --brief <file>                 writes the brief for the latest advice (news included) to the file; exit 3 when the
-//                                  analyst already answered for that close, or there is no advice yet
+// The stocks analyst job (ADR-0027) runs the same image without the EODHD key, with one of:
+//   --brief <file>                 writes brief-latest to the file when it is for the latest advice and not yet analysed;
+//                                  exit 3 otherwise
 //   --accept <brief> <answer>      checks Claude's answer against the brief and saves the analysis
 //   --not-run <brief> <reason>     saves that Claude didn't run for the brief's close (usage-limit, credentials, timeout,
 //                                  failed); a done analysis for that close is never replaced
@@ -51,7 +54,7 @@ internal static class StocksHost
             return 2;
         }
 
-        if (args is ["--accept", _, _] or ["--not-run", _, _])
+        if (analyst)
             return await AnalysisAsync(args, cancel.Token);
 
         StocksConfig config;
@@ -114,23 +117,22 @@ internal static class StocksHost
             }
 
             using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
-            if (args is ["--brief", var briefFile])
+            Print(await new DailyRun(config, source, store, TimeProvider.System).RunAsync(cancel.Token));
+            // A failed search still leaves the advice, so the analyst still gets its brief (without candidates); then the run fails.
+            ExceptionDispatchInfo? searchFailed = null;
+            try
             {
-                var brief = await new AnalystBriefing(store, source, TimeProvider.System).BuildAsync(cancel.Token);
-                if (brief is null)
-                {
-                    Console.WriteLine("Analyst: nothing to analyse (no advice yet, or this close was analysed).");
-                    return 3;
-                }
-
-                await File.WriteAllTextAsync(briefFile, JsonSerializer.Serialize(brief, StocksJson.Options), cancel.Token);
-                Console.WriteLine($"Analyst brief for {brief.AsOf:yyyy-MM-dd}: {brief.Holdings.Count} holdings, {brief.Buys.Count} buys, " +
-                                  $"{brief.Candidates.Count} candidates, news on {brief.News.Count} ({brief.NewsMissing.Count} failed, {brief.NewsSkipped.Count} past the cap).");
-                return 0;
+                Print(await new MarketSearch(config, market, source, store, TimeProvider.System, deadline).RunAsync(cancel.Token));
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                searchFailed = ExceptionDispatchInfo.Capture(e);
             }
 
-            Print(await new DailyRun(config, source, store, TimeProvider.System).RunAsync(cancel.Token));
-            Print(await new MarketSearch(config, market, source, store, TimeProvider.System, deadline).RunAsync(cancel.Token));
+            // The brief stops fetching news a minute after the search's deadline, two before the job's timeout.
+            if (Env("STOCKS_ANALYST_BRIEF") == "1")
+                Console.WriteLine(await new AnalystBriefing(store, source, TimeProvider.System).WriteAsync(deadline.AddMinutes(1), cancel.Token));
+            searchFailed?.Throw();
             return 0;
         }
         catch (OperationCanceledException) when (cancel.IsCancellationRequested)
@@ -155,11 +157,15 @@ internal static class StocksHost
             : $"Market search: {c.Status}, {c.Candidates.Count} candidates from {c.Shortlisted} shortlisted of {c.Listed} listed.");
 
     /// <summary>
-    /// Saves the analyst's answer (or that Claude didn't run) for the brief's close. Needs the database only, not the EODHD
-    /// key. A done analysis is never replaced by a later not-run for the same close.
+    /// The analyst job's steps: writes the brief to analyse to a file, or saves the analyst's answer (or that Claude didn't
+    /// run) for the brief's close. Needs the database only, never the EODHD key. A done analysis is never replaced by a later
+    /// not-run for the same close.
     /// </summary>
     private static async Task<int> AnalysisAsync(string[] args, CancellationToken cancellationToken)
     {
+        if (args is ["--brief", var briefFile])
+            return await BriefFileAsync(briefFile, cancellationToken);
+
         AnalystBrief brief;
         try
         {
@@ -231,6 +237,34 @@ internal static class StocksHost
         Console.WriteLine($"Analyst: {analysis.Status}{(analysis.Reason is { } r ? $" ({r})" : "")} for {analysis.AsOf:yyyy-MM-dd}: " +
                           $"{analysis.Holdings.Count} holdings, {analysis.Picks.Count} picks, {analysis.Skips.Count} skips, {analysis.Dropped} dropped.");
         return analysis.Status == AnalysisDocument.Done ? 0 : 1;
+    }
+
+    private static async Task<int> BriefFileAsync(string file, CancellationToken cancellationToken)
+    {
+        if (Env("STOCKS_COSMOS_ENDPOINT") is not { } endpoint || !Uri.TryCreate(endpoint, UriKind.Absolute, out var endpointUri) || Env("AZURE_CLIENT_ID") is not { } clientId)
+        {
+            Console.Error.WriteLine("Configuration: STOCKS_COSMOS_ENDPOINT and AZURE_CLIENT_ID must be set.");
+            return 2;
+        }
+
+        try
+        {
+            using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
+            if (await AnalystBriefing.ToAnalyseAsync(store, cancellationToken) is not { } brief)
+            {
+                Console.WriteLine("Analyst: nothing to analyse (no brief for the latest advice, or that close was analysed).");
+                return 3;
+            }
+
+            await File.WriteAllTextAsync(file, JsonSerializer.Serialize(brief, StocksJson.Options), cancellationToken);
+            Console.WriteLine($"Analyst: the brief for {brief.AsOf:yyyy-MM-dd}: {brief.Holdings.Count} holdings, {brief.Buys.Count} buys, {brief.Candidates.Count} candidates.");
+            return 0;
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"Analyst: reading the brief failed: {e.GetType().Name}: {e.Message}");
+            return 1;
+        }
     }
 
     private static string? Env(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } v ? v : null;

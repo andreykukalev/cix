@@ -64,6 +64,12 @@ public interface IStocksStore
     /// <summary>Replaces <c>analysis-latest</c>, which the dashboard reads.</summary>
     Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken);
 
+    /// <summary>The Claude analyst's brief the nightly run wrote last (<c>brief-latest</c>), or null (ADR-0027).</summary>
+    Task<AnalystBrief?> GetBriefAsync(CancellationToken cancellationToken);
+
+    /// <summary>Writes <c>brief-latest</c>, which the analyst job reads without the EODHD key.</summary>
+    Task SaveBriefAsync(AnalystBrief brief, CancellationToken cancellationToken);
+
     /// <summary>The owner's real portfolio as the last run left it (ADR-0026); null before the first submission was applied.</summary>
     Task<Versioned<OwnerState>?> GetOwnerStateAsync(CancellationToken cancellationToken);
 
@@ -234,15 +240,23 @@ public sealed class InMemoryStocksStore : IStocksStore
 
     public Task AddAnalysisAsync(string id, AnalysisDocument analysis, CancellationToken cancellationToken)
     {
-        _docs.TryAdd($"advice/{id}", JsonSerializer.Serialize(analysis, StocksJson.Options));
+        _docs.TryAdd($"analysis/{id}", JsonSerializer.Serialize(analysis, StocksJson.Options));
         return Task.CompletedTask;
     }
 
-    public Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Read<AnalysisDocument>($"advice/{id}"));
+    public Task<AnalysisDocument?> GetAnalysisAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Read<AnalysisDocument>($"analysis/{id}"));
+
+    public Task<AnalystBrief?> GetBriefAsync(CancellationToken cancellationToken) => Task.FromResult(Read<AnalystBrief>("analysis/brief-latest"));
+
+    public Task SaveBriefAsync(AnalystBrief brief, CancellationToken cancellationToken)
+    {
+        _docs["analysis/brief-latest"] = JsonSerializer.Serialize(brief, StocksJson.Options);
+        return Task.CompletedTask;
+    }
 
     public Task SaveLatestAnalysisAsync(AnalysisDocument analysis, CancellationToken cancellationToken)
     {
-        _docs["advice/analysis-latest"] = JsonSerializer.Serialize(analysis, StocksJson.Options);
+        _docs["analysis/analysis-latest"] = JsonSerializer.Serialize(analysis, StocksJson.Options);
         return Task.CompletedTask;
     }
 

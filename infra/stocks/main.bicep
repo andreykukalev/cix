@@ -4,7 +4,8 @@
 //     submissions (ADR-0026);
 //   - its own Key Vault (the EODHD key, set by the owner, never by a template), identity, logs and Container Apps
 //     environment;
-//   - the nightly job (stocks/src/Cix.Stocks.Host), once an image is given.
+//   - the nightly job (stocks/src/Cix.Stocks.Host), once an image is given;
+//   - the Claude analyst's job (ADR-0027), once an image is given and the owner's Claude token is in the vault.
 // The image lives in the dev CIX registry, which the job's identity may only pull from (the owner chose to reuse it rather
 // than pay for another). Nothing here touches the crypto engines, their databases or their apps. The job never trades: the
 // owner carries the advice out by hand.
@@ -33,6 +34,18 @@ param imageDigest string = ''
 
 @description('When the job runs, as a cron expression in UTC: after each US session\'s data is ready (stocks.json\'s dataReadyUtc).')
 param schedule string = '0 2 * * 2-6'
+
+@description('When the Claude analyst runs, as a cron expression in UTC: after the nightly run (twice, so a night the usage limit stopped is tried again before the US open; a close already analysed is skipped).')
+param analystSchedule string = '40 2,6 * * 2-6'
+
+@description('Whether to deploy the Claude analyst\'s job: provision-stocks.ps1 sets it once claude-token is in the vault.')
+param analystEnabled bool = false
+
+@description('The Claude model the analyst uses.')
+param analystModel string = 'opus'
+
+@description('When the Claude setup token expires (YYYY-MM-DD). Empty: not checked.')
+param claudeTokenExpires string = ''
 
 @description('Your Entra object ID (provision-stocks.ps1 passes your sign-in\'s), given Key Vault Secrets Officer to set the EODHD key. Empty: no grant.')
 param ownerObjectId string = ''
@@ -88,6 +101,16 @@ module registryPull 'modules/stocks-registry-pull.bicep' = {
   }
 }
 
+// The Claude analyst's own identity may pull too.
+module analystRegistryPull 'modules/stocks-registry-pull.bicep' = {
+  name: 'cix-stocks-analyst-registry-pull'
+  scope: resourceGroup(registryResourceGroupName)
+  params: {
+    registryName: registryName
+    principalId: platform.outputs.analystPrincipalId
+  }
+}
+
 module job 'modules/stocks-job.bicep' = if (!empty(imageDigest)) {
   name: 'cix-stocks-job'
   scope: group
@@ -98,6 +121,22 @@ module job 'modules/stocks-job.bicep' = if (!empty(imageDigest)) {
     registryServer: registryPull.outputs.registryServer
     imageDigest: imageDigest
     schedule: schedule
+    writeBrief: analystEnabled
+  }
+}
+
+module analystJob 'modules/stocks-analyst-job.bicep' = if (!empty(imageDigest) && analystEnabled) {
+  name: 'cix-stocks-analyst-job'
+  scope: group
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: allTags
+    registryServer: analystRegistryPull.outputs.registryServer
+    imageDigest: imageDigest
+    schedule: analystSchedule
+    model: analystModel
+    claudeTokenExpires: claudeTokenExpires
   }
 }
 
@@ -107,3 +146,4 @@ output databaseName string = platform.outputs.databaseName
 output keyVaultName string = platform.outputs.keyVaultName
 output registryName string = registryPull.outputs.registryName
 output jobName string = !empty(imageDigest) ? job!.outputs.jobName : ''
+output analystJobName string = !empty(imageDigest) && analystEnabled ? analystJob!.outputs.jobName : ''
