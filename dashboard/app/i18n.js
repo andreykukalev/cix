@@ -1003,6 +1003,12 @@
     'A change you sent was refused: {reason}. Check the portfolio and the trades, and send it again, corrected.':
       'Отправленное изменение не принято: {reason}. Проверьте портфель и сделки и отправьте его снова, исправив.',
     // The owner's trades at Revolut, recorded from the page
+    'Next update': 'Следующее обновление',
+    'in {time}': 'через {time}',
+    '{h} h {m} min': '{h} ч {m} мин',
+    'New advice and portfolio: {when}': 'Новые советы и портфель: {when}',
+    "Claude's view: about 40 min later": 'Мнение Claude: примерно на 40 мин позже',
+    "Claude's check before the open: {when}": 'Проверка Claude перед открытием: {when}',
     'I bought': 'Купил',
     'I sold': 'Продал',
     'My trades': 'Мои сделки',
