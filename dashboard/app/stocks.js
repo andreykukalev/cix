@@ -296,6 +296,61 @@ function nextStocksRun(now = new Date()) {
   return d;
 }
 
+/** New York's offset from UTC in hours at a moment, by the US rule (as Cix.Stocks.Host.AnalystPass.NewYork). */
+function newYorkOffset(at) {
+  const y = at.getUTCFullYear();
+  const sunday = (month, nth) => {
+    const d = new Date(Date.UTC(y, month, 1));
+    return Date.UTC(y, month, 1 + ((7 - d.getUTCDay()) % 7) + 7 * (nth - 1));
+  };
+  const start = sunday(2, 2) + 7 * 3_600_000; // 02:00 EST on the second Sunday of March
+  const end = sunday(10, 1) + 6 * 3_600_000; // 02:00 EDT on the first Sunday of November
+  return at.getTime() >= start && at.getTime() < end ? -4 : -5;
+}
+
+/**
+ * When Claude's next check before the US open runs: the analyst's 12:40 or 13:40 UTC slot (infra/stocks/main.bicep's
+ * analystSchedule) that falls on a weekday from 08:35 to 09:30 New York time, which is 08:40 there in summer and winter.
+ */
+function nextPreOpen(now = new Date()) {
+  for (let day = 0; day < 8; day += 1) {
+    for (const hour of [12, 13]) {
+      const at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + day, hour, 40));
+      if (at <= now) continue;
+      const ny = new Date(at.getTime() + newYorkOffset(at) * 3_600_000);
+      const minutes = ny.getUTCHours() * 60 + ny.getUTCMinutes();
+      if (ny.getUTCDay() >= 1 && ny.getUTCDay() <= 5 && minutes >= 8 * 60 + 35 && minutes < 9 * 60 + 30) return at;
+    }
+  }
+  return null;
+}
+
+/** How long until a moment: "45 min", "5 h 20 min", "2 d 14 h". */
+function until(d, now = new Date()) {
+  const minutes = Math.max(1, Math.ceil((d - now) / 60_000));
+  if (minutes < 60) return t('{n} min', { n: minutes });
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h >= 24) return h % 24 ? t('{d} d {h} h', { d: Math.floor(h / 24), h: h % 24 }) : t('{n} d', { n: h / 24 });
+  return m ? t('{h} h {m} min', { h, m }) : t('{n} h', { n: h });
+}
+
+/**
+ * The next updates of the Stocks page: the nightly run, which writes the new advice and applies the portfolio and the
+ * trades sent, then Claude's view of it about 40 minutes later, and Claude's check before the open.
+ */
+function renderNextRuns() {
+  if (!stocks.answer?.configured || stocks.error) { tile('tile-stocks-next', '', '–', '–'); return; }
+  const now = new Date();
+  const night = nextStocksRun(now);
+  const preOpen = nextPreOpen(now);
+  tile('tile-stocks-next', '', t('in {time}', { time: until(night, now) }), [
+    el('span', { class: 'line', text: t('New advice and portfolio: {when}', { when: runTime(night) }) }),
+    el('span', { class: 'line', text: t("Claude's view: about 40 min later") }),
+    preOpen ? el('span', { class: 'line', text: t("Claude's check before the open: {when}", { when: runTime(preOpen) }) }) : null,
+  ]);
+}
+
 /** A run's start in the owner's own time: "Tue, 3 Nov, 03:00". */
 function runTime(d) {
   return d.toLocaleString(I.locale(), { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -453,6 +508,7 @@ function renderStocks() {
       a ? [t('allocation {amount}', { amount: money(a.capital, a.baseCurrency) }), ' · ', t('cash {amount}', { amount: money(a.cash, a.baseCurrency) }), requested] : '–');
   }
 
+  renderNextRuns();
   renderAnalysis(a);
   renderOwner(a);
 
