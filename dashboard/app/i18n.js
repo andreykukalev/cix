@@ -198,6 +198,7 @@
     Safe: 'Безопасная',
     Balanced: 'Сбалансированная',
     Risky: 'Рискованная',
+    Swing: 'Свинг',
     Custom: 'Своя',
     Manual: 'Ручной',
     'Risk profile: {profile}': 'Профиль риска: {profile}',
@@ -706,6 +707,10 @@
       'Берёт больше таких же возможностей: фильтр издержек и вход на глубоких откатах, как у Safe и Balanced, но на большем числе монет (нужен меньший объём, допускаются более волатильные), с самыми крупными ордерами, двумя покупками за запуск и наибольшей долей средств в монетах.',
     'Highest of the three, still inside every mandatory limit. Orders up to 20 EUR, about 1 EUR at risk each, at most 25 EUR in one coin, up to 60% of the allocation in coins, an hour between buys and a 5 EUR daily loss stop. In the backtest it traded about three times a week, roughly broke even after costs and had the largest swings. Higher risk does not mean higher returns.':
       'Самый высокий из трёх, но в пределах всех обязательных ограничений. Ордера до 20 EUR, около 1 EUR риска на сделку, не больше 25 EUR в одной монете, до 60% средств в монетах, час между покупками и дневной стоп по убытку 5 EUR. В бэктесте торговал примерно трижды в неделю, после издержек остался около нуля и колебался сильнее остальных. Больший риск не означает большего дохода.',
+    'A daily swing strategy (ADR-0028): buys a coin whose daily close breaks above its 20-day high in a daily uptrend while BTC is above its 100-day EMA, and holds it for weeks behind a trailing stop. It trades a few times a month instead of chasing hourly moves that don\'t cover the costs.':
+      'Дневная свинг-стратегия (ADR-0028): покупает монету, когда её дневное закрытие пробивает максимум за 20 дней в дневном восходящем тренде и пока BTC выше своей 100-дневной EMA, и держит её неделями за подтягивающимся стопом. Торгует несколько раз в месяц, а не гонится за часовыми движениями, которые не окупают издержки.',
+    'Moderate. About 4 EUR at risk per trade (3 daily ATRs to the stop), at most 50 EUR per coin and 40% of the allocation in coins, a 20 EUR daily loss stop. Backtest 2024 to 11.2026 on 1000 EUR: +5.6% a year, worst drawdown 8%, about 3 trades a month, 45% winners. Losses are limited by stops, not prevented; months without trades are normal when BTC is weak.':
+      'Умеренный. Около 4 EUR риска на сделку (3 дневных ATR до стопа), не больше 50 EUR в одной монете и 40% средств в монетах, дневной стоп по убытку 20 EUR. Бэктест 2024 – 11.2026 на 1000 EUR: +5,6% в год, худшая просадка 8%, около 3 сделок в месяц, 45% прибыльных. Стопы ограничивают убытки, но не исключают их; месяцы без сделок нормальны, когда BTC слаб.',
     'Trend indicators': 'Индикаторы тренда',
     'Entry conditions': 'Условия входа',
     'Position size': 'Размер позиции',
@@ -718,17 +723,29 @@
     'New trades only': 'Только новые сделки',
     'New trades and open positions': 'Новые сделки и открытые позиции',
     'Fast EMA period': 'Период быстрой EMA',
-    'The shorter exponential moving average of hourly closing prices, in hours. A smaller number reacts sooner to price changes, and also to noise.':
-      'Более короткая экспоненциальная скользящая средняя часовых цен закрытия, в часах. Меньшее значение быстрее реагирует на изменения цены, но и на шум тоже.',
+    'The shorter exponential moving average of closing prices, in candles of the strategy\'s timeframe (hours, or days for a daily strategy). A smaller number reacts sooner to price changes, and also to noise. Hourly strategies allow up to 54.':
+      'Более короткая экспоненциальная скользящая средняя цен закрытия, в свечах таймфрейма стратегии (часах, а у дневной стратегии в днях). Меньшее значение быстрее реагирует на изменения цены, но и на шум тоже. Часовые стратегии допускают до 54.',
     'Slow EMA period': 'Период медленной EMA',
-    'The longer moving average. The trend is up when the fast EMA is above the slow one and down when it is below. This decides which coins can be bought and, with trend exits on, when held coins are sold.':
-      'Более длинная скользящая средняя. Тренд восходящий, когда быстрая EMA выше медленной, и нисходящий, когда ниже. От этого зависит, какие монеты можно купить, а при включённом выходе по тренду — когда продавать купленные.',
+    'The longer moving average. The trend is up when the fast EMA is above the slow one and down when it is below. This decides which coins can be bought and, with trend exits on, when held coins are sold (a daily strategy sells when a daily close falls below it). Hourly strategies allow up to 55.':
+      'Более длинная скользящая средняя. Тренд восходящий, когда быстрая EMA выше медленной, и нисходящий, когда ниже. От этого зависит, какие монеты можно купить, а при включённом выходе по тренду — когда продавать купленные (дневная стратегия продаёт, когда дневное закрытие опускается ниже неё). Часовые стратегии допускают до 55.',
+    'BTC trend filter':
+      'Фильтр тренда BTC',
+    'Daily strategies: new buys only while BTC\'s last daily close is above its EMA of this many days, as most coins fall when BTC does. BTC must be on the watched list. 0 turns the filter off.':
+      'Дневные стратегии: новые покупки только пока последнее дневное закрытие BTC выше его EMA за столько дней, ведь при падении BTC падает большинство монет. BTC должен быть в списке наблюдения. 0 выключает фильтр.',
     'Buy only pullbacks in an uptrend': 'Покупать только откаты в восходящем тренде',
     'When on, a coin is bought only in an uptrend, close to its fast EMA, and after an hour that didn\'t fall. When off, any coin that passes the filters can be bought, which is for testing orders rather than for trading well.':
       'Если включено, монета покупается только в восходящем тренде, рядом с быстрой EMA и после часа без падения. Если выключено, можно купить любую монету, прошедшую фильтры: это для проверки ордеров, а не для хорошей торговли.',
     'Furthest above the fast EMA': 'Максимум выше быстрой EMA',
-    'How far above the fast EMA the price may be at entry, in ATRs. Lower waits for a deeper pullback, so fewer but less stretched entries.':
-      'Насколько цена при входе может быть выше быстрой EMA, в ATR. Меньшее значение ждёт более глубокого отката: входов меньше, но они менее перегреты.',
+    'Hourly strategies: how far above the fast EMA the price may be at entry, in ATRs. Lower waits for a deeper pullback, so fewer but less stretched entries.':
+      'Часовые стратегии: насколько цена при входе может быть выше быстрой EMA, в ATR. Меньшее значение ждёт более глубокого отката: входов меньше, но они менее перегреты.',
+    'Breakout window':
+      'Окно пробоя',
+    'Daily strategies: a coin is bought when a daily close rises above the highest price of this many days before it. A longer window waits for a bigger breakout, so fewer entries. The same window measures momentum for the ranking.':
+      'Дневные стратегии: монета покупается, когда дневное закрытие поднимается выше максимальной цены за столько предыдущих дней. Более длинное окно ждёт более сильного пробоя, поэтому входов меньше. Это же окно измеряет импульс для рейтинга.',
+    'Furthest above the breakout close':
+      'Максимум выше закрытия пробоя',
+    'Daily strategies: how far the price may have run above the breakout\'s daily close before the buy, in daily ATRs, so a late buy doesn\'t chase.':
+      'Дневные стратегии: насколько цена может уйти выше дневного закрытия пробоя до покупки, в дневных ATR, чтобы поздняя покупка не гналась за ценой.',
     'The most one buy may spend. The scanner sizes each buy as the smaller of this and the size whose loss at the stop equals the risk per trade, so most orders are smaller. The engine reduces a larger buy to this.':
       'Сколько максимум может потратить одна покупка. Сканер берёт меньшее из этой суммы и объёма, при котором убыток на стопе равен риску на сделку, поэтому большинство ордеров меньше. Движок уменьшает более крупную покупку до этой суммы.',
     'Risk per trade': 'Риск на сделку',
@@ -738,8 +755,12 @@
     'How far below the entry the stop-loss sits, in ATRs. The engine sells by itself when the bid reaches it. Wider stops are hit less often but lose more when they are.':
       'Насколько ниже входа стоит стоп-лосс, в ATR. Движок сам продаёт, когда цена покупателя доходит до него. Широкие стопы срабатывают реже, но теряют больше.',
     'Take-profit distance': 'Расстояние до тейк-профита',
-    'The take-profit, as a multiple of the stop distance (reward to risk). 2 means the target is twice as far above the entry as the stop is below it. A further target is reached less often.':
-      'Тейк-профит как кратное расстояния до стопа (прибыль к риску). 2 означает, что цель вдвое дальше выше входа, чем стоп ниже. Более далёкая цель достигается реже.',
+    'The take-profit, as a multiple of the stop distance (reward to risk). 2 means the target is twice as far above the entry as the stop is below it. A further target is reached less often. 0 sets no take-profit: the position leaves at its stop or on the trend exit.':
+      'Тейк-профит как кратное расстояния до стопа (прибыль к риску). 2 означает, что цель вдвое дальше выше входа, чем стоп ниже. Более далёкая цель достигается реже. 0 — без тейк-профита: позиция закрывается по стопу или по выходу по тренду.',
+    'Trailing stop':
+      'Подтягивающийся стоп',
+    'Daily strategies: the engine raises a held coin\'s stop to the highest daily close since the buy less this many daily ATRs, and never lowers it, so a rise locks in part of the gain. 0 keeps the stop where the buy set it. This applies to coins already held, from the next scan.':
+      'Дневные стратегии: движок поднимает стоп купленной монеты до максимального дневного закрытия после покупки минус столько дневных ATR и никогда его не опускает, так что рост закрепляет часть прибыли. 0 оставляет стоп там, где его поставила покупка. Применяется и к уже купленным монетам со следующего сканирования.',
     'The most the strategy holds in a single coin, counting buys still working. A buy that would go over is reduced or refused.':
       'Сколько максимум стратегия держит в одной монете, с учётом покупок в работе. Покупка сверх этого уменьшается или отклоняется.',
     'Most of the allocation in coins': 'Максимальная доля средств в монетах',
@@ -760,26 +781,28 @@
     'When on, a held coin is sold once its trend turns down, even before its stop. When off, positions leave only at their stop or target. This applies to coins already held, from the next scan.':
       'Если включено, монета продаётся, как только её тренд разворачивается вниз, даже раньше стопа. Если выключено, позиции закрываются только по стопу или цели. Применяется и к уже купленным монетам со следующего сканирования.',
     'Least 24h volume': 'Минимальный объём за 24 ч',
-    'A coin must have traded at least this much in the last 24 hours, so orders fill near the quoted price.':
-      'Объём торгов монетой за последние 24 часа должен быть не меньше этого, чтобы ордера исполнялись близко к котировке.',
+    'A coin must have traded at least this much in the last 24 hours (daily strategies: on average over the last 7 days), so orders fill near the quoted price.':
+      'Объём торгов монетой за последние 24 часа (у дневных стратегий — в среднем за последние 7 дней) должен быть не меньше этого, чтобы ордера исполнялись близко к котировке.',
     'Widest spread': 'Максимальный спред',
     'The largest gap between the best buy and sell prices, as a share of the price. Wider spreads cost more on every trade.':
       'Наибольший разрыв между лучшими ценами покупки и продажи, как доля цены. Широкий спред обходится дороже в каждой сделке.',
     'Most volatile': 'Максимальная волатильность',
-    'Coins whose hourly ATR is above this share of the price are skipped as too wild for the stop sizes used.':
-      'Монеты, у которых часовой ATR выше этой доли цены, пропускаются как слишком резкие для используемых стопов.',
+    'Coins whose ATR (hourly, or daily for a daily strategy) is above this share of the price are skipped as too wild for the stop sizes used.':
+      'Монеты, у которых ATR (часовой, а у дневной стратегии дневной) выше этой доли цены, пропускаются как слишком резкие для используемых стопов.',
     'Least volatility for the costs': 'Минимальная волатильность относительно издержек',
-    'A coin\'s hourly ATR must be at least this multiple of a round trip\'s fees, spread and slippage, so a normal move can pay for the trade.':
-      'Часовой ATR монеты должен быть не меньше этого кратного комиссий, спреда и проскальзывания на круг, чтобы обычное движение окупало сделку.',
+    'A coin\'s ATR (hourly, or daily for a daily strategy) must be at least this multiple of a round trip\'s fees, spread and slippage, so a normal move can pay for the trade.':
+      'ATR монеты (часовой, а у дневной стратегии дневной) должен быть не меньше этого кратного комиссий, спреда и проскальзывания на круг, чтобы обычное движение окупало сделку.',
     'Least trading hours': 'Минимум часов торгов',
-    'Hourly candles needed in the last 24 hours to judge a coin at all.': 'Сколько часовых свечей за последние 24 часа нужно, чтобы вообще оценивать монету.',
+    'Hourly strategies: hourly candles needed in the last 24 hours to judge a coin at all.':
+      'Часовые стратегии: сколько часовых свечей за последние 24 часа нужно, чтобы вообще оценивать монету.',
     'Fee rate': 'Ставка комиссии',
     'The exchange fee per side the scanner assumes when it weighs costs. It doesn\'t change what the exchange charges.':
       'Комиссия биржи за сторону, которую сканер учитывает при оценке издержек. На то, что берёт биржа, не влияет.',
     'Slippage allowance': 'Запас на проскальзывание',
     'How much worse than the quote a fill is assumed to be, per side.': 'Насколько исполнение предполагается хуже котировки, на каждую сторону.',
     'Momentum weight': 'Вес импульса',
-    'How much the last 24 hours\' move counts when coins are ranked.': 'Насколько движение за последние 24 часа влияет на рейтинг монет.',
+    'How much the last 24 hours\' move counts when coins are ranked (daily strategies: the move over the breakout window).':
+      'Насколько движение за последние 24 часа (у дневных стратегий — за окно пробоя) влияет на рейтинг монет.',
     'Trend weight': 'Вес тренда',
     'How much the trend direction counts in the ranking.': 'Насколько направление тренда влияет на рейтинг.',
     'Volume weight': 'Вес объёма',

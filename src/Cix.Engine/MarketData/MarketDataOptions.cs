@@ -36,6 +36,16 @@ public sealed class MarketDataOptions
     /// <summary>How often to fetch new 1-hour candles.</summary>
     public TimeSpan HourCandleInterval { get; set; } = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// How often to look for a new daily candle per coin, or null to skip them. Daily strategies (ADR-0028) trade on them; a
+    /// new one appears once a day, so the default 20 minutes costs 2.5 requests a minute for 50 coins, and a new day's candle
+    /// is in within about 20 minutes of the exchange's midnight.
+    /// </summary>
+    public TimeSpan? DayCandleInterval { get; set; } = TimeSpan.FromMinutes(20);
+
+    /// <summary>History loaded on first start for daily candles: enough for a 200-day EMA, which the daily strategies cap at.</summary>
+    public TimeSpan DayLookback { get; set; } = TimeSpan.FromDays(330);
+
     /// <summary>History loaded on first start for 1-minute candles.</summary>
     public TimeSpan MinuteLookback { get; set; } = TimeSpan.FromHours(6);
 
@@ -54,9 +64,10 @@ public sealed class MarketDataOptions
     /// <summary>The tickers interval that applies: the signed one in live, the public one in paper.</summary>
     public TimeSpan? TickerIntervalFor(bool signedQuotes) => signedQuotes ? TickerInterval : PublicTickerInterval;
 
-    /// <summary>Candle requests a minute for <paramref name="symbolCount"/> coins (hourly, plus 1-minute when on): always public.</summary>
+    /// <summary>Candle requests a minute for <paramref name="symbolCount"/> coins (hourly, plus 1-minute and daily when on): always public.</summary>
     public decimal CandleRequestsPerMinute(int symbolCount) =>
-        symbolCount * ((MinuteCandleInterval is { } minute ? PerMinute(minute) : 0m) + PerMinute(HourCandleInterval));
+        symbolCount * ((MinuteCandleInterval is { } minute ? PerMinute(minute) : 0m) + PerMinute(HourCandleInterval)
+            + (DayCandleInterval is { } day ? PerMinute(day) : 0m));
 
     /// <summary>
     /// Planned public requests a minute for <paramref name="symbolCount"/> watched coins of which <paramref name="books"/>
@@ -97,8 +108,10 @@ public sealed class MarketDataOptions
     /// </summary>
     public void Validate(int symbolCount, bool signedQuotes = false)
     {
-        if (QuoteInterval <= TimeSpan.Zero || MinuteCandleInterval <= TimeSpan.Zero || HourCandleInterval <= TimeSpan.Zero)
+        if (QuoteInterval <= TimeSpan.Zero || MinuteCandleInterval <= TimeSpan.Zero || HourCandleInterval <= TimeSpan.Zero || DayCandleInterval <= TimeSpan.Zero)
             throw new InvalidOperationException("MarketData intervals must be positive.");
+        if (DayLookback < TimeSpan.FromDays(30) || DayLookback > TimeSpan.FromDays(1000))
+            throw new InvalidOperationException("MarketData:DayLookback must be between 30 and 1000 days.");
         if (TickerInterval is { } tickers && (tickers < TimeSpan.FromSeconds(1) || tickers > TimeSpan.FromMinutes(1)))
             throw new InvalidOperationException("MarketData:TickerInterval must be between 1 second and 1 minute (or null to turn tickers off).");
         if (PublicTickerInterval is { } publicTickers && (publicTickers < TimeSpan.FromSeconds(1) || publicTickers > TimeSpan.FromMinutes(1)))

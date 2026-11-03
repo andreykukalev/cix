@@ -192,6 +192,17 @@ public sealed record EngineState(
         return symbol is null ? this : WithoutPlans([symbol]);
     }
 
+    /// <summary>
+    /// Raises an open position's stop to <paramref name="stop"/> (a trailing stop, ADR-0028). Only upward, only for a plan
+    /// whose buy filled and that has a stop: a pending entry, a lower level or a position without a stop is left as it is.
+    /// </summary>
+    public EngineState WithStopRaised(string symbol, decimal stop)
+    {
+        if (stop <= 0 || !Plans.TryGetValue(symbol, out var plan) || plan.Status != PositionPlanState.Open || plan.StopLoss is not { } current || stop <= current)
+            return this;
+        return this with { Positions = WithPlan(symbol, plan with { StopLoss = stop }) };
+    }
+
     public EngineState WithoutPlans(IReadOnlyCollection<string> symbols)
     {
         ArgumentNullException.ThrowIfNull(symbols);

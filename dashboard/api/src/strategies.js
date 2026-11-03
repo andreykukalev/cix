@@ -12,7 +12,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const NAME = /^[a-z0-9-]{1,40}$/;
 const MODES = new Set(['paper', 'live']);
 const REQUEST_TYPE = 'strategy-selection';
-const FEATURED = ['safe', 'balanced', 'risky'];
+// The strategies the tab offers: only the daily swing strategy since 2026-11-03 (ADR-0028), as the hourly presets showed no
+// edge after costs. The switch itself stays as it was; add a name here to offer it again.
+const FEATURED = ['swing'];
 const GROUPS = {
   trend: 'Trend indicators',
   entry: 'Entry conditions',
@@ -151,8 +153,8 @@ function order(a, b) {
 }
 
 /**
- * The versions the tab offers, the same in both modes (ADR-0022): the newest version of each strategy the owner marked live,
- * so paper and live list the same presets and can run different ones side by side, plus the one running, whatever it is.
+ * The versions the tab offers, the same in both modes (ADR-0022): the newest version the owner marked live of each strategy
+ * in FEATURED (ADR-0028), plus the one running, whatever it is.
  * Older and paper-only versions stay in the database and the journal, unlisted. The engine checks every switch again: live
  * takes only the spec files marked live, and both modes refuse a version that says live but has no file the owner marked live.
  */
@@ -161,7 +163,7 @@ function offered(versions, active) {
     .filter((v) => v && typeof v === 'object' && NAME.test(String(v.name ?? '')) && Number.isInteger(Number(v.version)));
   const newest = new Map();
   for (const v of valid) {
-    if (String(v.status ?? '').toLowerCase() !== 'live') continue;
+    if (String(v.status ?? '').toLowerCase() !== 'live' || !FEATURED.includes(v.name)) continue;
     const seen = newest.get(v.name);
     if (!seen || Number(v.version) > Number(seen.version)) newest.set(v.name, v);
   }

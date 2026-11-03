@@ -242,6 +242,8 @@ public sealed partial class MarketScanService(
                 throw new InvalidOperationException($"{spec.Label}: parameters.scanner must be an object.");
             if (scanner.EnumerateObject().Any(p => string.Equals(p.Name, "orderQuote", StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException($"{spec.Label}: set orderQuote once, at the top of parameters, not inside scanner.");
+            if (scanner.EnumerateObject().Any(p => string.Equals(p.Name, "timeframe", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"{spec.Label}: set timeframe once, at the top of parameters, not inside scanner.");
             try
             {
                 result = scanner.Deserialize<ScannerParameters>(SpecJson)
@@ -251,6 +253,14 @@ public sealed partial class MarketScanService(
             {
                 throw new InvalidOperationException($"{spec.Label}: parameters.scanner is not valid ({ex.Message}).", ex);
             }
+        }
+
+        // The spec's timeframe decides the candles the scanner reads: hourly unless it says 1d (ADR-0028).
+        if (spec.Parameters.TryGetValue("timeframe", out var timeframe))
+        {
+            if (timeframe.ValueKind != JsonValueKind.String)
+                throw new InvalidOperationException($"{spec.Label}: parameters.timeframe must be text.");
+            result = result with { Timeframe = timeframe.GetString()! };
         }
 
         // One orderQuote per spec: the scanner's size cap and the order-size hook read the same number.
@@ -329,10 +339,11 @@ public sealed partial class MarketScanService(
             var allowed = universe.IsTradable(symbol);
             PairInfo? pair = allowed ? await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false) : null;
             var hourly = allowed ? candles.Recent(symbol, MarketDataPoller.HourInterval, FeatureService.HourlyCandlesNeeded) : Array.Empty<Candle>();
-            inputs.Add(new ScanInput(symbol, features.GetFeatures(symbol), hourly, pair, allowed, withOpenOrder.Contains(symbol)));
+            var daily = allowed ? candles.Recent(symbol, MarketDataPoller.DayInterval, FeatureService.DailyCandlesNeeded) : Array.Empty<Candle>();
+            inputs.Add(new ScanInput(symbol, features.GetFeatures(symbol), hourly, pair, allowed, withOpenOrder.Contains(symbol), daily));
         }
 
-        var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit)).ToList();
+        var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit, p.FilledAt)).ToList();
         var result = MarketScanner.Scan(inputs, held, parameters, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: EntriesPausedReason(spec, now));
         return (result, Preview(spec, inputs, held, now), held.Select(h => h.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
     }
@@ -570,6 +581,59 @@ public sealed partial class MarketScanService(
     [LoggerMessage(Level = LogLevel.Warning, Message = "No trim to {Strategy}: {Reason}")]
     private static partial void LogTrimSkipped(ILogger logger, string strategy, string reason);
 
+    /// <summary>The journal kind of a trailing-stop raise.</summary>
+    public const string StopRaisedKind = "stop-raised";
+
+    /// <summary>
+    /// Raises the stops of held positions to their trailing level (<see cref="ScanResult.StopRaises"/>, ADR-0028) in the
+    /// position plans, which <see cref="ProtectionService"/> arms from: a stop only ever goes up. Each raise is journaled. Not
+    /// an order: a stop raised to or above the bid is sold by the protection like any stop it sees crossed. Returns the raises
+    /// made; one that can't be saved is logged and tried again at the next scan.
+    /// </summary>
+    public async Task<int> RaiseStopsAsync(ScanResult scan, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(scan);
+        var raised = 0;
+        foreach (var raise in scan.StopRaises ?? [])
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            decimal? from;
+            try
+            {
+                from = execution.RaiseStop(raise.Symbol, raise.To);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                LogStopRaiseFailed(logger, raise.Symbol, ex.Message);
+                continue;
+            }
+
+            if (from is null)
+                continue; // the plan moved on since the scan (sold, or a higher stop already)
+            raised++;
+            var at = time.GetUtcNow();
+            var data = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["symbol"] = raise.Symbol,
+                ["from"] = from.Value.ToString(CultureInfo.InvariantCulture),
+                ["to"] = raise.To.ToString(CultureInfo.InvariantCulture),
+                ["reason"] = raise.Detail,
+            };
+            await AppendSafelyAsync(new JournalEntry(
+                JournalIds.New(at, StopRaisedKind), at, StopRaisedKind, "engine", null, specs.Active?.Label,
+                Inv($"stop raised {raise.Symbol} {from} → {raise.To}: {raise.Detail}"), data)).ConfigureAwait(false);
+            LogStopRaised(logger, raise.Symbol, from.Value, raise.To);
+        }
+
+        return raised;
+    }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Stop raised for {Symbol}: {From} to {To}")]
+    private static partial void LogStopRaised(ILogger logger, string symbol, decimal from, decimal to);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Stop raise for {Symbol} not saved ({Detail}); tried again at the next scan")]
+    private static partial void LogStopRaiseFailed(ILogger logger, string symbol, string detail);
+
     /// <summary>Cancels this engine's protective sells that have rested unfilled too long; the next scan sells again at the bid.</summary>
     public async Task<int> CancelStaleProtectiveExitsAsync(CancellationToken cancellationToken)
     {
@@ -641,8 +705,10 @@ public sealed partial class MarketScanService(
         foreach (var e in result.Entries)
         {
             current[$"buy:{e.Symbol}"] = (
-                Inv($"buy {e.Symbol} #{e.Rank}: {e.BaseSize} at {e.LimitPrice}, stop {e.StopLoss}, target {e.TakeProfit} ({e.Reason})"),
-                Data(e.Symbol, "buy", "entry", e.LimitPrice, e.BaseSize, ("stopLoss", e.StopLoss), ("takeProfit", e.TakeProfit), ("riskQuote", e.RiskQuote), ("rank", e.Rank)));
+                Inv($"buy {e.Symbol} #{e.Rank}: {e.BaseSize} at {e.LimitPrice}, stop {e.StopLoss}, {(e.TakeProfit is { } t ? Inv($"target {t}") : "no target")} ({e.Reason})"),
+                e.TakeProfit is { } target
+                    ? Data(e.Symbol, "buy", "entry", e.LimitPrice, e.BaseSize, ("stopLoss", e.StopLoss), ("takeProfit", target), ("riskQuote", e.RiskQuote), ("rank", e.Rank))
+                    : Data(e.Symbol, "buy", "entry", e.LimitPrice, e.BaseSize, ("stopLoss", e.StopLoss), ("riskQuote", e.RiskQuote), ("rank", e.Rank)));
         }
 
         foreach (var x in result.Exits)
@@ -796,6 +862,7 @@ public sealed partial class MarketScanBackgroundService(
             var result = await scanner.ScanAsync(cancellationToken).ConfigureAwait(false);
             LogScanned(logger, result.Ranked.Count, result.Excluded.Count, result.Entries.Count, result.Exits.Count, Describe(result));
             await scanner.ApplyProtectiveExitsAsync(result, cancellationToken).ConfigureAwait(false);
+            await scanner.RaiseStopsAsync(result, cancellationToken).ConfigureAwait(false);
             if (_trimPending && await scanner.TrimToStrategyAsync(result, cancellationToken).ConfigureAwait(false) is not null)
                 _trimPending = false;
             return true;
@@ -836,7 +903,9 @@ public sealed partial class MarketScanBackgroundService(
             $"#{r.Rank} {r.Symbol} {r.Score:0.##} ({r.NoEntryReason ?? "signal"})"));
         var excluded = result.Excluded.Select(e => $"{e.Symbol} {e.Reason}");
         var exits = result.Exits.Select(x => $"{x.Symbol} {x.Reason}");
-        return $"ranked [{string.Join("; ", ranked)}] excluded [{string.Join("; ", excluded)}] exits [{string.Join("; ", exits)}]";
+        var raises = (result.StopRaises ?? []).Select(r => string.Create(CultureInfo.InvariantCulture, $"{r.Symbol} {r.From}→{r.To}"));
+        return $"ranked [{string.Join("; ", ranked)}] excluded [{string.Join("; ", excluded)}] exits [{string.Join("; ", exits)}]"
+            + (result.StopRaises is { Count: > 0 } ? $" stop raises [{string.Join("; ", raises)}]" : string.Empty);
     }
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Scan: {Ranked} ranked, {Excluded} excluded, {Entries} entry and {Exits} exit signals: {Detail}")]
