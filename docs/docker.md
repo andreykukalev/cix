@@ -25,7 +25,7 @@ cosmos  (emulator, data in a Docker volume)  ◄── engine (paper exchange, r
    - It creates `secrets\operator_key` (random) and `secrets\claude_token` (you paste the token; nothing is shown).
    - It writes the token's expiry date to `.env`.
    - All three files are git-ignored. The two secret files are readable only by you; `.env` holds no secret.
-5. Choose what can be traded on the dashboard's Coins tab once the engine runs. `config\risk-limits.json`, which only you edit, sets the quote currency and the most coins at once; it lists no pairs (see paper-trading.md).
+5. Choose what can be traded once the engine runs (a `tradable-pair` request written by hand, since the dashboard shows only the live engine: ADR-0028). `config\risk-limits.json`, which only you edit, sets the quote currency and the most coins at once; it lists no pairs (see paper-trading.md).
 
 ## Start and stop
 

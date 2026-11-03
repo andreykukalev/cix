@@ -108,7 +108,9 @@ The deployment is safe to run again. It brings the resources back to what the te
 
 ## Engine and agents in Azure
 
-Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agents.deploy` in the environment file chooses how much of it exists:
+> **No paper engine since 2026-11-03 (ADR-0028).** Only the protected environment, `prod`, runs an engine and its jobs ([live-trading.md](live-trading.md)). `dev` keeps `agents.deploy` `platform` with `startEngine` false: its registry is where the stocks image is built (infra/stocks), and its other platform pieces cost next to nothing with no app running. The paper engine and its jobs are deleted by hand: see [Removing the paper engine](#removing-the-paper-engine). What follows describes both levels as the templates still offer them; `apps` is what `prod` runs.
+
+`agents.deploy` in the environment file chooses how much of it exists:
 
 - **`platform`** (`infra/modules/agents-platform.bicep`). This adds the pieces the engine and the jobs run on, in `agents.location`:
   - a Log Analytics workspace, capped at 0.1 GB a day;
@@ -121,7 +123,7 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
   - the budget, with alerts to your sign-in's address, or to `-BudgetEmail` (a personal Microsoft account usually has no address in the tenant that gets mail, so pass it).
 
   Apart from the registry, nothing here costs anything until something runs. The names are fixed per resource group, and a deleted Key Vault is kept for 7 days: provisioning again within a week of deleting the group fails until you purge it (`az keyvault purge --name <vault>`). You get Key Vault Secrets Officer on the vault, so you can set `claude-token` yourself. `provision.ps1` grants it to your own sign-in by object ID, never to whoever runs the deployment, so a CI identity can't pick it up.
-- **`apps`** (`infra/modules/agents-apps.bicep`). This adds the paper engine (internal ingress only, at most one replica, stopped while `startEngine` is false) and the jobs `trader`, `requests` and `analyst`. Each job is started by a message on its own queue and runs one at a time. Before deploying, `provision.ps1` makes these checks and changes, in this order, asking before each change:
+- **`apps`** (`infra/modules/agents-apps.bicep`). This adds the engine (internal ingress only, at most one replica, stopped while `startEngine` is false) and the jobs `trader`, `requests` and `analyst`. Each job is started by a message on its own queue and runs one at a time. Before deploying, `provision.ps1` makes these checks and changes, in this order, asking before each change:
   - checks that Container Apps is offered in `agents.location`, and that Bicep is 0.32 or later;
   - finds both images in the registry and their digests: with `-ImageTag <commit SHA>` (needed the first time) the images CI tagged with it, and without it the images the engine and the trader job run now. The apps get them by digest, so pushing a tag again can't change what runs. Apps deployed before digests run a tag, which the first run without `-ImageTag` resolves to whatever it points to then;
   - uploads `secrets/claude_token` to Key Vault as `claude-token` if it isn't there yet, straight from the file without showing it. Pass `-UploadClaudeToken` after renewing it;
@@ -135,34 +137,34 @@ Planned in [the hosting memo](research/azure-hosting.md) and not yet live. `agen
 
 ### Deploying the engine and the agents from CI
 
-Once its deploy identity is set up (below), CI deploys after a push to `main` that changes what goes into the images, or on a manual run of *CI* on `main`, once the .NET tests, the container checks and the secret scan pass (or already passed in the pull request) and you approve the run for paper (below). What goes into the images is what `tools/ci/plan.sh` says: `src/`, `config/`, `strategies/`, `docker/`, `tools/trader/`, `.claude/agents/`, `.claude/hooks/`, `.claude/settings.json`, the solution and build files, the Compose files, and also any change to CI itself or to a file it doesn't classify. Each deployment restarts the paper engine on a new revision (the lease carries its state over).
+Since ADR-0028 CI deploys to the live engine alone, in the job `deploy-live` ([live-trading.md](live-trading.md#deploys-from-main), ADR-0019): after a push to `main` that changes what goes into the images, or on a manual run of *CI* on `main`, once the .NET tests, the container checks and the secret scan pass (or already passed in the pull request) and you approve the run in the GitHub environment `prod`. What goes into the images is what `tools/ci/plan.sh` says: `src/`, `config/`, `strategies/`, `docker/`, `tools/trader/`, `.claude/agents/`, `.claude/hooks/`, `.claude/settings.json`, the solution and build files, the Compose files, and also any change to CI itself or to a file it doesn't classify. Each deployment restarts the live engine on a new revision (the lease carries its state over). There is no paper deploy before it any more: try an image in Docker Compose first if in doubt.
 
 1. `agents-images` builds `cix-engine` and `cix-trader` in a job with no Azure access, and hands them on as an artifact, with their hashes as job outputs.
-2. `deploy-agents` signs in as `cix-agents-deploy-<environment>`, checks the hashes, and runs `tools/ci/deploy-agents.sh`:
+2. `live-changes` lists, on the run's page, what the run would change on live. `deploy-live` waits for your approval, signs in as `cix-agents-deploy-prod`, checks the hashes, and runs `tools/ci/deploy-agents.sh`:
    - it pushes both images to the environment's registry, tagged with the commit SHA, and takes their digests from the push: the apps run the images by digest, never by a tag that could be pushed again;
    - with `agents.deploy` at `platform` it stops there: run `provision.ps1 -ImageTag <that SHA>` with `apps` to create the engine and the jobs from them;
-   - with `apps`, it points the engine at its new image and, while the engine runs a replica (`startEngine` true), stops the old revision and waits up to 12 minutes for the new one to be healthy (its startup and readiness probes passed). Container Apps would keep the old revision running until the new one is ready, but the new engine gets ready only once it holds the engine lease, which the old one gives up only when it stops; so the paper engine is down for the new one's startup, usually under a minute. Then it points the three jobs at the new agent image. It sends only the containers, with their images changed, through the management API, and waits for Azure to apply each change;
+   - with `apps`, it points the engine at its new image and, while the engine runs a replica (`startEngine` true), stops the old revision and waits up to 12 minutes for the new one to be healthy (its startup and readiness probes passed). Container Apps would keep the old revision running until the new one is ready, but the new engine gets ready only once it holds the engine lease, which the old one gives up only when it stops; so the engine is down for the new one's startup, usually under a minute. Then it points the three jobs at the new agent image. It sends only the containers, with their images changed, through the management API, and waits for Azure to apply each change;
    - if anything fails after the engine changed, it puts the engine and the jobs back on the images they ran before (stopping the failed revision) and fails the run. A run cancelled halfway does the same in its last step. If even that fails, the run says so: check the engine's revisions and the jobs in the portal, or run `provision.ps1` again;
    - an engine you stopped (its latest revision deactivated, or stopped with `az containerapp stop`) is left alone, with a warning, and nothing is deployed. Run *CI* by hand once it runs again.
 
-**Paper deploys wait for your approval** (ADR-0024). Between the images and `deploy-agents`, the job `approve-paper` waits in the GitHub environment `paper` until you approve the run, then checks that approval (`tools/ci/live-approved.sh`); a rejection, someone else's approval or an environment without its rules fails it, and nothing deploys. Set it up once in the repository's *Settings*, *Environments*: create `paper`, add yourself as the only required reviewer (allow approving runs you started), and allow only the branch `main`. Reject a run you won't approve: a waiting one holds the job's group. The repository variable `PAPER_APPROVAL=off` turns the gate off. Live then needs its own approval as before.
+The paper gate of ADR-0024 (`approve-paper`, the GitHub environment `paper`, `PAPER_APPROVAL`) went with the paper engine.
 
-A run that is no longer the tip of `main` still deploys when the newer commits changed nothing that goes into the images or CI; otherwise the newer run deploys. Runs deploy one at a time. Nothing deploys while `agents.deploy` is `none` or `AGENTS_AZURE_CLIENT_ID` isn't set. CI never deploys infrastructure, settings or roles: those stay with `provision.ps1`. The protected (live) environment gets the same images only after you approve the run, in a job of its own, `deploy-live`, with an identity of its own ([live-trading.md](live-trading.md#deploys-from-main), ADR-0019). The image artifact is kept for a day, so re-running only the deploy job later than that fails; run the whole workflow instead.
+A run that is no longer the tip of `main` still deploys when the newer commits changed nothing that goes into the images or CI; otherwise the newer run deploys. Runs deploy one at a time. Nothing builds or deploys while `LIVE_AZURE_CLIENT_ID` isn't set or `prod`'s `agents.deploy` is `none`. CI never deploys infrastructure, settings or roles: those stay with `provision.ps1`. The image artifact is kept for a day, so re-running only the deploy job later than that fails; run the whole workflow instead.
 
-**Set it up** once `provision.ps1` has deployed `agents.deploy` `platform` (needs Owner on the subscription), and again after it has deployed `apps`:
+**Set it up** for `prod` (live-trading.md, "Deploys from main"), once `provision.ps1` has deployed `agents.deploy` `platform` (needs Owner on the subscription), and again after it has deployed `apps`:
 
 ```powershell
-.\tools\azure\setup-ci-deploy.ps1 -For agents -Environment dev -SubscriptionId <id>
+.\tools\azure\setup-ci-deploy.ps1 -For agents -Environment prod -SubscriptionId <id> -SetGitHubVariables
 ```
 
 It works like the dashboard's setup above, with its own identity and role:
 - `AcrPush` on the environment's registry, and a custom role, `CIX agents deployer (<environment>)`: read and update Container Apps and jobs, stop an app's revision, and read the registry. Run the script again to add a right a newer version needs (stopping revisions came with the first engine deploy, #80): it adds it to the role in place. Azure can take a few minutes to apply a changed role, so wait that long before merging. It is assigned on the registry and, once `apps` exists, on the engine and the three jobs, never on the resource group. So it can't create apps, jobs or any other resource, nor role assignments, nor move an app to another identity or environment, and it can't read Key Vault, storage or the database itself;
-- it prints `AGENTS_AZURE_CLIENT_ID`, `AGENTS_REGISTRY` and `AGENTS_ENVIRONMENT` (with `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`, the same as the dashboard's). Add them as repository variables, or pass `-SetGitHubVariables`.
+- for `prod` it sets the `LIVE_*` variables and the environment's rules. For another environment it prints `AGENTS_AZURE_CLIENT_ID`, `AGENTS_REGISTRY` and `AGENTS_ENVIRONMENT`, which CI no longer reads (ADR-0028).
 
 Optionally set the repository variable `CLAUDE_CODE_VERSION` to pin the Claude Code version in the agent image (otherwise each build takes the latest).
 
-**What the identity could still do**, if a workflow on `main` misused it. `main` has no branch protection here, so this trusts everyone who can push to `main`, merge into it or start a workflow on it, including the Claude coding agents (see the dashboard's paragraph above).
-- Stop the paper engine by deactivating its revisions (it could already, by running a broken image). CI then takes it as stopped by hand and deploys nothing until it runs again.
+**What a deploy identity trusted by `main` could do** (the paper deploy's, before ADR-0028; the live one trusts only approved jobs in `prod`), if a workflow on `main` misused it. `main` has no branch protection here, so this trusts everyone who can push to `main`, merge into it or start a workflow on it, including the Claude coding agents (see the dashboard's paragraph above).
+- Stop the engine by deactivating its revisions (it could already, by running a broken image). CI then takes it as stopped by hand and deploys nothing until it runs again.
 - Run any image as the engine or a job, with their settings changed, since Azure has no right that allows changing only the image. That image runs with the engine's or the job's managed identity, so it can do whatever they can:
   - use the engine's Cosmos DB roles: read CIX's database, add journal entries (forged ones too), and overwrite any document in `state` and `requests`: the kill switch and halts, the paper account, the lease, the archived strategy specs, and your requests. It can't delete anything, change or remove a journal entry, or reach other projects' databases in the shared account;
   - read `claude-token`, through a job's identity, and use the subscription it belongs to;
@@ -177,7 +179,26 @@ If you suspect misuse:
 3. Renew `claude-token` (`claude setup-token`, then `provision.ps1 -UploadClaudeToken`).
 4. Check the images the engine and the jobs run (by digest) against the registry, and the engine's revisions.
 
-**To stop the engine in an emergency,** deactivate its revision (portal: the engine app, *Revisions*, *Deactivate*). CI then leaves it stopped. Remove `AGENTS_AZURE_CLIENT_ID` too if you don't want any image pushed meanwhile.
+**To stop the engine in an emergency,** deactivate its revision (portal: the engine app, *Revisions*, *Deactivate*). CI then leaves it stopped. Reject waiting `prod` runs meanwhile. See also live-trading.md, "Stopping live trading".
+
+### Removing the paper engine
+
+Once, after the change of ADR-0028 is on `main` (it can't be undone: the engine's state in Azure and its revisions go; its database and journal stay). From your own terminal, signed in with `az login`:
+
+```powershell
+$g = 'rg-cix-dev'
+foreach ($job in 'caj-cix-dev-trader', 'caj-cix-dev-requests', 'caj-cix-dev-analyst') { az resource delete -g $g -n $job --resource-type Microsoft.App/jobs }
+az resource delete -g $g -n ca-cix-dev-engine --resource-type Microsoft.App/containerApps
+az resource list -g $g --query "[].{name:name, type:type}" -o table   # left: the dashboard, the registry and the platform
+.\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig     # the platform as dev.json now says (startEngine false)
+```
+
+Recommended: delete CI's old paper deploy identity. It still trusts any workflow on `main` (no approval) and can push to dev's registry, where the stocks image is built (the stocks job pins its image by digest, so the reach is small, but nothing uses the identity any more): `az ad app list --display-name cix-agents-deploy-dev --query "[].appId" -o tsv`, then `az ad app delete --id <appId>`, which removes its trust; its role assignments are left naming an unknown identity, harmless, and can be removed from the registry's *Access control*.
+
+Optional tidying, none of it costs anything if left:
+- GitHub, *Settings*: delete the environment `paper`, and the variables `AGENTS_AZURE_CLIENT_ID`, `AGENTS_REGISTRY`, `AGENTS_ENVIRONMENT` and `PAPER_APPROVAL` (agents never touch these, CLAUDE.md rule 8).
+- Entra: the app registration `cix-engine-dev` (the paper engine's audience), the same way.
+- The paper database `cix` stays: it is free in the shared account, `provision.ps1` deploys it for `dev`, and the dashboard's writer holds a role on it.
 
 The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode or `Production`, or names the exchange outside the two key files. Those are mounted in a protected environment's engine only, which then stands by in paper until the owner switches it from their own sign-in ([live-trading.md](live-trading.md), ADR-0017). CI deploys only new images there, after the owner approves each run, and the engine keeps the settings it was switched to (ADR-0019).
 
@@ -210,7 +231,7 @@ This installs the API's one dependency, `@azure/functions` (pinned, with install
 After this first publish, CI publishes the dashboard by itself after a push to `main` that changes it (`dashboard/` or `infra/`), once the dashboard tests and the secret scan pass (or already passed in the pull request). You can also start it by hand: *Actions*, *CI*, *Run workflow* on `main`. A run that is no longer the tip of `main` still publishes when nothing in `dashboard/`, `infra/` or `.github/workflows/` changed since (the newer push didn't publish); otherwise it leaves publishing to the newer one. Until the setup below is done, pushes skip publishing with a notice, and a manual run fails, so a manual run really checks the setup.
 
 **No secret is stored in GitHub** ([ADR-0010](adr/0010-dashboard-ci-deploy-oidc.md)). This matters because the repository is private on GitHub Free, which has no environment secrets limited to a branch: a repository secret would be readable by workflows on any branch.
-- The `deploy-dashboard` job signs in to Azure as a dedicated identity, `cix-dashboard-deploy-dev`, through a GitHub OIDC token. The identity trusts any workflow run on the `main` ref of this repository, whatever the trigger. Pull requests, other branches and forks get different token subjects and can't use it. A test keeps `id-token` in that job and `deploy-agents` (once each) and allows only the `push`, `pull_request` and `workflow_dispatch` triggers, as a guard against accidental changes (not a security control: whoever can change `main` can change the test).
+- The `deploy-dashboard` job signs in to Azure as a dedicated identity, `cix-dashboard-deploy-dev`, through a GitHub OIDC token. The identity trusts any workflow run on the `main` ref of this repository, whatever the trigger. Pull requests, other branches and forks get different token subjects and can't use it. A test keeps `id-token` in that job and `deploy-live` (once each) and allows only the `push`, `pull_request` and `workflow_dispatch` triggers, as a guard against accidental changes (not a security control: whoever can change `main` can change the test).
 - The identity's only right is to read this Static Web App and its deployment token. The job reads the token at run time, signs out of Azure, and publishes with it.
 - npm install scripts run in a separate job with no Azure access. The deploy job checks the bundle's hash before unpacking it. The pinned Static Web Apps CLI itself still runs with the deployment token (it has to). The job signs out of Azure first, but that is hygiene, not a boundary: what limits the damage is that the identity can't do more than read that same token.
 
@@ -230,7 +251,7 @@ The script:
 
 Add those variables in GitHub: *Settings*, *Secrets and variables*, *Actions*, *Variables*. Or add `-SetGitHubVariables` to the script, which sets them with the GitHub CLI (`gh`, signed in). Then run *CI* on `main` once by hand to check it publishes.
 
-What the identity could still do, if a workflow on `main` misused it: read the deployment token, publish other code as the dashboard, and that code would run with the dashboard's settings, including the shared account's read-only key (which can read every project's database there) and the writer identity's secret (which can create paper requests the engine then checks and, once `-LiveRequests` has run, Pause and Resume requests for the live engine, ADR-0018). `main` has no branch protection on GitHub Free, so this trusts everyone who can push to `main`, merge into it, or start a workflow on it. That includes the Claude coding agents: their GitHub access could merge pull requests or push to `main` directly (in this repository they have merged at the owner's request). Only the rules in CLAUDE.md, not GitHub, stop them. GitHub Pro with branch protection on `main` would make that a technical limit. If you suspect misuse, remove the identity's role assignment, reset the deployment token (portal: `stapp-cix-dev`, *Manage deployment token*, *Reset*), and regenerate the account's read-only keys, then run `provision.ps1` again to update the dashboard's settings, and `setup-dashboard-requests.ps1 -RotateSecret`.
+What the identity could still do, if a workflow on `main` misused it: read the deployment token, publish other code as the dashboard, and that code would run with the dashboard's settings, including the shared account's read-only key (which can read every project's database there) and the writer identity's secret (which can create requests in paper's database, which no engine reads since ADR-0028, and, once `-LiveRequests` has run, Pause and Resume requests for the live engine, ADR-0018). `main` has no branch protection on GitHub Free, so this trusts everyone who can push to `main`, merge into it, or start a workflow on it. That includes the Claude coding agents: their GitHub access could merge pull requests or push to `main` directly (in this repository they have merged at the owner's request). Only the rules in CLAUDE.md, not GitHub, stop them. GitHub Pro with branch protection on `main` would make that a technical limit. If you suspect misuse, remove the identity's role assignment, reset the deployment token (portal: `stapp-cix-dev`, *Manage deployment token*, *Reset*), and regenerate the account's read-only keys, then run `provision.ps1` again to update the dashboard's settings, and `setup-dashboard-requests.ps1 -RotateSecret`.
 
 The script command above still works for publishing by hand.
 
@@ -259,12 +280,12 @@ It is **private** ([ADR-0014](adr/0014-private-dashboard.md)): every page and AP
 
 ## Owner requests
 
-The Buy and Sell buttons send manual requests to the engine ([ADR-0011](adr/0011-owner-manual-requests.md)). Only you can use them, signed in with your Microsoft account ([ADR-0012](adr/0012-dashboard-owner-sign-in-and-writer.md)):
+The Buy and Sell buttons (removed with paper by ADR-0028) sent manual requests to the engine ([ADR-0011](adr/0011-owner-manual-requests.md)). Only you can use them, signed in with your Microsoft account ([ADR-0012](adr/0012-dashboard-owner-sign-in-and-writer.md)):
 - **Sell:** pick 25%, 50% or 100% of the position, and **Direct** (the engine sells at the bid at once, no agent) or **Ask the trader** (the trader analyses it and may decline or sell less). **Buy** always asks the trader, with an amount in the quote currency; the trader sets the stop.
 - A confirmation shows exactly what will be sent. Each dialog has its own ID and is locked once sent, so a retry or a double click is still one request (also across midnight UTC), and the page follows it to the end: placed, filled, declined with the trader's reason, refused (by the engine or the risk gate, with the rule), expired.
 - The buttons pause, with the reason, when the engine isn't running or doesn't take requests (switched off, or the `requests` container missing).
 - Your note goes to the trader with the request, and shows in the request's history and decisions.
-- Buy and sell requests are paper only. The Trading tile's **Pause** and **Resume**, strategy switches and coin changes work in both views; in Live they need a tick in the box that names real money, and the one-time `-LiveRequests` setup below ([live-trading.md](live-trading.md#pausing-and-resuming-from-the-dashboard-adr-0018)). The engine checks each one again, and every order still goes through the risk gate.
+- Since ADR-0028 the dashboard has no Buy and Sell buttons: they were paper only, and no paper engine runs in Azure. The bullets above describe them as they were (the engine still takes manual requests in paper mode). The Trading tile's **Pause** and **Resume**, strategy switches and coin changes work on the Crypto view; they need a tick in the box that names real money, and the one-time `-LiveRequests` setup below ([live-trading.md](live-trading.md#pausing-and-resuming-from-the-dashboard-adr-0018)). The engine checks each one again, and every order still goes through the risk gate.
 
 One-time setup, per environment (needs rights to create app registrations and to manage Cosmos DB roles on the shared account):
 
@@ -304,7 +325,7 @@ Recovery works the same against Azure as against the emulator: [persistence.md](
 
 ## Resetting the database (testing only)
 
-`tools/azure/reset-database.ps1` clears data for a fresh test run, for example after releasing a new version. It never runs by itself: not during deployment, engine startup, or from the dashboard.
+`tools/azure/reset-database.ps1` clears data for a fresh test run, for example after releasing a new version. Since ADR-0028 no engine writes to `dev`'s database, so the steps below for `dev` matter only for an engine run locally against it; the live reset is under "Live too". It never runs by itself: not during deployment, engine startup, or from the dashboard.
 
 ```powershell
 # 1. See what would go (always a dry run without -Apply)
@@ -351,18 +372,9 @@ The protected environment (`prod`, real money) is reset only with `-LiveWhenFlat
 - `-IncludeSpecArchive` is refused (the archive holds the specs you reviewed for live), and the group must be tagged `cix-protected=true`;
 - the confirmation to type is `reset prod real money live state`.
 
-Afterwards the live engine starts halted with a fresh state and peak equity until you press Resume on the dashboard's Live view. Add the coins again on the Coins tab: the watched list is part of the state.
+Afterwards the live engine starts halted with a fresh state and peak equity until you press Resume on the dashboard's Crypto view. Add the coins again on the Coins tab: the watched list is part of the state.
 
 `-Target Journal` or `All` deletes the real-money journal for good, every buy and sell in it. Look through it or copy what you need first (Data Explorer in the portal), or keep the older days with `-JournalBefore`.
-
-To reset both databases in one go, sell the live coins first, stop both engines (as in step 2, for `ca-cix-dev-engine` in `rg-cix-dev` and `ca-cix-prod-engine` in `rg-cix-live`), then:
-
-```powershell
-.\tools\azure\reset-paper-and-live.ps1 -Target All -IncludeRequests           # dry run of both
-.\tools\azure\reset-paper-and-live.ps1 -Target All -IncludeRequests -Apply    # live first, then paper; one confirmation each
-```
-
-Live goes first, so if it refuses, paper is left as it was.
 
 The local emulator is reset differently: `docker compose down -v` removes its volume.
 

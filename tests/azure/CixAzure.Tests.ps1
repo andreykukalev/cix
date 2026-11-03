@@ -114,7 +114,7 @@ Check 'deployment parameters: valid JSON, no byte-order mark, arrays stay arrays
         Expect $p.sharedResourceGroupName.value 'rg-shared' 'shared resource group'
         Expect $p.sharedAccountName.value 'cosmos-shared-test' 'shared account'
         Expect $p.databaseThroughput.value 400 'databaseThroughput'
-        Expect $p.tags.value.purpose 'cix-paper-trading' 'tags'
+        Expect $p.tags.value.purpose 'cix-dashboard' 'tags'
       }
     }
     finally { Remove-Item $path -ErrorAction SilentlyContinue }
@@ -935,7 +935,7 @@ Check 'setup-ci-deploy.ps1 -For agents (-Yes), protected: trusts only its GitHub
   Expect @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' }).Count 6 'role assignments'
   foreach ($expected in @('trusted only for repo:owner@11/repo@22:environment:citest', 'Trusts repo:owner@11/repo@22:environment:citest.',
       'LIVE_AZURE_CLIENT_ID = 66666666-6666-6666-6666-666666666666', 'LIVE_REGISTRY = crcixcitest1', 'LIVE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa',
-      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'waits in CI for your approval')) {
+      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'for your approval (Review deployments')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   foreach ($never in @('refs/heads/main', 'AGENTS_', ' AZURE_CLIENT_ID', ' AZURE_TENANT_ID', ' AZURE_SUBSCRIPTION_ID')) {
@@ -1113,7 +1113,7 @@ Check 'setup-dashboard-requests.ps1 accepts the live role once in place, with or
   }
 }
 
-Check 'only the deploy-dashboard, deploy-agents and deploy-live jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
+Check 'only the deploy-dashboard and deploy-live jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
   # A guard against accidents, not a security control: anyone who can change main can change this test too (ADR-0010).
   $files = @(Get-ChildItem (Join-CixPath $repo '.github' 'workflows') -File | Where-Object { $_.Extension -in '.yml', '.yaml' })
   if ($files.Count -eq 0) { throw 'no workflows found' }
@@ -1135,11 +1135,11 @@ Check 'only the deploy-dashboard, deploy-agents and deploy-live jobs may request
     if ($triggers.Count -eq 0) { throw "$($f.Name): couldn't read its triggers" }
     $unexpected = @($triggers | Where-Object { $_ -notin 'push', 'pull_request', 'workflow_dispatch' })
     if ($unexpected.Count -gt 0) { throw "$($f.Name) runs on $($unexpected -join ', '); only push, pull_request and workflow_dispatch are allowed" }
-    # id-token, in any spelling, only in ci.yml: once inside each of the deploy-dashboard, deploy-agents and deploy-live jobs.
+    # id-token, in any spelling, only in ci.yml: once inside each of the deploy-dashboard and deploy-live jobs (no paper deploy since ADR-0028).
     $grants = @([regex]::Matches($text, 'id-token'))
     if ($f.Name -ne 'ci.yml') { if ($grants.Count -gt 0) { throw "$($f.Name) mentions id-token" }; continue }
-    Expect $grants.Count 3 'id-token mentions in ci.yml'
-    foreach ($job in 'deploy-dashboard', 'deploy-agents', 'deploy-live') {
+    Expect $grants.Count 2 'id-token mentions in ci.yml'
+    foreach ($job in 'deploy-dashboard', 'deploy-live') {
       $jobStart = $text.IndexOf("`n  ${job}:")
       if ($jobStart -lt 0) { throw "ci.yml has no $job job" }
       $next = [regex]::Match($text.Substring($jobStart + 1), '\n  [A-Za-z_-]+:')
@@ -1314,9 +1314,10 @@ Check 'provision.ps1 agents apps keeps the images the engine and the jobs run, b
   if ($r.Calls -cmatch '(^|\s)containerapp ') { throw "used the containerapp extension: $($r.Calls)" }
 }
 
-# A protected environment (ADR-0017): the citest copy marked protected, its images promoted from dev's registry.
+# A protected environment (ADR-0017): the citest copy marked protected, its images from its own registry, where CI pushes them
+# (nothing is promoted from a paper environment since ADR-0028; dev's registry stays in the fake to show it is never read).
 $devApps = '/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.App'
-function Get-PromoteFake([string]$RunningDigest = "sha256:$('5' * 64)") {
+function Get-ProtectedFake([string]$RunningDigest = "sha256:$('5' * 64)") {
   <# Both registries, and dev's engine and trader job running $RunningDigest (the fake gives every image the 5s digest). #>
   return @{
     'acr list'      = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}},{"name":"crcixdev1","tags":{"cix-environment":"dev"}}]'
@@ -1324,7 +1325,7 @@ function Get-PromoteFake([string]$RunningDigest = "sha256:$('5' * 64)") {
     'resource show' = "[{`"type`":`"Microsoft.App/containerApps`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdev1.azurecr.io/cix-engine@$RunningDigest`"}]}}},{`"type`":`"Microsoft.App/jobs`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdev1.azurecr.io/cix-trader@$RunningDigest`"}]}}}]"
   }
 }
-$promoteFake = Get-PromoteFake
+$protectedFake = Get-ProtectedFake
 function New-FakeKeyFiles {
   <# Two files standing in for the exchange keys, with content built at run time: not a secret. #>
   $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-keys-$([guid]::NewGuid().ToString('N'))"
@@ -1336,24 +1337,22 @@ function New-FakeKeyFiles {
   return @{ Dir = $dir; Api = (Join-Path $dir 'api.txt'); Pem = (Join-Path $dir 'private.pem'); Bom = (Join-Path $dir 'bom.txt'); Marker = $marker }
 }
 
-Check 'provision.ps1 protected apps (-Yes): checks access, promotes dev''s images by digest, uploads the keys unseen, then deploys' {
+Check 'provision.ps1 protected apps (-Yes): checks access, takes its own registry''s images by digest, uploads the keys unseen, then deploys' {
   $keys = New-FakeKeyFiles
   try {
-    $r = Invoke-AgentsProvision $promoteFake @{ Yes = $true; ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = $keys.Api; ExchangePrivateKeyFile = $keys.Pem } 'apps' $true
+    $r = Invoke-AgentsProvision $protectedFake @{ Yes = $true; ImageTag = 'abc123'; ExchangeApiKeyFile = $keys.Api; ExchangePrivateKeyFile = $keys.Pem } 'apps' $true
   }
   finally { Remove-Item $keys.Dir -Recurse -Force }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   $calls = $r.Calls.Replace('"', '') # Windows logs arguments with spaces in quotes
   foreach ($call in @('role assignment list --all', 'role assignment list --scope /subscriptions/00000000-0000-0000-0000-000000000001 --include-inherited',
-      'acr repository show-tags --name crcixdev1 --repository cix-engine',
-      "acr import --name crcixcitest1 --source crcixdev1.azurecr.io/cix-engine@$digest5 --image cix-engine:abc123 --force",
-      "acr import --name crcixcitest1 --source crcixdev1.azurecr.io/cix-trader@$digest5 --image cix-trader:abc123 --force",
+      'acr repository show --name crcixcitest1',
       "keyvault secret set --vault-name kvcixcitest1 --name revolutx-api-key --file $($keys.Api)",
       "keyvault secret set --vault-name kvcixcitest1 --name revolutx-private-key --file $($keys.Pem)",
       '--content-type Exchange key')) {
     if (-not $calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
   }
-  if ($calls.IndexOf('acr import') -gt $calls.IndexOf('acr repository show --name crcixcitest1')) { throw 'read the digests to deploy before copying them' }
+  if ($calls.Contains('acr import') -or $calls.Contains('crcixdev1')) { throw "copied or read images from another registry: $($r.Calls)" }
   if ($calls.IndexOf('keyvault secret set') -gt $calls.IndexOf('deployment sub create')) { throw 'uploaded the keys after the deployment that mounts them' }
   if ($r.Output.Contains($keys.Marker) -or $r.Calls.Contains($keys.Marker)) { throw 'showed a key' }
   if ($calls.Contains('cosmosdb keys')) { throw "read the account key for this PC's paper engine" }
@@ -1433,21 +1432,17 @@ Check 'provision.ps1 protected: the live deploy''s expected roles pass, anything
 }
 
 foreach ($case in @(
-    @{ Name = 'an exchange key file for a paper environment'; Protected = $false; Deploy = 'apps'; Arguments = @{ ExchangeApiKeyFile = 'KEYFILE' }; Says = 'are for a protected environment only' },
-    @{ Name = '-PromoteFrom for a paper environment'; Protected = $false; Deploy = 'apps'; Arguments = @{ PromoteFrom = 'dev'; ImageTag = 'abc123' }; Says = 'are for a protected environment only' },
-    @{ Name = '-PromoteFrom without -ImageTag'; Protected = $true; Deploy = 'apps'; Arguments = @{ PromoteFrom = 'dev' }; Says = '-PromoteFrom needs -ImageTag' },
+    @{ Name = 'an exchange key file for an unprotected environment'; Protected = $false; Deploy = 'apps'; Arguments = @{ ExchangeApiKeyFile = 'KEYFILE' }; Says = 'are for a protected environment only' },
     @{ Name = 'key files without the apps'; Protected = $true; Deploy = 'platform'; Arguments = @{ ExchangeApiKeyFile = 'KEYFILE' }; Says = 'go with agents.deploy apps' },
     @{ Name = 'a key file with a byte-order mark'; Protected = $true; Deploy = 'apps'; Arguments = @{ ExchangeApiKeyFile = 'BOMFILE' }; Says = 'starts with a UTF-8 byte-order mark' },
     @{ Name = 'a key file that is not there'; Protected = $true; Deploy = 'apps'; Arguments = @{ ExchangePrivateKeyFile = 'no-such-key.pem' }; Says = 'no-such-key.pem: no such file' },
-    @{ Name = 'no exchange keys given or in Key Vault'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev' }; Says = 'has no revolutx-api-key' },
-    @{ Name = 'promoting from a protected environment'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'citest'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = '-PromoteFrom citest is protected' },
-    @{ Name = 'promoting images paper doesn''t run'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $promoteFake['acr list'] }; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = "dev doesn't run the images tagged abc123 now: promote the images paper runs" },
-    @{ Name = 'a protected environment without secrets/claude_token'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $promoteFake['acr list']; 'keyvault secret list' = '[]' }; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = 'has no claude-token'; NoLocalToken = $true })) {
+    @{ Name = 'no exchange keys given or in Key Vault'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123' }; Says = 'has no revolutx-api-key' },
+    @{ Name = 'a protected environment without secrets/claude_token'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $protectedFake['acr list']; 'keyvault secret list' = '[]' }; Arguments = @{ ImageTag = 'abc123'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = 'has no claude-token'; NoLocalToken = $true })) {
   Check "provision.ps1 refuses $($case.Name), before any change" {
     $keys = New-FakeKeyFiles
     $arguments = @{ Yes = $true }
     foreach ($k in $case.Arguments.Keys) { $arguments[$k] = switch ($case.Arguments[$k]) { 'KEYFILE' { $keys.Api } 'BOMFILE' { $keys.Bom } default { $_ } } }
-    $fakeAnswers = if ($case['Fake']) { $case.Fake } else { $promoteFake }
+    $fakeAnswers = if ($case['Fake']) { $case.Fake } else { $protectedFake }
     # Skipped where a developer has secrets/claude_token (it is never in the repo), as below.
     if ($case['NoLocalToken'] -and (Test-Path (Join-CixPath $repo 'secrets' 'claude_token'))) { Remove-Item $keys.Dir -Recurse -Force; return }
     try { $r = Invoke-AgentsProvision $fakeAnswers $arguments $case.Deploy $case.Protected }

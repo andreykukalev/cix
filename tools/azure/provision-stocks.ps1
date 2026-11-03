@@ -350,7 +350,7 @@ Write-CixStep 'Settings'
 $stocks = Read-StocksSettings
 $registryEnv = Read-CixEnvironment -Name $stocks.registryEnvironment
 $dashboardEnv = Read-CixEnvironment -Name $stocks.dashboardEnvironment
-if ($registryEnv.protected) { throw "registryEnvironment '$($stocks.registryEnvironment)' is the live environment; the stocks image goes in a paper environment's registry." }
+if ($registryEnv.protected) { throw "registryEnvironment '$($stocks.registryEnvironment)' is the live environment; the stocks image goes in the dev environment's registry." }
 if (-not $registryEnv.ContainsKey('agents') -or $registryEnv.agents.deploy -eq 'none') { throw "Environment '$($stocks.registryEnvironment)' has no registry (agents.deploy is none)." }
 if (-not $dashboardEnv.deployDashboard) { throw "Environment '$($stocks.dashboardEnvironment)' has no dashboard (deployDashboard is false)." }
 foreach ($group in @($registryEnv.resourceGroup, $dashboardEnv.resourceGroup, $registryEnv.shared.resourceGroup)) {

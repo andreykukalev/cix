@@ -94,19 +94,24 @@ class CosmosReader {
   }
 }
 
+/** The live engine's database is not configured: the dashboard has nothing to show (and never shows another database). */
+class DatabaseNotConfigured extends Error {}
+
 /**
- * The database one mode's engine writes to. Paper's is COSMOS_DATABASE. The live engine has its own (ADR-0017), named by
- * COSMOS_LIVE_DATABASE; without that setting, live reads paper's database, where it finds nothing of its own.
+ * The database one mode's engine writes to. The live engine, the only one the dashboard shows since ADR-0028, has its own
+ * (ADR-0017), named by COSMOS_LIVE_DATABASE; without that setting live is refused, never read from another database.
+ * COSMOS_DATABASE names the old paper engine's, which the dashboard no longer reads.
  */
 function databaseFor(mode, env = process.env) {
-  const paper = env.COSMOS_DATABASE ?? 'cix';
-  return mode === 'live' && env.COSMOS_LIVE_DATABASE ? env.COSMOS_LIVE_DATABASE : paper;
+  if (mode !== 'live') return env.COSMOS_DATABASE ?? 'cix';
+  if (!env.COSMOS_LIVE_DATABASE) throw new DatabaseNotConfigured("The dashboard's COSMOS_LIVE_DATABASE isn't set: deploy the dashboard (provision.ps1 or CI).");
+  return env.COSMOS_LIVE_DATABASE;
 }
 
 /** One reader per database, made on first use, so each function instance signs in to each database once. */
 function readerCache(env = process.env) {
   const readers = new Map();
-  return (mode = 'paper') => {
+  return (mode = 'live') => {
     const database = databaseFor(mode, env);
     if (!readers.has(database)) {
       readers.set(database, new CosmosReader({ endpoint: env.COSMOS_ENDPOINT, key: env.COSMOS_READONLY_KEY, database }));
@@ -115,4 +120,4 @@ function readerCache(env = process.env) {
   };
 }
 
-module.exports = { authToken, CosmosReader, CosmosError, databaseFor, readerCache };
+module.exports = { authToken, CosmosReader, CosmosError, DatabaseNotConfigured, databaseFor, readerCache };

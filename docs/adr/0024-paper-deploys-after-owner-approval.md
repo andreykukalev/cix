@@ -1,6 +1,6 @@
 # 0024. Paper deploys wait for the owner's approval
 
-- Status: proposed
+- Status: superseded by [ADR-0028](0028-no-paper-trading.md) (no paper engine, so no paper deploy to gate)
 - Date: 2026-10-29
 
 ## Context

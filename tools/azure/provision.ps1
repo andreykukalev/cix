@@ -8,7 +8,7 @@
       the shared account (infra/main.bicep, settings in infra/environments/<Environment>.json).
   The engine and agents keep running in Docker on this PC, unless agents.deploy in the settings says otherwise (ADR-0013):
     - platform: what the engine and the agent jobs run on (registry, queues, Key Vault, environment, logs, budget);
-    - apps: also the paper engine and the three jobs. Needs platform deployed first, claude-token in its Key Vault
+    - apps: also the engine and the three jobs. Needs platform deployed first, claude-token in its Key Vault
       (uploaded from secrets/claude_token, which tools/setup-secrets.ps1 writes, without showing it), and images CI pushed.
       Creates the engine's Entra app registration (cix-engine-<environment>) when missing.
 
@@ -22,8 +22,8 @@
      to .env, and the account key to secrets/cosmos_key (readable only by you; never printed).
   6. With -DeployDashboard, publishes dashboard/ to the Static Web App.
 
-  Nothing is deleted, and no data is copied: the engine starts with an empty paper account in Azure. Switching the engine to
-  Azure is a separate, manual step (docs/azure.md). The one exception: a Container Apps environment still on its own VNet
+  Nothing is deleted, and no data is copied. Since ADR-0028 only the protected environment (prod) runs an engine in Azure;
+  dev holds the dashboard and, with agents.deploy platform, the registry the stocks image is built in. The one exception: a Container Apps environment still on its own VNet
   (deployed before 2026-10-28) is deleted with its apps and VNet, after you confirm it, and recreated without one.
 
 .EXAMPLE
@@ -33,16 +33,12 @@
 .EXAMPLE
   .\tools\azure\provision.ps1 -Environment dev -DeployDashboard -SkipInfrastructure -SkipEngineConfig   # publish the dashboard only
 .EXAMPLE
-  .\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig -ImageTag <commit SHA>   # agents.deploy apps, first time
-.EXAMPLE
-  .\tools\azure\provision.ps1 -Environment prod -PromoteFrom dev -ImageTag <commit SHA>   # the protected environment (ADR-0017)
+  .\tools\azure\provision.ps1 -Environment prod -ImageTag <commit SHA>   # the protected environment (ADR-0017), images CI pushed there
 .PARAMETER ImageTag
-  agents.deploy apps: the images to run, by the tag CI gave them (the commit SHA). They are deployed by digest, so what runs
-  can't change if the tag is pushed again. Without it, the images the engine and the jobs run now are kept (CI deploys new ones).
-.PARAMETER PromoteFrom
-  A protected environment only, with -ImageTag: first copy the images CI tagged with it from that (paper) environment's
-  registry into this one's, by digest, and deploy those. Live runs only images that ran on paper; CI deploys new ones there only
-  after the owner approves each run (ADR-0019).
+  agents.deploy apps: the images to run, by the tag CI gave them in this environment's registry (the commit SHA). They are
+  deployed by digest, so what runs can't change if the tag is pushed again. Without it, the images the engine and the jobs run
+  now are kept (CI deploys new ones, after the owner approves each run: ADR-0019). The paper environment the images used to
+  be promoted from is gone (ADR-0028).
 .PARAMETER ExchangeApiKeyFile
   A protected environment only: upload this file (the exchange API key) to its Key Vault as revolutx-api-key, without showing
   it. With -ExchangePrivateKeyFile, before the apps are deployed, and again to rotate (docs/live-trading.md).
@@ -64,7 +60,6 @@ param(
   [switch]$DeployDashboard,
   [switch]$UpdateShared,
   [ValidatePattern('^[A-Za-z0-9._-]{1,128}$')][string]$ImageTag,
-  [ValidatePattern('^[a-z0-9-]{2,12}$')][string]$PromoteFrom,
   [string]$ExchangeApiKeyFile,
   [string]$ExchangePrivateKeyFile,
   [switch]$UploadClaudeToken,
@@ -101,15 +96,14 @@ Write-CixInfo "Shared account:  resource group $($shared.resourceGroup) ($($shar
 Write-CixInfo "CIX:             resource group $($settings.resourceGroup) ($($settings.location)), database '$($settings.cosmos.databaseName)' at $($settings.cosmos.databaseThroughput) RU/s"
 Write-CixInfo "Dashboard:       $(if ($settings.deployDashboard) { "Static Web App (Free) in $($settings.dashboardLocation)" } else { 'not deployed' })"
 $agents = if ($settings.ContainsKey('agents')) { $settings.agents.deploy } else { 'none' }
-Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "$(if ($settings.protected) { 'the engine (on standby until you switch it)' } else { 'the paper engine' }) and three jobs, in $($settings.agents.location)" } })"
+Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "$(if ($settings.protected) { 'the engine (on standby until you switch it)' } else { 'an engine in paper mode' }) and three jobs, in $($settings.agents.location)" } })"
 $exchangeKeyFiles = @{ ExchangeApiKeyFile = $ExchangeApiKeyFile; ExchangePrivateKeyFile = $ExchangePrivateKeyFile }
-if (-not $settings.protected -and ($PromoteFrom -or $ExchangeApiKeyFile -or $ExchangePrivateKeyFile)) {
-  throw "-PromoteFrom, -ExchangeApiKeyFile and -ExchangePrivateKeyFile are for a protected environment only; '$Environment' isn't one."
+if (-not $settings.protected -and ($ExchangeApiKeyFile -or $ExchangePrivateKeyFile)) {
+  throw "-ExchangeApiKeyFile and -ExchangePrivateKeyFile are for a protected environment only; '$Environment' isn't one."
 }
-if (($PromoteFrom -or $ExchangeApiKeyFile -or $ExchangePrivateKeyFile) -and $agents -ne 'apps') {
-  throw "-PromoteFrom, -ExchangeApiKeyFile and -ExchangePrivateKeyFile go with agents.deploy apps; $($settings.path) says $agents."
+if (($ExchangeApiKeyFile -or $ExchangePrivateKeyFile) -and $agents -ne 'apps') {
+  throw "-ExchangeApiKeyFile and -ExchangePrivateKeyFile go with agents.deploy apps; $($settings.path) says $agents."
 }
-if ($PromoteFrom -and -not $ImageTag) { throw '-PromoteFrom needs -ImageTag: the tag CI gave the images to promote (the commit SHA).' }
 foreach ($name in @($exchangeKeyFiles.Keys)) {
   $file = $exchangeKeyFiles[$name]
   if (-not $file) { continue }
@@ -209,29 +203,8 @@ if (-not $SkipInfrastructure) {
       if ($uploadClaudeToken -and -not (Test-Path $claudeToken)) { throw "Key Vault $vault has no claude-token. Run tools/setup-secrets.ps1 (it writes secrets/claude_token), then run this again: it uploads the file without showing it." }
       # The engine's Entra app registration, looked up now (it is created only once you have said yes, below).
       $audience = Get-CixEngineAudience -Settings $settings -OwnerId $me.Id
-      # Checked before anything is changed: the images (for a protected environment, copied by digest from paper's registry)...
-      if ($PromoteFrom) {
-        $source = Read-CixEnvironment -Name $PromoteFrom
-        if ($source.protected) { throw "-PromoteFrom $PromoteFrom is protected: promote from the paper environment." }
-        $sourceRegistry = Find-CixAgentsResource -Settings $source -Kind acr
-        if (-not $sourceRegistry) { throw "Environment '$PromoteFrom' has no registry to promote from." }
-        $promoted = Resolve-CixImageDigests -Settings $source -Registry $sourceRegistry -Tag $ImageTag
-        # Only what paper runs now: a tag CI pushed again, or an image that never ran there, isn't promoted.
-        $onPaper = Resolve-CixImageDigests -Settings $source -Registry $sourceRegistry
-        if (-not $onPaper -or $onPaper.Engine -ne $promoted.Engine -or $onPaper.Agent -ne $promoted.Agent) {
-          throw "$PromoteFrom doesn't run the images tagged $ImageTag now$(if ($onPaper) { " (it runs cix-engine@$($onPaper.Engine), cix-trader@$($onPaper.Agent))" }): promote the images paper runs. Nothing was changed."
-        }
-        foreach ($image in @(@{ Repository = 'cix-engine'; Digest = $promoted.Engine }, @{ Repository = 'cix-trader'; Digest = $promoted.Agent })) {
-          $from = "$($sourceRegistry.ToLowerInvariant()).azurecr.io/$($image.Repository)@$($image.Digest)"
-          if ($WhatIfOnly) { Write-CixInfo "Would copy $from to $registry as $($image.Repository):$ImageTag."; continue }
-          Confirm-Step "Copy $from to $registry as $($image.Repository):${ImageTag}?"
-          Invoke-CixAz -Quiet @('acr', 'import', '--name', $registry, '--source', $from, '--image', "$($image.Repository):$ImageTag", '--force', '--only-show-errors') | Out-Null
-        }
-      }
-      $images = if ($PromoteFrom -and $WhatIfOnly) { $promoted } else { Resolve-CixImageDigests -Settings $settings -Registry $registry -Tag $ImageTag }
-      if ($PromoteFrom -and $images -and ($images.Engine -ne $promoted.Engine -or $images.Agent -ne $promoted.Agent)) {
-        throw "The images tagged $ImageTag in $registry aren't the ones copied from $PromoteFrom; nothing was deployed."
-      }
+      # Checked before anything is changed: the images, from this environment's own registry...
+      $images = Resolve-CixImageDigests -Settings $settings -Registry $registry -Tag $ImageTag
       if (-not $images) { throw 'Nothing runs yet, so there is no image to keep: pass -ImageTag with a tag CI pushed (the commit SHA).' }
       $agentValues['engineImageDigest'] = $images.Engine
       $agentValues['agentImageDigest'] = $images.Agent
@@ -295,7 +268,7 @@ if (-not $SkipInfrastructure) {
   if ($rebuild) {
     Confirm-Step "Delete $what now, and recreate the environment and the apps without a VNet?"
     if ($agentValues.ContainsKey('engineImageDigest')) {
-      $again = if ($settings.protected) { "-PromoteFrom <paper environment> -ImageTag <the commit SHA paper runs>" } else { '-ImageTag <a tag CI pushed>' }
+      $again = '-ImageTag <a tag CI pushed>'
       Write-CixWarn "If the deployment fails after this, nothing runs to keep images from: run this again with $again. The images now are cix-engine@$($agentValues.engineImageDigest) and cix-trader@$($agentValues.agentImageDigest)."
     }
     Remove-CixVnetEnvironment -Rebuild $rebuild

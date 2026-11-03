@@ -9,7 +9,7 @@ The full design discussion, with alternatives, sources and cost estimates, is in
 - You allocate capital to a dedicated Revolut X sub-account.
 - A trader agent decides and trades within that allocation without asking.
 - You review afterwards using the decision journal, a daily report and questions to the tool server.
-- You retune the strategy by choosing or adding a versioned **strategy spec** (prompt and parameters), not code. Safe, Balanced and Risky are the built-in choices; paper trading switches between versions at run time ([strategies/README.md](../strategies/README.md)).
+- You retune the strategy by choosing or adding a versioned **strategy spec** (prompt and parameters), not code. Safe, Balanced and Risky are the built-in choices; the owner switches between the live-marked versions at run time on the dashboard ([strategies/README.md](../strategies/README.md)).
 
 ## Components
 
@@ -62,7 +62,7 @@ flowchart LR
 | Protection | Deterministic, independent of the strategy | Spots a stop on every quote, not only in the 5-minute scan; confirms it on a fresh order book, cancels the engine's own open orders on the coin and sells what is held with an immediate-or-cancel limit at the bid, no lower than mid minus the emergency slippage; re-quotes partial fills every 2 s, at most one order per coin per 2 s and five a second in all. After five tries without a fill the exit is reported blocked (journal, critical log, dashboard) and retried every minute until the position is gone. Stale or invalid prices never trigger a sell. Runs through Pause and the critical drawdown halt; only a stopped engine or an unreachable exchange stops it. ADR-0020 records the design and the three cases where a sale is not guaranteed (exchange unreachable, a gap or empty band, the restart window) |
 | Strategy limits | Deterministic, before the risk gate | The active spec's own, tighter limits on buys: order size, per-coin position, total exposure, daily loss stop, new positions per run, cooldown between buys. They can only reduce or refuse a buy; sells always pass, and the risk gate still decides last |
 | Order execution | Deterministic | Idempotent client order IDs, pair filters (step sizes, min size), partial fills, retries |
-| Paper execution | Deterministic | Simulates fills from live Revolut X prices and fees; the default until go-live |
+| Paper execution | Deterministic | Simulates fills from live Revolut X prices and fees; the engine's default and safe mode, used by Docker Compose, `dotnet run` and the tests. Since ADR-0028 no paper engine runs in Azure: the live engine is the only crypto engine there |
 | Portfolio | Deterministic | Built from polled orders and fills; reconciled with balances; halts on mismatch |
 | Decision journal | Append-only Cosmos DB container (`journal`) | Every agent run: inputs, spec version, tool calls, rationale, risk verdict, orders, fills, PnL. Each entry is tagged with the mode that wrote it, and each engine reads its own mode only |
 | Operational state | Cosmos DB container (`state`) | What is true now: kill switch, loss baselines, orders in flight, position plans (stop and target), the paper account, archived specs. Recovery after a restart starts here and reconciles with the exchange ([persistence.md](persistence.md)) |
@@ -119,7 +119,7 @@ A separate module under `stocks/` (ADR-0023) advises on medium-term stock tradin
 | Phase | Where | Approx. USD per month |
 | --- | --- | --- |
 | Prototype | Docker Compose on your machine: Cosmos DB emulator, engine, agent containers running Claude Code (ADR-0005) | Claude usage only |
-| Azure (proposed, ADR-0013) | Azure Container Apps (engine always on, agents as queue-triggered jobs); Cosmos DB free tier in the shared account (ADR-0009); Key Vault; Log Analytics | about 23 to 35, plus Claude |
+| Azure (ADR-0013, ADR-0028) | Azure Container Apps: the live engine always on, agents as queue-triggered jobs (no paper engine since ADR-0028); Cosmos DB free tier in the shared account (ADR-0009); Key Vault; Log Analytics | about 23 to 35, plus Claude |
 
 Budget: $150 a month including Claude through Microsoft Foundry. Set an Azure budget alert at $130.
 

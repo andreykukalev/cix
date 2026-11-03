@@ -1,6 +1,6 @@
 # 0018. The dashboard controls live trading through requests
 
-- Status: accepted
+- Status: accepted; amended by [ADR-0028](0028-no-paper-trading.md) (the dashboard shows the live engine only)
 - Date: 2026-10-27
 
 ## Context
