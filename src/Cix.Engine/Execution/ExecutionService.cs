@@ -256,6 +256,24 @@ public sealed partial class ExecutionService : IActiveSymbolSource
     /// <summary>Position plans (stop and target by symbol) from the engine state.</summary>
     public IReadOnlyDictionary<string, PositionPlanState> PositionPlanStates => _store.Current.Plans;
 
+    /// <summary>
+    /// Raises <paramref name="symbol"/>'s stop to <paramref name="stop"/> in its plan (<see cref="EngineState.WithStopRaised"/>)
+    /// and saves it. Returns the stop it replaced, or null when nothing changed. Places no order: the protection arms the new
+    /// stop at its next plan refresh. A failed save throws, so the caller tries again.
+    /// </summary>
+    public decimal? RaiseStop(string symbol, decimal stop)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        decimal? from = null;
+        _store.Update(s =>
+        {
+            var next = s.WithStopRaised(symbol, stop);
+            from = ReferenceEquals(next, s) ? null : s.Plans[symbol].StopLoss;
+            return next;
+        });
+        return from;
+    }
+
     private static OrderIntent ToIntent(SentOrder o) =>
         new(o.Symbol, o.Side == "sell" ? OrderSide.Sell : OrderSide.Buy, o.Size, o.LimitPrice, o.ClientOrderId);
 

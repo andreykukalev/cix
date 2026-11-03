@@ -53,24 +53,27 @@ const VERSIONS = [
   { name: 'safe', version: '2', status: 'Draft', parameters: { orderQuote: 5, scanner: { fastEmaPeriod: 20 } }, allowedTools: ['place_order'] },
   { name: 'balanced', version: '1', status: 'Live', parameters: { orderQuote: 10, scanner: { fastEmaPeriod: 20 } }, allowedTools: ['place_order'] },
   { name: 'observer', version: '1', status: 'Paper', parameters: {}, allowedTools: ['get_portfolio'] },
+  { name: 'swing', version: '1', status: 'Live', parameters: { orderQuote: 50, scanner: { fastEmaPeriod: 10 } }, allowedTools: ['place_order'] },
+  { name: 'swing', version: '2', status: 'Draft', parameters: { orderQuote: 50, scanner: { fastEmaPeriod: 10 } }, allowedTools: ['place_order'] },
   { name: '<script>', version: '1', status: 'Live' },
 ];
 
-test('the view: Safe, Balanced, Risky first, the running one marked, every parameter grouped and explained', () => {
+test('the view: only Swing offered (ADR-0029), the running one marked, every parameter grouped and explained', () => {
   const view = strategiesView({
     mode: 'paper', schema: SCHEMA, versions: VERSIONS,
     status: { strategy: 'balanced@v1#abc', startedAt: '2026-10-27T07:00:00Z', strategySelection: { state: 'active', requested: 'balanced@v1', problems: [], activatedAt: '2026-10-27T09:00:00Z' } },
     requests: [{ id: 'a', createdAt: '2026-10-27T08:59:00Z', name: 'balanced', version: 1, status: 'accepted', events: [{ detail: 'Selected balanced@v1.' }] }],
   }, NOW);
 
-  // The newest version marked live of each, the same list as live's (ADR-0022): no draft, older or paper-only version.
-  assert.deepEqual(view.strategies.map((s) => s.key), ['safe@v1', 'balanced@v1', 'risky@v2']);
+  // The newest version marked live of the offered strategy, the same list as live's (ADR-0022): no draft, older or
+  // paper-only version, and the hourly presets only while one of them runs.
+  assert.deepEqual(view.strategies.map((s) => s.key), ['swing@v1', 'balanced@v1']);
   assert.deepEqual(view.strategies.filter((s) => s.active).map((s) => s.key), ['balanced@v1']);
   assert.match(view.note, /same strategies as live/);
   const running = strategiesView({ mode: 'paper', schema: SCHEMA, versions: VERSIONS, status: { strategy: 'observer@v1#abc' }, requests: [] }, NOW);
-  assert.deepEqual(running.strategies.map((s) => s.key), ['safe@v1', 'balanced@v1', 'risky@v2', 'observer@v1'], 'the running one is listed, whatever it is');
+  assert.deepEqual(running.strategies.map((s) => s.key), ['swing@v1', 'observer@v1'], 'the running one is listed, whatever it is');
   assert.equal(running.strategies.find((s) => s.name === 'observer').canTrade, false);
-  assert.deepEqual(view.strategies.find((s) => s.name === 'risky').values, { 'scanner.fastEmaPeriod': 12, orderQuote: 20 });
+  assert.deepEqual(view.strategies.find((s) => s.name === 'swing').values, { 'scanner.fastEmaPeriod': 10, orderQuote: 50 });
   assert.deepEqual(view.groups.map((g) => g.title), ['Trend indicators', 'Position size']);
   assert.equal(view.groups[0].parameters[0].applies, 'New trades and open positions');
   assert.equal(view.groups[1].parameters[0].boundBy, 'maxOrderQuote');
@@ -84,10 +87,10 @@ test('live switches too, saying only specs marked live are listed, and the view 
   assert.equal(view.editable, true);
   assert.equal(view.readOnlyReason, null);
   assert.match(view.note, /marked live/);
-  const liveVersions = [...VERSIONS, { name: 'safe', version: '3', status: 'Live', parameters: {}, allowedTools: ['place_order'] }];
+  const liveVersions = [...VERSIONS, { name: 'swing', version: '3', status: 'Live', parameters: {}, allowedTools: ['place_order'] }];
   const both = ['paper', 'live'].map((mode) => strategiesView({ mode, schema: SCHEMA, versions: liveVersions, status: null, requests: [] }, NOW)
     .strategies.map((x) => x.key));
-  assert.deepEqual(both, [['safe@v3', 'balanced@v1', 'risky@v2'], ['safe@v3', 'balanced@v1', 'risky@v2']], 'both modes offer the same presets');
+  assert.deepEqual(both, [['swing@v3'], ['swing@v3']], 'both modes offer the same strategy');
   assert.equal(view.active, null);
   assert.deepEqual([view.groups, view.strategies, view.mandatory], [[], [], []]);
 });
@@ -99,31 +102,31 @@ test('the switch preview: which watched coins would enter and leave trading, wit
       at: '2026-10-27T09:25:00Z',
       market: [{ symbol: 'BTC-EUR', rank: 1 }, { symbol: 'ETH-EUR', rank: 2 }, { symbol: 'DOGE-EUR', rank: null }, { symbol: 'SOL-EUR', rank: null }],
       previews: [
-        { name: 'safe', version: 1, passing: ['BTC-EUR'], excluded: { 'ETH-EUR': 'low-volume', 'DOGE-EUR': 'too-volatile', 'SOL-EUR': '<b>' } },
-        { name: 'risky', version: 2, passing: ['BTC-EUR', 'ETH-EUR', 'DOGE-EUR', 'SOL-EUR', '../x'], excluded: {} },
+        { name: 'swing', version: 1, passing: ['BTC-EUR'], excluded: { 'ETH-EUR': 'low-volume', 'DOGE-EUR': 'too-volatile', 'SOL-EUR': '<b>' } },
       ],
     },
     portfolio: { holdings: [{ symbol: 'ETH-EUR', valueQuote: '12.5' }, { symbol: 'SOL-EUR', valueQuote: '3' }] },
   };
-  const view = strategiesView({ mode: 'paper', schema: SCHEMA, versions: VERSIONS, status, requests: [] }, NOW);
-  const preview = (name) => view.strategies.find((s) => s.name === name).preview;
-  assert.deepEqual(preview('safe'), {
+  const viewOf = (previews) => strategiesView({ mode: 'paper', schema: SCHEMA, versions: VERSIONS, status: { ...status, lastScan: { ...status.lastScan, previews } }, requests: [] }, NOW);
+  const view = viewOf(status.lastScan.previews);
+  const preview = (name, of = view) => of.strategies.find((s) => s.name === name).preview;
+  assert.deepEqual(preview('swing'), {
     at: '2026-10-27T09:25:00Z',
     enter: [],
     leave: [{ symbol: 'ETH-EUR', held: true, reason: 'low-volume' }],
   });
-  assert.deepEqual(preview('risky').enter, [{ symbol: 'DOGE-EUR', held: false }, { symbol: 'SOL-EUR', held: true }], 'a malformed symbol is left out');
-  assert.deepEqual(preview('risky').leave, []);
+  const wider = viewOf([{ name: 'swing', version: 1, passing: ['BTC-EUR', 'ETH-EUR', 'DOGE-EUR', 'SOL-EUR', '../x'], excluded: {} }]);
+  assert.deepEqual(preview('swing', wider).enter, [{ symbol: 'DOGE-EUR', held: false }, { symbol: 'SOL-EUR', held: true }], 'a malformed symbol is left out');
+  assert.deepEqual(preview('swing', wider).leave, []);
   assert.equal(preview('balanced'), null, 'the running strategy');
-  const unpreviewed = strategiesView({ mode: 'paper', schema: SCHEMA, versions: VERSIONS, status: { ...status, lastScan: { ...status.lastScan, previews: [] } }, requests: [] }, NOW);
-  assert.equal(unpreviewed.strategies.find((s) => s.name === 'safe').preview, null, 'not previewed yet');
+  assert.equal(preview('swing', viewOf([])), null, 'not previewed yet');
 
   const V = require('../../app/view.js');
-  assert.deepEqual(V.strategyCoins(preview('safe')), [
+  assert.deepEqual(V.strategyCoins(preview('swing')), [
     'Leave trading: ETH-EUR (held): low-volume.',
     'You hold ETH-EUR: they keep their stop and target, and the new strategy buys no more.',
   ]);
-  assert.deepEqual(V.strategyCoins(preview('risky')), ['Enter trading: DOGE-EUR, SOL-EUR (held).']);
+  assert.deepEqual(V.strategyCoins(preview('swing', wider)), ['Enter trading: DOGE-EUR, SOL-EUR (held).']);
   assert.deepEqual(V.strategyCoins({ enter: [], leave: [] }), ['No coin enters or leaves trading.']);
   assert.match(V.strategyCoins(null)[0], /^No preview for this strategy yet/);
 });

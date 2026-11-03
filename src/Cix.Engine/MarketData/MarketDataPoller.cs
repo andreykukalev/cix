@@ -22,6 +22,13 @@ public sealed partial class MarketDataPoller
 {
     public const int MinuteInterval = 1;
     public const int HourInterval = 60;
+    public const int DayInterval = 1440;
+
+    /// <summary>
+    /// The exchange's daily candles start at its local midnight (00:00 UTC in winter, 23:00 UTC in summer), so the day the
+    /// clocks change lasts 23 or 25 hours: the daily series is read with this much slack either side.
+    /// </summary>
+    public static readonly TimeSpan DaySlack = TimeSpan.FromHours(1);
 
     private const string TickersKey = "*";
 
@@ -134,9 +141,12 @@ public sealed partial class MarketDataPoller
         }
 
         var next = symbols
-            .SelectMany(symbol => _options.MinuteCandleInterval is null
-                ? new[] { (Symbol: symbol, Kind: "1h") }
-                : new[] { (Symbol: symbol, Kind: "1m"), (Symbol: symbol, Kind: "1h") })
+            .SelectMany(symbol => new[]
+            {
+                (Symbol: symbol, Kind: _options.MinuteCandleInterval is null ? null : "1m"),
+                (Symbol: symbol, Kind: "1h"),
+                (Symbol: symbol, Kind: _options.DayCandleInterval is null ? null : "1d"),
+            }.Where(t => t.Kind is not null).Select(t => (t.Symbol, Kind: t.Kind!)))
             .Select(t => (t.Symbol, t.Kind, Due: DueSince(t.Symbol, t.Kind)))
             .Where(t => t.Due is not null)
             .OrderBy(t => t.Due)
@@ -146,6 +156,8 @@ public sealed partial class MarketDataPoller
             await RunAsync(next.Symbol, "1m", minuteInterval, () => PollCandlesAsync(next.Symbol, MinuteInterval, _options.MinuteLookback, cancellationToken)).ConfigureAwait(false);
         else if (next.Kind == "1h")
             await RunAsync(next.Symbol, "1h", _options.HourCandleInterval, () => PollCandlesAsync(next.Symbol, HourInterval, _options.HourLookback, cancellationToken)).ConfigureAwait(false);
+        else if (next.Kind == "1d" && _options.DayCandleInterval is { } dayInterval)
+            await RunAsync(next.Symbol, "1d", dayInterval, () => PollCandlesAsync(next.Symbol, DayInterval, _options.DayLookback, cancellationToken)).ConfigureAwait(false);
 
         return _requests;
     }
@@ -274,16 +286,21 @@ public sealed partial class MarketDataPoller
         && _state.Quote(symbol) is { BidSize: <= 0, AskSize: <= 0 } ticker
         && ticker.AsOf > quote.AsOf;
 
-    /// <summary>Fetches closed candles after the latest stored one (or the lookback on first run), catching up in pages.</summary>
+    /// <summary>
+    /// Fetches closed candles after the latest stored one (or the lookback on first run), catching up in pages. Daily candles
+    /// allow for the 23- and 25-hour days (<see cref="DaySlack"/>): the next one is looked for from an hour early, and one
+    /// counts as closed once a later candle exists or a 25-hour day has passed.
+    /// </summary>
     private async Task PollCandlesAsync(string symbol, int intervalMinutes, TimeSpan lookback, CancellationToken cancellationToken)
     {
         var interval = TimeSpan.FromMinutes(intervalMinutes);
+        var slack = intervalMinutes >= DayInterval ? DaySlack : TimeSpan.Zero;
 
         for (var page = 0; page < _options.MaxCatchUpPages; page++)
         {
             var now = _time.GetUtcNow();
             var latest = _store.Latest(symbol, intervalMinutes);
-            var since = latest is null ? AlignDown(now - lookback, interval) : latest.Start + interval;
+            var since = latest is null ? AlignDown(now - lookback, interval) : latest.Start + interval - slack;
             if (since + interval > now)
                 break; // The next candle hasn't closed yet.
 
@@ -291,9 +308,14 @@ public sealed partial class MarketDataPoller
             var fetched = await _candles.GetCandlesAsync(symbol, intervalMinutes, since, cancellationToken).ConfigureAwait(false);
 
             // Keep only closed candles at or after `since`; the open candle would change later.
-            var closed = fetched.Where(c => c.Start >= since && c.Start + interval <= now).OrderBy(c => c.Start).ToList();
-            if (latest is not null && closed.Count > 0 && closed[0].Start > since)
-                LogCandleGap(_logger, intervalMinutes, symbol, since, closed[0].Start); // a quiet market, or the API skipped candles
+            var newest = fetched.Count > 0 ? fetched.Max(c => c.Start) : DateTimeOffset.MinValue;
+            var closed = fetched
+                .Where(c => c.Start >= since && (slack == TimeSpan.Zero
+                    ? c.Start + interval <= now
+                    : c.Start < newest || c.Start + interval + slack <= now)) // a later candle has begun, or even a 25-hour day is over
+                .OrderBy(c => c.Start).ToList();
+            if (latest is not null && closed.Count > 0 && closed[0].Start > latest.Start + interval + slack)
+                LogCandleGap(_logger, intervalMinutes, symbol, latest.Start + interval, closed[0].Start); // a quiet market, or the API skipped candles
 
             var added = _store.Upsert(symbol, intervalMinutes, closed);
             if (added == 0)
@@ -308,7 +330,7 @@ public sealed partial class MarketDataPoller
     /// <summary>Upper-case dash form: "btc/eur" becomes "BTC-EUR".</summary>
     public static string NormaliseSymbol(string symbol) => symbol.Trim().Replace('/', '-').ToUpperInvariant();
 
-    /// <summary>Rounds down to a candle boundary, so the first load starts with a whole candle.</summary>
+    /// <summary>Rounds down to a candle boundary (in UTC), so the first load starts with a whole candle.</summary>
     private static DateTimeOffset AlignDown(DateTimeOffset time, TimeSpan interval) =>
         new(time.UtcTicks - (time.UtcTicks % interval.Ticks), TimeSpan.Zero);
 

@@ -15,7 +15,7 @@ namespace Cix.Engine.Strategy;
 /// <param name="Key">Its path in the spec's parameters: <c>orderQuote</c>, or <c>scanner.stopAtr</c>.</param>
 /// <param name="Group"><c>trend</c>, <c>entry</c>, <c>size</c>, <c>stops</c>, <c>exposure</c>, <c>frequency</c>, <c>exits</c>, <c>filters</c>, <c>costs</c> or <c>ranking</c>.</param>
 /// <param name="Kind"><c>number</c>, <c>integer</c>, <c>boolean</c> or <c>text</c>.</param>
-/// <param name="Unit"><c>EUR</c>, <c>fraction</c> (0.01 = 1%), <c>ATR</c> (multiples of the hourly average true range), <c>minutes</c>, <c>candles</c>, <c>ratio</c>, <c>weight</c>, <c>count</c>, or null.</param>
+/// <param name="Unit"><c>EUR</c>, <c>fraction</c> (0.01 = 1%), <c>ATR</c> (multiples of the average true range of the strategy's candles, hourly or daily), <c>minutes</c>, <c>candles</c>, <c>ratio</c>, <c>weight</c>, <c>count</c>, or null.</param>
 /// <param name="Applies"><c>new-trades</c>, or <c>open-positions-too</c> for the trend and exit rules, which every held position follows from the next scan.</param>
 /// <param name="BoundBy">The mandatory limit that caps <paramref name="Max"/>, when one does (a key of <see cref="MandatoryLimit"/>).</param>
 public sealed record StrategyParameter(
@@ -71,18 +71,27 @@ public static partial class StrategySchema
         [
             // Trend indicators
             new("scanner.fastEmaPeriod", "trend", "Fast EMA period",
-                "The shorter exponential moving average of hourly closing prices, in hours. A smaller number reacts sooner to price changes, and also to noise.",
-                "integer", 3, ScannerParameters.MaxEmaPeriod - 1, "candles", All),
+                $"The shorter exponential moving average of closing prices, in candles of the strategy's timeframe (hours, or days for a daily strategy). A smaller number reacts sooner to price changes, and also to noise. Hourly strategies allow up to {ScannerParameters.MaxEmaPeriod - 1}.",
+                "integer", 3, ScannerParameters.MaxDailyEmaPeriod - 1, "candles", All),
             new("scanner.slowEmaPeriod", "trend", "Slow EMA period",
-                "The longer moving average. The trend is up when the fast EMA is above the slow one and down when it is below. This decides which coins can be bought and, with trend exits on, when held coins are sold.",
-                "integer", 4, ScannerParameters.MaxEmaPeriod, "candles", All),
+                $"The longer moving average. The trend is up when the fast EMA is above the slow one and down when it is below. This decides which coins can be bought and, with trend exits on, when held coins are sold (a daily strategy sells when a daily close falls below it). Hourly strategies allow up to {ScannerParameters.MaxEmaPeriod}.",
+                "integer", 4, ScannerParameters.MaxDailyEmaPeriod, "candles", All),
+            new("scanner.regimeEmaPeriod", "trend", "BTC trend filter",
+                "Daily strategies: new buys only while BTC's last daily close is above its EMA of this many days, as most coins fall when BTC does. BTC must be on the watched list. 0 turns the filter off.",
+                "integer", 0, ScannerParameters.MaxDailyEmaPeriod, "candles", New),
 
             // Entry conditions
             new("scanner.requireUptrendPullback", "entry", "Buy only pullbacks in an uptrend",
-                "When on, a coin is bought only in an uptrend, close to its fast EMA, and after an hour that didn't fall. When off, any coin that passes the filters can be bought, which is for testing orders rather than for trading well.",
+                "When on, a coin is bought only in an uptrend, close to its fast EMA, and after an hour that didn't fall (daily strategies: a 20-day breakout in a daily uptrend). When off, any coin that passes the filters can be bought, which is for testing orders rather than for trading well; a daily strategy still waits for BTC's trend.",
                 "boolean", null, null, null, New),
             new("scanner.entryMaxAboveEma20Atr", "entry", "Furthest above the fast EMA",
-                "How far above the fast EMA the price may be at entry, in ATRs. Lower waits for a deeper pullback, so fewer but less stretched entries.",
+                "Hourly strategies: how far above the fast EMA the price may be at entry, in ATRs. Lower waits for a deeper pullback, so fewer but less stretched entries.",
+                "number", 0, 3, "ATR", New),
+            new("scanner.breakoutCandles", "entry", "Breakout window",
+                "Daily strategies: a coin is bought when a daily close rises above the highest price of this many days before it. A longer window waits for a bigger breakout, so fewer entries. The same window measures momentum for the ranking.",
+                "integer", 2, 100, "candles", New),
+            new("scanner.entryMaxAboveBreakoutAtr", "entry", "Furthest above the breakout close",
+                "Daily strategies: how far the price may have run above the breakout's daily close before the buy, in daily ATRs, so a late buy doesn't chase.",
                 "number", 0, 3, "ATR", New),
 
             // Position size
@@ -98,8 +107,11 @@ public static partial class StrategySchema
                 "How far below the entry the stop-loss sits, in ATRs. The engine sells by itself when the bid reaches it. Wider stops are hit less often but lose more when they are.",
                 "number", 0.5m, 5, "ATR", New),
             new("scanner.rewardRisk", "stops", "Take-profit distance",
-                "The take-profit, as a multiple of the stop distance (reward to risk). 2 means the target is twice as far above the entry as the stop is below it. A further target is reached less often.",
-                "number", 0.5m, 5, "ratio", New),
+                "The take-profit, as a multiple of the stop distance (reward to risk). 2 means the target is twice as far above the entry as the stop is below it. A further target is reached less often. 0 sets no take-profit: the position leaves at its stop or on the trend exit.",
+                "number", 0, 5, "ratio", New),
+            new("scanner.trailAtr", "stops", "Trailing stop",
+                "Daily strategies: the engine raises a held coin's stop to the highest daily close since the buy less this many daily ATRs, never above the current price and never down, so a rise locks in part of the gain. 0 keeps the stop where the buy set it; otherwise at least 1. This applies to coins already held, from the next scan.",
+                "number", 0, 10, "ATR", All),
 
             // Exposure
             new("maxPositionQuotePerSymbol", "exposure", "Most in one coin",
@@ -130,19 +142,19 @@ public static partial class StrategySchema
 
             // Coin filters
             new("scanner.minQuoteVolume24h", "filters", "Least 24h volume",
-                "A coin must have traded at least this much in the last 24 hours, so orders fill near the quoted price.",
+                "A coin must have traded at least this much in the last 24 hours (daily strategies: on average over the last 7 days), so orders fill near the quoted price.",
                 "number", 0, 10_000_000, "EUR", New),
             new("scanner.maxSpreadFraction", "filters", "Widest spread",
                 "The largest gap between the best buy and sell prices, as a share of the price. Wider spreads cost more on every trade.",
                 "number", 0.0001m, 0.02m, "fraction", New),
             new("scanner.maxAtrFraction", "filters", "Most volatile",
-                "Coins whose hourly ATR is above this share of the price are skipped as too wild for the stop sizes used.",
+                "Coins whose ATR (hourly, or daily for a daily strategy) is above this share of the price are skipped as too wild for the stop sizes used.",
                 "number", 0.005m, 0.2m, "fraction", New),
             new("scanner.minAtrToCostRatio", "filters", "Least volatility for the costs",
-                "A coin's hourly ATR must be at least this multiple of a round trip's fees, spread and slippage, so a normal move can pay for the trade.",
+                "A coin's ATR (hourly, or daily for a daily strategy) must be at least this multiple of a round trip's fees, spread and slippage, so a normal move can pay for the trade.",
                 "number", 0.1m, 10, "ratio", New),
             new("scanner.minHourlyCandles24h", "filters", "Least trading hours",
-                "Hourly candles needed in the last 24 hours to judge a coin at all.",
+                "Hourly strategies: hourly candles needed in the last 24 hours to judge a coin at all.",
                 "integer", 1, 24, "candles", New),
 
             // Cost assumptions
@@ -155,7 +167,7 @@ public static partial class StrategySchema
 
             // Ranking
             new("scanner.momentumWeight", "ranking", "Momentum weight",
-                "How much the last 24 hours' move counts when coins are ranked.", "number", 0, 5, "weight", New),
+                "How much the last 24 hours' move counts when coins are ranked (daily strategies: the move over the breakout window).", "number", 0, 5, "weight", New),
             new("scanner.trendWeight", "ranking", "Trend weight",
                 "How much the trend direction counts in the ranking.", "number", 0, 5, "weight", New),
             new("scanner.volumeWeight", "ranking", "Volume weight",
@@ -242,8 +254,9 @@ public static partial class StrategySchema
                 CheckValue(parameter, value, errors);
         }
 
-        if (spec.Parameters.TryGetValue("timeframe", out var timeframe) && !(timeframe.ValueKind == JsonValueKind.String && timeframe.GetString() == "1h"))
-            errors.Add("parameters.timeframe must be \"1h\": the scanner works on hourly candles.");
+        if (spec.Parameters.TryGetValue("timeframe", out var timeframe)
+            && !(timeframe.ValueKind == JsonValueKind.String && timeframe.GetString() is ScannerParameters.Hourly or ScannerParameters.Daily))
+            errors.Add("parameters.timeframe must be \"1h\" (hourly candles) or \"1d\" (daily candles).");
         if (spec.Parameters.TryGetValue("symbols", out var symbols)
             && (symbols.ValueKind != JsonValueKind.Array || symbols.GetArrayLength() > 20
                 || symbols.EnumerateArray().Any(s => s.ValueKind != JsonValueKind.String || !limits.Permits(s.GetString()!))))

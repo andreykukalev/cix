@@ -97,7 +97,7 @@ public sealed class MarketDataPollerTests
 
     /// <summary>The v1 schedule (5-second quotes plus 1-minute candles): exercises both candle series and catch-up paging.</summary>
     private static MarketDataOptions WithMinuteCandles() =>
-        new() { QuoteInterval = TimeSpan.FromSeconds(5), MinuteCandleInterval = TimeSpan.FromMinutes(1) };
+        new() { QuoteInterval = TimeSpan.FromSeconds(5), MinuteCandleInterval = TimeSpan.FromMinutes(1), DayCandleInterval = null };
 
     private sealed class Rig
     {
@@ -519,8 +519,8 @@ public sealed class MarketDataPollerTests
     public void DefaultSchedule_FitsFiftyWatchedCoins()
     {
         var options = new MarketDataOptions();
-        Assert.Equal(10m, options.CandleRequestsPerMinute(50));                             // 0.2 hourly-candle polls per coin
-        Assert.Equal(28m, options.PlannedPublicRequestsPerMinute(50, books: 1, signedQuotes: false)); // + 12 tickers + one 10-second book
+        Assert.Equal(12.5m, options.CandleRequestsPerMinute(50));                           // 0.2 hourly- and 0.05 daily-candle polls per coin
+        Assert.Equal(30.5m, options.PlannedPublicRequestsPerMinute(50, books: 1, signedQuotes: false)); // + 12 tickers + one 10-second book
         options.Validate(50);
         options.Validate(50, signedQuotes: true);                                           // live: 30 tickers + 50 × 6 books = 330 of 800
     }
@@ -540,13 +540,13 @@ public sealed class MarketDataPollerTests
         Assert.Equal(TimeSpan.FromSeconds(20), options.QuoteInterval);
         Assert.Equal(TimeSpan.FromSeconds(2), options.TickerInterval);
         Assert.Equal(TimeSpan.FromSeconds(5), options.PublicTickerInterval);
-        Assert.Equal(25m, options.PlannedPublicRequestsPerMinute(50, books: 1, signedQuotes: false)); // 10 candles + 12 tickers + 3
+        Assert.Equal(27.5m, options.PlannedPublicRequestsPerMinute(50, books: 1, signedQuotes: false)); // 10 hourly + 2.5 daily candles + 12 tickers + 3
         options.Validate(50);
         options.Validate(50, signedQuotes: true);
-        // Paper leaves 48 - 10 - 12 = 26 books a minute: 8 active coins keep 20 s, 13 get 30 s, 26 get a minute.
-        Assert.Equal(TimeSpan.FromSeconds(20), options.BookInterval(50, active: 8, signedQuotes: false));
-        Assert.Equal(TimeSpan.FromSeconds(30), options.BookInterval(50, active: 13, signedQuotes: false));
-        Assert.Equal(TimeSpan.FromSeconds(60), options.BookInterval(50, active: 26, signedQuotes: false));
+        // Paper leaves 48 - 12.5 - 12 = 23.5 books a minute: 7 active coins keep 20 s, 12 get 31 s, 23 get 59 s.
+        Assert.Equal(TimeSpan.FromSeconds(20), options.BookInterval(50, active: 7, signedQuotes: false));
+        Assert.Equal(TimeSpan.FromSeconds(31), options.BookInterval(50, active: 12, signedQuotes: false));
+        Assert.Equal(TimeSpan.FromSeconds(59), options.BookInterval(50, active: 23, signedQuotes: false));
         Assert.Equal(TimeSpan.FromSeconds(20), options.BookInterval(50, active: 0, signedQuotes: false));
         Assert.Equal(TimeSpan.FromSeconds(20), options.BookInterval(50, active: 50, signedQuotes: true)); // live: 150 + 30 of 800
     }

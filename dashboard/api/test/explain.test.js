@@ -33,6 +33,22 @@ test('test entries say what they are', () => {
   assert.equal(x.points[2], 'Moves: last hour n/a, last 24 hours -1.20%');
 });
 
+test('swing entries read the daily breakout and have no target', () => {
+  const swing = { ...ENTRY, data: { ...ENTRY.data, symbol: 'SOL-EUR', stopLoss: '90.1', takeProfit: undefined, approvedPrice: '97', requestedPrice: '97',
+    rationale: 'signal entry SOL-EUR rank 1: 20-day breakout: close +2.54% over the 20-day high, 20-day +12.3%, ask 0.12 ATR above the close; stop 90.1, risk 3.9' } };
+  const x = own(swing);
+  assert.equal(x.headline, "Buy SOL-EUR: the scanner's #1 ranked coin had an entry signal");
+  assert.deepEqual(x.points, [
+    'Breakout: the last daily close is +2.54% above the highest price of the 20 days before it',
+    'Moves: +12.3% over 20 days; the ask is 0.12× the daily range (ATR) above that close',
+  ]);
+  assert.equal(x.risk.text, 'Risk plan: stop 90.1 (-7.11%), about 3.9 EUR lost if the stop is hit');
+  assert.match(explain(swing, 'ru').points[0], /^Пробой: последнее дневное закрытие на \+2\.54% выше максимума 20 дней до него$/);
+
+  const exit = { actor: 'trader', data: { tool: 'place_order', symbol: 'SOL-EUR', side: 'sell', status: 'placed', rule: 'ok', rationale: 'signal exit SOL-EUR trend-down: the daily close fell 1.2% below EMA50' } };
+  assert.ok(explain(exit, 'ru').points.includes('Подробности: дневное закрытие опустилось на 1.2% ниже EMA50'));
+});
+
 test('exits name their reason, with the detail', () => {
   const stop = { actor: 'engine', data: { tool: 'protective-exit', symbol: 'UNI-EUR', side: 'sell', status: 'placed', rule: 'ok', rationale: 'protective exit UNI-EUR stop: bid 6.10 at or below stop 6.12' } };
   assert.equal(own(stop).headline, "Sell UNI-EUR: the price fell to the position's stop-loss");

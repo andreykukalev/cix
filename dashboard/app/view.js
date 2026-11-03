@@ -234,18 +234,19 @@
     return { body: { id, name: choice.name, version: choice.version, note: cleanNote(choice.note), tradingMode: choice.mode === 'live' ? 'live' : 'paper' } };
   }
 
-  /** A strategy's name for people: Safe v1 (Безопасная v1 in Russian, for the three featured ones). */
+  /** A strategy's name for people: Safe v1 (Безопасная v1 in Russian, for the presets). */
   function strategyName(s) {
     const name = String(s?.name ?? '');
     const title = PROFILES[name] ? t(PROFILES[name].title) : `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
     return `${title} v${s?.version ?? '?'}`;
   }
 
-  /** The three preset strategies (risk profiles); every other version is shown as Custom. */
+  /** The preset strategies (risk profiles, and the daily swing one); every other version is shown as Custom. */
   const PROFILES = {
     safe: { title: 'Safe', profile: 'Safe', tone: 'ok' },
     balanced: { title: 'Balanced', profile: 'Balanced', tone: '' },
     risky: { title: 'Risky', profile: 'Risky', tone: 'warn' },
+    swing: { title: 'Swing', profile: 'Swing', tone: '' },
   };
 
   const SELECTION = {
