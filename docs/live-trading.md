@@ -8,15 +8,15 @@ Every step on this page is yours: agents can't set the live mode, add the keys, 
 
 The live engine reads its own limits file, `config/risk-limits.live.json`, never paper's `config/risk-limits.json`. Without it, a Live engine refuses to start. Like paper's file, it changes only on your request (CLAUDE.md rule 3), and the hard ceilings in `HardCeilings.cs` still cap whatever it says. It is built into the image, so a change reaches the live engine with the next image you promote.
 
-The file as it stands, for the first run: 100 EUR on the fixed Safe strategy. Safe's own limits are tighter still: 5 EUR orders, at most 10 EUR per coin, 25% of the allocation in coins, and no buys after a 3 EUR loss in a day.
+The file as it stands: 1000 EUR since 2026-11-03, the owner's budget for the daily swing strategy; the first run had 100 EUR on the fixed Safe strategy. Safe's own limits are tighter still: 5 EUR orders, at most 10 EUR per coin, 25% of the allocation in coins, and no buys after a 3 EUR loss in a day.
 
 ```json
 {
   "Risk": {
-    "AllocationQuote": 100,
-    "MaxOrderQuote": 20,
-    "MaxPositionQuotePerSymbol": 25,
-    "MaxDailyLossQuote": 5,
+    "AllocationQuote": 1000,
+    "MaxOrderQuote": 50,
+    "MaxPositionQuotePerSymbol": 50,
+    "MaxDailyLossQuote": 20,
     "MaxDrawdownFraction": 0.10,
     "MaxOrdersPerMinute": 5,
     "MaxPriceDeviationFraction": 0.01,
@@ -27,8 +27,8 @@ The file as it stands, for the first run: 100 EUR on the fixed Safe strategy. Sa
 }
 ```
 
-- **Drawdown 10%**, not paper's 15%: while equity is 10% or more below its peak (10 EUR from 100 EUR), the gate refuses new buys and the safety checks cancel open ones. It isn't latched: buys are allowed again by themselves once equity is back within 10% of the peak, with no Resume. Sells, stops and targets carry on. Only the 30% hard ceiling halts until you resume (below).
-- **Daily loss 5 EUR**, half the ceiling (10% of the allocation).
+- **Drawdown 10%**, not paper's 15%: while equity is 10% or more below its peak (100 EUR from 1000 EUR), the gate refuses new buys and the safety checks cancel open ones. It isn't latched: buys are allowed again by themselves once equity is back within 10% of the peak, with no Resume. Sells, stops and targets carry on. Only the 30% hard ceiling halts until you resume (below).
+- **Daily loss 20 EUR**, a fifth of the ceiling (10% of the allocation): room for four or five swing stops in one day.
 - **Coins: any EUR pair, at most `MaxTradableSymbols`.** No pair list lives in the file (ADR-0021). You add coins on the Live view's Coins tab (with its confirmation); each is watched, and trades only while it passes the live strategy's filters. Coins the sub-account holds are added by the engine and can't be removed while held. Such a coin has no stop: the protection watches only positions bought with a stop-loss (their plan), so a coin the engine adopts, or one bought without a stop, is sold only by the trader or by you. The live engine starts watching only what it holds and what you add. Revolut X's smallest order on the liquid pairs is 0.1 EUR (its public pairs list, 27 Oct), well under Safe's 5 EUR.
 - **Emergency slippage** (`MaxEmergencySlippageFraction`, optional): how far below mid a stop-loss sell may go. The protection sells with immediate-or-cancel limits at the bid, and refuses to quote when the bid is further below mid than this; without the setting it uses `MaxPriceDeviationFraction`, which on thin pairs leaves many stops unfilled in a fast fall. `0.03` is the agreed start, set in the file above; the hard ceiling (5%) caps it. The `Protection` section of `appsettings.json` holds the engine side (quote age, retry delay, five quick tries, then a retry every minute) with conservative defaults that need no change.
 
