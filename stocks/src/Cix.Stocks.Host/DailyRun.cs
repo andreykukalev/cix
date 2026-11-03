@@ -1,3 +1,4 @@
+using System.Globalization;
 using Cix.Domain.Exchange;
 using Cix.Stocks.Simulation;
 
@@ -62,10 +63,10 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
         var terms = state.Terms ?? new Dictionary<string, SymbolTerms>();
         var notes = new List<AdvisorNote>();
 
-        // 0. The owner's real portfolio (ADR-0026): as the last run left it, or the newest submission from the page since.
-        // Their broker account is in USD, so only a USD advisor advises it.
+        // 0. The owner's real portfolio (ADR-0026): as the last run left it, with the submissions from the page since applied
+        // in order (whole portfolios and trades). Their broker account is in USD, so only a USD advisor advises it.
         var ownerSaved = UsdBase ? await store.GetOwnerStateAsync(cancellationToken).ConfigureAwait(false) : null;
-        var ownerRecord = UsdBase ? await OwnerAsync(ownerSaved?.Value, now, cancellationToken).ConfigureAwait(false) : null;
+        var (ownerRecord, ownerTrades) = UsdBase ? await OwnerAsync(ownerSaved?.Value, now, cancellationToken).ConfigureAwait(false) : (null, []);
         var owner = OwnerPortfolio.HasPortfolio(ownerRecord) ? ownerRecord : null;
 
         // 1. What needs fetching, and the reservation of its calls.
@@ -244,6 +245,8 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
         // 6. Append-only records first, then the portfolio (which fails if another run got there first), then the page.
         foreach (var trade in trades)
             await store.AddTradeAsync($"{trade.Day:yyyy-MM-dd}-{trade.Symbol}-{trade.Kind}", trade, cancellationToken).ConfigureAwait(false);
+        foreach (var (sequence, trade) in ownerTrades)
+            await store.AddTradeAsync(string.Create(CultureInfo.InvariantCulture, $"owner-{sequence}"), trade, cancellationToken).ConfigureAwait(false);
         await store.AddAdviceAsync($"advice-{asOf:yyyy-MM-dd}", document, cancellationToken).ConfigureAwait(false);
         var next = new PaperState(
             config.BaseCurrency, state.Capital, portfolio.Cash, portfolio.Positions, asOf, pending, today, calls + spent, nextTerms);
@@ -288,30 +291,39 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
     private bool UsdBase => string.Equals(config.BaseCurrency, "USD", StringComparison.Ordinal);
 
     /// <summary>
-    /// The owner's record for this run: the saved one, or the newest submission since the last one seen (one the page sent
-    /// since), applied. A refused newest submission leaves the portfolio as it was (none, before the first is applied); the
-    /// refusal is kept, and shown, until a newer submission is applied, and it isn't looked at again.
+    /// The owner's record for this run: the saved one, with each submission since the last one seen (the page sent them
+    /// since) applied in order: a whole portfolio replaces it, a trade changes it (and its line goes to the trades
+    /// container). A refused submission leaves the portfolio as it was (none, before the first is applied); the refusal is
+    /// kept, and shown, until a later run applies a submission, and it isn't looked at again.
     /// </summary>
-    private async Task<OwnerState?> OwnerAsync(OwnerState? saved, DateTimeOffset now, CancellationToken cancellationToken)
+    private async Task<(OwnerState? Record, List<(int Sequence, TradeLine Trade)> Trades)> OwnerAsync(
+        OwnerState? saved, DateTimeOffset now, CancellationToken cancellationToken)
     {
         var seen = OwnerPortfolio.Seen(saved);
-        (int Sequence, SubmissionRead Read)? newest = null;
+        var record = saved;
+        var trades = new List<(int, TradeLine)>();
+        PortfolioRefusal? refused = null;
         for (var n = seen + 1; n <= seen + OwnerPortfolio.MaxPending; n++)
         {
             if (await store.GetPortfolioSubmissionAsync(n, cancellationToken).ConfigureAwait(false) is not { } read)
                 break;
-            newest = (n, read);
+            var (state, error, trade) = read.Submission is not { } submission ? (null, "unreadable", null)
+                : submission.Sequence != n ? (null, "sequence", null)
+                : OwnerPortfolio.Apply(record, submission);
+            if (state is not null)
+            {
+                record = state;
+                if (trade is not null)
+                    trades.Add((n, trade));
+                continue;
+            }
+
+            refused = new PortfolioRefusal(n, error!);
+            record = (record ?? new OwnerState(0m, [], 0, now)) with { SeenSequence = n, Refusal = refused };
         }
 
-        if (newest is not { } found)
-            return saved;
-        var (state, error) = found.Read.Submission is not { } submission ? (null, "unreadable")
-            : submission.Sequence != found.Sequence ? (null, "sequence")
-            : OwnerPortfolio.Apply(submission);
-        if (state is not null)
-            return state;
-        var refusal = new PortfolioRefusal(found.Sequence, error!);
-        return (saved ?? new OwnerState(0m, [], 0, now)) with { SeenSequence = found.Sequence, Refusal = refusal };
+        // A refusal among them is shown even when a later one applied (a refused trade isn't replaced by the next one).
+        return (refused is null ? record : record! with { Refusal = refused }, trades);
     }
 
     /// <summary>
@@ -375,7 +387,8 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
             holdings.Select(h => new HoldingLine(
                 h.Symbol, InstrumentOf(h).Name, InstrumentOf(h).Currency, h.Quantity, Math.Round(h.AverageCost, 4, MidpointRounding.ToEven),
                 lastClose.TryGetValue(h.Symbol, out var c) ? c : null, h.Stop, h.OpenedOn)).ToList(),
-            notes.Distinct().Select(n => new NoteLine(n.Symbol, n.Reason)).ToList());
+            notes.Distinct().Select(n => new NoteLine(n.Symbol, n.Reason)).ToList(),
+            (owner.Trades ?? []).Reverse().ToList());
 
         // The stops the advice set or raised, as placed; the terms of each holding's bars, for the next split.
         var placed = result.Actions.Where(a => a.Kind is ActionKind.SetStop or ActionKind.RaiseStop && a.Stop is not null)

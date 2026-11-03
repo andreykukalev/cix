@@ -187,6 +187,39 @@ public class OwnerPortfolioTests
     }
 
     [Fact]
+    public async Task Run_ATradeAsTheDashboardWritesItIsApplied()
+    {
+        // Byte for byte the shape dashboard/api/src/portfolio.js tradeValue writes: no capital or holdings, the trade's
+        // figures as decimal strings, null fees and stop when not entered.
+        var s = new Setup();
+        s.Store.SubmitJson(1, """
+            {"sequence":1,"submittedAt":"2026-10-28T18:00:00.000Z","capital":"5000","holdings":[
+              {"symbol":"OWN.US","name":"Own Inc","quantity":"10","averageCost":"100","stop":"90","openedOn":"2026-09-01"}],
+             "clientId":"0b7c4bde-2f8e-4a52-9a43-5d1f2f6f3c11"}
+            """);
+        s.Store.SubmitJson(2, """
+            {"sequence":2,"submittedAt":"2026-10-28T18:05:00.000Z","trade":
+              {"kind":"sell","symbol":"OWN.US","name":null,"quantity":"4","price":"130.25","fees":null,"day":"2026-10-28","stop":null},
+             "clientId":"2d9c2f4e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"}
+            """);
+        s.Store.SubmitJson(3, """
+            {"sequence":3,"submittedAt":"2026-10-28T18:06:00.000Z","trade":
+              {"kind":"buy","symbol":"XYZ.US","name":"Xyz","quantity":"2.5","price":"40","fees":"0.5","day":"2026-10-28","stop":"36"},
+             "clientId":"3e0d3f5a-2b3c-4d5e-9f0a-1b2c3d4e5f60"}
+            """);
+
+        await s.RunAsync();
+
+        Assert.Null(s.Latest.Refusal);
+        var owner = s.Owner!;
+        // 5000 + 4 × (130.25 − 100) = 5121; the buy keeps the capital and costs (2.5 × 40 + 0.5) / 2.5 = 40.2 a share.
+        Assert.Equal((5_121m, 3), (owner.Capital, owner.AppliedSequence));
+        // (The stops are the night's advice's, which raises them on the test's bars.)
+        Assert.Equal([("OWN.US", 6m, 100m), ("XYZ.US", 2.5m, 40.2m)], owner.Holdings.Select(h => (h.Symbol, h.Quantity, h.AverageCost)));
+        Assert.Equal([("sell", 0m, (decimal?)121m), ("buy", 0.5m, null)], owner.Trades!.Select(t => (t.Kind, t.FeesBase, t.ProfitBase)));
+    }
+
+    [Fact]
     public async Task Run_ASubmissionThatIsNotOneIsRefused()
     {
         var s = new Setup();
@@ -314,5 +347,113 @@ public class OwnerPortfolioTests
         // 80 code points, as the page counts them (160 UTF-16 units here).
         Assert.Equal(string.Concat(Enumerable.Repeat("\U0001F600", 80)), state.Holdings[2].Name);
         Assert.Null(state.Holdings[3].Name); // nothing left
+    }
+
+    private static PortfolioSubmission Trade(
+        int sequence, string kind, string symbol, decimal quantity, decimal price, decimal? fees = null, DateOnly? day = null, decimal? stop = null) =>
+        new(sequence, Sent, 0m, null, new OwnerTradeInput(kind, symbol, null, quantity, price, fees, day ?? Wednesday, stop));
+
+    private static OwnerState Portfolio(decimal capital = 5_000m) =>
+        OwnerPortfolio.Apply(Submission(1, capital, Held("XYZ.US", 10m, 120m, stop: 110m), Held("OWN.US", 5m, 100m))).State!;
+
+    [Fact]
+    public void Trade_ABuyAddsTheSharesAtTheirPriceWithTheFeesInTheCost()
+    {
+        var (state, error, line) = OwnerPortfolio.Apply(Portfolio(), Trade(2, "buy", "XYZ.US", 5m, 150m, fees: 1.5m));
+
+        Assert.Null(error);
+        // (10 × 120 + 5 × 150 + 1.5) / 15 = 130.1; the stop and the day bought stay; the capital stays (the cash falls).
+        Assert.Equal(new OwnerHolding("XYZ.US", null, 15m, 130.1m, 110m, new DateOnly(2026, 9, 1)), state!.Holdings[0]);
+        Assert.Equal((5_000m, 2, 2), (state.Capital, state.AppliedSequence, state.SeenSequence));
+        Assert.Equal(new TradeLine(Wednesday, "XYZ.US", "buy", 5m, 150m, 1.5m, null, OwnerPortfolio.TradeReason), line);
+        Assert.Equal([line!], state.Trades!);
+
+        // A new holding opens on the trade's day, with the stop placed with it; a new stop replaces a held one's.
+        var (bought, _, _) = OwnerPortfolio.Apply(state, Trade(3, "buy", "NEW.US", 2m, 50m, stop: 45m));
+        Assert.Equal(new OwnerHolding("NEW.US", null, 2m, 50m, 45m, Wednesday), bought!.Holdings[^1]);
+        Assert.Equal(125m, OwnerPortfolio.Apply(bought, Trade(4, "buy", "XYZ.US", 1m, 130m, stop: 125m)).State!.Holdings[0].Stop);
+        Assert.Equal(2, bought.Trades!.Count);
+    }
+
+    [Fact]
+    public void Trade_ASellAddsItsProfitOrLossToTheCapital()
+    {
+        // 4 × (140 − 120) − 1 = 79.
+        var (state, error, line) = OwnerPortfolio.Apply(Portfolio(), Trade(2, "sell", "XYZ.US", 4m, 140m, fees: 1m));
+        Assert.Null(error);
+        Assert.Equal((5_079m, 6m, 120m), (state!.Capital, state.Holdings[0].Quantity, state.Holdings[0].AverageCost));
+        Assert.Equal(new TradeLine(Wednesday, "XYZ.US", "sell", 4m, 140m, 1m, 79m, OwnerPortfolio.TradeReason), line);
+
+        // All of OWN at a loss: 5 × (90 − 100) = −50, and the holding goes.
+        var (sold, _, loss) = OwnerPortfolio.Apply(state, Trade(3, "sell", "OWN.US", 5m, 90m));
+        Assert.Equal((5_029m, -50m), (sold!.Capital, loss!.ProfitBase));
+        Assert.Equal(["XYZ.US"], sold.Holdings.Select(h => h.Symbol));
+
+        // A whole portfolio sent afterwards replaces the holdings and keeps the record of trades.
+        var replaced = OwnerPortfolio.Apply(sold, Submission(4, 6_000m)).State!;
+        Assert.Empty(replaced.Holdings);
+        Assert.Equal(2, replaced.Trades!.Count);
+    }
+
+    [Theory]
+    [InlineData("short", "XYZ.US", "1", "1", null, 0, "kind")]
+    [InlineData("sell", "ABC.US", "1", "1", null, 0, "not-held")]
+    [InlineData("sell", "XYZ.US", "11", "1", null, 0, "too-many")]
+    [InlineData("buy", "SAP.XETRA", "1", "1", null, 0, "symbol")]
+    [InlineData("buy", "XYZ.US", "0", "1", null, 0, "figures")]
+    [InlineData("buy", "XYZ.US", "1", "0", null, 0, "figures")]
+    [InlineData("buy", "XYZ.US", "1", "1", "-1", 0, "figures")]
+    [InlineData("buy", "XYZ.US", "1", "1", null, 2, "opened")] // the day after the submission's is allowed: the owner's date may be ahead
+    public void Trade_RefusesWhatTheBrokerCouldNotHaveDone(string kind, string symbol, string quantity, string price, string? fees, int daysAfter, string error)
+    {
+        static decimal D(string v) => decimal.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
+        var trade = Trade(2, kind, symbol, D(quantity), D(price), fees is null ? null : D(fees), Wednesday.AddDays(daysAfter));
+
+        Assert.Equal((null, error, null), OwnerPortfolio.Apply(Portfolio(), trade));
+    }
+
+    [Fact]
+    public void Trade_NeedsAPortfolioAndCanNotLeaveTheCapitalAtNothing()
+    {
+        Assert.Equal("no-portfolio", OwnerPortfolio.Apply(null, Trade(1, "buy", "XYZ.US", 1m, 1m)).Error);
+        // 5 × (0.01 − 100) = −499.95 off a capital of 100.
+        Assert.Equal("capital", OwnerPortfolio.Apply(Portfolio(100m), Trade(2, "sell", "OWN.US", 5m, 0.01m)).Error);
+        Assert.Equal("trade", OwnerPortfolio.Apply(Trade(2, "buy", "XYZ.US", 1m, 1m)).Error); // not a whole portfolio
+        Assert.Equal("holdings", OwnerPortfolio.Apply(
+            OwnerPortfolio.Apply(Submission(1, 1_000m, Enumerable.Range(0, 50).Select(i => Held($"S{i}.US", 1m, 1m)).ToArray())).State, Trade(2, "buy", "XYZ.US", 1m, 1m)).Error);
+    }
+
+    [Fact]
+    public async Task Run_TradesAreAppliedInOrderRecordedOnceAndShownNewestFirst()
+    {
+        var s = new Setup();
+        s.Store.Submit(Submission(1, 5_000m, Held("XYZ.US", 10m, 120m)));
+        s.Store.Submit(Trade(2, "sell", "XYZ.US", 4m, 140m));
+        s.Store.Submit(Trade(3, "sell", "ABC.US", 1m, 50m)); // not held: refused, and the next still applies
+        s.Store.Submit(Trade(4, "buy", "XYZ.US", 2m, 130m));
+
+        await s.RunAsync();
+
+        var owner = s.Latest.Owner!;
+        // 5000 + 4 × 20; XYZ (6 × 120 + 2 × 130) / 8 = 122.5, so 980 invested.
+        Assert.Equal((5_080m, 980m, 4_100m, 4), (owner.Capital, owner.Invested, owner.Cash, owner.AppliedSequence));
+        Assert.Equal((8m, 122.5m), (owner.Holdings[0].Quantity, owner.Holdings[0].AverageCost));
+        Assert.Equal(new PortfolioRefusal(3, "not-held"), s.Latest.Refusal);
+        Assert.Equal([("buy", 2m), ("sell", 4m)], owner.Trades!.Select(t => (t.Kind, t.Quantity)));
+        Assert.Equal(80m, s.Store.Read<TradeLine>("trades/owner-2")!.ProfitBase);
+        Assert.NotNull(s.Store.Read<TradeLine>("trades/owner-4"));
+        Assert.Null(s.Store.Read<TradeLine>("trades/owner-3"));
+        Assert.Equal(4, s.Owner!.SeenSequence);
+
+        // The next night: nothing new, the record stays, and the refusal goes once a later change applies.
+        s.NextDay();
+        await s.RunAsync();
+        Assert.Equal(2, s.Latest.Owner!.Trades!.Count);
+        s.NextDay();
+        s.Store.Submit(Trade(5, "sell", "XYZ.US", 8m, 125m));
+        await s.RunAsync();
+        Assert.Null(s.Latest.Refusal);
+        Assert.Empty(s.Latest.Owner!.Holdings);
+        Assert.Equal(5_100m, s.Latest.Owner.Capital); // + 8 × 2.5
     }
 }

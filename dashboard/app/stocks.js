@@ -1,12 +1,17 @@
 'use strict';
 // The Stocks mode (ADR-0023), the third button of the Paper | Live | Stocks switch: the stocks advisor's latest advice from
 // /api/stocks. The owner carries it out by hand in Revolut; the one thing sent from here is the owner's real portfolio
-// (ADR-0026, POST /api/owner/stocks-portfolio), which the next nightly run applies. Kept apart from the
+// (ADR-0026): the whole of it (POST /api/owner/stocks-portfolio) or one trade made at Revolut (POST /api/owner/stocks-trade),
+// which the next nightly run applies in order, doing the trade's arithmetic itself. Kept apart from the
 // crypto tabs, which hide while it shows: app.js calls refreshStocks when it opens and on each refresh while it shows (and
 // reads nothing of crypto's then), and renderStocks when the language changes. Uses app.js's helpers (el, rows, td,
 // tile, amount, price, getJson, t) and its state, so it loads after app.js. Every value is written as text, never as HTML.
 
-const stocks = { answer: null, error: null, sent: null, clientId: null, failed: null };
+const stocks = {
+  answer: null, error: null, sent: null, clientId: null, failed: null,
+  // The trades this page sent (the read may not show them yet), and the trade dialog's kind, retry id and failed figures.
+  sentTrades: [], tradeKind: 'buy', tradeClientId: null, tradeFailed: null,
+};
 
 async function refreshStocks() {
   if (state.signedOut) return;
@@ -265,14 +270,17 @@ function holdingCells(h) {
   ];
 }
 
-/** Why the host refused a portfolio, from its code (Cix.Stocks.Host.OwnerPortfolio). */
+/** Why the host refused a portfolio or a trade, from its code (Cix.Stocks.Host.OwnerPortfolio). */
 function refusalReason(code) {
   switch (code) {
-    case 'capital': return t('the capital is missing or too large');
+    case 'capital': return t('the capital is missing or too large, or a sale\'s loss leaves none');
     case 'holdings': return t('too many holdings');
     case 'symbol': return t('a ticker is not a US share, or is listed twice');
-    case 'figures': return t('a number of shares, a price or a stop is wrong');
-    case 'opened': return t('a day bought is after the day it was sent');
+    case 'figures': return t('a number of shares, a price, the fees or a stop is wrong');
+    case 'opened': return t('a day bought or traded is after the day it was sent');
+    case 'no-portfolio': return t('a trade came before any portfolio: save the whole portfolio first');
+    case 'not-held': return t('a sale of a stock the portfolio does not hold');
+    case 'too-many': return t('a sale of more shares than the portfolio holds');
     default: return t("it couldn't be read");
   }
 }
@@ -298,26 +306,75 @@ function waitingPortfolio(a) {
   return [stocks.answer?.pending, stocks.sent].filter((p) => p && p.sequence > seen).sort((x, y) => y.sequence - x.sequence)[0] ?? null;
 }
 
+/** The trades sent and not yet applied, in the order the next run applies them, the page's own sends included. */
+function waitingTrades(a) {
+  const seen = Math.max(a?.owner?.appliedSequence ?? 0, a?.refusal?.sequence ?? 0);
+  const all = new Map();
+  for (const x of [...(stocks.answer?.pendingTrades ?? []), ...stocks.sentTrades]) if (x && x.sequence > seen) all.set(x.sequence, x);
+  return [...all.values()].sort((x, y) => x.sequence - y.sequence);
+}
+
+function tradeKind(kind) {
+  return el('span', { class: `badge ${kind === 'sell' ? 'bad' : 'ok'}`, text: kind === 'sell' ? t('Sale') : t('Purchase') });
+}
+
+/** A trade as the host recorded it: its profit for a sale, against the average price paid, fees off. */
+function tradeCells(x) {
+  return [
+    x.day ?? '–',
+    tradeKind(x.kind),
+    stockName(x),
+    td(amount(x.quantity, 0), 'num'),
+    td(stockPrice(x.price, 'USD'), 'num'),
+    td(x.fees ? money(x.fees, 'USD') : '–', 'num'),
+    td(x.profit === null || x.profit === undefined ? '–' : el('span', { class: `move ${x.profit >= 0 ? 'up' : 'down'}`, text: money(x.profit, 'USD') }), 'num'),
+  ];
+}
+
+/** A trade sent and not yet applied: the next run works out its profit. */
+function waitingTradeCells(x) {
+  if (x.unreadable || !x.trade) return ['–', '–', '–', td('–', 'num'), td('–', 'num'), td('–', 'num'), td(el('span', { class: 'badge warn', text: t("can't be read") }), 'num')];
+  const w = x.trade;
+  return [
+    w.day,
+    tradeKind(w.kind),
+    stockName(w),
+    td(amount(w.quantity, 0), 'num'),
+    td(stockPrice(w.price, 'USD'), 'num'),
+    td(w.fees && Number(w.fees) > 0 ? money(w.fees, 'USD') : '–', 'num'),
+    td(el('span', { class: 'badge warn', text: t('waiting for the next run') }), 'num'),
+  ];
+}
+
 /** The owner's real portfolio (ADR-0026): its advice, what is waiting for the next run, or the ask to enter it. */
 function renderOwner(a) {
   const o = a?.owner ?? null;
   const waiting = waitingPortfolio(a);
+  const trades = waitingTrades(a);
   const configured = Boolean(stocks.answer?.configured) && !stocks.error;
   document.getElementById('stocks-portfolio-open').hidden = !configured;
+  // A trade changes a portfolio, so it needs one first: applied, or waiting before it.
+  const tradable = configured && Boolean(o || (waiting && !waiting.unreadable));
+  document.getElementById('stocks-trade-buy').hidden = !tradable;
+  document.getElementById('stocks-trade-sell').hidden = !tradable;
   const notice = document.getElementById('stocks-owner-banner');
   const say = (text, tone) => {
     notice.hidden = !text;
     notice.className = `banner ${tone ?? ''}`;
     notice.textContent = text ?? '';
   };
-  if (!configured) say(null);
-  else if (waiting?.unreadable) say(t('A portfolio change is waiting for the next run, but the page cannot read it.'), 'warn');
+  const waits = [];
+  if (waiting?.unreadable) waits.push(t('A portfolio change is waiting for the next run, but the page cannot read it.'));
   else if (waiting) {
-    say(t('Sent {when}: capital {capital}, {count} holdings. The next run after a US close applies it: {next}.', {
+    waits.push(t('Sent {when}: capital {capital}, {count} holdings. The next run after a US close applies it: {next}.', {
       when: new Date(waiting.submittedAt).toLocaleString(I.locale()), capital: money(waiting.capital, 'USD'), count: waiting.holdings.length,
       next: runTime(nextStocksRun()),
-    }), 'warn');
-  } else if (a?.refusal) say(t('The last portfolio you sent was refused: {reason}. Edit it and save again.', { reason: refusalReason(a.refusal.reason) }), 'bad');
+    }));
+  }
+  if (trades.length) waits.push(t('Trades waiting for the next run: {count}. It recomputes the capital and the holdings from them: {next}.', { count: trades.length, next: runTime(nextStocksRun()) }));
+  if (!configured) say(null);
+  else if (waits.length) say(waits.join(' '), 'warn');
+  else if (a?.refusal) say(t('A change you sent was refused: {reason}. Check the portfolio and the trades, and send it again, corrected.', { reason: refusalReason(a.refusal.reason) }), 'bad');
   else if (!o) say(t('Enter your capital and what you hold at Revolut, so the advice is for your real account. Until then the advice below is for the paper portfolio only.'));
   else say(null);
 
@@ -329,6 +386,11 @@ function renderOwner(a) {
   rows('stocks-owner-actions', o?.actions ?? [], actionCells, t('Nothing to do: hold what you have, with its stops.'));
   rows('stocks-owner-holdings', o?.holdings ?? [], holdingCells, t('No holdings: all in cash.'));
   rows('stocks-owner-notes', o?.notes ?? [], (n) => [stockName(n), td(stockReason(n.reason), 'why')], t('No notes.'));
+  // The journal: the trades waiting for the next run, newest first, above those the host recorded (newest first too).
+  document.getElementById('stocks-owner-trades-part').hidden = !configured || !(o || trades.length);
+  const journal = [...[...trades].reverse().map((x) => ({ waiting: x })), ...(o?.trades ?? []).map((x) => ({ recorded: x }))];
+  rows('stocks-owner-trades', journal, (j) => (j.waiting ? waitingTradeCells(j.waiting) : tradeCells(j.recorded)),
+    t('No trades recorded yet: after a buy or a sell at Revolut, press I bought or I sold.'));
   // With a real portfolio the paper one stays beside it, as the benchmark.
   document.getElementById('h-stocks-actions').textContent = o ? t('Paper portfolio: what it does') : t('What to do in Revolut');
   document.getElementById('h-stocks-holdings').textContent = o ? t('Paper portfolio: holdings and stops') : t('Holdings and stops');
@@ -371,10 +433,11 @@ function renderStocks() {
   // change sent and not yet applied marks the tile, so its figures aren't taken for the new ones.
   const o = a?.owner ?? null;
   const waiting = waitingPortfolio(a);
+  const pendingTrades = waitingTrades(a).length;
   const requested = waiting && !waiting.unreadable
     ? el('span', { class: 'line', text: t('Change requested: capital {capital}, from {next}', { capital: money(waiting.capital, 'USD'), next: runTime(nextStocksRun()) }) })
-    : waiting ? el('span', { class: 'line', text: t('A change is waiting for the next run') }) : null;
-  const tone = waiting ? 'warn' : '';
+    : waiting || pendingTrades ? el('span', { class: 'line', text: t('A change is waiting for the next run') }) : null;
+  const tone = waiting || pendingTrades ? 'warn' : '';
   if (o) {
     tile('tile-stocks-account', tone, o.value !== null && o.cash !== null ? money(o.cash + o.value, 'USD') : '–',
       [t('allocation {amount}', { amount: money(o.capital, 'USD') }), ' · ', t('cash {amount}', { amount: money(o.cash, 'USD') }), requested]);
@@ -445,6 +508,11 @@ function openPortfolio() {
   document.querySelector('#stocks-portfolio-rows tbody').replaceChildren();
   for (const h of start.holdings) portfolioRow({ ...h, symbol: h.symbol?.replace(/\.US$/, '') });
   if (start.holdings.length === 0) portfolioRow();
+  // Trades waiting after that portfolio are not in the form: a portfolio saved now comes after them and replaces what they make.
+  const after = waitingTrades(a).filter((x) => !waiting || x.sequence > waiting.sequence).length;
+  const warning = document.getElementById('stocks-portfolio-trades');
+  warning.hidden = after === 0;
+  warning.textContent = after ? t('Trades waiting for the next run are not in this form: {count}. A portfolio saved now replaces what they would change, so enter it as it is after them.', { count: after }) : '';
   document.getElementById('stocks-portfolio-error').hidden = true;
   document.getElementById('stocks-portfolio-send').disabled = false;
   stocks.clientId = crypto.randomUUID(); // a retry of this dialog is the same submission
@@ -543,7 +611,111 @@ async function sendPortfolio(event) {
   }
 }
 
+// --- The trade dialog: one buy or sell made at Revolut, sent as one submission -------------------------------------------
+
+/** Opens the trade dialog for a buy or a sell; the tickers held are offered, and the day is today. */
+function openTrade(kind) {
+  const a = stocks.answer?.advice ?? null;
+  const waiting = waitingPortfolio(a);
+  stocks.tradeKind = kind;
+  const buy = kind === 'buy';
+  document.getElementById('stocks-trade-title').textContent = buy ? t('I bought') : t('I sold');
+  document.getElementById('stocks-trade-help').textContent = buy
+    ? t('The shares are added to the holding at this price, the fees in its cost. The capital stays the same, so the free cash falls by what you paid.')
+    : t('The shares come off the holding; the profit or loss against the average price paid, fees off, is added to the capital. Selling all of them closes the holding.');
+  document.getElementById('stocks-trade-stop').hidden = !buy;
+  const held = (waiting && !waiting.unreadable ? waiting.holdings : a?.owner?.holdings ?? []).map((h) => h.symbol);
+  document.getElementById('stocks-trade-held').replaceChildren(...held.map((symbol) => el('option', { value: symbol.replace(/\.US$/, '') })));
+  const form = document.getElementById('stocks-trade-form');
+  form.reset();
+  form.elements.day.value = localToday();
+  const waits = waitingTrades(a).length;
+  const note = document.getElementById('stocks-trade-waiting');
+  note.hidden = waits === 0;
+  note.textContent = waits ? t('Trades waiting for the next run: {count}. This one is applied after them.', { count: waits }) : '';
+  document.getElementById('stocks-trade-error').hidden = true;
+  document.getElementById('stocks-trade-send').disabled = false;
+  stocks.tradeClientId = crypto.randomUUID(); // a retry of this dialog is the same trade
+  stocks.tradeFailed = null;
+  document.getElementById('stocks-trade-dialog').showModal();
+}
+
+/** The dialog's trade, checked as the host checks it; { error } names the first problem. */
+function tradeBody() {
+  const form = document.getElementById('stocks-trade-form');
+  const get = (name) => form.elements[name].value.trim();
+  const buy = stocks.tradeKind === 'buy';
+  const raw = get('symbol').toUpperCase();
+  const symbol = raw.includes('.') ? raw : `${raw}.US`;
+  if (!US_TICKER.test(symbol)) return { error: t('{symbol} is not a US ticker: enter it like EPAM or EPAM.US.', { symbol: raw || '–' }) };
+  const names = buy ? ['quantity', 'price', 'fees', 'stop'] : ['quantity', 'price', 'fees'];
+  const unclear = names.find((name) => get(name) && typedNumber(get(name)) === null);
+  if (unclear) return { error: t('{value} could be thousands or a decimal: write it as 10000 or 10.5.', { value: get(unclear) }) };
+  const figure = (name) => {
+    const v = typedNumber(get(name));
+    return v !== null && DECIMAL.test(v) && Number(v) > 0 && Number(v) <= 1_000_000 ? v : null;
+  };
+  const quantity = figure('quantity');
+  const price = figure('price');
+  if (!quantity || !price) return { error: t('Enter the shares and the price per share, as numbers above 0.') };
+  const feesTyped = get('fees') ? typedNumber(get('fees')) : null;
+  if (feesTyped !== null && (!DECIMAL.test(feesTyped) || Number(feesTyped) > 1_000_000)) return { error: t('The fees must be a number from 0, or empty.') };
+  const stop = buy && get('stop') ? figure('stop') : null;
+  if (buy && get('stop') && !stop) return { error: t('{symbol}: the stop must be a number above 0, or empty.', { symbol }) };
+  const day = get('day');
+  if (!day) return { error: t('Enter the day of the trade.') };
+  if (day > localToday()) return { error: t('The day of the trade cannot be after today.') };
+  // A sale of what the applied portfolio doesn't hold is refused by the next run; with changes waiting the page can't tell.
+  const a = stocks.answer?.advice ?? null;
+  if (!buy && !waitingPortfolio(a) && waitingTrades(a).length === 0 && a?.owner) {
+    const h = a.owner.holdings.find((x) => x.symbol === symbol);
+    if (!h) return { error: t('{symbol} is not in your portfolio.', { symbol }) };
+    if (Number(quantity) > Number(h.quantity)) return { error: t('{symbol}: you hold {held} shares.', { symbol, held: amount(h.quantity, 0) }) };
+  }
+  const name = (a?.owner?.holdings ?? []).find((x) => x.symbol === symbol)?.name ?? null;
+  return { body: { clientId: stocks.tradeClientId, trade: { kind: stocks.tradeKind, symbol, name, quantity, price, fees: feesTyped, day, stop } } };
+}
+
+async function sendTrade(event) {
+  event.preventDefault();
+  const error = document.getElementById('stocks-trade-error');
+  const { body, error: problem } = tradeBody();
+  if (problem) { error.textContent = problem; error.hidden = false; return; }
+  // Changed since a send that failed (and may have been saved all the same): a new trade.
+  const figures = JSON.stringify(body.trade);
+  if (stocks.tradeFailed !== null && stocks.tradeFailed !== figures) body.clientId = stocks.tradeClientId = crypto.randomUUID();
+  stocks.tradeFailed = null;
+  const send = document.getElementById('stocks-trade-send');
+  const label = send.textContent;
+  send.disabled = true;
+  send.textContent = t('Sending…');
+  try {
+    const response = await api('/api/owner/stocks-trade', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cix-request': '1' },
+      body: JSON.stringify(body),
+    });
+    const answer = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(answer.error ? t(answer.error) : t('The dashboard answered {status}.', { status: response.status }));
+    if (answer.pending?.trade) stocks.sentTrades = [...stocks.sentTrades.filter((x) => x.sequence !== answer.pending.sequence), answer.pending];
+    document.getElementById('stocks-trade-dialog').close();
+    renderStocks();
+  } catch (e) {
+    if (e instanceof SignedOut) { signedOut(); return; }
+    stocks.tradeFailed = figures;
+    error.textContent = t('Not saved: {error} Save again to retry: it stays one change.', { error: e.message });
+    error.hidden = false;
+    send.disabled = false;
+  } finally {
+    send.textContent = label;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('stocks-trade-buy').addEventListener('click', () => openTrade('buy'));
+  document.getElementById('stocks-trade-sell').addEventListener('click', () => openTrade('sell'));
+  document.getElementById('stocks-trade-form').addEventListener('submit', sendTrade);
+  document.getElementById('stocks-trade-cancel').addEventListener('click', () => document.getElementById('stocks-trade-dialog').close());
   document.getElementById('stocks-portfolio-open').addEventListener('click', openPortfolio);
   document.getElementById('stocks-portfolio-add').addEventListener('click', () => portfolioRow());
   document.getElementById('stocks-portfolio-form').addEventListener('submit', sendPortfolio);

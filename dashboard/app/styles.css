@@ -124,6 +124,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; }
 .panel-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+.panel-head .head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .split { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
 
 .figures { display: flex; flex-wrap: wrap; gap: 10px 28px; }

@@ -15,11 +15,13 @@ The stocks advisor (ADR-0023) advises a paper portfolio of its own and assumes t
 4. **The advice is for the real portfolio.** The same advisor, on the same bars, runs a second time for the owner: sized on the owner's capital less what his holdings cost, his holdings checked first (their bars fetched before the rest of the watchlist), a stop for each, sells when the trend breaks or the stop is hit. The page shows it first, under "My portfolio"; the paper portfolio stays beside it as the benchmark. The market-wide search sizes its candidates on the owner's capital and leaves out what he holds.
 5. **What the advisor assumes until told otherwise.** A stop it sets or raises is taken as placed (the next run trails from it). A sell is advised again each night until the owner sends the portfolio without it. A split moves the holding into the new terms, with a note to check it; a dividend changes nothing (the broker leaves stops and costs alone).
 
+6. **Amended 2026-11-03: trades too.** The owner asked to record a sale with its shares and price, not retype the portfolio. The page's "I bought" and "I sold" send one trade (`POST /api/owner/stocks-trade`: buy or sell, ticker, shares, price per share, fees, day, and a stop for a buy) as the next `portfolio-N`, with the same writer and the same once-only client id. The host now applies every submission after the last one seen, in order: a whole portfolio replaces the state, a trade changes it (`OwnerPortfolio.ApplyTrade`, in decimal on the host, never on the page). A buy adds the shares at its price with the fees in the average cost and leaves the capital, so the free cash falls; a sell takes the shares off at the average cost and adds its profit or loss, fees off, to the capital, closing the holding at zero. A trade that can't apply (no portfolio yet, a sale of more than is held) is refused like a portfolio and the ones after it still apply. Each applied trade is recorded once (`trades/owner-N`) and the latest 100 are shown under "My trades". The whole-portfolio dialog stays, to correct the record.
+
 ## Alternatives considered
 
 | Option | Why not |
 | --- | --- |
-| Sending each buy and sell as its own change | Applying changes in order needs every one of them, exactly once; a whole portfolio is simple to check and to correct. The chat can still fill the dialog's figures later. |
+| Sending each buy and sell as its own change | Chosen too since (item 6): the numbered submissions and the once-only client id already give every change exactly once, in order, and the whole portfolio stays to correct the record. |
 | A writer secret of its own for the stocks database | Another secret to rotate; the existing writer gets a create-only role in the stocks account instead. |
 | Applying the portfolio at once from the dashboard | The dashboard can't read EODHD or run the advisor, and the owner asked for the next scheduled run. |
 | Dropping the paper portfolio | It shows what following every piece of advice earns, against which the owner's own choices can be judged. |
@@ -28,5 +30,5 @@ The stocks advisor (ADR-0023) advises a paper portfolio of its own and assumes t
 
 - The owner reruns provision-stocks.ps1 once (after setup-dashboard-requests.ps1 has made the writer): the `requests` container and the writer's role appear, and the new image is built.
 - Each holding outside the watchlist costs one EODHD call a night: with the free key's 18 calls, a long list pushes watchlist stocks to the next night (noted `call-budget`). With more holdings than calls, the holdings take turns, the longest unfetched first, so none goes unchecked for more than a night or two. The fixed watchlist goes once the search is on.
-- The owner records his buys and sells himself (the dialog now, the chat later); the advice is only as current as the last portfolio he sent.
+- The owner records his buys and sells himself (each with "I bought" or "I sold", or the whole dialog); the advice is only as current as what he sent. A whole portfolio saved after trades still waiting replaces what they change, and the dialog says so.
 - Next: warnings on holdings (sell half, sell all, buy more) from the Claude analyst, and the chat.

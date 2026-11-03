@@ -84,12 +84,12 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
 
 test('without the stocks settings the tab is not set up, and nothing is read', async () => {
   assert.equal(stocksReader({ COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: 'a2V5' }), null);
-  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, analysis: null, pending: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, analysis: null, pending: null, pendingTrades: [], generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('no document yet is set up but without advice', async () => {
   const reader = { readDocument: async () => null };
-  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, analysis: null, pending: null, generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, analysis: null, pending: null, pendingTrades: [], generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('actions come protective first, in the advisor\'s order within a kind', () => {
@@ -264,6 +264,38 @@ test('a portfolio sent since the last run is shown as waiting, from the first nu
   assert.equal(answer.pending.sequence, 5);
   assert.equal(answer.pending.capital, '3000');
   assert.deepEqual(answer.pending.holdings, [{ symbol: 'OWN.US', name: null, quantity: '5', averageCost: '100', stop: null, openedOn: null }]);
+  assert.deepEqual(answer.pendingTrades, []);
+});
+
+test('trades sent since the last run wait in order, beside the newest whole portfolio', async () => {
+  const trade = (n, kind) => ({ value: { sequence: n, submittedAt: '2026-10-30T19:00:00Z', trade: { kind, symbol: 'OWN.US', quantity: '2', price: '150', day: '2026-10-30' } } });
+  const docs = {
+    'advice-latest': { value: { ...ADVICE, owner: OWNER_SECTION } },
+    'portfolio-3': trade(3, 'buy'),
+    'portfolio-4': { value: { sequence: 4, submittedAt: '2026-10-30T19:30:00Z', capital: '4000', holdings: [] } },
+    'portfolio-5': trade(5, 'sell'),
+    'portfolio-6': { value: { sequence: 6, trade: { kind: 'sell' } } }, // not a trade the page could send
+  };
+  const reader = { readDocument: async (_container, id) => docs[id] ?? null };
+  const answer = await loadStocks(reader, NOW);
+  assert.equal(answer.pending.sequence, 4);
+  assert.deepEqual(answer.pendingTrades.map((x) => [x.sequence, x.trade?.kind ?? null, x.unreadable ?? false]), [[3, 'buy', false], [5, 'sell', false], [6, null, true]]);
+  assert.deepEqual(answer.pendingTrades[0].trade, { kind: 'buy', symbol: 'OWN.US', name: null, quantity: '2', price: '150', fees: null, day: '2026-10-30', stop: null });
+});
+
+test('the owner\'s trades as the host recorded them, every field checked', () => {
+  const trades = [
+    { day: '2026-10-29', symbol: 'OWN.US', kind: 'sell', quantity: '4', price: '140', feesBase: '1', profitBase: '79', reason: 'owner' },
+    { day: '2026-10-28', symbol: 'OWN.US', kind: 'buy', quantity: '10', price: '120', feesBase: '0', profitBase: null, reason: 'owner' },
+    { day: '2026-10-28', symbol: 'OWN.US', kind: 'stop-out', quantity: '1', price: '1' },
+    { day: '2026-10-28', symbol: 'bad', kind: 'buy', quantity: '1', price: '1' },
+  ];
+  const view = stocksView({ ...ADVICE, owner: { ...OWNER_SECTION, trades } }, NOW);
+  assert.deepEqual(view.owner.trades, [
+    { day: '2026-10-29', symbol: 'OWN.US', kind: 'sell', quantity: 4, price: 140, fees: 1, profit: 79 },
+    { day: '2026-10-28', symbol: 'OWN.US', kind: 'buy', quantity: 10, price: 120, fees: 0, profit: null },
+  ]);
+  assert.deepEqual(stocksView({ ...ADVICE, owner: OWNER_SECTION }, NOW).owner.trades, []);
 });
 
 
