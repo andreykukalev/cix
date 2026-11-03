@@ -168,8 +168,9 @@ public sealed record EngineState(
             {
                 Positions = WithPlan(symbol, plan with
                 {
-                    // A further buy that set only one level keeps the other: a stop is never dropped by adding to a position.
-                    EntryClientOrderId = clientOrderId, StopLoss = plan.PendingStopLoss ?? plan.StopLoss, TakeProfit = plan.PendingTakeProfit ?? plan.TakeProfit,
+                    // A further buy that set only one level keeps the other: a stop is never dropped by adding to a position,
+                    // nor lowered, so a trailed stop (ADR-0028) keeps the gain it locked in.
+                    EntryClientOrderId = clientOrderId, StopLoss = Higher(plan.PendingStopLoss, plan.StopLoss), TakeProfit = plan.PendingTakeProfit ?? plan.TakeProfit,
                     EntryPrice = averagePrice, FilledAt = at, PendingClientOrderId = null, PendingStopLoss = null, PendingTakeProfit = null,
                 }),
             };
@@ -211,6 +212,8 @@ public sealed record EngineState(
         var kept = Plans.Where(p => !symbols.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
         return this with { Positions = kept.Count == 0 ? null : kept };
     }
+
+    private static decimal? Higher(decimal? a, decimal? b) => a is { } x && b is { } y ? Math.Max(x, y) : a ?? b;
 
     private Dictionary<string, PositionPlanState> WithPlan(string symbol, PositionPlanState plan)
     {

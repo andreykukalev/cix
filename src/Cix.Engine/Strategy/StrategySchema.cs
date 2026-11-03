@@ -82,7 +82,7 @@ public static partial class StrategySchema
 
             // Entry conditions
             new("scanner.requireUptrendPullback", "entry", "Buy only pullbacks in an uptrend",
-                "When on, a coin is bought only in an uptrend, close to its fast EMA, and after an hour that didn't fall. When off, any coin that passes the filters can be bought, which is for testing orders rather than for trading well.",
+                "When on, a coin is bought only in an uptrend, close to its fast EMA, and after an hour that didn't fall (daily strategies: a 20-day breakout in a daily uptrend). When off, any coin that passes the filters can be bought, which is for testing orders rather than for trading well; a daily strategy still waits for BTC's trend.",
                 "boolean", null, null, null, New),
             new("scanner.entryMaxAboveEma20Atr", "entry", "Furthest above the fast EMA",
                 "Hourly strategies: how far above the fast EMA the price may be at entry, in ATRs. Lower waits for a deeper pullback, so fewer but less stretched entries.",
@@ -110,7 +110,7 @@ public static partial class StrategySchema
                 "The take-profit, as a multiple of the stop distance (reward to risk). 2 means the target is twice as far above the entry as the stop is below it. A further target is reached less often. 0 sets no take-profit: the position leaves at its stop or on the trend exit.",
                 "number", 0, 5, "ratio", New),
             new("scanner.trailAtr", "stops", "Trailing stop",
-                "Daily strategies: the engine raises a held coin's stop to the highest daily close since the buy less this many daily ATRs, and never lowers it, so a rise locks in part of the gain. 0 keeps the stop where the buy set it. This applies to coins already held, from the next scan.",
+                "Daily strategies: the engine raises a held coin's stop to the highest daily close since the buy less this many daily ATRs, never above the current price and never down, so a rise locks in part of the gain. 0 keeps the stop where the buy set it; otherwise at least 1. This applies to coins already held, from the next scan.",
                 "number", 0, 10, "ATR", All),
 
             // Exposure

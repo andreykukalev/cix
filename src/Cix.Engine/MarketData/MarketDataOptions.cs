@@ -43,7 +43,7 @@ public sealed class MarketDataOptions
     /// </summary>
     public TimeSpan? DayCandleInterval { get; set; } = TimeSpan.FromMinutes(20);
 
-    /// <summary>History loaded on first start for daily candles: enough for a 200-day EMA, which the daily strategies cap at.</summary>
+    /// <summary>History loaded on first start for daily candles: enough for the 320 a daily strategy reads (at least 160 days).</summary>
     public TimeSpan DayLookback { get; set; } = TimeSpan.FromDays(330);
 
     /// <summary>History loaded on first start for 1-minute candles.</summary>
@@ -110,8 +110,10 @@ public sealed class MarketDataOptions
     {
         if (QuoteInterval <= TimeSpan.Zero || MinuteCandleInterval <= TimeSpan.Zero || HourCandleInterval <= TimeSpan.Zero || DayCandleInterval <= TimeSpan.Zero)
             throw new InvalidOperationException("MarketData intervals must be positive.");
-        if (DayLookback < TimeSpan.FromDays(30) || DayLookback > TimeSpan.FromDays(1000))
-            throw new InvalidOperationException("MarketData:DayLookback must be between 30 and 1000 days.");
+        if (DayLookback < TimeSpan.FromDays(160) || DayLookback > TimeSpan.FromDays(1000))
+            throw new InvalidOperationException("MarketData:DayLookback must be between 160 and 1000 days: the longest daily EMA (150 days) needs the history.");
+        if (DayCandleInterval > TimeSpan.FromHours(2))
+            throw new InvalidOperationException("MarketData:DayCandleInterval must be at most 2 hours (or null to skip daily candles): a daily strategy treats daily candles over 27 hours old as stale.");
         if (TickerInterval is { } tickers && (tickers < TimeSpan.FromSeconds(1) || tickers > TimeSpan.FromMinutes(1)))
             throw new InvalidOperationException("MarketData:TickerInterval must be between 1 second and 1 minute (or null to turn tickers off).");
         if (PublicTickerInterval is { } publicTickers && (publicTickers < TimeSpan.FromSeconds(1) || publicTickers > TimeSpan.FromMinutes(1)))

@@ -5,6 +5,8 @@
 //
 // Recognised rationale formats:
 //   signal entry <SYM> rank <n>: <setup> <x> ATR above EMA20, 1h <±p%>, 24h <±p%>; stop <a>, target <b>, risk <r>
+//   signal entry <SYM> rank <n>: <n>-day breakout: close <±p%> over the <n>-day high, <n>-day <±p%>, ask <x> ATR above the close; stop <a>, risk <r>
+//                                                 (daily strategies, ADR-0028: no target)
 //   signal exit <SYM> <reason>: <detail>          (strategy specs, step "Exits")
 //   protective exit <SYM> <reason>: <detail>      (the engine's own stop or target sell)
 //   Owner's direct sell[: note]                   (manual request, ADR-0011)
@@ -15,20 +17,20 @@
 // reasons, the scanner's setups and exit details) are translated from their known formats; an agent's own words are shown
 // in Russian when the agent wrote them in Russian too (rationaleRu), else as written.
 
-const ENTRY = /^signal entry (\S+) rank (\d+):\s*(.*?)(?:;\s*stop (\S+),\s*target (\S+),\s*risk (\S+))?\s*$/i;
+const ENTRY = /^signal entry (\S+) rank (\d+):\s*(.*?)(?:;\s*stop (\S+),\s*(?:target (\S+),\s*)?risk (\S+))?\s*$/i;
 const EXIT = /^(signal|protective) exit (\S+) (stop|target|trend-down|[\w-]+):\s*(.*)$/i;
 const DIRECT = /^Owner's direct sell(?:\.|:\s*(.*))?$/;
 
 const EXIT_REASON = {
   stop: 'The price fell to the position\'s stop-loss',
   target: 'The price rose to the position\'s take-profit',
-  'trend-down': 'The trend turned down (20-hour average crossed below the 50-hour average)',
+  'trend-down': 'The trend turned down (the detail says how)',
 };
 
 const EXIT_REASON_RU = {
   stop: 'Цена опустилась до стоп-лосса позиции',
   target: 'Цена поднялась до тейк-профита позиции',
-  'trend-down': 'Тренд развернулся вниз (быстрая средняя пересекла медленную сверху вниз)',
+  'trend-down': 'Тренд развернулся вниз (как именно, сказано в подробностях)',
 };
 
 // The rule codes the risk gate (src/Cix.Domain/Risk/RiskGate.cs) and the execution service write, in words.
@@ -195,6 +197,8 @@ function exitDetailRu(detail) {
   m = /^bid (\S+) at or above target (\S+)$/.exec(detail);
   if (m) return `bid ${m[1]} на уровне тейк-профита ${m[2]} или выше`;
   if (detail === 'the fast EMA crossed below the slow EMA') return 'быстрая EMA пересекла медленную сверху вниз';
+  m = /^the daily close fell (\S+) below EMA(\d+)$/.exec(detail);
+  if (m) return `дневное закрытие опустилось на ${m[1]} ниже EMA${m[2]}`;
   return null;
 }
 
@@ -209,6 +213,8 @@ const WORDS = {
     setup: (setup) => `Setup: ${setup}`,
     aboveEma: (x) => `Price is ${x}× the hourly range (ATR) above its 20-hour average (EMA20)`,
     moves: (hour, day) => `Moves: last hour ${hour}, last 24 hours ${day}`,
+    breakout: (days, over) => `Breakout: the last daily close is ${over} above the highest price of the ${days} days before it`,
+    breakoutMoves: (days, change, atr) => `Moves: ${change} over ${days} days; the ask is ${atr}× the daily range (ATR) above that close`,
     stop: 'stop',
     target: 'target',
     riskLoss: (amount) => `about ${amount} lost if the stop is hit`,
@@ -244,6 +250,8 @@ const WORDS = {
     setup: (setup) => `Сетап: ${SETUPS_RU[setup] ?? setup}`,
     aboveEma: (x) => `Цена выше своей 20-часовой средней (EMA20) на ${x}× часового диапазона (ATR)`,
     moves: (hour, day) => `Движение: за последний час ${hour}, за 24 часа ${day}`,
+    breakout: (days, over) => `Пробой: последнее дневное закрытие на ${over} выше максимума ${days} дней до него`,
+    breakoutMoves: (days, change, atr) => `Движение: ${change} за ${days} дней; ask выше этого закрытия на ${atr}× дневного диапазона (ATR)`,
     stop: 'стоп-лосс',
     target: 'тейк-профит',
     riskLoss: (amount) => `около ${amount} убытка, если сработает стоп-лосс`,
@@ -277,9 +285,11 @@ function pctText(text) {
   return text && text !== 'n/a' ? text : null;
 }
 
-/** "uptrend pullback 0.31 ATR above EMA20, 1h +0.22%, 24h +0.38%" as readable points, or null if it doesn't match. */
+/** "uptrend pullback 0.31 ATR above EMA20, 1h +0.22%, 24h +0.38%" or a daily "20-day breakout: ..." as readable points, or null if it doesn't match. */
 function entryEvidence(reason, lang = 'en') {
   const w = WORDS[lang] ?? WORDS.en;
+  const daily = /^(\d+)-day breakout: close (\S+) over the \d+-day high, \d+-day (\S+), ask (-?[\d.]+) ATR above the close$/.exec(reason.trim());
+  if (daily) return [w.breakout(daily[1], daily[2]), w.breakoutMoves(daily[1], daily[3], daily[4])];
   const m = /^(.*?),?\s+(-?[\d.]+) ATR above EMA20,\s*1h (\S+),\s*24h (\S+)$/.exec(reason.trim());
   if (!m) return null;
   const setup = m[1].trim();

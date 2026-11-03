@@ -23,7 +23,7 @@ public sealed class FeatureService(ICandleStore store, MarketState state, Market
     /// <summary>Enough hourly candles for EMA 50 plus 24h-over-24h comparisons.</summary>
     public const int HourlyCandlesNeeded = 60;
 
-    /// <summary>Daily candles a daily strategy reads: a 200-day EMA (the longest allowed) with room to settle.</summary>
+    /// <summary>Daily candles a daily strategy reads: a 150-day EMA (the longest allowed) with room to settle.</summary>
     public const int DailyCandlesNeeded = 320;
 
     public FeatureSet GetFeatures(string symbol)

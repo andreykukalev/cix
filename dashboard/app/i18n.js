@@ -733,8 +733,8 @@
     'Daily strategies: new buys only while BTC\'s last daily close is above its EMA of this many days, as most coins fall when BTC does. BTC must be on the watched list. 0 turns the filter off.':
       'Дневные стратегии: новые покупки только пока последнее дневное закрытие BTC выше его EMA за столько дней, ведь при падении BTC падает большинство монет. BTC должен быть в списке наблюдения. 0 выключает фильтр.',
     'Buy only pullbacks in an uptrend': 'Покупать только откаты в восходящем тренде',
-    'When on, a coin is bought only in an uptrend, close to its fast EMA, and after an hour that didn\'t fall. When off, any coin that passes the filters can be bought, which is for testing orders rather than for trading well.':
-      'Если включено, монета покупается только в восходящем тренде, рядом с быстрой EMA и после часа без падения. Если выключено, можно купить любую монету, прошедшую фильтры: это для проверки ордеров, а не для хорошей торговли.',
+    'When on, a coin is bought only in an uptrend, close to its fast EMA, and after an hour that didn\'t fall (daily strategies: a 20-day breakout in a daily uptrend). When off, any coin that passes the filters can be bought, which is for testing orders rather than for trading well; a daily strategy still waits for BTC\'s trend.':
+      'Если включено, монета покупается только в восходящем тренде, рядом с быстрой EMA и после часа без падения (у дневных стратегий: пробой 20-дневного максимума в дневном восходящем тренде). Если выключено, можно купить любую монету, прошедшую фильтры: это для проверки ордеров, а не для хорошей торговли; дневная стратегия всё равно ждёт тренда BTC.',
     'Furthest above the fast EMA': 'Максимум выше быстрой EMA',
     'Hourly strategies: how far above the fast EMA the price may be at entry, in ATRs. Lower waits for a deeper pullback, so fewer but less stretched entries.':
       'Часовые стратегии: насколько цена при входе может быть выше быстрой EMA, в ATR. Меньшее значение ждёт более глубокого отката: входов меньше, но они менее перегреты.',
@@ -759,8 +759,8 @@
       'Тейк-профит как кратное расстояния до стопа (прибыль к риску). 2 означает, что цель вдвое дальше выше входа, чем стоп ниже. Более далёкая цель достигается реже. 0 — без тейк-профита: позиция закрывается по стопу или по выходу по тренду.',
     'Trailing stop':
       'Подтягивающийся стоп',
-    'Daily strategies: the engine raises a held coin\'s stop to the highest daily close since the buy less this many daily ATRs, and never lowers it, so a rise locks in part of the gain. 0 keeps the stop where the buy set it. This applies to coins already held, from the next scan.':
-      'Дневные стратегии: движок поднимает стоп купленной монеты до максимального дневного закрытия после покупки минус столько дневных ATR и никогда его не опускает, так что рост закрепляет часть прибыли. 0 оставляет стоп там, где его поставила покупка. Применяется и к уже купленным монетам со следующего сканирования.',
+    'Daily strategies: the engine raises a held coin\'s stop to the highest daily close since the buy less this many daily ATRs, never above the current price and never down, so a rise locks in part of the gain. 0 keeps the stop where the buy set it; otherwise at least 1. This applies to coins already held, from the next scan.':
+      'Дневные стратегии: движок поднимает стоп купленной монеты до максимального дневного закрытия после покупки минус столько дневных ATR, но не выше текущей цены и никогда не опускает его, так что рост закрепляет часть прибыли. 0 оставляет стоп там, где его поставила покупка; иначе не меньше 1. Применяется и к уже купленным монетам со следующего сканирования.',
     'The most the strategy holds in a single coin, counting buys still working. A buy that would go over is reduced or refused.':
       'Сколько максимум стратегия держит в одной монете, с учётом покупок в работе. Покупка сверх этого уменьшается или отклоняется.',
     'Most of the allocation in coins': 'Максимальная доля средств в монетах',

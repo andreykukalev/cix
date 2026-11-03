@@ -135,6 +135,42 @@ public sealed class DailyScannerTests
     }
 
     [Fact]
+    public void TheRegimeHoldsBuys_EvenWithoutTheBreakoutRule()
+    {
+        var result = Scan([Sol(), Btc(BtcDown())], parameters: Swing with { RequireUptrendPullback = false });
+
+        Assert.Equal("regime: BTC below EMA100", Assert.Single(result.Ranked, r => r.Symbol == "SOL-EUR").NoEntryReason);
+        Assert.Empty(result.Entries);
+    }
+
+    [Fact]
+    public void ACoinSoldSinceTheLastDailyCandleBegan_IsNotBoughtBackOnTheSameBreakout()
+    {
+        // The last daily candle began 2026-10-22 00:00 UTC: a stop-out today waits for the next close.
+        var soldToday = Scan([Sol() with { LastSoldAt = Now.AddHours(-3) }, Btc()]);
+        Assert.Equal("sold since the breakout", Assert.Single(soldToday.Ranked, r => r.Symbol == "SOL-EUR").NoEntryReason);
+        Assert.Empty(soldToday.Entries);
+
+        var soldBefore = Scan([Sol() with { LastSoldAt = new DateTimeOffset(2026, 10, 21, 20, 0, 0, TimeSpan.Zero) }, Btc()]);
+        Assert.Single(soldBefore.Entries); // sold before this breakout's day: a new signal
+    }
+
+    [Theory]
+    [InlineData(98, true)] // the highest high just before the 20-day window doesn't count
+    [InlineData(99, false)] // the first day of the window does
+    public void TheBreakoutWindow_IsTheTwentyDaysBeforeTheLastClose(int index, bool breakout)
+    {
+        var candles = SolBreakout();
+        candles[index] = candles[index] with { High = 98m };
+
+        var result = Scan([Sol(candles), Btc()]);
+
+        Assert.Equal(breakout, result.Entries.Count == 1);
+        if (!breakout)
+            Assert.Equal("no breakout", Assert.Single(result.Ranked, r => r.Symbol == "SOL-EUR").NoEntryReason);
+    }
+
+    [Fact]
     public void AnAskFarAboveTheBreakoutClose_IsNotChased()
     {
         var result = Scan([Sol(bid: 99.95m, ask: 100.05m), Btc()]);
@@ -142,6 +178,14 @@ public sealed class DailyScannerTests
         var row = Assert.Single(result.Ranked, r => r.Symbol == "SOL-EUR");
         Assert.StartsWith("extended: ", row.NoEntryReason, StringComparison.Ordinal);
         Assert.EndsWith("ATR above the breakout close", row.NoEntryReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnAskBackUnderTheBrokenHigh_IsNoBuy()
+    {
+        var result = Scan([Sol(bid: 94.45m, ask: 94.55m), Btc()]); // the 20-day high was 94.6
+
+        Assert.Equal("back below the breakout", Assert.Single(result.Ranked, r => r.Symbol == "SOL-EUR").NoEntryReason);
     }
 
     [Fact]
@@ -199,6 +243,11 @@ public sealed class DailyScannerTests
         Assert.Empty(Scan([Sol(), Btc()], [new HeldPosition("SOL-EUR", 0.3m, null, null, filled)]).StopRaises!); // no stop to raise
         Assert.Empty(Scan([Sol(), Btc()], [new HeldPosition("SOL-EUR", 0.3m, 80m, null, filled)], Swing with { TrailAtr = 0m }).StopRaises!);
         Assert.Empty(Scan([Sol(bid: 79.95m, ask: 80.05m), Btc()], [new HeldPosition("SOL-EUR", 0.3m, 80m, null, filled)]).StopRaises!); // being sold at its stop
+
+        // A bid under the trail level: the raise stops 0.5% under the bid, so the raise alone never sells.
+        var under = Assert.Single(Scan([Sol(bid: 85m, ask: 85.1m), Btc()], [new HeldPosition("SOL-EUR", 0.3m, 80m, null, filled)]).StopRaises!);
+        Assert.Equal(84.57m, under.To); // 85 × 0.995 = 84.575, floored to the 0.01 step
+        Assert.Empty(Scan([Sol(bid: 80.2m, ask: 80.3m), Btc()], [new HeldPosition("SOL-EUR", 0.3m, 80m, null, filled)]).StopRaises!); // 79.79 is no raise
     }
 
     [Fact]
@@ -218,13 +267,15 @@ public sealed class DailyScannerTests
     [Theory]
     [InlineData("1h", 20, 50, 0, 0, true)]
     [InlineData("1d", 10, 50, 100, 3, true)]
-    [InlineData("1d", 20, 200, 200, 0, true)]
+    [InlineData("1d", 20, 150, 150, 0, true)]
     [InlineData("1h", 20, 100, 0, 0, false)]   // hourly EMAs stop at 55
     [InlineData("1h", 20, 50, 100, 0, false)]  // the regime filter is daily only
     [InlineData("1h", 20, 50, 0, 3, false)]    // so is the trailing stop
-    [InlineData("1d", 20, 201, 0, 0, false)]
+    [InlineData("1d", 20, 151, 0, 0, false)]
     [InlineData("1d", 10, 50, 1, 0, false)]    // an EMA of one day is no filter
     [InlineData("4h", 20, 50, 0, 0, false)]
+    [InlineData("1d", 10, 50, 100, 1, true)]
+    [InlineData("1d", 10, 50, 100, 11, false)]
     public void Validate_TheTimeframeDecidesWhatIsAllowed(string timeframe, int fast, int slow, int regime, int trail, bool valid)
     {
         var p = new ScannerParameters { Timeframe = timeframe, FastEmaPeriod = fast, SlowEmaPeriod = slow, RegimeEmaPeriod = regime, TrailAtr = trail, RewardRisk = 0m };

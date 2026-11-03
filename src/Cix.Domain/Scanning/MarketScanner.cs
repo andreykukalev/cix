@@ -80,8 +80,11 @@ public sealed record ScannerParameters
     /// </summary>
     public const string Daily = "1d";
 
-    /// <summary>Longest EMA the scan's daily candles can support.</summary>
-    public const int MaxDailyEmaPeriod = 200;
+    /// <summary>
+    /// Longest EMA the scan's daily candles can support: the engine keeps 320 (see the engine's FeatureService), so even a
+    /// 150-day EMA's starting average weighs about a tenth.
+    /// </summary>
+    public const int MaxDailyEmaPeriod = 150;
 
     /// <summary>Daily: the breakout looks back this many daily candles, before the one that closed last.</summary>
     public int BreakoutCandles { get; init; } = 20;
@@ -119,8 +122,8 @@ public sealed record ScannerParameters
         var maxEma = daily ? MaxDailyEmaPeriod : MaxEmaPeriod;
         if (FastEmaPeriod < 3 || SlowEmaPeriod > maxEma || FastEmaPeriod >= SlowEmaPeriod)
             throw new InvalidOperationException($"Scanner EMA periods must satisfy 3 <= fast < slow <= {maxEma}.");
-        if (BreakoutCandles is < 2 or > 100 || RegimeEmaPeriod is < 0 or 1 or > MaxDailyEmaPeriod || EntryMaxAboveBreakoutAtr < 0 || TrailAtr is < 0 or > 10)
-            throw new InvalidOperationException($"Scanner breakoutCandles must be 2-100, regimeEmaPeriod 0 or 2-{MaxDailyEmaPeriod}, entryMaxAboveBreakoutAtr at least 0 and trailAtr 0-10.");
+        if (BreakoutCandles is < 2 or > 100 || RegimeEmaPeriod is < 0 or 1 or > MaxDailyEmaPeriod || EntryMaxAboveBreakoutAtr < 0 || TrailAtr is < 0 or (> 0 and < 1) or > 10)
+            throw new InvalidOperationException($"Scanner breakoutCandles must be 2-100, regimeEmaPeriod 0 or 2-{MaxDailyEmaPeriod}, entryMaxAboveBreakoutAtr at least 0 and trailAtr 0 or 1-10 (a tighter trail would sell almost at once).");
         if (!daily && (RegimeEmaPeriod != 0 || TrailAtr != 0))
             throw new InvalidOperationException("Scanner regimeEmaPeriod and trailAtr work on daily candles only (timeframe 1d).");
     }
@@ -134,6 +137,7 @@ public sealed record HeldPosition(string Symbol, decimal SellableBaseSize, decim
 /// Everything the scanner needs about one universe symbol. <paramref name="Hourly"/> and <paramref name="Daily"/> are closed
 /// candles, oldest first; a daily strategy needs <paramref name="Daily"/>.
 /// </summary>
+/// <param name="LastSoldAt">When the engine last sold this coin, if recently: a daily strategy doesn't buy it again on the same breakout.</param>
 public sealed record ScanInput(
     string Symbol,
     FeatureSet Features,
@@ -141,7 +145,8 @@ public sealed record ScanInput(
     PairInfo? Pair,
     bool Allowed,
     bool HasOpenOrder,
-    IReadOnlyList<Candle>? Daily = null);
+    IReadOnlyList<Candle>? Daily = null,
+    DateTimeOffset? LastSoldAt = null);
 
 public sealed record ScanRow(
     string Symbol,

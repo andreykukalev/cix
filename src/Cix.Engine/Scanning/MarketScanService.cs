@@ -333,20 +333,63 @@ public sealed partial class MarketScanService(
         StaleOrderSymbols = open.Where(o => o.IsOpen && now - o.CreatedAt > StaleOrderAge)
             .Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol)).ToHashSet(StringComparer.Ordinal);
 
+        var daily = parameters.Timeframe == ScannerParameters.Daily;
+        var (sold, soldUnknown) = daily ? await RecentSellsAsync(now, cancellationToken).ConfigureAwait(false) : (null, null);
         var inputs = new List<ScanInput>();
         foreach (var symbol in universe.Candidates)
         {
             var allowed = universe.IsTradable(symbol);
             PairInfo? pair = allowed ? await pairs.GetAsync(symbol, cancellationToken).ConfigureAwait(false) : null;
             var hourly = allowed ? candles.Recent(symbol, MarketDataPoller.HourInterval, FeatureService.HourlyCandlesNeeded) : Array.Empty<Candle>();
-            var daily = allowed ? candles.Recent(symbol, MarketDataPoller.DayInterval, FeatureService.DailyCandlesNeeded) : Array.Empty<Candle>();
-            inputs.Add(new ScanInput(symbol, features.GetFeatures(symbol), hourly, pair, allowed, withOpenOrder.Contains(symbol), daily));
+            var dailyCandles = allowed ? candles.Recent(symbol, MarketDataPoller.DayInterval, FeatureService.DailyCandlesNeeded) : Array.Empty<Candle>();
+            inputs.Add(new ScanInput(
+                symbol, features.GetFeatures(symbol), hourly, pair, allowed, withOpenOrder.Contains(symbol), dailyCandles,
+                sold?.TryGetValue(symbol, out var soldAt) == true ? soldAt : null));
         }
 
-        var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit, p.FilledAt)).ToList();
-        var result = MarketScanner.Scan(inputs, held, parameters, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: EntriesPausedReason(spec, now));
+        // A fill time only for plans the engine state holds: a raise can't be written to a plan from the journal fallback.
+        var states = execution.PositionPlanStates;
+        var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit, states.ContainsKey(p.Symbol) ? p.FilledAt : null)).ToList();
+        var result = MarketScanner.Scan(inputs, held, parameters, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: EntriesPausedReason(spec, now) ?? soldUnknown);
         return (result, Preview(spec, inputs, held, now), held.Select(h => h.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
     }
+
+    /// <summary>
+    /// When the engine last sold each coin, from the journal's fills of the last two days, so a daily strategy doesn't buy back
+    /// a coin it just sold on the same breakout. If the journal can't be read, no coin is bought this scan (the reason says why).
+    /// </summary>
+    private async Task<(Dictionary<string, DateTimeOffset>? Sold, string? Unknown)> RecentSellsAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<JournalEntry> fills;
+        try
+        {
+            fills = await journal.QueryAsync(
+                new JournalQuery(From: DateOnly.FromDateTime(now.UtcDateTime).AddDays(-2), Kind: "fill", Limit: FileJournal.MaxQueryLimit),
+                cancellationToken).ConfigureAwait(false);
+        }
+#pragma warning disable CA1031 // any journal failure: buys wait, the exits and stops go on
+        catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning restore CA1031
+        {
+            LogRecentSellsFailed(logger, ex.Message);
+            return (null, "recent sells unknown (journal unavailable)");
+        }
+
+        var sold = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        foreach (var fill in fills.Where(f => f.Data?.GetValueOrDefault("side") == "sell"))
+        {
+            if (fill.Data?.GetValueOrDefault("symbol") is not { Length: > 0 } raw)
+                continue;
+            var symbol = MarketDataPoller.NormaliseSymbol(raw);
+            if (!sold.TryGetValue(symbol, out var at) || fill.At > at)
+                sold[symbol] = fill.At;
+        }
+
+        return (sold, null);
+    }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Recent sells not read ({Detail}); no buys this scan")]
+    private static partial void LogRecentSellsFailed(ILogger logger, string detail);
 
     /// <summary>
     /// Runs the market filters of every other strategy the owner could switch to on the same inputs: one implementation of
@@ -587,12 +630,15 @@ public sealed partial class MarketScanService(
     /// <summary>
     /// Raises the stops of held positions to their trailing level (<see cref="ScanResult.StopRaises"/>, ADR-0028) in the
     /// position plans, which <see cref="ProtectionService"/> arms from: a stop only ever goes up. Each raise is journaled. Not
-    /// an order: a stop raised to or above the bid is sold by the protection like any stop it sees crossed. Returns the raises
-    /// made; one that can't be saved is logged and tried again at the next scan.
+    /// an order, and the scanner keeps a raise below the bid, so a raise alone never sells. None while trading is halted: the
+    /// stops already set stay armed, and a Pause also freezes a trail the owner doesn't trust. Returns the raises made; one
+    /// that can't be saved is logged and tried again at the next scan.
     /// </summary>
     public async Task<int> RaiseStopsAsync(ScanResult scan, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(scan);
+        if (Halted)
+            return 0;
         var raised = 0;
         foreach (var raise in scan.StopRaises ?? [])
         {
@@ -602,7 +648,9 @@ public sealed partial class MarketScanService(
             {
                 from = execution.RaiseStop(raise.Symbol, raise.To);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+#pragma warning disable CA1031 // any store failure (file, database, network): the stop stays where it was and the next scan tries again
+            catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning restore CA1031
             {
                 LogStopRaiseFailed(logger, raise.Symbol, ex.Message);
                 continue;

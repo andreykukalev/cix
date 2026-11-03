@@ -142,10 +142,12 @@ public static partial class MarketScanner
         var f = input.Features;
         var d = m.Daily!;
         var n = p.BreakoutCandles;
+        if (regime is { Open: false })
+            return (null, regime.Reason, regime.Detail);
+        if (input.LastSoldAt is { } sold && input.Daily is { Count: > 0 } daily && sold >= daily[^1].Start)
+            return (null, "sold since the breakout", Inv($"The engine sold {input.Symbol} at {sold.UtcDateTime:yyyy-MM-dd HH:mm} UTC, after the last daily candle began; the strategy waits for the next daily close before buying it again, so a stop-out isn't bought back on the same signal."));
         if (p.RequireUptrendPullback)
         {
-            if (regime is { Open: false })
-                return (null, regime.Reason, regime.Detail);
             if (d.FastEma is not { } fast || fast <= d.SlowEma || d.LastClose <= d.SlowEma)
                 return (null, "no daily uptrend", Inv($"The strategy buys only in a daily uptrend: EMA{p.FastEmaPeriod} above EMA{p.SlowEmaPeriod} and the last daily close above EMA{p.SlowEmaPeriod}; the close is {d.LastClose / d.SlowEma - 1:+0.##%;-0.##%;0%} from EMA{p.SlowEmaPeriod}."));
             if (d.LastClose <= d.PriorHigh)
@@ -154,6 +156,8 @@ public static partial class MarketScanner
 
         if (f.Ask is not > 0)
             return (null, "no ask", "The exchange shows no ask price right now.");
+        if (p.RequireUptrendPullback && f.Ask.Value <= d.PriorHigh)
+            return (null, "back below the breakout", Inv($"The ask has fallen back to or under the {n}-day high the last close broke; the strategy buys only while the breakout holds."));
         var atr = f.Atr14!.Value;
         var above = (f.Ask.Value - d.LastClose) / atr;
         if (p.RequireUptrendPullback && above > p.EntryMaxAboveBreakoutAtr)
@@ -180,8 +184,9 @@ public static partial class MarketScanner
     /// <summary>
     /// For each held position with a stop and a fill time: the highest daily close since the buy filled, less
     /// <see cref="ScannerParameters.TrailAtr"/> daily ATRs, when that is above the stop. Left out: a coin with an exit signal
-    /// (it is being sold), and one whose quote or daily candles are stale. A raise at or above the bid makes the engine sell,
-    /// as a stop crossed overnight would.
+    /// (it is being sold), and one whose quote or daily candles are stale. A raise stays at least
+    /// <see cref="MinExitDistanceFraction"/> below the bid, so a raise alone never sells (a bad daily print can't force a sale
+    /// at once); the price then has to fall to it.
     /// </summary>
     private static List<StopRaise> Trail(
         IReadOnlyList<HeldPosition> held, IReadOnlyDictionary<string, ScanInput> inputs, IReadOnlyList<ExitSignal> exits, ScannerParameters p, DateTimeOffset now)
@@ -191,15 +196,19 @@ public static partial class MarketScanner
         {
             if (h.StopLoss is not { } stop || h.FilledAt is not { } filled || exits.Any(x => string.Equals(x.Symbol, h.Symbol, StringComparison.Ordinal)))
                 continue;
-            if (inputs.GetValueOrDefault(h.Symbol) is not { Pair: { } pair, Daily: { Count: > 0 } daily } input || input.Features.IsStale)
+            if (inputs.GetValueOrDefault(h.Symbol) is not { Pair: { } pair, Daily: { Count: > 0 } daily } input || input.Features.IsStale
+                || input.Features.Bid is not > 0)
                 continue;
             if (now - (daily[^1].Start + Day) > MaxDailyCandleAge || Indicators.Atr(daily, AtrPeriod) is not { } atr || atr <= 0)
                 continue;
-            var since = daily.Where(c => c.Start + Day > filled).ToList(); // the candles that closed after the fill
+            // The candles that closed after the fill: a candle closes when the next one starts (23 or 25 hours on a clock change).
+            var since = daily.Where((c, i) => (i + 1 < daily.Count ? daily[i + 1].Start : c.Start + Day) > filled).ToList();
             if (since.Count == 0)
                 continue;
             var highest = since.Max(c => c.Close);
-            var level = FloorToStep(highest - (p.TrailAtr * atr), pair.QuoteStep);
+            var level = Math.Min(
+                FloorToStep(highest - (p.TrailAtr * atr), pair.QuoteStep),
+                FloorToStep(input.Features.Bid.Value * (1 - MinExitDistanceFraction), pair.QuoteStep));
             if (level > stop)
                 raises.Add(new StopRaise(h.Symbol, stop, level, Inv($"trailing stop: highest daily close since the buy less {p.TrailAtr:0.##} daily ATR")));
         }

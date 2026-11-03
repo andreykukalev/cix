@@ -6,6 +6,7 @@ using Cix.Domain.MarketData;
 using Cix.Domain.Risk;
 using Cix.Domain.Scanning;
 using Cix.Engine.Execution;
+using Cix.Engine.Journal;
 using Cix.Engine.MarketData;
 using Cix.Engine.Scanning;
 using Cix.Engine.Strategy;
@@ -142,6 +143,86 @@ public sealed class SwingStrategyTests
     }
 
     [Fact]
+    public async Task ARaisedStop_IsArmedByTheProtection_AndSellsWhenTheBidReachesIt()
+    {
+        var tools = Swinging(btc: 0.001m);
+        var filled = Cix.Engine.Tests.Rig.T0.AddDays(-10);
+        tools.Rig.Store.Update(s => s with
+        {
+            Positions = new Dictionary<string, PositionPlanState>(StringComparer.Ordinal)
+            {
+                [Btc] = new(Btc, PositionPlanState.Open, "c-entry", 50_000m, null, filled, EntryPrice: 58_000m, FilledAt: filled),
+            },
+        });
+        var scan = await tools.Scanner.ScanAsync(CancellationToken.None);
+        Assert.Equal(1, await tools.Scanner.RaiseStopsAsync(scan, CancellationToken.None));
+        var level = Assert.Single(scan.StopRaises!).To;
+
+        var protection = new ProtectionRig(tools.Rig);
+        Assert.Equal(0, await protection.Service.RefreshAsync(CancellationToken.None)); // armed at the new level; the bid is above it
+        Assert.Equal(level, protection.Trigger.StopFor(Btc));
+
+        protection.Feed(new MarketQuote(Btc, level - 5m, 0.01m, level + 5m, 0.01m, tools.Rig.Time.GetUtcNow()));
+        Assert.Equal(1, await protection.Service.RefreshAsync(CancellationToken.None));
+        await protection.Service.WhenIdleAsync();
+
+        Assert.Equal(0m, await protection.Held());
+        Assert.Equal("placed", Assert.Single(protection.Orders()).Data!["status"]); // through the risk gate, as any stop
+    }
+
+    [Fact]
+    public async Task APositionPlannedOnlyInTheJournal_IsNotTrailed()
+    {
+        var tools = Swinging(btc: 0.001m);
+        var filled = Cix.Engine.Tests.Rig.T0.AddDays(-10);
+        await tools.Journal.AppendAsync(
+            new JournalEntry("fill-1", filled, "fill", "engine", null, null, "buy 0.001 of 0.001 BTC-EUR (filled)",
+                new Dictionary<string, string> { ["symbol"] = Btc, ["side"] = "buy", ["averagePrice"] = "58000", ["stopLoss"] = "50000", ["clientOrderId"] = "c-old" }),
+            CancellationToken.None);
+
+        var scan = await tools.Scanner.ScanAsync(CancellationToken.None);
+
+        Assert.Empty(scan.StopRaises!); // no plan in the engine state to raise: no raise is suggested every scan
+    }
+
+    [Fact]
+    public async Task ACoinSoldToday_IsNotBoughtBackOnTheSameBreakout()
+    {
+        var tools = Swinging();
+        var at = tools.Rig.Time.GetUtcNow().AddHours(-2);
+        await tools.Journal.AppendAsync(
+            new JournalEntry("fill-2", at, "fill", "engine", null, null, "sell 0.001 of 0.001 BTC-EUR (filled)",
+                new Dictionary<string, string> { ["symbol"] = Btc, ["side"] = "sell", ["averagePrice"] = "55000", ["clientOrderId"] = "c-stop" }),
+            CancellationToken.None);
+
+        var scan = await tools.Scanner.ScanAsync(CancellationToken.None);
+
+        Assert.Empty(scan.Entries);
+        Assert.Equal("sold since the breakout", Assert.Single(scan.Ranked, r => r.Symbol == Btc).NoEntryReason);
+    }
+
+    [Fact]
+    public async Task WhileTradingIsHalted_NoStopIsRaised()
+    {
+        var tools = Swinging(btc: 0.001m);
+        var filled = Cix.Engine.Tests.Rig.T0.AddDays(-10);
+        tools.Rig.Store.Update(s => s with
+        {
+            Positions = new Dictionary<string, PositionPlanState>(StringComparer.Ordinal)
+            {
+                [Btc] = new(Btc, PositionPlanState.Open, "c-entry", 50_000m, null, filled, EntryPrice: 58_000m, FilledAt: filled),
+            },
+        });
+        var scan = await tools.Scanner.ScanAsync(CancellationToken.None);
+        Assert.Single(scan.StopRaises!);
+
+        tools.Rig.KillSwitch.Engage("owner pause", "owner");
+        Assert.Equal(0, await tools.Scanner.RaiseStopsAsync(scan, CancellationToken.None));
+        Assert.Equal(50_000m, tools.Rig.Execution.PositionPlanStates[Btc].StopLoss); // the stop set at the buy stays armed
+        Assert.DoesNotContain(tools.Journal.Entries, e => e.Kind == MarketScanService.StopRaisedKind);
+    }
+
+    [Fact]
     public void StopRaise_OnlyMovesAnOpenPlansStopUp()
     {
         var at = Cix.Engine.Tests.Rig.T0;
@@ -164,10 +245,24 @@ public sealed class SwingStrategyTests
         Assert.Same(state, state.WithStopRaised("ADA-EUR", 1m));   // no plan
     }
 
+    [Fact]
+    public void AFurtherBuy_NeverLowersAPositionsStop()
+    {
+        var at = Cix.Engine.Tests.Rig.T0;
+        var plan = new PositionPlanState(Btc, PositionPlanState.Open, "a", 170m, null, at, EntryPrice: 150m, FilledAt: at); // a trailed stop
+        var state = EngineState.Initial with { Positions = new Dictionary<string, PositionPlanState>(StringComparer.Ordinal) { [Btc] = plan } };
+
+        var lower = state.WithSent(new SentOrder("b", Btc, "buy", 0.1m, 190m, at, "place_order", StopLoss: 2m)).WithEntryFilled(Btc, "b", 190m, at);
+        Assert.Equal(170m, lower.Plans[Btc].StopLoss);
+        var higher = state.WithSent(new SentOrder("c", Btc, "buy", 0.1m, 190m, at, "place_order", StopLoss: 180m)).WithEntryFilled(Btc, "c", 190m, at);
+        Assert.Equal(180m, higher.Plans[Btc].StopLoss);
+    }
+
     /// <summary>
     /// Daily candles that start at London midnight, as Revolut X's do (00:00 UTC in winter, 23:00 UTC in summer), including
-    /// the one still open, and hourly candles on the UTC hour. Summer time in 2025 and 2026 starts with the day of 30 March
-    /// 2025 and 30 March 2026 and ends after the day of 26 October 2025 and 25 October 2026.
+    /// the one still open, and hourly candles on the UTC hour. The clocks go forward on 30 March 2025 and 29 March 2026 (those
+    /// days last 23 hours), so the first day to start at 23:00 UTC is 31 March 2025 and 30 March 2026; the last is the 25-hour
+    /// day of 26 October 2025 and 25 October 2026.
     /// </summary>
     private sealed class LondonCandles(TimeProvider time) : IMarketDataSource, IQuoteSource
     {
