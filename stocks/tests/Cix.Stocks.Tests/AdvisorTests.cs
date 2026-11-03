@@ -370,10 +370,49 @@ public class AdvisorTests
         // Closes 0.5 to 2.99 with ATR 1: the stop 2.99 - 3 is negative.
         var penny = Line(0.5m, 0.01m);
 
-        var advice = Advisor.Evaluate(Input(watchlist: [new PriceHistory(Xyz, penny)]), Settings);
+        // Without the volatility filter, which would stop it first (ATR 1 is a third of its price).
+        var advice = Advisor.Evaluate(Input(watchlist: [new PriceHistory(Xyz, penny)]), Settings with { MaxAtrFraction = null });
 
         Assert.Empty(advice.Actions);
         Assert.Contains(new AdvisorNote("XYZ.US", Reasons.NotEnoughData), advice.Notes);
+    }
+
+    [Fact]
+    public void Entry_AJumpyStockIsNotAnEntry()
+    {
+        // Closes 5 to 17.45 with ATR 1: 5.7% of the close, over the 5% limit. Otherwise a breakout.
+        var bars = Line(5m, 0.05m);
+
+        Assert.Equal(EntryState.TooVolatile, Advisor.Entry(bars, Today, 1m, Settings).State);
+        Assert.Equal(EntryState.Breakout, Advisor.Entry(bars, Today, 1m, Settings with { MaxAtrFraction = null }).State);
+        Assert.DoesNotContain(Advisor.Evaluate(Input(watchlist: [new PriceHistory(Xyz, bars)]), Settings).Actions, a => a.Kind == ActionKind.Buy);
+    }
+
+    [Fact]
+    public void Entry_AnOverheatedStockIsNotAnEntryUntilItCools()
+    {
+        // The rising line to 124.8, then a close of 150: 22% above the 50-day average (122.95) and 20.6% above the close five
+        // days before (124.4). Either one alone makes it overheated.
+        var jump = WithLastClose(Line(100m, 0.1m), 150m);
+        Assert.Equal(EntryState.Overextended, Advisor.Entry(jump, Today, 1m, Settings with { MaxRecentGain = null }).State);
+        Assert.Equal(EntryState.Overextended, Advisor.Entry(jump, Today, 1m, Settings with { MaxAboveFastAverage = null }).State);
+        Assert.Equal(EntryState.Breakout, Advisor.Entry(jump, Today, 1m, Settings with { MaxAboveFastAverage = null, MaxRecentGain = null }).State);
+        Assert.Empty(Advisor.Evaluate(Input(watchlist: [new PriceHistory(Xyz, jump)]), Settings).Actions);
+
+        // A close of 135: 10% above the average (122.65) and 8.5% up in five days, within both limits: a breakout, bought.
+        var step = WithLastClose(Line(100m, 0.1m), 135m);
+        Assert.Equal(EntryState.Breakout, Advisor.Entry(step, Today, 1m, Settings).State);
+        Assert.Equal(ActionKind.Buy, Assert.Single(Advisor.Evaluate(Input(watchlist: [new PriceHistory(Xyz, step)]), Settings).Actions).Kind);
+    }
+
+    [Fact]
+    public void Settings_TheEntryFiltersAreCheckedAndCanBeTurnedOff()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => (Settings with { MaxAboveFastAverage = 0m }).Validate());
+        Assert.Throws<ArgumentOutOfRangeException>(() => (Settings with { MaxRecentGain = -0.1m }).Validate());
+        Assert.Throws<ArgumentOutOfRangeException>(() => (Settings with { MaxAtrFraction = 0.9m }).Validate());
+        Assert.Throws<ArgumentException>(() => (Settings with { RecentGainDays = 200 }).Validate());
+        (Settings with { MaxAboveFastAverage = null, MaxRecentGain = null, MaxAtrFraction = null }).Validate();
     }
 
     [Fact]

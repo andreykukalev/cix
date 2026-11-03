@@ -112,6 +112,15 @@ public enum EntryState
     /// <summary>The close is at or under the slow average, or the fast average is at or under it.</summary>
     BelowTrend,
 
+    /// <summary>In an uptrend, but its daily range (ATR) is over <see cref="AdvisorSettings.MaxAtrFraction"/> of the close.</summary>
+    TooVolatile,
+
+    /// <summary>
+    /// In an uptrend, but overheated: the close more than <see cref="AdvisorSettings.MaxAboveFastAverage"/> above the fast
+    /// average, or up more than <see cref="AdvisorSettings.MaxRecentGain"/> in <see cref="AdvisorSettings.RecentGainDays"/> days.
+    /// </summary>
+    Overextended,
+
     /// <summary>In an uptrend, but the close isn't above the prior closing high.</summary>
     Uptrend,
 
@@ -129,7 +138,9 @@ public static class Advisor
     /// <summary>
     /// The entry rule, the one place it is written: fresh bars, a share within the price cap (checked only when
     /// <paramref name="fxToBase"/> is known), enough history, the close above the slow average with the fast one above it, and
-    /// the close above the prior closing high. The watchlist on the Stocks page shows the same verdicts.
+    /// the close above the prior closing high. A stock in an uptrend that is too jumpy, or overheated (far above the fast
+    /// average, or up sharply in the last days), isn't an entry: buying it means a far stop and often buying the top of a jump.
+    /// The watchlist on the Stocks page shows the same verdicts.
     /// </summary>
     public static EntryCheck Entry(IReadOnlyList<Candle> bars, DateOnly today, decimal? fxToBase, AdvisorSettings settings)
     {
@@ -152,6 +163,12 @@ public static class Advisor
             return Check(EntryState.NotEnoughData);
         if (close <= slow || fast <= slow)
             return Check(EntryState.BelowTrend);
+        if (settings.MaxAtrFraction is { } maxAtr && atr > close * maxAtr)
+            return Check(EntryState.TooVolatile);
+        var before = bars[Math.Max(0, bars.Count - 1 - settings.RecentGainDays)].Close;
+        if ((settings.MaxAboveFastAverage is { } maxAbove && close > fast.Value * (1 + maxAbove))
+            || (settings.MaxRecentGain is { } maxGain && before > 0 && close > before * (1 + maxGain)))
+            return Check(EntryState.Overextended);
         return Check(close > high ? EntryState.Breakout : EntryState.Uptrend);
     }
 

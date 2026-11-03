@@ -953,12 +953,14 @@
     'How far the price must rise to close above its 50-day high': 'Насколько цена должна вырасти, чтобы закрыться выше 50-дневного максимума',
     'vs 200-day': 'К 200-дневной',
     'How far the last close is above or under the 200-day average': 'Насколько последнее закрытие выше или ниже 200-дневной средней',
-    'An uptrend is a close above the 200-day average with the 50-day average above it. A close above the 50-day high in an uptrend is the entry signal: the advisor buys it unless the market, the cash, the price cap or the theme limit stops it, and the notes say which.':
-      'Восходящий тренд: закрытие выше 200-дневной средней, и 50-дневная средняя выше неё. Закрытие выше 50-дневного максимума в восходящем тренде и есть сигнал на вход: советник покупает, если не мешают рынок, свободные деньги, потолок цены или лимит темы, а что именно помешало, видно в заметках.',
+    'An uptrend is a close above the 200-day average with the 50-day average above it. A close above the 50-day high in an uptrend is the entry signal, unless the stock is overheated (over 20% above its 50-day average, or up over 15% in five days) or too jumpy (a daily range over 5% of its price). The advisor buys it unless the market, the cash, the price cap or the theme limit stops it, and the notes say which.':
+      'Восходящий тренд: закрытие выше 200-дневной средней, и 50-дневная средняя выше неё. Закрытие выше 50-дневного максимума в восходящем тренде и есть сигнал на вход, если акция не перегрета (не выше 50-дневной средней больше чем на 20% и не выросла больше чем на 15% за пять дней) и не слишком прыгучая (дневной размах не больше 5% цены). Советник покупает, если не мешают рынок, свободные деньги, потолок цены или лимит темы, а что именно помешало, видно в заметках.',
     Held: 'В портфеле',
     'Entry signal': 'Сигнал на вход',
     'Uptrend, under its high': 'Тренд вверх, ниже максимума',
     'Over your price cap': 'Дороже потолка цены',
+    'Overheated: wait for a pullback': 'Перегрета: ждать отката',
+    'Too jumpy to buy': 'Слишком прыгучая для покупки',
     'Old prices': 'Старые цены',
     // The owner's real portfolio (ADR-0026)
     'My portfolio': 'Мой портфель',

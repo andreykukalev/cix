@@ -26,6 +26,7 @@ internal static class BacktestCommand
         "symbols", "benchmark", "from", "to", "capital", "currency", "fx", "step", "out", "cache",
         "commission", "min-commission", "fx-fee", "slippage",
         "initial-stop-atr", "trail-atr", "risk", "max-position", "max-positions",
+        "max-above-fast", "max-recent-gain", "max-atr",
     };
 
     public static async Task<int> RunAsync(string[] args)
@@ -66,6 +67,7 @@ internal static class BacktestCommand
                [--capital 10000] [--currency EUR] [--fx USD=0.92,GBP=1.17] [--step 1] [--out backtest-out]
                [--cache .cache/eodhd] [--commission 0.0025] [--min-commission 1] [--fx-fee 0.0025] [--slippage 0.001]
                [--initial-stop-atr 3] [--trail-atr 3] [--risk 0.01] [--max-position 0.2] [--max-positions 8]
+               [--max-above-fast 0.2|off] [--max-recent-gain 0.15|off] [--max-atr 0.05|off]
         A symbol's currency comes from its exchange (US: USD, XETRA/PA/AS...: EUR); give it after a colon otherwise.
         The key is read from EODHD_API_TOKEN; without it the public demo key is used (a few US tickers only).
         """;
@@ -107,6 +109,9 @@ internal static class BacktestCommand
             RiskPerTrade = Decimal(o, "risk", defaults.RiskPerTrade),
             MaxPositionFraction = Decimal(o, "max-position", defaults.MaxPositionFraction),
             MaxPositions = o.TryGetValue("max-positions", out var maxPositions) ? int.Parse(maxPositions, CultureInfo.InvariantCulture) : defaults.MaxPositions,
+            MaxAboveFastAverage = Limit(o, "max-above-fast", defaults.MaxAboveFastAverage),
+            MaxRecentGain = Limit(o, "max-recent-gain", defaults.MaxRecentGain),
+            MaxAtrFraction = Limit(o, "max-atr", defaults.MaxAtrFraction),
         }.Validate();
 
         var token = Environment.GetEnvironmentVariable("EODHD_API_TOKEN");
@@ -194,6 +199,12 @@ internal static class BacktestCommand
 
     private static string Required(Dictionary<string, string> o, string name) =>
         o.TryGetValue(name, out var value) ? value : throw new ArgumentException($"--{name} is required.");
+
+    /// <summary>An entry filter's limit: a fraction, or <c>off</c> for none.</summary>
+    private static decimal? Limit(Dictionary<string, string> o, string name, decimal? fallback) =>
+        o.TryGetValue(name, out var value)
+            ? value == "off" ? null : decimal.Parse(value, NumberStyles.Number, CultureInfo.InvariantCulture)
+            : fallback;
 
     private static decimal Decimal(Dictionary<string, string> o, string name, decimal fallback) =>
         o.TryGetValue(name, out var value) ? decimal.Parse(value, CultureInfo.InvariantCulture) : fallback;
