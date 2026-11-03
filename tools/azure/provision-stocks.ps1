@@ -95,7 +95,7 @@ function Read-StocksSettings {
   if (-not ($s.monthlyBudget -is [int] -or $s.monthlyBudget -is [long]) -or $s.monthlyBudget -lt 1) { throw "${SettingsPath}: monthlyBudget must be a positive whole number." }
   if ("$($s.budgetStartDate)" -notmatch '^\d{4}-\d{2}-01$') { throw "${SettingsPath}: budgetStartDate must be the first of a month (YYYY-MM-01)." }
   # The Claude analyst's settings (ADR-0027), with defaults for a settings file from before it.
-  $defaults = @{ analystSchedule = '40 2,6 * * 2-6'; analystModel = 'opus'; claudeCodeVersion = '2.1.316'; claudeTokenExpires = '' }
+  $defaults = @{ analystSchedule = '40 2,6,12,13 * * 1-6'; analystModel = 'opus'; claudeCodeVersion = '2.1.316'; claudeTokenExpires = '' }
   foreach ($key in $defaults.Keys) { if (-not $s.ContainsKey($key) -or $null -eq $s[$key]) { $s[$key] = $defaults[$key] } }
   if ("$($s.analystSchedule)" -notmatch '^[0-9*,/-]+( [0-9*,/-]+){4}$') { throw "${SettingsPath}: analystSchedule must be a five-field cron expression in UTC." }
   if ("$($s.analystModel)" -cnotmatch '^[a-z0-9][a-z0-9.-]{1,63}(\[1m\])?$') { throw "${SettingsPath}: analystModel must be a lowercase model alias or name, like opus or sonnet." }

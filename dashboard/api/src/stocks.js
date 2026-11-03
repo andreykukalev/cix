@@ -204,6 +204,8 @@ function analysisView(value) {
     asOf: day(value.asOf),
     generatedAt: iso(value.generatedAt),
     status,
+    // The night's run, or the check before the US open (absent from before it: the night's).
+    pass: value.pass === 'pre-open' ? 'pre-open' : 'night',
     reason: code(value.reason),
     market: text(value.market, MAX_MARKET),
     marketRu: text(value.marketRu, MAX_MARKET),

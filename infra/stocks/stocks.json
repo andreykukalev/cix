@@ -7,7 +7,7 @@
   "registryEnvironment": "dev",
   "dashboardEnvironment": "dev",
   "schedule": "0 2 * * 2-6",
-  "analystSchedule": "40 2,6 * * 2-6",
+  "analystSchedule": "40 2,6,12,13 * * 1-6",
   "analystModel": "opus",
   "claudeCodeVersion": "2.1.316",
   "claudeTokenExpires": "",

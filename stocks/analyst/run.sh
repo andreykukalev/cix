@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # The stocks Claude analyst (ADR-0027), the analyst job's only container. The nightly job wrote tonight's brief to the
 # advice container (brief-latest); this job reads it with its own identity and never has the EODHD key. The host writes
-# the brief to /work/brief.json (--brief) only when it's for the latest advice and not yet analysed; otherwise there is
-# nothing to do. One headless Claude Code session reads the brief on
+# the brief to /work/brief.json (--brief) only when it's for the latest advice and this pass hasn't analysed it yet;
+# otherwise there is nothing to do. The host picks the pass by the clock: the night's, or on a weekday from 08:35 New York
+# time to the 09:30 open the check before the open, whose brief carries the night's view and which looks only for news
+# since then. One
+# headless Claude Code session reads the brief on
 # stdin, may search the web and open pages from ANALYST_WEB_DOMAINS only (no shell, files or MCP servers), and answers
 # with one JSON object. The host checks that answer against the brief and saves it (--accept), or records why Claude
 # didn't run (--not-run): usage-limit, credentials, timeout or failed. Its view can only advise less risk: the amounts and
@@ -33,9 +36,14 @@ source "$app/analyst/agent-common.sh"
 mkdir -p "$work"
 "${host[@]}" --brief "$brief"
 code=$?
-if (( code == 3 )); then say "No brief to analyse tonight (none yet, or already analysed)."; exit 0; fi
-(( code == 0 )) || { say "Couldn't read tonight's brief (exit $code)."; exit "$code"; }
+if (( code == 3 )); then say "No brief to analyse now (none yet, or this pass already analysed it)."; exit 0; fi
+(( code == 0 )) || { say "Couldn't read the brief (exit $code)."; exit "$code"; }
 [[ -s "$brief" ]] || { say "The host wrote an empty brief."; exit 1; }
+pass="$(jq -r '.pass // "night"' "$brief" 2>/dev/null)"
+case "$pass" in
+  pre-open) prompt="This is the check before the US open: the brief, with your view from the night in its night field, is on standard input. Look for news since the night as your instructions say and answer with the JSON object only." ;;
+  *) pass=night; prompt="Tonight's brief is on standard input. Analyse it as your instructions say and answer with the JSON object only." ;;
+esac
 
 # Records that Claude didn't run for the brief's close, and stops with the host's exit code (1: not a done analysis).
 not_run() {
@@ -71,11 +79,11 @@ logs="$work/logs"
 mkdir -p "$logs" "$work/empty"
 run_id="stocks-analyst-$(date -u +%Y%m%d-%H%M%S)"
 log="$logs/$run_id.json"
-say "$run_id starting ($auth, model $model)"
+say "$run_id starting ($pass, $auth, model $model)"
 
 # From an empty folder, with the job's identity variables unset: Claude has no tool to use them, and gets them not at all.
 (cd "$work/empty" && timeout -k 60s "${timeout_minutes}m" env -u IDENTITY_ENDPOINT -u IDENTITY_HEADER -u MSI_ENDPOINT -u MSI_SECRET -u AZURE_CLIENT_ID \
-    claude -p "Tonight's brief is on standard input. Analyse it as your instructions say and answer with the JSON object only." \
+    claude -p "$prompt" \
     --append-system-prompt "$instructions"$'\n\n'"$site_note" \
     --strict-mcp-config \
     --tools "WebSearch,WebFetch" \
