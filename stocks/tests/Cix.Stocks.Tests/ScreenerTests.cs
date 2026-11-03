@@ -89,6 +89,13 @@ public class ScreenerTests
         Assert.Equal(EntryState.Uptrend, Screener.Evaluate("XYZ.US", null, null, null, Rising(250, last: 340m), Day, 10_000m, advisor, Settings)!.State);
         // A dip to 330: 5.5% under the high, not listed.
         Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(250, last: 330m), Day, 10_000m, advisor, Settings));
+        // A jump to 400: 16% over the close five days before and 23% over the 50-day average. Overheated, not listed.
+        Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(250, last: 400m), Day, 10_000m, advisor, Settings));
+        // Each limit alone drops it; with both off it is a breakout.
+        Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(250, last: 400m), Day, 10_000m, advisor with { MaxRecentGain = null }, Settings));
+        Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(250, last: 400m), Day, 10_000m, advisor with { MaxAboveFastAverage = null }, Settings));
+        Assert.Equal(EntryState.Breakout, Screener.Evaluate(
+            "XYZ.US", null, null, null, Rising(250, last: 400m), Day, 10_000m, advisor with { MaxRecentGain = null, MaxAboveFastAverage = null }, Settings)!.State);
         // Falling, too short, or old bars: not listed.
         Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(250, step: -0.1m), Day, 10_000m, advisor, Settings));
         Assert.Null(Screener.Evaluate("XYZ.US", null, null, null, Rising(150), Day, 10_000m, advisor, Settings));

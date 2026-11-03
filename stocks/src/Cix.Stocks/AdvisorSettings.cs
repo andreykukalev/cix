@@ -55,6 +55,26 @@ public sealed record AdvisorSettings
     /// </summary>
     public decimal MaxThemeFraction { get; init; } = 1m;
 
+    /// <summary>
+    /// The most an entry's close may stand above the fast average, as a fraction (0.2: 20% above): further up, the stock is
+    /// overheated and isn't bought until it cools off toward the average. Null: no limit.
+    /// </summary>
+    public decimal? MaxAboveFastAverage { get; init; } = 0.20m;
+
+    /// <summary>
+    /// The most an entry's close may have risen over the last <see cref="RecentGainDays"/> trading days, as a fraction: a
+    /// stock that just jumped is overheated too. Null: no limit.
+    /// </summary>
+    public decimal? MaxRecentGain { get; init; } = 0.15m;
+
+    public int RecentGainDays { get; init; } = 5;
+
+    /// <summary>
+    /// The largest average daily range (<see cref="AtrDays"/>-day ATR) an entry may have, as a fraction of its close: jumpier
+    /// stocks (much of biotech, for one) aren't bought, as their stop is far and a gap through it is large. Null: no limit.
+    /// </summary>
+    public decimal? MaxAtrFraction { get; init; } = 0.05m;
+
     /// <summary>A stop is only worth moving when it rises by at least this fraction, so the owner isn't asked daily for cents.</summary>
     public decimal MinStopRaiseFraction { get; init; } = 0.005m;
 
@@ -80,6 +100,15 @@ public sealed record AdvisorSettings
         Positive(MomentumDays, nameof(MomentumDays));
         Positive(MaxPositions, nameof(MaxPositions));
         Positive(MaxBarAgeDays, nameof(MaxBarAgeDays));
+        Positive(RecentGainDays, nameof(RecentGainDays));
+        if (RecentGainDays > MomentumDays)
+            throw new ArgumentException($"{nameof(RecentGainDays)} must be at most {nameof(MomentumDays)}.");
+        if (MaxAboveFastAverage is { } above)
+            Between(above, 0.01m, 2m, nameof(MaxAboveFastAverage));
+        if (MaxRecentGain is { } gain)
+            Between(gain, 0.01m, 2m, nameof(MaxRecentGain));
+        if (MaxAtrFraction is { } atrFraction)
+            Between(atrFraction, 0.005m, 0.5m, nameof(MaxAtrFraction));
         if (FastSmaDays >= SlowSmaDays)
             throw new ArgumentException($"{nameof(FastSmaDays)} must be shorter than {nameof(SlowSmaDays)}.");
         Between(InitialStopAtr, 0.5m, 10m, nameof(InitialStopAtr));

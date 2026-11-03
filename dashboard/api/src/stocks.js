@@ -33,7 +33,7 @@ const ACTION_ORDER = ['sell', 'set-stop', 'raise-stop', 'buy']; // protecting wh
 const REGIMES = new Set(['risk-on', 'risk-off', 'unknown']);
 // The watchlist's statuses (Cix.Stocks.Host.WatchStatus), in the order the page lists them: what is held, what signals an
 // entry tonight, what is in an uptrend under its high, then the rest.
-const WATCH_ORDER = ['held', 'breakout', 'uptrend', 'below-trend', 'too-expensive', 'stale-data', 'not-enough-data', 'no-data'];
+const WATCH_ORDER = ['held', 'breakout', 'uptrend', 'overextended', 'too-volatile', 'below-trend', 'too-expensive', 'stale-data', 'not-enough-data', 'no-data'];
 // The same rule as Cix.Stocks.StockSymbol: TICKER.EXCHANGE in capitals.
 const SYMBOL = /^[A-Z0-9][A-Z0-9_-]{0,19}\.[A-Z]{1,10}$/;
 const CODE = /^[a-z][a-z-]{0,39}$/;

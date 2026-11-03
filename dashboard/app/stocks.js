@@ -67,6 +67,8 @@ function watchStatus(status) {
     case 'held': return [t('Held'), 'pending'];
     case 'breakout': return [t('Entry signal'), 'ok'];
     case 'uptrend': return [t('Uptrend, under its high'), 'signal'];
+    case 'overextended': return [t('Overheated: wait for a pullback'), ''];
+    case 'too-volatile': return [t('Too jumpy to buy'), ''];
     case 'below-trend': return [t('No uptrend'), ''];
     case 'too-expensive': return [t('Over your price cap'), ''];
     case 'stale-data': return [t('Old prices'), 'warn'];

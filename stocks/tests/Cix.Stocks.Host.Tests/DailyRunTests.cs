@@ -152,6 +152,11 @@ public class DailyRunTests
         // A rally after a long fall: the close is over the 200-day average but the 50-day is still under it.
         var turning = Enumerable.Range(0, 240).Select(i => Bar(i, 400m - i)).Concat(Enumerable.Range(240, 11).Select(i => Bar(i, 160m + (40m * (i - 239))))).ToList();
         Assert.Equal(WatchStatus.BelowTrend, Status(turning));
+        // A jump to 420: 28% over its 50-day average (16 345 / 50 = 326.9), overheated. ATR (19 × 1.5 + 71.5) / 20 = 5, 1.2%.
+        Assert.Equal(WatchStatus.Overextended, Status([.. bars.SkipLast(1), Bar(250, 420m)]));
+        // A slow rise with a 3-wide daily range: ATR 3 is 13% of the close 22.5, too jumpy.
+        var wide = Enumerable.Range(0, 251).Select(i => new Candle(start.AddDays(i), 20m + (0.01m * i), 21.5m + (0.01m * i), 18.5m + (0.01m * i), 20m + (0.01m * i), 1m)).ToList();
+        Assert.Equal(WatchStatus.TooVolatile, Status(wide));
         // The advisor's other checks, in its order: old bars, the price cap, short history; held comes first.
         Assert.Equal(WatchStatus.StaleData, Status(bars, on: today.AddDays(settings.MaxBarAgeDays + 1)));
         Assert.Equal(WatchStatus.TooExpensive, Status(bars, with: settings with { MaxSharePrice = 300m }));

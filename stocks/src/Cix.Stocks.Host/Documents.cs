@@ -103,6 +103,12 @@ public static class WatchStatus
     /// <summary>Under its trend average, or the fast average under it: no entry until the trend turns.</summary>
     public const string BelowTrend = "below-trend";
 
+    /// <summary>In an uptrend but too jumpy to buy: its daily range is too large a part of its price.</summary>
+    public const string TooVolatile = "too-volatile";
+
+    /// <summary>In an uptrend but overheated: far above its 50-day average, or up sharply in the last days.</summary>
+    public const string Overextended = "overextended";
+
     public const string TooExpensive = "too-expensive";
     public const string StaleData = "stale-data";
     public const string NotEnoughData = "not-enough-data";
@@ -117,6 +123,8 @@ public static class WatchStatus
             EntryState.Breakout => Breakout,
             EntryState.Uptrend => Uptrend,
             EntryState.BelowTrend => BelowTrend,
+            EntryState.TooVolatile => TooVolatile,
+            EntryState.Overextended => Overextended,
             EntryState.TooExpensive => TooExpensive,
             EntryState.StaleData => StaleData,
             EntryState.NotEnoughData => NotEnoughData,
