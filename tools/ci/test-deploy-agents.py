@@ -698,6 +698,10 @@ for job in ["build-test", "containers", "secret-scan", "agents-images"]:
         problems.append(f"deploy-live doesn't need {job}")
     elif job != "agents-images" and f"needs.{job}.result != 'failure'" not in live:
         problems.append(f"deploy-live doesn't stop on a failed {job}")
+    elif job != "agents-images" and f"needs.{job}.result != 'cancelled'" not in live:
+        problems.append(f"deploy-live doesn't stop on a cancelled {job}")
+if "needs.live-changes.result == 'success'" not in live:
+    problems.append("deploy-live runs without live-changes' summary")
 if "needs.agents-images.result == 'success'" not in live:
     problems.append("deploy-live doesn't require the images")
 if "SETTINGS: infra/environments/prod.json" not in images:

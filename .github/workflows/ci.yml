@@ -553,7 +553,8 @@ jobs:
   deploy-live:
     # The live engine and its jobs (ADR-0019, ADR-0028): this commit's images, once the checks passed and the owner approves.
     # The checks may have been skipped (they passed on this exact content in the pull request); none may have failed, and
-    # cancelling the run stops the deployment (the last step rolls back a half-done one). The job is in the GitHub
+    # cancelling the run stops the deployment (the last step rolls back a half-done one). Without live-changes' summary the
+    # owner isn't asked: with no paper canary (ADR-0028) it is the owner's view of what the run changes. The job is in the GitHub
     # environment prod, whose rules (the owner as its only required reviewer, main only, no admin bypass) hold it until the
     # owner presses Approve, and the live deploy identity trusts only jobs in that environment. tools/ci/live-approved.sh
     # checks the approval again, so this workflow fails closed if the environment lost its rules. Only the images change:
@@ -566,6 +567,7 @@ jobs:
       && needs.build-test.result != 'failure' && needs.build-test.result != 'cancelled'
       && needs.containers.result != 'failure' && needs.containers.result != 'cancelled'
       && needs.secret-scan.result != 'failure' && needs.secret-scan.result != 'cancelled'
+      && needs.live-changes.result == 'success'
       && vars.LIVE_AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45

@@ -178,10 +178,9 @@ const VERSIONS_MAX = 100;
  * The Strategy tab for one mode: the engine's parameter schema, every strategy version (without its instructions), the
  * running strategy and what became of the latest selection, and the owner's switch requests of the last week, for paper or
  * live (live lists only the spec files the owner marked live, which its engine seeds: ADR-0018). reader is the mode's
- * database (live's is its own, ADR-0017) and paperReader paper's, whose schema stands in until the mode's engine has written
- * its own.
+ * database (live's is its own, ADR-0017). Until the mode's engine has written its schema, the page shows no explanations.
  */
-async function loadStrategies(reader, mode, now, paperReader = reader) {
+async function loadStrategies(reader, mode, now) {
   if (!MODES.has(mode)) throw new RangeError('mode must be paper or live');
   const from = utcDay(now - (REQUEST_DAYS - 1) * 24 * 3600 * 1000);
   const [ownSchema, versionDocs, statusDoc, requestDocs] = await Promise.all([
@@ -196,9 +195,7 @@ async function loadStrategies(reader, mode, now, paperReader = reader) {
       maxItems: REQUESTS_MAX,
     }),
   ]);
-  // Paper's explanations stand in until this mode's engine has written its own.
-  const schemaDoc = ownSchema ?? (mode === 'paper' ? null : await paperReader.readDocument('state', 'strategy-schema-paper'));
-  return strategiesView({ mode, schema: schemaDoc?.value ?? null, versions: versionDocs, status: statusDoc?.value ?? null, requests: requestDocs }, now);
+  return strategiesView({ mode, schema: ownSchema?.value ?? null, versions: versionDocs, status: statusDoc?.value ?? null, requests: requestDocs }, now);
 }
 
 /** One switch request of the mode, for the page to follow it after a click; null if it isn't there (yet). */

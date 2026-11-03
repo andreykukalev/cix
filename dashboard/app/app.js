@@ -9,7 +9,6 @@
 
 const REFRESH_MS = 30_000;
 const POLL_MS = 3_000;
-const POLL_FOR_MS = 15 * 60_000;
 const V = window.CixView;
 const I = window.CixI18n;
 const t = I.t;

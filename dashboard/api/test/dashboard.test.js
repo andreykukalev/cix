@@ -47,11 +47,15 @@ test('the reads are registered under /api', () => {
 });
 
 test('only the confirmed owner gets an answer; nobody else reaches the database or the cache', async () => {
+  reads.length = 0;
   for (const name of Object.keys(QUERIES)) {
     const ok = await routes[name].handler(request(name), context);
     assert.equal(ok.status, 200, name);
     assert.equal(ok.headers['cache-control'], 'no-store', `${name}: a browser or proxy never keeps the owner's data`);
   }
+  // The first, uncached reads (the dashboard's too): only the live engine's database (ADR-0028).
+  assert.ok(reads.length > 0);
+  assert.deepEqual([...new Set(reads.map((x) => x.database))], ['cix-live']);
   reads.length = 0;
   for (const principal of [null, 'garbage', VISITOR, OTHER_OWNER, GITHUB_OWNER]) {
     for (const name of Object.keys(QUERIES)) {
@@ -116,7 +120,6 @@ test('anyone else is sent to the Microsoft sign-in, or to the signed-out page; G
 
 test("every read is the live engine's, from its own database (ADR-0017); paper is refused (ADR-0028)", async () => {
   const cases = [
-    ['dashboard', ''], // live's dashboard is in the cache from the first test, under the same key
     ['journal', `day=${today}&kind=fill&mode=live`], ['journal', `day=${today}&kind=order`],
     ['activity', 'period=month&mode=live'], ['activity', 'period=day'],
     ['balance-history', 'mode=live&days=90'], ['balance-history', 'days=7'],
@@ -125,7 +128,6 @@ test("every read is the live engine's, from its own database (ADR-0017); paper i
     reads.length = 0;
     const r = await routes[name].handler(request(name, OWNER, query), context);
     assert.equal(r.status, 200, `${name} ${query}`);
-    if (name === 'dashboard') continue;
     assert.ok(reads.length > 0, `${name} ${query}: read the database`);
     assert.deepEqual([...new Set(reads.map((x) => x.database))], ['cix-live'], `${name} ${query}`);
     for (const q of reads.filter((x) => x.options?.parameters)) {

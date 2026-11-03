@@ -1,5 +1,5 @@
 'use strict';
-// The Stocks mode (ADR-0023), the third button of the Paper | Live | Stocks switch: the stocks advisor's latest advice from
+// The Stocks mode (ADR-0023), the second button of the Crypto | Stocks switch: the stocks advisor's latest advice from
 // /api/stocks. The owner carries it out by hand in Revolut; the one thing sent from here is the owner's real portfolio
 // (ADR-0026): the whole of it (POST /api/owner/stocks-portfolio) or one trade made at Revolut (POST /api/owner/stocks-trade),
 // which the next nightly run applies in order, doing the trade's arithmetic itself. Kept apart from the

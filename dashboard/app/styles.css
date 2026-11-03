@@ -196,8 +196,6 @@ details[open] > summary { margin-bottom: 6px; }
 .legend { margin: 8px 0 0; }
 td.actions { white-space: nowrap; }
 td.actions button { padding: 3px 10px; font-weight: 600; }
-button.buy { color: var(--ok); border-color: var(--ok); }
-button.sell { color: var(--bad); border-color: var(--bad); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .request-status { margin: 0 0 10px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--chip);

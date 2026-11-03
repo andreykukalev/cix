@@ -257,7 +257,6 @@ async function createStocksTrade(request, context) {
   });
 }
 
-/** The mode a lookup or view asks for: live only when it says so. */
 /** The mode a lookup or view is for: live, the only one (ADR-0028); an older page asking for paper gets a 400. */
 function modeOf(request) {
   const mode = request.query.get('mode') ?? 'live';
