@@ -203,7 +203,7 @@ internal static class BacktestCommand
     /// <summary>An entry filter's limit: a fraction, or <c>off</c> for none.</summary>
     private static decimal? Limit(Dictionary<string, string> o, string name, decimal? fallback) =>
         o.TryGetValue(name, out var value)
-            ? value == "off" ? null : decimal.Parse(value, NumberStyles.Number, CultureInfo.InvariantCulture)
+            ? string.Equals(value, "off", StringComparison.OrdinalIgnoreCase) ? null : decimal.Parse(value, NumberStyles.Number, CultureInfo.InvariantCulture)
             : fallback;
 
     private static decimal Decimal(Dictionary<string, string> o, string name, decimal fallback) =>
