@@ -187,7 +187,9 @@ function renderAnalysis(advice) {
   notice.className = `banner ${tone ?? ''}`;
   notice.textContent = text ?? '';
   document.getElementById('stocks-analysis-meta').textContent = v?.asOf
-    ? [t('close of {day}, written {ago}', { day: v.asOf, ago: ago(v.generatedAt) }),
+    ? [v.pass === 'pre-open' && v.status === 'done'
+      ? t('close of {day}, checked before the open {ago}', { day: v.asOf, ago: ago(v.generatedAt) })
+      : t('close of {day}, written {ago}', { day: v.asOf, ago: ago(v.generatedAt) }),
       done?.dropped ? t('lines left out as outside the advice: {count}', { count: done.dropped }) : null].filter(Boolean).join(' · ')
     : '';
 

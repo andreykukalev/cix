@@ -154,20 +154,20 @@ public class AnalystTests
     public async Task TheAnalystTakesTheStoredBriefOnlyForTheLatestAdviceAndOnlyUntilItIsAnalysed()
     {
         var (store, news) = await StoreWith(Advice(Friday));
-        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None)); // no brief yet
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night, CancellationToken.None)); // no brief yet
 
         await store.SaveBriefAsync((await Build(store, news))!, CancellationToken.None);
-        Assert.Equal(Friday, (await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None))?.AsOf);
+        Assert.Equal(Friday, (await AnalystBriefing.ToAnalyseAsync(store, Night, CancellationToken.None))?.AsOf);
 
         await store.SaveLatestAnalysisAsync(AnalysisDocument.Missing(Friday, Night, AnalysisDocument.NotRun, "usage-limit"), CancellationToken.None);
-        Assert.NotNull(await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None)); // the second slot tries again
+        Assert.NotNull(await AnalystBriefing.ToAnalyseAsync(store, Night, CancellationToken.None)); // the second slot tries again
 
         await store.SaveLatestAnalysisAsync(Done(Friday), CancellationToken.None);
-        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None));
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night, CancellationToken.None));
 
         // Monday's advice without Monday's brief (its news failed): Friday's brief isn't analysed for it.
         await store.SaveLatestAdviceAsync(Advice(Friday.AddDays(3)), CancellationToken.None);
-        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, CancellationToken.None));
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night, CancellationToken.None));
     }
 
     /// <summary>News that takes a minute a request, on the test's clock.</summary>
@@ -217,7 +217,175 @@ public class AnalystTests
         return store;
     }
 
-    private static AnalysisDocument Done(DateOnly asOf) => new(asOf, Night, AnalysisDocument.Done, null, "calm", [], [], [], 0);
+    private static AnalysisDocument Done(DateOnly asOf, string? pass = null, params string[] picks) =>
+        new(asOf, Night, AnalysisDocument.Done, null, "calm", [], picks.Select((p, i) => new PickView(p, i + 1, "why", null)).ToList(), [], 0, Pass: pass);
+
+    // Monday 2 November 2026, 13:40 UTC: 08:40 in New York (winter time), before the open; Friday's close is still the latest advice.
+    private static readonly DateTimeOffset BeforeTheOpen = new(2026, 11, 2, 13, 40, 0, TimeSpan.Zero);
+
+    private static AnalysisDocument Checked(DateOnly asOf, DateTimeOffset at) => Done(asOf, AnalystPass.PreOpen) with { GeneratedAt = at };
+
+    [Theory]
+    [InlineData("2026-10-31T02:30:00Z", AnalystPass.Night)] // Saturday night, after Friday's close
+    [InlineData("2026-11-03T02:40:00Z", AnalystPass.Night)]
+    [InlineData("2026-11-03T06:40:00Z", AnalystPass.Night)]
+    [InlineData("2026-11-02T12:40:00Z", AnalystPass.Night)] // 07:40 EST: before the 8:30 data
+    [InlineData("2026-11-02T13:40:00Z", AnalystPass.PreOpen)] // 08:40 EST
+    [InlineData("2026-11-02T13:34:00Z", AnalystPass.Night)] // 08:34
+    [InlineData("2026-11-02T13:35:00Z", AnalystPass.PreOpen)] // 08:35
+    [InlineData("2026-11-02T14:29:00Z", AnalystPass.PreOpen)] // 09:29
+    [InlineData("2026-11-02T14:30:00Z", AnalystPass.Night)] // the open
+    [InlineData("2026-10-30T12:40:00Z", AnalystPass.PreOpen)] // Friday, 08:40 EDT
+    [InlineData("2026-10-30T13:40:00Z", AnalystPass.Night)] // 09:40 EDT: after the open
+    [InlineData("2026-03-06T13:40:00Z", AnalystPass.PreOpen)] // Friday before daylight time (8 March 2026): 08:40 EST
+    [InlineData("2026-03-09T12:40:00Z", AnalystPass.PreOpen)] // Monday after it: 08:40 EDT
+    [InlineData("2026-03-09T13:40:00Z", AnalystPass.Night)]
+    [InlineData("2026-10-31T12:40:00Z", AnalystPass.Night)] // Saturday: no session, so the night's pass (which skips a close done)
+    [InlineData("2026-11-02T15:40:00+02:00", AnalystPass.PreOpen)] // 13:40 UTC
+    public void ThePassFollowsNewYorkTime(string at, string pass) =>
+        Assert.Equal(pass, AnalystPass.For(DateTimeOffset.Parse(at, System.Globalization.CultureInfo.InvariantCulture)));
+
+    [Theory]
+    [InlineData("2026-03-08T06:59:00Z", "2026-03-08T01:59:00")] // daylight time starts at 02:00 EST, 07:00 UTC
+    [InlineData("2026-03-08T07:00:00Z", "2026-03-08T03:00:00")]
+    [InlineData("2026-11-01T05:59:00Z", "2026-11-01T01:59:00")] // and ends at 02:00 EDT, 06:00 UTC
+    [InlineData("2026-11-01T06:00:00Z", "2026-11-01T01:00:00")]
+    [InlineData("2027-03-14T07:00:00Z", "2027-03-14T03:00:00")] // 14 March 2027 is that year's second Sunday
+    public void NewYorkTimeFollowsTheUsDaylightRule(string utc, string local) =>
+        Assert.Equal(DateTime.Parse(local, System.Globalization.CultureInfo.InvariantCulture),
+            AnalystPass.NewYork(DateTimeOffset.Parse(utc, System.Globalization.CultureInfo.InvariantCulture)));
+
+    [Fact]
+    public async Task TheCheckBeforeTheOpenGetsTheNightsViewAndRunsOncePerNewYorkDay()
+    {
+        var (store, news) = await StoreWith(Advice(Friday));
+        await store.SaveBriefAsync((await Build(store, news))!, CancellationToken.None);
+        Assert.Equal(AnalystPass.Night, (await AnalystBriefing.ToAnalyseAsync(store, Night, CancellationToken.None))?.Pass);
+
+        // The night's run didn't use Claude: the check before the open is a full analysis, with no night view.
+        await store.SaveLatestAnalysisAsync(AnalysisDocument.Missing(Friday, Night, AnalysisDocument.NotRun, "usage-limit"), CancellationToken.None);
+        var first = await AnalystBriefing.ToAnalyseAsync(store, BeforeTheOpen, CancellationToken.None);
+        Assert.Equal((AnalystPass.PreOpen, (AnalysisDocument?)null), (first?.Pass, first?.Night));
+
+        // The night's done (an older document has no pass: the night's): the night's pass has nothing left, the check gets its view.
+        await store.SaveLatestAnalysisAsync(Done(Friday, null, "PAPERBUY.US"), CancellationToken.None);
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night.AddHours(4), CancellationToken.None));
+        var check = await AnalystBriefing.ToAnalyseAsync(store, BeforeTheOpen, CancellationToken.None);
+        Assert.Equal((AnalystPass.PreOpen, (DateOnly?)Friday), (check?.Pass, check?.Night?.AsOf));
+        Assert.Equal(["PAPERBUY.US"], check!.Night!.Picks.Select(p => p.Symbol));
+
+        // Once checked, nothing is left that New York day for Friday's close.
+        await store.SaveLatestAnalysisAsync(Checked(Friday, BeforeTheOpen), CancellationToken.None);
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, BeforeTheOpen.AddMinutes(30), CancellationToken.None));
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night, CancellationToken.None));
+
+        // A holiday on Monday: no new close by Tuesday, whose open gets its own check, of the Monday check's view.
+        var tuesday = await AnalystBriefing.ToAnalyseAsync(store, BeforeTheOpen.AddDays(1), CancellationToken.None);
+        Assert.Equal((AnalystPass.PreOpen, (string?)AnalystPass.PreOpen), (tuesday?.Pass, tuesday?.Night?.Pass));
+
+        // A check of an older close is no view of this one.
+        await store.SaveLatestAnalysisAsync(Checked(Friday.AddDays(-1), BeforeTheOpen.AddDays(-3)), CancellationToken.None);
+        Assert.Null((await AnalystBriefing.ToAnalyseAsync(store, BeforeTheOpen, CancellationToken.None))!.Night);
+    }
+
+    private const string MorningAnswer = """
+        ```json
+        { "market": "Futures down on a jobs report.",
+          "holdings": [{ "symbol": "OWN.US", "action": "sell-all", "reason": "Cut its guidance before the bell." }],
+          "picks": [{ "symbol": "CAND.US", "rank": 1, "reason": "New." }, { "symbol": "NEW.US", "rank": 2, "reason": "Still fine." }],
+          "skips": [{ "symbol": "MORE.US", "reason": "Reports today." }] }
+        ```
+        """;
+
+    [Fact]
+    public void BeforeTheOpenOnlyTheNightsPicksCanBeKept()
+    {
+        var night = Done(Friday, AnalystPass.Night, "NEW.US", "MORE.US");
+
+        var check = AnalystAnswer.Check(Brief() with { Pass = AnalystPass.PreOpen, Night = night }, MorningAnswer, BeforeTheOpen);
+
+        Assert.Equal((AnalysisDocument.Done, AnalystPass.PreOpen), (check.Status, check.Pass));
+        Assert.Equal(["NEW.US"], check.Picks.Select(p => p.Symbol)); // CAND.US wasn't a pick of the night's
+        Assert.Equal(1, check.Picks[0].Rank);
+        Assert.Equal(["MORE.US"], check.Skips.Select(k => k.Symbol));
+        Assert.Equal(1, check.Dropped);
+        Assert.Equal(AnalystActions.SellAll, Assert.Single(check.Holdings).Action);
+
+        // Without a night's view (it didn't run), the check is a full analysis.
+        var full = AnalystAnswer.Check(Brief() with { Pass = AnalystPass.PreOpen }, MorningAnswer, BeforeTheOpen);
+        Assert.Equal(["CAND.US", "NEW.US"], full.Picks.Select(p => p.Symbol));
+        Assert.Equal(AnalystPass.PreOpen, AnalystAnswer.Check(Brief() with { Pass = AnalystPass.PreOpen }, "no json", BeforeTheOpen).Pass);
+    }
+
+    [Fact]
+    public void BeforeTheOpenTheNightsWarningsStand()
+    {
+        var earnings = new DateOnly(2026, 11, 5);
+        var night = Done(Friday, AnalystPass.Night) with
+        {
+            Holdings = [new("OWN.US", AnalystActions.SellAll, "Fraud report.", earnings), new("KEEP.US", AnalystActions.SellHalf, "Reports on Thursday.", earnings)],
+            Skips = [new("CAND.US", "A rumour spike.", null), new("GONE.US", "Not in the brief.", null)],
+        };
+        const string answer = """
+            { "holdings": [{ "symbol": "OWN.US", "action": "hold", "reason": "The report was denied." }], "picks": [] }
+            """;
+
+        var check = AnalystAnswer.Check(Brief() with { Pass = AnalystPass.PreOpen, Night = night }, answer, BeforeTheOpen);
+
+        Assert.Equal(AnalysisDocument.Done, check.Status);
+        // OWN.US can't go from sell-all to hold; KEEP.US, left out, keeps the night's line; both keep the earnings day.
+        Assert.Equal([("OWN.US", AnalystActions.SellAll, "Fraud report."), ("KEEP.US", AnalystActions.SellHalf, "Reports on Thursday.")],
+            check.Holdings.Select(h => (h.Symbol, h.Action, h.Reason)));
+        Assert.All(check.Holdings, h => Assert.Equal(earnings, h.Earnings));
+        Assert.Equal(1, check.Dropped);
+        Assert.Equal(["CAND.US"], check.Skips.Select(k => k.Symbol)); // a skip of a stock the brief no longer has isn't carried
+
+        // More caution is taken as written, and the night's earnings day fills a line that has none.
+        var sooner = AnalystAnswer.Check(Brief() with { Pass = AnalystPass.PreOpen, Night = night },
+            """{ "holdings": [{ "symbol": "KEEP.US", "action": "sell-all", "reason": "Missed." }], "picks": [] }""", BeforeTheOpen);
+        Assert.Equal(("KEEP.US", AnalystActions.SellAll, (DateOnly?)earnings), (sooner.Holdings[0].Symbol, sooner.Holdings[0].Action, sooner.Holdings[0].Earnings));
+
+        // An answer with no line of its own is still empty: the night's lines don't make it a check.
+        Assert.Equal((AnalysisDocument.Refused, "empty"), (AnalystAnswer.Check(Brief() with { Pass = AnalystPass.PreOpen, Night = night },
+            """{ "holdings": [], "picks": [] }""", BeforeTheOpen) is var empty ? (empty.Status, empty.Reason) : default));
+    }
+
+    [Fact]
+    public void ThePassAndTheNightsViewRoundTripThroughTheBriefsFile()
+    {
+        var brief = Brief() with { Pass = AnalystPass.PreOpen, Night = Done(Friday, AnalystPass.Night, "NEW.US") };
+
+        var json = JsonSerializer.Serialize(brief, StocksJson.Options);
+        var back = JsonSerializer.Deserialize<AnalystBrief>(json, StocksJson.Options)!;
+
+        Assert.Contains("\"pass\":\"pre-open\"", json, StringComparison.Ordinal); // run.sh reads it with jq
+        Assert.Equal((AnalystPass.PreOpen, AnalystPass.Night, "NEW.US"), (back.Pass, back.Night?.Pass, back.Night?.Picks[0].Symbol));
+    }
+
+    [Fact]
+    public async Task TheCheckBeforeTheOpenReplacesTheNightsViewAndIsNeverReplacedByIt()
+    {
+        var store = new InMemoryStocksStore();
+        Assert.True(await AnalysisRecord.SaveAsync(store, Done(Friday, AnalystPass.Night), CancellationToken.None));
+        Assert.True(await AnalysisRecord.SaveAsync(store, Checked(Friday, BeforeTheOpen), CancellationToken.None));
+        Assert.True(store.Documents.ContainsKey("analysis/analysis-2026-10-30"));
+        Assert.True(store.Documents.ContainsKey("analysis/analysis-2026-10-30-pre-open-2026-11-02"));
+        Assert.Equal(AnalystPass.PreOpen, store.Read<AnalysisDocument>("analysis/analysis-latest")!.Pass);
+
+        // A failed check, or a late night's run, keeps the check.
+        Assert.False(await AnalysisRecord.SaveAsync(store, AnalysisDocument.Missing(Friday, BeforeTheOpen, AnalysisDocument.NotRun, "timeout", AnalystPass.PreOpen), CancellationToken.None));
+        Assert.False(await AnalysisRecord.SaveAsync(store, Done(Friday, AnalystPass.Night) with { GeneratedAt = BeforeTheOpen }, CancellationToken.None));
+        // Even when it read the latest before the check was saved: the check's dated copy stops it.
+        await store.SaveLatestAnalysisAsync(Done(Friday, AnalystPass.Night), CancellationToken.None);
+        Assert.False(await AnalysisRecord.SaveAsync(store, Done(Friday, AnalystPass.Night) with { GeneratedAt = BeforeTheOpen, Market = "late" }, CancellationToken.None));
+        Assert.False(await AnalysisRecord.SaveAsync(store, AnalysisDocument.Missing(Friday, BeforeTheOpen, AnalysisDocument.Refused, "unreadable", AnalystPass.PreOpen), CancellationToken.None));
+        // A second check that day (an overlapping run) keeps the first.
+        Assert.False(await AnalysisRecord.SaveAsync(store, Checked(Friday, BeforeTheOpen.AddMinutes(5)) with { Market = "second" }, CancellationToken.None));
+
+        // The next day's check (Monday was a holiday) is its own.
+        Assert.True(await AnalysisRecord.SaveAsync(store, Checked(Friday, BeforeTheOpen.AddDays(1)), CancellationToken.None));
+        Assert.True(store.Documents.ContainsKey("analysis/analysis-2026-10-30-pre-open-2026-11-03"));
+    }
 
     private static AnalystBrief Brief() => new(
         Friday, Night, "risk-on", "VTI.US", true, 0.1m,

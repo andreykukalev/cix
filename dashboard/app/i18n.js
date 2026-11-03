@@ -1062,6 +1062,7 @@
     "Claude's run took too long and was stopped: the rules' advice stands.": 'Запуск Claude шёл слишком долго и был остановлен: действуют советы по правилам.',
     "Claude's run failed: the rules' advice stands.": 'Запуск Claude не удался: действуют советы по правилам.',
     'close of {day}, written {ago}': 'закрытие {day}, написано {ago}',
+    'close of {day}, checked before the open {ago}': 'закрытие {day}, перепроверено перед открытием {ago}',
     'lines left out as outside the advice: {count}': 'отброшено строк вне советов: {count}',
     'earnings {day}': 'отчётность {day}',
     'Earnings {day}': 'Отчётность {day}',

@@ -35,8 +35,8 @@ param imageDigest string = ''
 @description('When the job runs, as a cron expression in UTC: after each US session\'s data is ready (stocks.json\'s dataReadyUtc).')
 param schedule string = '0 2 * * 2-6'
 
-@description('When the Claude analyst runs, as a cron expression in UTC: after the nightly run (twice, so a night the usage limit stopped is tried again before the US open; a close already analysed is skipped).')
-param analystSchedule string = '40 2,6 * * 2-6'
+@description('When the Claude analyst runs, as a cron expression in UTC: after the nightly run (twice, so a night the usage limit stopped is tried again; a close already analysed is skipped), and at 12:40 and 13:40 on weekdays, one of which is 08:40 in New York, for the check before the US open (the run picks its pass by New York time).')
+param analystSchedule string = '40 2,6,12,13 * * 1-6'
 
 @description('Whether to deploy the Claude analyst\'s job: provision-stocks.ps1 sets it once claude-token is in the vault.')
 param analystEnabled bool = false

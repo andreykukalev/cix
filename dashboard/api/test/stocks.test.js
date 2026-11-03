@@ -294,7 +294,9 @@ test('the analyst\'s view is checked line by line: allowed actions, real symbols
   assert.equal(view.picks[1].reason.length, 400);
   assert.deepEqual(view.skips, [{ symbol: 'NEAR.US', reason: 'Lawsuit pending.', reasonRu: null, earnings: null }]);
   assert.deepEqual(analysisView({ status: 'not-run', reason: 'usage-limit', asOf: '2026-10-30' }),
-    { asOf: '2026-10-30', generatedAt: null, status: 'not-run', reason: 'usage-limit', market: null, marketRu: null, holdings: [], picks: [], skips: [], dropped: null });
+    { asOf: '2026-10-30', generatedAt: null, status: 'not-run', pass: 'night', reason: 'usage-limit', market: null, marketRu: null, holdings: [], picks: [], skips: [], dropped: null });
+  assert.equal(analysisView({ status: 'done', pass: 'pre-open' }).pass, 'pre-open');
+  assert.equal(analysisView({ status: 'done', pass: 'midday' }).pass, 'night');
   assert.equal(analysisView({ status: 'thinking' }), null);
   assert.equal(analysisView('done'), null);
   assert.equal(analysisView({ status: 'done', picks: Array.from({ length: 9 }, (_, i) => ({ symbol: `P${i}.US`, reason: 'r' })) }).picks.length, 5);

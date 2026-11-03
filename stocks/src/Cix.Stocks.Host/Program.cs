@@ -194,7 +194,7 @@ internal static class StocksHost
                 return 2;
             }
 
-            analysis = AnalysisDocument.Missing(brief.AsOf, now, AnalysisDocument.NotRun, reason);
+            analysis = AnalysisDocument.Missing(brief.AsOf, now, AnalysisDocument.NotRun, reason, brief.Pass);
         }
         else
         {
@@ -234,7 +234,7 @@ internal static class StocksHost
             return 1;
         }
 
-        Console.WriteLine($"Analyst: {analysis.Status}{(analysis.Reason is { } r ? $" ({r})" : "")} for {analysis.AsOf:yyyy-MM-dd}: " +
+        Console.WriteLine($"Analyst: {analysis.Status}{(analysis.Reason is { } r ? $" ({r})" : "")} for {analysis.AsOf:yyyy-MM-dd} ({analysis.Pass ?? AnalystPass.Night}): " +
                           $"{analysis.Holdings.Count} holdings, {analysis.Picks.Count} picks, {analysis.Skips.Count} skips, {analysis.Dropped} dropped.");
         return analysis.Status == AnalysisDocument.Done ? 0 : 1;
     }
@@ -250,14 +250,14 @@ internal static class StocksHost
         try
         {
             using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
-            if (await AnalystBriefing.ToAnalyseAsync(store, cancellationToken) is not { } brief)
+            if (await AnalystBriefing.ToAnalyseAsync(store, TimeProvider.System.GetUtcNow(), cancellationToken) is not { } brief)
             {
-                Console.WriteLine("Analyst: nothing to analyse (no brief for the latest advice, or that close was analysed).");
+                Console.WriteLine("Analyst: nothing to analyse (no brief for the latest advice, or this pass already analysed that close).");
                 return 3;
             }
 
             await File.WriteAllTextAsync(file, JsonSerializer.Serialize(brief, StocksJson.Options), cancellationToken);
-            Console.WriteLine($"Analyst: the brief for {brief.AsOf:yyyy-MM-dd}: {brief.Holdings.Count} holdings, {brief.Buys.Count} buys, {brief.Candidates.Count} candidates.");
+            Console.WriteLine($"Analyst: the brief for {brief.AsOf:yyyy-MM-dd} ({brief.Pass}{(brief.Night is null ? "" : ", with the night's view")}): {brief.Holdings.Count} holdings, {brief.Buys.Count} buys, {brief.Candidates.Count} candidates.");
             return 0;
         }
         catch (Exception e)
