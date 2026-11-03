@@ -4,7 +4,7 @@ using Cix.Domain.Scanning;
 
 namespace Cix.Domain.Tests;
 
-/// <summary>The daily swing rules (ADR-0028): breakout entry, BTC regime, daily trend exit and the trailing stop.</summary>
+/// <summary>The daily swing rules (ADR-0029): breakout entry, BTC regime, daily trend exit and the trailing stop.</summary>
 public sealed class DailyScannerTests
 {
     private static readonly DateTimeOffset Now = new(2026, 10, 23, 12, 0, 30, TimeSpan.Zero);

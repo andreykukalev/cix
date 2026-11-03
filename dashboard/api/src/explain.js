@@ -6,7 +6,7 @@
 // Recognised rationale formats:
 //   signal entry <SYM> rank <n>: <setup> <x> ATR above EMA20, 1h <±p%>, 24h <±p%>; stop <a>, target <b>, risk <r>
 //   signal entry <SYM> rank <n>: <n>-day breakout: close <±p%> over the <n>-day high, <n>-day <±p%>, ask <x> ATR above the close; stop <a>, risk <r>
-//                                                 (daily strategies, ADR-0028: no target)
+//                                                 (daily strategies, ADR-0029: no target)
 //   signal exit <SYM> <reason>: <detail>          (strategy specs, step "Exits")
 //   protective exit <SYM> <reason>: <detail>      (the engine's own stop or target sell)
 //   Owner's direct sell[: note]                   (manual request, ADR-0011)

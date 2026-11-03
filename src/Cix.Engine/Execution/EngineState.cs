@@ -169,7 +169,7 @@ public sealed record EngineState(
                 Positions = WithPlan(symbol, plan with
                 {
                     // A further buy that set only one level keeps the other: a stop is never dropped by adding to a position,
-                    // nor lowered, so a trailed stop (ADR-0028) keeps the gain it locked in.
+                    // nor lowered, so a trailed stop (ADR-0029) keeps the gain it locked in.
                     EntryClientOrderId = clientOrderId, StopLoss = Higher(plan.PendingStopLoss, plan.StopLoss), TakeProfit = plan.PendingTakeProfit ?? plan.TakeProfit,
                     EntryPrice = averagePrice, FilledAt = at, PendingClientOrderId = null, PendingStopLoss = null, PendingTakeProfit = null,
                 }),
@@ -194,7 +194,7 @@ public sealed record EngineState(
     }
 
     /// <summary>
-    /// Raises an open position's stop to <paramref name="stop"/> (a trailing stop, ADR-0028). Only upward, only for a plan
+    /// Raises an open position's stop to <paramref name="stop"/> (a trailing stop, ADR-0029). Only upward, only for a plan
     /// whose buy filled and that has a stop: a pending entry, a lower level or a position without a stop is left as it is.
     /// </summary>
     public EngineState WithStopRaised(string symbol, decimal stop)

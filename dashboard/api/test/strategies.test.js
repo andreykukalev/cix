@@ -58,7 +58,7 @@ const VERSIONS = [
   { name: '<script>', version: '1', status: 'Live' },
 ];
 
-test('the view: only Swing offered (ADR-0028), the running one marked, every parameter grouped and explained', () => {
+test('the view: only Swing offered (ADR-0029), the running one marked, every parameter grouped and explained', () => {
   const view = strategiesView({
     mode: 'paper', schema: SCHEMA, versions: VERSIONS,
     status: { strategy: 'balanced@v1#abc', startedAt: '2026-10-27T07:00:00Z', strategySelection: { state: 'active', requested: 'balanced@v1', problems: [], activatedAt: '2026-10-27T09:00:00Z' } },

@@ -75,7 +75,7 @@ public sealed record ScannerParameters
     public const string Hourly = "1h";
 
     /// <summary>
-    /// Daily candles (ADR-0028): EMAs, ATR, volume and the trend come from daily candles, an entry needs a daily close above
+    /// Daily candles (ADR-0029): EMAs, ATR, volume and the trend come from daily candles, an entry needs a daily close above
     /// the highest high of the <see cref="BreakoutCandles"/> days before it, and the trend exit is a daily close below the slow EMA.
     /// </summary>
     public const string Daily = "1d";

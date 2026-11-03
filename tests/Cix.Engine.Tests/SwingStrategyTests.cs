@@ -14,7 +14,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cix.Engine.Tests;
 
-/// <summary>The daily swing strategy in the engine (ADR-0028): its spec, daily candles, the scan on them and the trailing stop.</summary>
+/// <summary>The daily swing strategy in the engine (ADR-0029): its spec, daily candles, the scan on them and the trailing stop.</summary>
 public sealed class SwingStrategyTests
 {
     private const string Btc = Cix.Engine.Tests.Rig.Btc;

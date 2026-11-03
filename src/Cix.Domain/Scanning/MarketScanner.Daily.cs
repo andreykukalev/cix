@@ -4,7 +4,7 @@ using Cix.Domain.MarketData;
 namespace Cix.Domain.Scanning;
 
 /// <summary>
-/// The daily swing rules (ADR-0028), for strategies with <see cref="ScannerParameters.Timeframe"/> <c>1d</c>: the same
+/// The daily swing rules (ADR-0029), for strategies with <see cref="ScannerParameters.Timeframe"/> <c>1d</c>: the same
 /// filters, sizing and signals as the hourly scan, measured on daily candles, with a breakout entry, a BTC regime filter, a
 /// trend exit on the daily close and an optional trailing stop. The live quote still prices every order.
 /// </summary>

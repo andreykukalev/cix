@@ -255,7 +255,7 @@ public sealed partial class MarketScanService(
             }
         }
 
-        // The spec's timeframe decides the candles the scanner reads: hourly unless it says 1d (ADR-0028).
+        // The spec's timeframe decides the candles the scanner reads: hourly unless it says 1d (ADR-0029).
         if (spec.Parameters.TryGetValue("timeframe", out var timeframe))
         {
             if (timeframe.ValueKind != JsonValueKind.String)
@@ -628,7 +628,7 @@ public sealed partial class MarketScanService(
     public const string StopRaisedKind = "stop-raised";
 
     /// <summary>
-    /// Raises the stops of held positions to their trailing level (<see cref="ScanResult.StopRaises"/>, ADR-0028) in the
+    /// Raises the stops of held positions to their trailing level (<see cref="ScanResult.StopRaises"/>, ADR-0029) in the
     /// position plans, which <see cref="ProtectionService"/> arms from: a stop only ever goes up. Each raise is journaled. Not
     /// an order, and the scanner keeps a raise below the bid, so a raise alone never sells. None while trading is halted: the
     /// stops already set stay armed, and a Pause also freezes a trail the owner doesn't trust. Returns the raises made; one

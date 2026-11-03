@@ -9,7 +9,7 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 
 ## Swing v1: the strategy the dashboard offers
 
-Since 2026-11-03 the Strategy tab offers only `swing`, the newest version the owner marked `live`, plus the strategy running now (ADR-0028). The switch works as before; the hourly presets below stay in this folder and in the journal.
+Since 2026-11-03 the Strategy tab offers only `swing`, the newest version the owner marked `live`, plus the strategy running now (ADR-0029). The switch works as before; the hourly presets below stay in this folder and in the journal.
 
 `swing.v1` trades on daily candles (`"timeframe": "1d"`): it buys when a daily close breaks above the highest high of the 20 days before it, in a daily uptrend (EMA 10 above EMA 50, close above EMA 50), while BTC closed above its 100-day EMA, and not when the ask has already run more than 0.5 daily ATR above that close. The stop starts 3 daily ATRs below the ask, and the engine raises it each day to the highest daily close since the buy less 3 ATRs, never lowering it; there is no take-profit. A daily close below EMA 50 is the trend exit. A coin the engine sold isn't bought back before the next daily close. Each trade risks about 4 EUR, at most 50 EUR per coin and 40% of the allocation in coins, with a 20 EUR daily loss stop, fitted to `config/risk-limits.live.json`. BTC must be on the watched list for it to buy.
 

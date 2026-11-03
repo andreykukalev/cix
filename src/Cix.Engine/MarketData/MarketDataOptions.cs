@@ -37,7 +37,7 @@ public sealed class MarketDataOptions
     public TimeSpan HourCandleInterval { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
-    /// How often to look for a new daily candle per coin, or null to skip them. Daily strategies (ADR-0028) trade on them; a
+    /// How often to look for a new daily candle per coin, or null to skip them. Daily strategies (ADR-0029) trade on them; a
     /// new one appears once a day, so the default 20 minutes costs 2.5 requests a minute for 50 coins, and a new day's candle
     /// is in within about 20 minutes of the exchange's midnight.
     /// </summary>

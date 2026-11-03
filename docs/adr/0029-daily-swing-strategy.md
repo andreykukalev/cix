@@ -1,4 +1,4 @@
-# 0028. A daily swing strategy, and the only one offered
+# 0029. A daily swing strategy, and the only one offered
 
 - Status: proposed
 - Date: 2026-11-03
@@ -9,7 +9,7 @@ In the first week of live and paper trading (from 2026-10-28) the engine made no
 
 The same research found that daily candles do have an edge. A breakout strategy on daily candles was positive out of sample in 81% of 1,152 configurations. Its central configuration, swing.v1, made +5.6% a year from 2024 to November 2026 on 1,000 EUR (worst drawdown 8.3%), +38 EUR in the last 11 months while BTC fell 17%, about three trades a month, held for about three weeks. Every neighbouring configuration was positive in both periods. Caveats: a modest return, today's listed coins only (survivorship), USDT prices for the long history, and months without a trade when BTC is weak.
 
-The owner decided (2026-11-03) to build swing.v1 for live with a 1,000 EUR allocation, to offer only that strategy on the dashboard while keeping the switch, and to drop paper trading (a separate change).
+The owner decided (2026-11-03) to build swing.v1 for live with a 1,000 EUR allocation, to offer only that strategy on the dashboard while keeping the switch, and to drop paper trading ([ADR-0028](0028-no-paper-trading.md)).
 
 ## Decision
 

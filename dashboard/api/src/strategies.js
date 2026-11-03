@@ -12,7 +12,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const NAME = /^[a-z0-9-]{1,40}$/;
 const MODES = new Set(['paper', 'live']);
 const REQUEST_TYPE = 'strategy-selection';
-// The strategies the tab offers: only the daily swing strategy since 2026-11-03 (ADR-0028), as the hourly presets showed no
+// The strategies the tab offers: only the daily swing strategy since 2026-11-03 (ADR-0029), as the hourly presets showed no
 // edge after costs. The switch itself stays as it was; add a name here to offer it again.
 const FEATURED = ['swing'];
 const GROUPS = {
@@ -154,7 +154,7 @@ function order(a, b) {
 
 /**
  * The versions the tab offers, the same in both modes (ADR-0022): the newest version the owner marked live of each strategy
- * in FEATURED (ADR-0028), plus the one running, whatever it is.
+ * in FEATURED (ADR-0029), plus the one running, whatever it is.
  * Older and paper-only versions stay in the database and the journal, unlisted. The engine checks every switch again: live
  * takes only the spec files marked live, and both modes refuse a version that says live but has no file the owner marked live.
  */
