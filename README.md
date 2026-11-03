@@ -2,7 +2,7 @@
 
 Claude agents trade an allocated budget on [Revolut X](https://revolut.com/revolut-x) on their own, on top of a deterministic .NET engine that enforces the budget, executes orders and records every decision. You review the history later and retune the strategy by editing a versioned prompt and parameters, not code.
 
-> Status: milestone 1 (paper trading prototype). Nothing here trades real money yet. Not financial advice.
+> Status: the live engine trades a small real-money allocation in Azure; paper trading runs only locally (Docker Compose, tests), see ADR-0028. Not financial advice.
 
 ## How it fits together
 

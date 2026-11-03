@@ -1,6 +1,6 @@
 # 0011. Owner manual requests through a requests container
 
-- Status: proposed
+- Status: proposed; amended by [ADR-0028](0028-no-paper-trading.md) (the paper buy and sell requests are gone from the dashboard)
 - Date: 2026-10-26
 
 ## Context

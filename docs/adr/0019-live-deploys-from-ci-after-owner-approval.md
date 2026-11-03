@@ -1,6 +1,6 @@
 # 0019. Live deploys from CI, after the owner approves each one
 
-- Status: accepted
+- Status: accepted; amended by [ADR-0028](0028-no-paper-trading.md) (live deploys right after the checks, with no paper deploy before it)
 - Date: 2026-10-28
 
 ## Context

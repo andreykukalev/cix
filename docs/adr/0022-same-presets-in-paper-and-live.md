@@ -1,6 +1,6 @@
 # 0022. The same Safe, Balanced and Risky presets in paper and live
 
-- Status: proposed
+- Status: proposed; amended by [ADR-0028](0028-no-paper-trading.md) (only live runs in Azure; the presets stay as they are)
 - Date: 2026-10-28
 - Amends ADR-0015 (paper switches between `paper` specs) and ADR-0018 ("Paper is unchanged: it switches between `paper` specs only")
 
