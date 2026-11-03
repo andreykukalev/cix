@@ -554,10 +554,17 @@ test('the owner sends a trade as the next submission, after a portfolio waiting 
   assert.match(edited.jsonBody.error, /trade was already saved/);
   assert.equal(writes.length, 2);
 
+  // Another change landed between a lost answer and its retry: the retried trade is still found, not saved again.
+  assert.equal((await postPortfolio({ ...PORTFOLIO, clientId: crypto.randomUUID() })).status, 201);
+  const retried = await postTrade({ ...TRADE, trade: { ...TRADE.trade, symbol: 'EPAM.US' } });
+  assert.equal(retried.status, 200);
+  assert.equal(retried.jsonBody.pending.sequence, 2);
+  assert.equal(writes.length, 3);
+
   // A buy keeps its stop.
   const bought = await postTrade({ clientId: crypto.randomUUID(), trade: { kind: 'buy', symbol: 'NIO.US', quantity: '10', price: '5.5', day: '2026-10-29', stop: '4.9' } });
   assert.equal(bought.status, 201);
-  assert.deepEqual(writes[2].value.trade, { kind: 'buy', symbol: 'NIO.US', name: null, quantity: '10', price: '5.5', fees: null, day: '2026-10-29', stop: '4.9' });
+  assert.deepEqual(writes[3].value.trade, { kind: 'buy', symbol: 'NIO.US', name: null, quantity: '10', price: '5.5', fees: null, day: '2026-10-29', stop: '4.9' });
 });
 
 test('a trade the host would refuse is refused before anything is written', async () => {

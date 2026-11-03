@@ -272,6 +272,34 @@ public class OwnerPortfolioTests
     }
 
     [Fact]
+    public async Task Run_TradesSentAfterASplitMeetTheSharesInTheNewTerms()
+    {
+        var s = new Setup();
+        s.Store.Submit(Submission(1, 5_000m, Held("XYZ.US", 10m, 120m)));
+        await s.RunAsync();
+
+        // Two for one, and the owner trades in the new shares before the run: 10 bought at 50, then 15 sold at 70.
+        s.NextDay();
+        s.Source.Factor["XYZ.US"] = 0.5m;
+        s.Store.Submit(Trade(2, "buy", "XYZ.US", 10m, 50m));
+        s.Store.Submit(Trade(3, "sell", "XYZ.US", 15m, 70m));
+        await s.RunAsync();
+
+        // 20 at 60 after the split; (20 × 60 + 10 × 50) / 30 = 56.66666667; 15 × (70 − 56.66666667) = 200.00 to the cent.
+        Assert.Null(s.Latest.Refusal);
+        var owner = s.Owner!;
+        var holding = Assert.Single(owner.Holdings);
+        Assert.Equal((15m, 56.66666667m, 5_200m), (holding.Quantity, holding.AverageCost, owner.Capital));
+        Assert.Equal(200m, s.Store.Read<TradeLine>("trades/owner-3")!.ProfitBase);
+        Assert.Contains(new NoteLine("XYZ.US", HostReasons.Adjusted), s.Latest.Owner!.Notes);
+
+        // The night after, nothing moves again.
+        s.NextDay();
+        await s.RunAsync();
+        Assert.Equal((15m, 56.66666667m), (s.Owner!.Holdings[0].Quantity, s.Owner.Holdings[0].AverageCost));
+    }
+
+    [Fact]
     public async Task Run_MoreHoldingsThanTheCallBudgetTakeTurns()
     {
         // 18 calls a night: the benchmark and 17 of the 20 holdings; the night after, the 3 left out go first.
@@ -424,6 +452,23 @@ public class OwnerPortfolioTests
     }
 
     [Fact]
+    public void Trade_AnAverageCostAboveThePriceCapOrADateAtTheCalendarsEndIsRefusedNotThrown()
+    {
+        // Fees far above a tiny buy: (0.00000001 × 1 + 1 000 000) / 0.00000001 a share, more than any price the dialog takes.
+        Assert.Equal("figures", OwnerPortfolio.Apply(Portfolio(), Trade(2, "buy", "ABC.US", 0.00000001m, 1m, fees: 1_000_000m)).Error);
+        // Added to a holding of 0.5 shares at 1: (0.5 + 0.00000001 + 1 000 000) / 0.50000001 ≈ 2 000 001.
+        var small = OwnerPortfolio.Apply(Submission(1, 1_000m, Held("XYZ.US", 0.5m, 1m))).State;
+        Assert.Equal("figures", OwnerPortfolio.Apply(small, Trade(2, "buy", "XYZ.US", 0.00000001m, 1m, fees: 1_000_000m)).Error);
+
+        // A document written outside the dashboard, sent at the calendar's end: refused or applied, never an exception that
+        // would stop every nightly run after it.
+        var late = Trade(2, "buy", "XYZ.US", 1m, 1m, day: DateOnly.MaxValue) with { SubmittedAt = DateTimeOffset.MaxValue };
+        Assert.Null(OwnerPortfolio.Apply(Portfolio(), late).Error);
+        var portfolio = Submission(1, 1_000m, Held("XYZ.US", 1m, 1m, opened: DateOnly.MaxValue)) with { SubmittedAt = DateTimeOffset.MaxValue };
+        Assert.Null(OwnerPortfolio.Apply(portfolio).Error);
+    }
+
+    [Fact]
     public async Task Run_TradesAreAppliedInOrderRecordedOnceAndShownNewestFirst()
     {
         var s = new Setup();
@@ -438,7 +483,7 @@ public class OwnerPortfolioTests
         // 5000 + 4 × 20; XYZ (6 × 120 + 2 × 130) / 8 = 122.5, so 980 invested.
         Assert.Equal((5_080m, 980m, 4_100m, 4), (owner.Capital, owner.Invested, owner.Cash, owner.AppliedSequence));
         Assert.Equal((8m, 122.5m), (owner.Holdings[0].Quantity, owner.Holdings[0].AverageCost));
-        Assert.Equal(new PortfolioRefusal(3, "not-held"), s.Latest.Refusal);
+        Assert.Equal(new PortfolioRefusal(3, "not-held", "sell", "ABC.US"), s.Latest.Refusal); // which trade, for the page
         Assert.Equal([("buy", 2m), ("sell", 4m)], owner.Trades!.Select(t => (t.Kind, t.Quantity)));
         Assert.Equal(80m, s.Store.Read<TradeLine>("trades/owner-2")!.ProfitBase);
         Assert.NotNull(s.Store.Read<TradeLine>("trades/owner-4"));
@@ -455,5 +500,24 @@ public class OwnerPortfolioTests
         Assert.Null(s.Latest.Refusal);
         Assert.Empty(s.Latest.Owner!.Holdings);
         Assert.Equal(5_100m, s.Latest.Owner.Capital); // + 8 × 2.5
+    }
+
+    [Fact]
+    public async Task Run_TradesAfterARefusedPortfolioAreRefusedAndTheCauseIsShown()
+    {
+        var s = new Setup();
+        s.Store.Submit(Submission(1, 5_000m, Held("XYZ.US", 10m, 120m)));
+        s.Store.Submit(Submission(2, 0m, Held("XYZ.US", 20m, 120m))); // refused: no capital
+        s.Store.Submit(Trade(3, "sell", "XYZ.US", 4m, 140m)); // made on the refused portfolio: not applied to the old one
+        s.Store.Submit(Submission(4, 6_000m, Held("XYZ.US", 16m, 120m)));
+        s.Store.Submit(Trade(5, "sell", "XYZ.US", 6m, 130m)); // after a portfolio that applied: applies
+
+        await s.RunAsync();
+
+        Assert.Equal(new PortfolioRefusal(2, "capital"), s.Latest.Refusal);
+        var owner = s.Owner!;
+        Assert.Equal((6_060m, 10m, 5, 5), (owner.Capital, owner.Holdings[0].Quantity, owner.AppliedSequence, owner.SeenSequence));
+        Assert.Null(s.Store.Read<TradeLine>("trades/owner-3"));
+        Assert.Equal(60m, s.Store.Read<TradeLine>("trades/owner-5")!.ProfitBase);
     }
 }

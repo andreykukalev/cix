@@ -56,8 +56,12 @@ public sealed record OwnerSection(
     IReadOnlyList<ActionLine> Actions, IReadOnlyList<HoldingLine> Holdings, IReadOnlyList<NoteLine> Notes,
     IReadOnlyList<TradeLine>? Trades = null);
 
-/// <summary>The newest submission, refused: the portfolio stays as it was. <see cref="Reason"/> is one of <see cref="OwnerPortfolio.Apply"/>'s codes, or <c>unreadable</c>.</summary>
-public sealed record PortfolioRefusal(int Sequence, string Reason);
+/// <summary>
+/// A submission refused: the portfolio stays as it was. <see cref="Reason"/> is one of <see cref="OwnerPortfolio.Apply"/>'s
+/// codes, <c>unreadable</c>, or <c>after-refused</c> (a trade after a refused whole portfolio). For a trade, its kind and
+/// ticker, so the page can say which one.
+/// </summary>
+public sealed record PortfolioRefusal(int Sequence, string Reason, string? Kind = null, string? Symbol = null);
 
 /// <summary>Turning submissions into the owner's state.</summary>
 public static class OwnerPortfolio
@@ -113,7 +117,7 @@ public static class OwnerPortfolio
                 return (null, "symbol");
             if (h.Quantity is <= 0 or > MaxQuantity || h.AverageCost is <= 0 or > MaxPrice || h.Stop is <= 0 or > MaxPrice)
                 return (null, "figures");
-            if (h.OpenedOn is { } opened && opened > day.AddDays(1))
+            if (h.OpenedOn is { } opened && opened.DayNumber > day.DayNumber + 1) // day numbers: AddDays throws at the calendar's end
                 return (null, "opened");
             holdings.Add(new(h.Symbol, Name(h.Name), h.Quantity, h.AverageCost, h.Stop, h.OpenedOn ?? day));
         }
@@ -162,7 +166,7 @@ public static class OwnerPortfolio
             return (null, "symbol", null);
         if (trade.Quantity is <= 0 or > MaxQuantity || trade.Price is <= 0 or > MaxPrice || trade.Fees is < 0 or > MaxPrice || trade.Stop is <= 0 or > MaxPrice)
             return (null, "figures", null);
-        if (trade.Day > DateOnly.FromDateTime(submission.SubmittedAt.UtcDateTime).AddDays(1))
+        if (trade.Day.DayNumber > DateOnly.FromDateTime(submission.SubmittedAt.UtcDateTime).DayNumber + 1)
             return (null, "opened", null);
 
         var fees = trade.Fees ?? 0m;
@@ -176,18 +180,22 @@ public static class OwnerPortfolio
             {
                 if (holdings.Count >= MaxHoldings)
                     return (null, "holdings", null);
-                holdings.Add(new(trade.Symbol, Name(trade.Name), trade.Quantity, Cost(trade.Quantity * trade.Price + fees, trade.Quantity), trade.Stop, trade.Day));
+                var cost = Cost(trade.Quantity * trade.Price + fees, trade.Quantity);
+                if (cost > MaxPrice) // fees far above a tiny buy: a cost the portfolio dialog couldn't send back
+                    return (null, "figures", null);
+                holdings.Add(new(trade.Symbol, Name(trade.Name), trade.Quantity, cost, trade.Stop, trade.Day));
             }
             else
             {
                 var h = holdings[index];
                 var quantity = h.Quantity + trade.Quantity;
-                if (quantity > MaxQuantity)
+                var cost = Cost((h.Quantity * h.AverageCost) + (trade.Quantity * trade.Price) + fees, quantity);
+                if (quantity > MaxQuantity || cost > MaxPrice)
                     return (null, "figures", null);
                 holdings[index] = h with
                 {
                     Quantity = quantity,
-                    AverageCost = Cost((h.Quantity * h.AverageCost) + (trade.Quantity * trade.Price) + fees, quantity),
+                    AverageCost = cost,
                     Stop = trade.Stop ?? h.Stop,
                 };
             }

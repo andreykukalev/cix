@@ -202,11 +202,23 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
             config.Watchlist.Select(w => new PriceHistory(instruments[w.Symbol], bars.GetValueOrDefault(w.Symbol) ?? [])).ToList(),
             bars.GetValueOrDefault(config.Benchmark) ?? [], portfolio.Holdings);
         var result = Advisor.Evaluate(input, config.AdvisorSettings);
+        // A split since the last run moves the owner's saved holdings into the new terms before the submissions apply again
+        // on them, so a trade made since meets the shares as the broker now counts them. A whole portfolio sent since is in
+        // the new terms already (it has no terms), so the note stays only while no whole portfolio replaced them.
+        IReadOnlyList<AdvisorNote> splitNotes = [];
+        if (owner is not null && ownerSaved?.Value is { } before && OwnerPortfolio.HasPortfolio(before)
+            && SplitOwner(before, bars, instruments) is ({ } adjusted, { Count: > 0 } adjustedNotes))
+        {
+            (ownerRecord, ownerTrades) = await OwnerAsync(adjusted, now, cancellationToken).ConfigureAwait(false);
+            owner = OwnerPortfolio.HasPortfolio(ownerRecord) ? ownerRecord : null;
+            splitNotes = owner?.Terms is null ? [] : adjustedNotes;
+        }
+
         // A fetch note on a symbol only the owner holds belongs to the owner's section, not the paper record's.
         var paperSymbols = Symbols(state, null).ToHashSet(StringComparer.Ordinal);
         notes.RemoveAll(n => !paperSymbols.Contains(n.Symbol));
         notes.AddRange(result.Notes);
-        var (nextOwner, ownerSection) = owner is null ? (null, null) : AdviseOwner(owner, bars, instruments, fetchNotes, lastClose, today);
+        var (nextOwner, ownerSection) = owner is null ? (null, null) : AdviseOwner(owner, bars, instruments, fetchNotes.Concat(splitNotes).ToList(), lastClose, today);
         // Advice still waiting for its symbol's bar (a sell, a stop) stays pending unless the new advice says otherwise.
         var stillHeld = portfolio.Holdings.Select(h => h.Symbol).ToHashSet(StringComparer.Ordinal);
         var pending = result.Actions
@@ -303,13 +315,18 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
         var record = saved;
         var trades = new List<(int, TradeLine)>();
         PortfolioRefusal? refused = null;
+        var portfolioRefused = false; // trades made on a portfolio the run refused would change the wrong one
         for (var n = seen + 1; n <= seen + OwnerPortfolio.MaxPending; n++)
         {
             if (await store.GetPortfolioSubmissionAsync(n, cancellationToken).ConfigureAwait(false) is not { } read)
                 break;
-            var (state, error, trade) = read.Submission is not { } submission ? (null, "unreadable", null)
+            var submission = read.Submission;
+            var (state, error, trade) = submission is null ? (null, "unreadable", null)
                 : submission.Sequence != n ? (null, "sequence", null)
+                : submission.Trade is not null && portfolioRefused ? (null, "after-refused", null)
                 : OwnerPortfolio.Apply(record, submission);
+            if (submission is { Trade: null })
+                portfolioRefused = state is null;
             if (state is not null)
             {
                 record = state;
@@ -318,7 +335,9 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
                 continue;
             }
 
-            refused = new PortfolioRefusal(n, error!);
+            // The cause is shown, not the trades it took with it.
+            if (refused is null || error != "after-refused")
+                refused = new PortfolioRefusal(n, error!, submission?.Trade?.Kind, submission?.Trade?.Symbol);
             record = (record ?? new OwnerState(0m, [], 0, now)) with { SeenSequence = n, Refusal = refused };
         }
 
@@ -327,33 +346,27 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
     }
 
     /// <summary>
-    /// The advice for the owner's real portfolio, on the same bars and rules as the paper one: sized on the owner's capital,
-    /// with what the holdings cost taken off it. A split since the last run moves a holding into the new terms (the owner
-    /// checks it, the note says so). A stop the advice sets or raises is taken as placed; a sell is advised again each run
-    /// until the owner sends the portfolio without it.
+    /// The owner's saved holdings moved into the terms of this run's bars: a split since the last run changes the shares,
+    /// the average cost and the stop (the owner checks it, the note <c>adjusted</c> says so). A split only: the broker leaves
+    /// stops and costs alone for a dividend, and the latest close is never adjusted. No notes when nothing split.
     /// </summary>
-    private (OwnerState State, OwnerSection Section) AdviseOwner(
-        OwnerState owner, Dictionary<string, IReadOnlyList<Candle>> bars, Dictionary<string, Instrument> instruments,
-        IReadOnlyList<AdvisorNote> fetchNotes, Dictionary<string, decimal> lastClose, DateOnly today)
+    private static (OwnerState State, List<AdvisorNote> Notes) SplitOwner(
+        OwnerState owner, Dictionary<string, IReadOnlyList<Candle>> bars, Dictionary<string, Instrument> instruments)
     {
-        var heldSymbols = owner.Holdings.Select(h => h.Symbol).ToHashSet(StringComparer.Ordinal);
-        var notes = fetchNotes.Where(n => heldSymbols.Contains(n.Symbol)).ToList();
-        Instrument InstrumentOf(OwnerHolding h) =>
-            instruments.GetValueOrDefault(h.Symbol) ?? new Instrument(h.Symbol, h.Name ?? h.Symbol, "USD", InstrumentKind.Stock);
-
-        // A split only: the broker leaves stops and costs alone for a dividend, and the latest close is never adjusted.
         var terms = owner.Terms ?? new Dictionary<string, SymbolTerms>();
+        var notes = new List<AdvisorNote>();
         var holdings = new List<OwnerHolding>();
         foreach (var h in owner.Holdings)
         {
             if (terms.TryGetValue(h.Symbol, out var t) && AdjustmentFactor(t.References, bars.GetValueOrDefault(h.Symbol) ?? []) is { } f
                 && Math.Abs(f.Factor - 1m) > SplitThreshold)
             {
+                var tick = (instruments.GetValueOrDefault(h.Symbol) ?? new Instrument(h.Symbol, h.Name ?? h.Symbol, "USD", InstrumentKind.Stock)).PriceTick;
                 holdings.Add(h with
                 {
                     Quantity = Math.Round(h.Quantity / f.Factor, 2, MidpointRounding.ToEven),
                     AverageCost = Math.Round(h.AverageCost * f.Factor, 6, MidpointRounding.ToEven),
-                    Stop = h.Stop is { } stop ? Advisor.FloorTo(stop * f.Factor, InstrumentOf(h).PriceTick) : null,
+                    Stop = h.Stop is { } stop ? Advisor.FloorTo(stop * f.Factor, tick) : null,
                 });
                 notes.Add(new(h.Symbol, HostReasons.Adjusted));
             }
@@ -364,6 +377,26 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
         }
 
         holdings.RemoveAll(h => h.Quantity <= 0);
+        return (owner with { Holdings = holdings }, notes);
+    }
+
+    /// <summary>
+    /// The advice for the owner's real portfolio, on the same bars and rules as the paper one: sized on the owner's capital,
+    /// with what the holdings cost taken off it, its holdings already in this run's terms (<see cref="SplitOwner"/>). A stop
+    /// the advice sets or raises is taken as placed; a sell is advised again each run until the owner records the sale or
+    /// sends the portfolio without it.
+    /// </summary>
+    private (OwnerState State, OwnerSection Section) AdviseOwner(
+        OwnerState owner, Dictionary<string, IReadOnlyList<Candle>> bars, Dictionary<string, Instrument> instruments,
+        IReadOnlyList<AdvisorNote> fetchNotes, Dictionary<string, decimal> lastClose, DateOnly today)
+    {
+        var heldSymbols = owner.Holdings.Select(h => h.Symbol).ToHashSet(StringComparer.Ordinal);
+        var notes = fetchNotes.Where(n => heldSymbols.Contains(n.Symbol)).ToList();
+        Instrument InstrumentOf(OwnerHolding h) =>
+            instruments.GetValueOrDefault(h.Symbol) ?? new Instrument(h.Symbol, h.Name ?? h.Symbol, "USD", InstrumentKind.Stock);
+
+        var terms = owner.Terms ?? new Dictionary<string, SymbolTerms>();
+        var holdings = owner.Holdings.Where(h => h.Quantity > 0).ToList();
         var invested = holdings.Sum(h => h.Quantity * h.AverageCost * Fx(InstrumentOf(h).Currency));
         var cash = Math.Max(0m, owner.Capital - invested);
         var histories = config.Watchlist.Select(w => new PriceHistory(instruments[w.Symbol], bars.GetValueOrDefault(w.Symbol) ?? []))

@@ -281,6 +281,7 @@ function refusalReason(code) {
     case 'no-portfolio': return t('a trade came before any portfolio: save the whole portfolio first');
     case 'not-held': return t('a sale of a stock the portfolio does not hold');
     case 'too-many': return t('a sale of more shares than the portfolio holds');
+    case 'after-refused': return t('it came after a portfolio that was refused: save the whole portfolio again, then the trade');
     default: return t("it couldn't be read");
   }
 }
@@ -374,7 +375,13 @@ function renderOwner(a) {
   if (trades.length) waits.push(t('Trades waiting for the next run: {count}. It recomputes the capital and the holdings from them: {next}.', { count: trades.length, next: runTime(nextStocksRun()) }));
   if (!configured) say(null);
   else if (waits.length) say(waits.join(' '), 'warn');
-  else if (a?.refusal) say(t('A change you sent was refused: {reason}. Check the portfolio and the trades, and send it again, corrected.', { reason: refusalReason(a.refusal.reason) }), 'bad');
+  else if (a?.refusal) {
+    const r = a.refusal;
+    const reason = refusalReason(r.reason);
+    say(r.kind === 'buy' && r.symbol ? t('Your purchase of {symbol} was refused: {reason}. Check the portfolio and the trades, and record it again, corrected.', { symbol: r.symbol, reason })
+      : r.kind === 'sell' && r.symbol ? t('Your sale of {symbol} was refused: {reason}. Check the portfolio and the trades, and record it again, corrected.', { symbol: r.symbol, reason })
+        : t('A change you sent was refused: {reason}. Check the portfolio and the trades, and send it again, corrected.', { reason }), 'bad');
+  }
   else if (!o) say(t('Enter your capital and what you hold at Revolut, so the advice is for your real account. Until then the advice below is for the paper portfolio only.'));
   else say(null);
 
@@ -665,8 +672,12 @@ function tradeBody() {
   const day = get('day');
   if (!day) return { error: t('Enter the day of the trade.') };
   if (day > localToday()) return { error: t('The day of the trade cannot be after today.') };
-  // A sale of what the applied portfolio doesn't hold is refused by the next run; with changes waiting the page can't tell.
+  // What the next run would refuse, as far as the applied portfolio tells: with changes waiting the page can't tell.
   const a = stocks.answer?.advice ?? null;
+  if (!waitingPortfolio(a) && waitingTrades(a).length === 0 && a?.owner) {
+    const h = a.owner.holdings.find((x) => x.symbol === symbol);
+    if (buy && !h && a.owner.holdings.length >= 50) return { error: t('At most 50 holdings: sell one first, or save the whole portfolio.') };
+  }
   if (!buy && !waitingPortfolio(a) && waitingTrades(a).length === 0 && a?.owner) {
     const h = a.owner.holdings.find((x) => x.symbol === symbol);
     if (!h) return { error: t('{symbol} is not in your portfolio.', { symbol }) };

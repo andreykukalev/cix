@@ -265,10 +265,13 @@ function ownerView(o) {
   };
 }
 
+/** The submission the host refused, and for a trade its kind and ticker, so the page can say which one. */
 function refusalView(r) {
   const n = sequence(r?.sequence);
   const reason = code(r?.reason);
-  return n && reason ? { sequence: n, reason } : null;
+  if (!n || !reason) return null;
+  const kind = TRADE_KINDS.has(r.kind) ? r.kind : null;
+  return { sequence: n, reason, kind, symbol: kind ? symbol(r.symbol) : null };
 }
 
 /** What the Stocks tab shows from the advisor's document, every field checked. */

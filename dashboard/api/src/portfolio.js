@@ -32,11 +32,11 @@ function decimal(v, what, max, optional = false) {
 }
 
 /** A real calendar day, not after the owner's today: the page sends their local date, so up to a day ahead of UTC's. */
-function day(v, latest) {
+function day(v, latest, what = 'The day bought') {
   if (v === undefined || v === null || v === '') return null;
   const s = typeof v === 'string' ? v.trim() : '';
-  if (!DAY.test(s) || !Number.isFinite(Date.parse(s)) || new Date(s).toISOString().slice(0, 10) !== s) throw new PortfolioError('The day bought must be a date.');
-  if (s > latest) throw new PortfolioError('The day bought cannot be after today.');
+  if (!DAY.test(s) || !Number.isFinite(Date.parse(s)) || new Date(s).toISOString().slice(0, 10) !== s) throw new PortfolioError(`${what} must be a date.`);
+  if (s > latest) throw new PortfolioError(`${what} cannot be after today.`);
   return s;
 }
 
@@ -76,7 +76,7 @@ function tradeValue(body, now) {
   if (!t || (t.kind !== 'buy' && t.kind !== 'sell')) throw new PortfolioError('A trade is a buy or a sell.');
   const symbol = typeof t.symbol === 'string' ? t.symbol.trim().toUpperCase() : '';
   if (!SYMBOL.test(symbol)) throw new PortfolioError('A ticker must be a US share, like EPAM.US.');
-  const traded = day(t.day, latest);
+  const traded = day(t.day, latest, 'The day of the trade');
   if (!traded) throw new PortfolioError('The trade needs its day.');
   const clientId = typeof b.clientId === 'string' && CLIENT_ID.test(b.clientId) ? b.clientId : null;
   return {
@@ -142,23 +142,25 @@ function submissionView(doc, n) {
 }
 
 /**
- * The submissions sent since the host last looked, from number start, which the next run applies in order: the newest of
- * any kind, the newest whole portfolio (or one that can't be read), the trades in order, and the next free number; next is
- * null when MAX_PENDING are waiting already.
+ * The submissions sent since the host last looked, from number start, which the next run applies in order: all of them, the
+ * newest of any kind, the newest whole portfolio (or one that can't be read), the trades in order, and the next free number;
+ * next is null when MAX_PENDING are waiting already.
  */
 async function pendingPortfolio(reader, start) {
-  let newest = null;
+  const all = [];
   let portfolio = null;
   const trades = [];
+  let next = null;
   for (let n = start; n < start + MAX_PENDING; n += 1) {
     const doc = await reader.readDocument(CONTAINER, `portfolio-${n}`);
-    if (!doc) return { newest, portfolio, trades, next: n };
-    newest = submissionView(doc, n);
+    if (!doc) { next = n; break; }
+    const view = submissionView(doc, n);
+    all.push(view);
     // By what was sent, so a trade that can't be read is shown among the trades, not as the portfolio to fill the form from.
-    if (doc.value && typeof doc.value === 'object' && doc.value.trade !== undefined) trades.push(newest);
-    else portfolio = newest;
+    if (doc.value && typeof doc.value === 'object' && doc.value.trade !== undefined) trades.push(view);
+    else portfolio = view;
   }
-  return { newest, portfolio, trades, next: null };
+  return { all, newest: all.at(-1) ?? null, portfolio, trades, next };
 }
 
 module.exports = { portfolioValue, tradeValue, portfolioDocument, firstUnseen, samePortfolio, pendingPortfolio, submissionView, PortfolioError, CONTAINER, MAX_PENDING, MAX_HOLDINGS };

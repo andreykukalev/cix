@@ -988,6 +988,12 @@
     'a trade came before any portfolio: save the whole portfolio first': 'сделка пришла раньше портфеля: сначала сохраните портфель целиком',
     'a sale of a stock the portfolio does not hold': 'продажа акции, которой нет в портфеле',
     'a sale of more shares than the portfolio holds': 'продано больше акций, чем есть в портфеле',
+    'it came after a portfolio that was refused: save the whole portfolio again, then the trade': 'она шла после непринятого портфеля: сохраните портфель целиком заново, потом сделку',
+    'Your purchase of {symbol} was refused: {reason}. Check the portfolio and the trades, and record it again, corrected.':
+      'Покупка {symbol} не принята: {reason}. Проверьте портфель и сделки и отметьте её снова, исправив.',
+    'Your sale of {symbol} was refused: {reason}. Check the portfolio and the trades, and record it again, corrected.':
+      'Продажа {symbol} не принята: {reason}. Проверьте портфель и сделки и отметьте её снова, исправив.',
+    'At most 50 holdings: sell one first, or save the whole portfolio.': 'Не больше 50 позиций: сначала продайте одну или сохраните портфель целиком.',
     "it couldn't be read": 'его не удалось прочитать',
     'A portfolio change is waiting for the next run, but the page cannot read it.': 'Изменение портфеля ждёт следующего запуска, но страница не может его прочитать.',
     'Sent {when}: capital {capital}, {count} holdings. The next run after a US close applies it: {next}.':
@@ -1111,6 +1117,7 @@
 
   /** Engine text with figures in it: [pattern, Russian with $1… for the parts]. */
   const PATTERNS = [
+    [/^The [\w ]+ could not be completed right now\.$/, () => 'Сейчас не получилось: попробуйте позже.'],
     [/^trend (up|down|flat|unknown)$/, (m) => `тренд: ${{ up: 'вверх', down: 'вниз', flat: 'боковой', unknown: 'неизвестен' }[m[1]]}`],
     [/^sell \((stop|target|trend-down)\)$/, (m) => `продажа (${{ stop: 'стоп', target: 'цель', 'trend-down': 'тренд вниз' }[m[1]]})`],
     [/^extended: ([\d.]+) ATR above EMA20$/, (m) => `перегрета: на ${m[1]} ATR выше EMA20`],

@@ -244,7 +244,12 @@ test('the owner\'s real portfolio is checked like the paper one, protective acti
   assert.equal(view.owner.holdings[0].change, 0.42199999999999993); // 142.2 / 100 − 1
   assert.equal(view.owner.holdings[0].stop, null);
   assert.deepEqual(view.owner.notes, [{ symbol: 'OWN.US', reason: 'data-error' }]);
-  assert.deepEqual(view.refusal, { sequence: 3, reason: 'capital' });
+  assert.deepEqual(view.refusal, { sequence: 3, reason: 'capital', kind: null, symbol: null });
+  // A refused trade says which one; a kind or ticker that isn't one is left out.
+  assert.deepEqual(stocksView({ ...ADVICE, refusal: { sequence: 4, reason: 'not-held', kind: 'sell', symbol: 'ABC.US' } }, NOW).refusal,
+    { sequence: 4, reason: 'not-held', kind: 'sell', symbol: 'ABC.US' });
+  assert.deepEqual(stocksView({ ...ADVICE, refusal: { sequence: 4, reason: 'not-held', kind: 'short', symbol: '<b>' } }, NOW).refusal,
+    { sequence: 4, reason: 'not-held', kind: null, symbol: null });
   // None, or one without a capital: no section.
   assert.equal(stocksView(ADVICE, NOW).owner, null);
   assert.equal(stocksView({ ...ADVICE, owner: { ...OWNER_SECTION, capital: '0' } }, NOW).owner, null);

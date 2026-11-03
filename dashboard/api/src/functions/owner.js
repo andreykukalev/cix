@@ -222,19 +222,21 @@ function getStocksWriter() {
 /**
  * Sends the owner's whole portfolio, or one trade, as the next submission. The number is the first free one after what the
  * host has seen; a send that loses the number to another takes the next. The same dialog sent again (its clientId) is
- * answered with the submission already there, not sent twice.
+ * answered with the submission already there, among all those waiting, not sent twice.
  */
 async function createSubmission(context, value, now, { different, logged }) {
   stocksRead ??= stocksReader();
   if (!stocksRead) throw new WriterNotConfigured(STOCKS_NOT_SET_UP);
   const latest = await stocksRead.readDocument('advice', 'advice-latest');
   const advice = latest ? stocksView(latest.value ?? null, now) : null;
-  const { newest, next } = await pendingPortfolio(stocksRead, firstUnseen(advice));
-  if (value.clientId && newest?.clientId === value.clientId) {
-    // The same dialog again: the first send stands. Edited figures since would be dropped silently, so say so.
-    return samePortfolio(newest, value)
-      ? respond(200, { result: 'exists', pending: newest })
-      : respond(409, { error: different, pending: newest });
+  const { all, next } = await pendingPortfolio(stocksRead, firstUnseen(advice));
+  // The same dialog again, even with another change sent since (another tab): the first send stands, so a trade whose
+  // answer was lost is never counted twice. Edited figures since would be dropped silently, so say so.
+  const earlier = value.clientId ? all.findLast((x) => x.clientId === value.clientId) : undefined;
+  if (earlier) {
+    return samePortfolio(earlier, value)
+      ? respond(200, { result: 'exists', pending: earlier })
+      : respond(409, { error: different, pending: earlier });
   }
   let n = next;
   const last = next === null ? null : Math.min(next + 2, firstUnseen(advice) + MAX_PENDING - 1); // the host looks no further
