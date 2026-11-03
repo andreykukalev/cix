@@ -405,6 +405,7 @@ if ($For -eq 'agents' -and $settings.agents.deploy -ne 'apps') {
   Write-CixInfo 'CI can push images now. After provision.ps1 deploys agents.deploy apps, run this again.'
 }
 if ($live) {
-  Write-CixInfo "From now on each change on main to the engine or the agents waits in CI, after its checks, for your approval (Review deployments, $Environment), then deploys to the live engine, which keeps its mode and strategy."
+  Write-CixInfo "From now on each change on main to the engine or the agents waits in CI, after its checks,"
+  Write-CixInfo "for your approval (Review deployments, $Environment), then deploys to the live engine, which keeps its mode and strategy."
 }
 else { Write-CixInfo "Then run CI on main by hand once (Actions, CI, Run workflow) to check it deploys the $For." }
