@@ -325,12 +325,13 @@ function nextPreOpen(now = new Date()) {
   return null;
 }
 
-/** How long until a moment: "45 min", "5 h 20 min". */
+/** How long until a moment: "45 min", "5 h 20 min", "2 d 14 h". */
 function until(d, now = new Date()) {
   const minutes = Math.max(1, Math.ceil((d - now) / 60_000));
   if (minutes < 60) return t('{n} min', { n: minutes });
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
+  if (h >= 24) return h % 24 ? t('{d} d {h} h', { d: Math.floor(h / 24), h: h % 24 }) : t('{n} d', { n: h / 24 });
   return m ? t('{h} h {m} min', { h, m }) : t('{n} h', { n: h });
 }
 

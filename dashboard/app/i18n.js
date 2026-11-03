@@ -1006,6 +1006,7 @@
     'Next update': 'Следующее обновление',
     'in {time}': 'через {time}',
     '{h} h {m} min': '{h} ч {m} мин',
+    '{d} d {h} h': '{d} д {h} ч',
     'New advice and portfolio: {when}': 'Новые советы и портфель: {when}',
     "Claude's view: about 40 min later": 'Мнение Claude: примерно на 40 мин позже',
     "Claude's check before the open: {when}": 'Проверка Claude перед открытием: {when}',
