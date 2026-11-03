@@ -36,11 +36,13 @@ const {
 } = require('../controls');
 
 const { stocksReader, stocksView } = require('../stocks');
-const { portfolioValue, portfolioDocument, firstUnseen, pendingPortfolio, samePortfolio, MAX_PENDING } = require('../portfolio');
+const { portfolioValue, tradeValue, portfolioDocument, firstUnseen, pendingPortfolio, samePortfolio, MAX_PENDING } = require('../portfolio');
 
 const MAX_BODY = 4096;
 const MAX_PORTFOLIO_BODY = 16_384; // 50 holdings
 const SENT_DIFFERENT = 'This portfolio was already saved with other figures; it stands as first saved. Close the dialog and open it again to save the new ones.';
+const TRADE_SENT_DIFFERENT = 'This trade was already saved with other figures; it stands as first saved. Close the dialog and open it again to save the new ones.';
+const MAX_TRADE_BODY = 2_048;
 const STOCKS_NOT_SET_UP = "The Stocks page can't send your portfolio yet: run tools/azure/provision-stocks.ps1 again, after setup-dashboard-requests.ps1.";
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 const getReader = readerCache(); // each mode's database: live's engine writes to its own (ADR-0017); requests are paper's
@@ -218,43 +220,58 @@ function getStocksWriter() {
 }
 
 /**
- * Sends the owner's whole portfolio as the next submission. The number is the first free one after what the host has seen;
- * a send that loses the number to another takes the next. The same dialog sent again (its clientId) is answered with the
- * submission already there, not sent twice.
+ * Sends the owner's whole portfolio, or one trade, as the next submission. The number is the first free one after what the
+ * host has seen; a send that loses the number to another takes the next. The same dialog sent again (its clientId) is
+ * answered with the submission already there, among all those waiting, not sent twice.
  */
+async function createSubmission(context, value, now, { different, logged }) {
+  stocksRead ??= stocksReader();
+  if (!stocksRead) throw new WriterNotConfigured(STOCKS_NOT_SET_UP);
+  const latest = await stocksRead.readDocument('advice', 'advice-latest');
+  const advice = latest ? stocksView(latest.value ?? null, now) : null;
+  const { all, next } = await pendingPortfolio(stocksRead, firstUnseen(advice));
+  // The same dialog again, even with another change sent since (another tab): the first send stands, so a trade whose
+  // answer was lost is never counted twice. Edited figures since would be dropped silently, so say so.
+  const earlier = value.clientId ? all.findLast((x) => x.clientId === value.clientId) : undefined;
+  if (earlier) {
+    return samePortfolio(earlier, value)
+      ? respond(200, { result: 'exists', pending: earlier })
+      : respond(409, { error: different, pending: earlier });
+  }
+  let n = next;
+  const last = next === null ? null : Math.min(next + 2, firstUnseen(advice) + MAX_PENDING - 1); // the host looks no further
+  for (; n !== null && n <= last; n += 1) {
+    let result;
+    try {
+      result = await getStocksWriter().create(portfolioDocument(value, n));
+    } catch (error) {
+      // The role is granted by provision-stocks.ps1: without it, say so.
+      if (error instanceof WriterError && error.status === 403) throw new WriterNotConfigured(STOCKS_NOT_SET_UP);
+      throw error;
+    }
+    if (result === 'created') {
+      context.log(`Owner stocks ${logged(value)} created: portfolio-${n}`);
+      return respond(201, { result, pending: { sequence: n, ...value } });
+    }
+  }
+  if (next === null || n > firstUnseen(advice) + MAX_PENDING - 1) throw new RequestError('Too many portfolio changes are waiting for the next run: wait for it, then send again.');
+  throw new RequestError('Another change was sent at the same time: reload the page and send again.');
+}
+
 async function createStocksPortfolio(request, context) {
   return ownerOnly(request, context, 'portfolio', async () => {
     const now = Date.now();
     const value = portfolioValue(await readBody(request, MAX_PORTFOLIO_BODY), now);
-    stocksRead ??= stocksReader();
-    if (!stocksRead) throw new WriterNotConfigured(STOCKS_NOT_SET_UP);
-    const latest = await stocksRead.readDocument('advice', 'advice-latest');
-    const advice = latest ? stocksView(latest.value ?? null, now) : null;
-    const { newest, next } = await pendingPortfolio(stocksRead, firstUnseen(advice));
-    if (value.clientId && newest?.clientId === value.clientId) {
-      // The same dialog again: the first send stands. Edited figures since would be dropped silently, so say so.
-      return samePortfolio(newest, value)
-        ? respond(200, { result: 'exists', pending: newest })
-        : respond(409, { error: SENT_DIFFERENT, pending: newest });
-    }
-    let n = next;
-    const last = next === null ? null : Math.min(next + 2, firstUnseen(advice) + MAX_PENDING - 1); // the host looks no further
-    for (; n !== null && n <= last; n += 1) {
-      let result;
-      try {
-        result = await getStocksWriter().create(portfolioDocument(value, n));
-      } catch (error) {
-        // The role is granted by provision-stocks.ps1: without it, say so.
-        if (error instanceof WriterError && error.status === 403) throw new WriterNotConfigured(STOCKS_NOT_SET_UP);
-        throw error;
-      }
-      if (result === 'created') {
-        context.log(`Owner stocks portfolio created: portfolio-${n}, ${value.holdings.length} holdings`);
-        return respond(201, { result, pending: { sequence: n, ...value } });
-      }
-    }
-    if (next === null || n > firstUnseen(advice) + MAX_PENDING - 1) throw new RequestError('Too many portfolio changes are waiting for the next run: wait for it, then send again.');
-    throw new RequestError('Another change was sent at the same time: reload the page and send again.');
+    return createSubmission(context, value, now, { different: SENT_DIFFERENT, logged: (v) => `portfolio of ${v.holdings.length} holdings` });
+  });
+}
+
+/** Sends one trade the owner made at the broker (a buy or a sell, with its price): the next run applies it to the portfolio. */
+async function createStocksTrade(request, context) {
+  return ownerOnly(request, context, 'trade', async () => {
+    const now = Date.now();
+    const value = tradeValue(await readBody(request, MAX_TRADE_BODY), now);
+    return createSubmission(context, value, now, { different: TRADE_SENT_DIFFERENT, logged: (v) => `${v.trade.kind} of ${v.trade.symbol}` });
   });
 }
 
@@ -396,6 +413,13 @@ app.http('owner-stocks-portfolio', {
   handler: createStocksPortfolio,
 });
 
+app.http('owner-stocks-trade', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'owner/stocks-trade',
+  handler: createStocksTrade,
+});
+
 module.exports = {
-  createRequest, createStrategyRequest, createPairRequest, createControlRequest, createAnalystRequest, createStocksPortfolio, readBody, ownerOnly,
+  createRequest, createStrategyRequest, createPairRequest, createControlRequest, createAnalystRequest, createStocksPortfolio, createStocksTrade, readBody, ownerOnly,
 };

@@ -1,9 +1,10 @@
 'use strict';
 // The owner's real stocks portfolio (ADR-0026): what they hold at Revolut's broker and the capital they give the advisor.
-// The Stocks page sends the whole portfolio each time, as one submission, `portfolio-N` in the stocks database's requests
-// container; the writer identity can only create it there. The host applies the newest one on its next nightly run and
-// checks every field again (Cix.Stocks.Host.OwnerPortfolio): the rules here are the same, so the page can say what's wrong
-// before anything is sent. Numbers are written as decimal strings, so they reach the host exactly (CLAUDE.md rule 7).
+// The Stocks page sends either the whole portfolio or one trade (a buy or a sell, with its shares, price and fees), each as
+// one submission, `portfolio-N` in the stocks database's requests container; the writer identity can only create it there.
+// The host applies them in order on its next nightly run and checks every field again (Cix.Stocks.Host.OwnerPortfolio),
+// doing the trade's arithmetic in decimal: the rules here are the same, so the page can say what's wrong before anything is
+// sent. Numbers are written as decimal strings, so they reach the host exactly (CLAUDE.md rule 7).
 
 const CONTAINER = 'requests';
 /** The most submissions after the applied one: the host looks at no more (OwnerPortfolio.MaxPending). */
@@ -31,11 +32,11 @@ function decimal(v, what, max, optional = false) {
 }
 
 /** A real calendar day, not after the owner's today: the page sends their local date, so up to a day ahead of UTC's. */
-function day(v, latest) {
+function day(v, latest, what = 'The day bought') {
   if (v === undefined || v === null || v === '') return null;
   const s = typeof v === 'string' ? v.trim() : '';
-  if (!DAY.test(s) || !Number.isFinite(Date.parse(s)) || new Date(s).toISOString().slice(0, 10) !== s) throw new PortfolioError('The day bought must be a date.');
-  if (s > latest) throw new PortfolioError('The day bought cannot be after today.');
+  if (!DAY.test(s) || !Number.isFinite(Date.parse(s)) || new Date(s).toISOString().slice(0, 10) !== s) throw new PortfolioError(`${what} must be a date.`);
+  if (s > latest) throw new PortfolioError(`${what} cannot be after today.`);
   return s;
 }
 
@@ -56,6 +57,41 @@ function holding(h, latest) {
     averageCost: decimal(h.averageCost, `The price paid for ${symbol}`, MAX_FIGURE),
     stop: decimal(h.stop, `The stop of ${symbol}`, MAX_FIGURE, true),
     openedOn: day(h.openedOn, latest),
+  };
+}
+
+/** Fees as typed: empty for none, else a number from 0, at most max. */
+function fees(v, max) {
+  if (v === undefined || v === null || v === '') return null;
+  const s = typeof v === 'string' ? v.trim() : typeof v === 'number' && Number.isFinite(v) ? String(v) : '';
+  if (!DECIMAL.test(s) || Number(s) > max) throw new PortfolioError(`The fees must be a number from 0, at most ${max}.`);
+  return s.replace(/^0+(?=\d)/, '');
+}
+
+/** A trade the page sent, checked: a buy or a sell of a US share, its shares, price, fees and day. Throws PortfolioError. */
+function tradeValue(body, now) {
+  const b = body && typeof body === 'object' ? body : {};
+  const latest = new Date(new Date(now).getTime() + 86_400_000).toISOString().slice(0, 10); // as OwnerPortfolio.ApplyTrade
+  const t = b.trade && typeof b.trade === 'object' ? b.trade : null;
+  if (!t || (t.kind !== 'buy' && t.kind !== 'sell')) throw new PortfolioError('A trade is a buy or a sell.');
+  const symbol = typeof t.symbol === 'string' ? t.symbol.trim().toUpperCase() : '';
+  if (!SYMBOL.test(symbol)) throw new PortfolioError('A ticker must be a US share, like EPAM.US.');
+  const traded = day(t.day, latest, 'The day of the trade');
+  if (!traded) throw new PortfolioError('The trade needs its day.');
+  const clientId = typeof b.clientId === 'string' && CLIENT_ID.test(b.clientId) ? b.clientId : null;
+  return {
+    submittedAt: new Date(now).toISOString(),
+    trade: {
+      kind: t.kind,
+      symbol,
+      name: name(t.name),
+      quantity: decimal(t.quantity, `The shares of ${symbol}`, MAX_FIGURE),
+      price: decimal(t.price, `The price of ${symbol}`, MAX_FIGURE),
+      fees: fees(t.fees, MAX_FIGURE),
+      day: traded,
+      stop: t.kind === 'buy' ? decimal(t.stop, `The stop of ${symbol}`, MAX_FIGURE, true) : null,
+    },
+    clientId,
   };
 }
 
@@ -81,9 +117,9 @@ function portfolioDocument(value, n) {
   return { id: `portfolio-${n}`, value: { sequence: n, ...value } };
 }
 
-/** Whether two submissions hold the same capital and holdings. */
+/** Whether two submissions hold the same capital and holdings, or the same trade. */
 function samePortfolio(a, b) {
-  const key = (p) => JSON.stringify({ capital: p.capital, holdings: p.holdings });
+  const key = (p) => JSON.stringify({ capital: p.capital, holdings: p.holdings, trade: p.trade });
   return key(a) === key(b);
 }
 
@@ -98,7 +134,7 @@ function submissionView(doc, n) {
   const sentAt = v && typeof v === 'object' && typeof v.submittedAt === 'string' ? Date.parse(v.submittedAt) : NaN;
   if (!Number.isFinite(sentAt)) return { sequence: n, unreadable: true };
   try {
-    return { sequence: n, ...portfolioValue(v, sentAt) };
+    return { sequence: n, ...(v.trade ? tradeValue(v, sentAt) : portfolioValue(v, sentAt)) };
   } catch (error) {
     if (error instanceof PortfolioError) return { sequence: n, unreadable: true };
     throw error;
@@ -106,17 +142,25 @@ function submissionView(doc, n) {
 }
 
 /**
- * The submissions sent since the host last looked, from number start: the newest (what the next run applies), and the next
- * free number; next is null when MAX_PENDING are waiting already.
+ * The submissions sent since the host last looked, from number start, which the next run applies in order: all of them, the
+ * newest of any kind, the newest whole portfolio (or one that can't be read), the trades in order, and the next free number;
+ * next is null when MAX_PENDING are waiting already.
  */
 async function pendingPortfolio(reader, start) {
-  let newest = null;
+  const all = [];
+  let portfolio = null;
+  const trades = [];
+  let next = null;
   for (let n = start; n < start + MAX_PENDING; n += 1) {
     const doc = await reader.readDocument(CONTAINER, `portfolio-${n}`);
-    if (!doc) return { newest, next: n };
-    newest = submissionView(doc, n);
+    if (!doc) { next = n; break; }
+    const view = submissionView(doc, n);
+    all.push(view);
+    // By what was sent, so a trade that can't be read is shown among the trades, not as the portfolio to fill the form from.
+    if (doc.value && typeof doc.value === 'object' && doc.value.trade !== undefined) trades.push(view);
+    else portfolio = view;
   }
-  return { newest, next: null };
+  return { all, newest: all.at(-1) ?? null, portfolio, trades, next };
 }
 
-module.exports = { portfolioValue, portfolioDocument, firstUnseen, samePortfolio, pendingPortfolio, submissionView, PortfolioError, CONTAINER, MAX_PENDING, MAX_HOLDINGS };
+module.exports = { portfolioValue, tradeValue, portfolioDocument, firstUnseen, samePortfolio, pendingPortfolio, submissionView, PortfolioError, CONTAINER, MAX_PENDING, MAX_HOLDINGS };

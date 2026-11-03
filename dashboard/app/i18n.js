@@ -966,8 +966,8 @@
     'My portfolio': 'Мой портфель',
     'Edit portfolio': 'Изменить портфель',
     'My holdings': 'Мои позиции',
-    "Your real account at Revolut's broker, in dollars: the advice is sized on the capital you give it, less what your holdings cost. After a buy or a sell, edit the portfolio; the next nightly run takes it into account. A stop the advice sets or raises is taken as placed.":
-      'Ваш реальный счёт у брокера Revolut, в долларах: советы считаются от капитала, который вы указали, за вычетом стоимости покупки позиций. После покупки или продажи измените портфель: следующий ночной запуск это учтёт. Стоп, который советник предложил поставить или поднять, считается поставленным.',
+    "Your real account at Revolut's broker, in dollars: the advice is sized on the capital you give it, less what your holdings cost. After a buy or a sell at Revolut, record it with I bought or I sold; the next nightly run recomputes the capital and the holdings from it. Edit the portfolio only to correct it as a whole. A stop the advice sets or raises is taken as placed.":
+      'Ваш реальный счёт у брокера Revolut, в долларах: советы считаются от капитала, который вы указали, за вычетом стоимости покупки позиций. После покупки или продажи в Revolut отметьте её кнопкой «Купил» или «Продал»: следующий ночной запуск пересчитает по ней капитал и позиции. Изменяйте портфель целиком, только чтобы его поправить. Стоп, который советник предложил поставить или поднять, считается поставленным.',
     "Everything you hold at Revolut's broker now, and the capital the advisor may plan with. Applied at the next nightly run, after the US close.":
       'Всё, что у вас сейчас есть у брокера Revolut, и капитал, которым советник может распоряжаться. Применяется на следующем ночном запуске, после закрытия американского рынка.',
     'Capital, USD': 'Капитал, USD',
@@ -980,18 +980,62 @@
     'A US ticker, like EPAM or EPAM.US. The price paid is the average per share; leave the stop empty if none is placed.':
       'Американский тикер, например EPAM или EPAM.US. Цена покупки: средняя за акцию; стоп оставьте пустым, если он не стоит.',
     'Save portfolio': 'Сохранить портфель',
-    'the capital is missing or too large': 'капитал не указан или слишком большой',
+    'the capital is missing or too large, or a sale\'s loss leaves none': 'капитал не указан или слишком большой, или убыток от продажи не оставляет ничего',
     'too many holdings': 'слишком много позиций',
     'a ticker is not a US share, or is listed twice': 'тикер не американской акции или указан дважды',
-    'a number of shares, a price or a stop is wrong': 'неверно количество акций, цена или стоп',
-    'a day bought is after the day it was sent': 'день покупки позже дня отправки',
+    'a number of shares, a price, the fees or a stop is wrong': 'неверно количество акций, цена, комиссия или стоп',
+    'a day bought or traded is after the day it was sent': 'день покупки или сделки позже дня отправки',
+    'a trade came before any portfolio: save the whole portfolio first': 'сделка пришла раньше портфеля: сначала сохраните портфель целиком',
+    'a sale of a stock the portfolio does not hold': 'продажа акции, которой нет в портфеле',
+    'a sale of more shares than the portfolio holds': 'продано больше акций, чем есть в портфеле',
+    'it came after a portfolio that was refused: save the whole portfolio again, then the trade': 'она шла после непринятого портфеля: сохраните портфель целиком заново, потом сделку',
+    'Your purchase of {symbol} was refused: {reason}. Check the portfolio and the trades, and record it again, corrected.':
+      'Покупка {symbol} не принята: {reason}. Проверьте портфель и сделки и отметьте её снова, исправив.',
+    'Your sale of {symbol} was refused: {reason}. Check the portfolio and the trades, and record it again, corrected.':
+      'Продажа {symbol} не принята: {reason}. Проверьте портфель и сделки и отметьте её снова, исправив.',
+    'At most 50 holdings: sell one first, or save the whole portfolio.': 'Не больше 50 позиций: сначала продайте одну или сохраните портфель целиком.',
     "it couldn't be read": 'его не удалось прочитать',
     'A portfolio change is waiting for the next run, but the page cannot read it.': 'Изменение портфеля ждёт следующего запуска, но страница не может его прочитать.',
     'Sent {when}: capital {capital}, {count} holdings. The next run after a US close applies it: {next}.':
       'Отправлено {when}: капитал {capital}, позиций: {count}. Применится на следующем запуске после закрытия американского рынка: {next}.',
     'Change requested: capital {capital}, from {next}': 'Запрошено изменение: капитал {capital}, с {next}',
     'A change is waiting for the next run': 'Изменение ждёт следующего запуска',
-    'The last portfolio you sent was refused: {reason}. Edit it and save again.': 'Последний отправленный портфель не принят: {reason}. Исправьте его и сохраните снова.',
+    'A change you sent was refused: {reason}. Check the portfolio and the trades, and send it again, corrected.':
+      'Отправленное изменение не принято: {reason}. Проверьте портфель и сделки и отправьте его снова, исправив.',
+    // The owner's trades at Revolut, recorded from the page
+    'I bought': 'Купил',
+    'I sold': 'Продал',
+    'My trades': 'Мои сделки',
+    Purchase: 'Покупка',
+    Profit: 'Прибыль',
+    Sale: 'Продажа',
+    'Day of the trade': 'День сделки',
+    'Price per share, USD': 'Цена за акцию, USD',
+    'Fees, USD': 'Комиссия, USD',
+    'Stop placed, USD': 'Поставленный стоп, USD',
+    'Save trade': 'Сохранить сделку',
+    'For a sale: what it earned or lost against the average price paid, fees off': 'Для продажи: сколько она принесла или потеряла против средней цены покупки, за вычетом комиссии',
+    "can't be read": 'не читается',
+    'waiting for the next run': 'ждёт следующего запуска',
+    'Trades waiting for the next run: {count}. It recomputes the capital and the holdings from them: {next}.':
+      'Сделок ждёт следующего запуска: {count}. Он пересчитает по ним капитал и позиции: {next}.',
+    'No trades recorded yet: after a buy or a sell at Revolut, press I bought or I sold.':
+      'Сделок пока нет: после покупки или продажи в Revolut нажмите «Купил» или «Продал».',
+    'Trades waiting for the next run are not in this form: {count}. A portfolio saved now replaces what they would change, so enter it as it is after them.':
+      'Сделки, ждущие следующего запуска, в этой форме не учтены: {count}. Портфель, сохранённый сейчас, заменит то, что они изменили бы, поэтому введите его таким, каким он будет после них.',
+    'The shares are added to the holding at this price, the fees in its cost. The capital stays the same, so the free cash falls by what you paid.':
+      'Акции добавляются к позиции по этой цене, комиссия входит в её стоимость. Капитал не меняется, поэтому свободных денег становится меньше на заплаченное.',
+    'The shares come off the holding; the profit or loss against the average price paid, fees off, is added to the capital. Selling all of them closes the holding.':
+      'Акции списываются с позиции; прибыль или убыток против средней цены покупки, за вычетом комиссии, добавляется к капиталу. Продажа всех акций закрывает позицию.',
+    'Trades waiting for the next run: {count}. This one is applied after them.': 'Сделок ждёт следующего запуска: {count}. Эта применится после них.',
+    'Enter the shares and the price per share, as numbers above 0.': 'Укажите количество акций и цену за акцию, числами больше 0.',
+    'The fees must be a number from 0, or empty.': 'Комиссия должна быть числом от 0 или пустой.',
+    'Enter the day of the trade.': 'Укажите день сделки.',
+    'The day of the trade cannot be after today.': 'День сделки не может быть позже сегодняшнего.',
+    '{symbol} is not in your portfolio.': '{symbol}: этой акции нет в вашем портфеле.',
+    '{symbol}: you hold {held} shares.': '{symbol}: у вас {held} акций.',
+    'This trade was already saved with other figures; it stands as first saved. Close the dialog and open it again to save the new ones.':
+      'Эта сделка уже сохранена с другими цифрами и остаётся такой, как сохранена в первый раз. Закройте окно и откройте снова, чтобы сохранить новые.',
     'Enter your capital and what you hold at Revolut, so the advice is for your real account. Until then the advice below is for the paper portfolio only.':
       'Укажите капитал и то, что у вас есть в Revolut, чтобы советы были для вашего реального счёта. Пока советы ниже только для бумажного портфеля.',
     'capital {capital} · free {cash} · invested {invested} · worth {value}': 'капитал {capital} · свободно {cash} · вложено {invested} · стоит {value}',
@@ -1073,6 +1117,7 @@
 
   /** Engine text with figures in it: [pattern, Russian with $1… for the parts]. */
   const PATTERNS = [
+    [/^The [\w ]+ could not be completed right now\.$/, () => 'Сейчас не получилось: попробуйте позже.'],
     [/^trend (up|down|flat|unknown)$/, (m) => `тренд: ${{ up: 'вверх', down: 'вниз', flat: 'боковой', unknown: 'неизвестен' }[m[1]]}`],
     [/^sell \((stop|target|trend-down)\)$/, (m) => `продажа (${{ stop: 'стоп', target: 'цель', 'trend-down': 'тренд вниз' }[m[1]]})`],
     [/^extended: ([\d.]+) ATR above EMA20$/, (m) => `перегрета: на ${m[1]} ATR выше EMA20`],
@@ -1089,7 +1134,7 @@
 
   /** Words that stay as they are in Russian: names, tickers, technical identifiers the journal filter sends as values. */
   const UNTRANSLATED = new Set([
-    'CIX', 'RU', 'EN', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '▲', '–', '×', '↻',
+    'CIX', 'RU', 'EN', 'EPAM', '0', '25%', '50%', '25', ':', '◆', '◧', '◎', '◇', '▤', '⇄', '☰', '▲', '–', '×', '↻',
     'order', 'fill', 'order-closed', 'tool-call', 'tool-denied', 'kill-switch', 'scan-signal', 'market-view', 'manual-request',
     'scanner-filters', 'scan-eligibility', 'strategy', 'pairs', 'balance-snapshot',
   ]);

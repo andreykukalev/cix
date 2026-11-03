@@ -273,7 +273,7 @@
       </section>
 
       <section class="panel" aria-labelledby="h-stocks-owner">
-        <div class="panel-head"><h2 id="h-stocks-owner">My portfolio</h2><span id="stocks-owner-meta" class="muted small"></span><button type="button" id="stocks-portfolio-open" class="ghost">Edit portfolio</button></div>
+        <div class="panel-head"><h2 id="h-stocks-owner">My portfolio</h2><span id="stocks-owner-meta" class="muted small"></span><span class="head-actions"><button type="button" id="stocks-trade-buy" class="ghost" hidden>I bought</button><button type="button" id="stocks-trade-sell" class="ghost" hidden>I sold</button><button type="button" id="stocks-portfolio-open" class="ghost">Edit portfolio</button></span></div>
         <p id="stocks-owner-banner" class="banner" role="status" hidden></p>
         <div id="stocks-owner-body" hidden>
           <h3>What to do in Revolut</h3>
@@ -283,7 +283,11 @@
           <h3>Notes</h3>
           <table id="stocks-owner-notes"><thead><tr><th>Stock</th><th>Why there is no action</th></tr></thead><tbody></tbody></table>
         </div>
-        <p class="muted small">Your real account at Revolut's broker, in dollars: the advice is sized on the capital you give it, less what your holdings cost. After a buy or a sell, edit the portfolio; the next nightly run takes it into account. A stop the advice sets or raises is taken as placed.</p>
+        <div id="stocks-owner-trades-part" hidden>
+          <h3>My trades</h3>
+          <table id="stocks-owner-trades"><thead><tr><th>Day</th><th>Trade</th><th>Stock</th><th class="num">Shares</th><th class="num">Price</th><th class="num">Fees</th><th class="num" title="For a sale: what it earned or lost against the average price paid, fees off">Profit</th></tr></thead><tbody></tbody></table>
+        </div>
+        <p class="muted small">Your real account at Revolut's broker, in dollars: the advice is sized on the capital you give it, less what your holdings cost. After a buy or a sell at Revolut, record it with I bought or I sold; the next nightly run recomputes the capital and the holdings from it. Edit the portfolio only to correct it as a whole. A stop the advice sets or raises is taken as placed.</p>
       </section>
 
       <section class="panel" aria-labelledby="h-stocks-actions">
@@ -410,10 +414,31 @@
       <table id="stocks-portfolio-rows" class="form-table"><thead><tr><th>Ticker</th><th class="num">Shares</th><th class="num">Price paid, USD</th><th class="num">Stop, USD</th><th>Bought on</th><th></th></tr></thead><tbody></tbody></table>
       <p><button type="button" id="stocks-portfolio-add" class="ghost">Add a holding</button></p>
       <p class="muted small">A US ticker, like EPAM or EPAM.US. The price paid is the average per share; leave the stop empty if none is placed.</p>
+      <p id="stocks-portfolio-trades" class="banner warn" hidden></p>
       <p id="stocks-portfolio-error" class="error" role="alert" hidden></p>
       <div class="actions">
         <button type="button" id="stocks-portfolio-cancel" class="ghost">Cancel</button>
         <button type="submit" id="stocks-portfolio-send" class="primary">Save portfolio</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="stocks-trade-dialog" aria-labelledby="stocks-trade-title">
+    <form id="stocks-trade-form" method="dialog">
+      <h2 id="stocks-trade-title">I bought</h2>
+      <p id="stocks-trade-help" class="muted small"></p>
+      <label class="field">Ticker <input type="text" name="symbol" list="stocks-trade-held" placeholder="EPAM" maxlength="24" autocomplete="off"></label>
+      <datalist id="stocks-trade-held"></datalist>
+      <label class="field">Shares <input type="text" name="quantity" inputmode="decimal" autocomplete="off"></label>
+      <label class="field">Price per share, USD <input type="text" name="price" inputmode="decimal" autocomplete="off"></label>
+      <label class="field">Fees, USD <input type="text" name="fees" inputmode="decimal" autocomplete="off" placeholder="0"></label>
+      <label class="field">Day of the trade <input type="date" name="day"></label>
+      <label class="field" id="stocks-trade-stop">Stop placed, USD <input type="text" name="stop" inputmode="decimal" autocomplete="off"></label>
+      <p id="stocks-trade-waiting" class="muted small" hidden></p>
+      <p id="stocks-trade-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="stocks-trade-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="stocks-trade-send" class="primary">Save trade</button>
       </div>
     </form>
   </dialog>

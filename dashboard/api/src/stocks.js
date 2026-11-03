@@ -235,6 +235,17 @@ const sequence = (v) => {
   return Number.isInteger(n) && n >= 1 ? n : null;
 };
 
+const TRADE_KINDS = new Set(['buy', 'sell']);
+
+/** One of the owner's trades as the host recorded it: day, buy or sell, shares, price, fees and, for a sell, the profit. */
+function ownerTrade(x) {
+  const s = symbol(x?.symbol);
+  const quantity = positive(x?.quantity);
+  const price = positive(x?.price);
+  if (!s || !TRADE_KINDS.has(x?.kind) || quantity === null || price === null) return null;
+  return { day: day(x.day), symbol: s, kind: x.kind, quantity, price, fees: num(x.feesBase), profit: x.kind === 'sell' ? num(x.profitBase) : null };
+}
+
 /** The owner's real portfolio as the host advised it (ADR-0026); null when there is none yet. */
 function ownerView(o) {
   if (!o || typeof o !== 'object') return null;
@@ -250,13 +261,17 @@ function ownerView(o) {
     actions: sortActions(o.actions),
     holdings: list(o.holdings).map(holding).filter(Boolean),
     notes: list(o.notes).map(note).filter(Boolean),
+    trades: list(o.trades).map(ownerTrade).filter(Boolean),
   };
 }
 
+/** The submission the host refused, and for a trade its kind and ticker, so the page can say which one. */
 function refusalView(r) {
   const n = sequence(r?.sequence);
   const reason = code(r?.reason);
-  return n && reason ? { sequence: n, reason } : null;
+  if (!n || !reason) return null;
+  const kind = TRADE_KINDS.has(r.kind) ? r.kind : null;
+  return { sequence: n, reason, kind, symbol: kind ? symbol(r.symbol) : null };
 }
 
 /** What the Stocks tab shows from the advisor's document, every field checked. */
@@ -289,12 +304,12 @@ function stocksView(value, now) {
 /** The Stocks tab's answer: whether the stocks database is set up, and the latest advice when there is one. */
 async function loadStocks(reader, now) {
   const generatedAt = new Date(now).toISOString();
-  if (!reader) return { configured: false, advice: null, candidates: null, analysis: null, pending: null, generatedAt };
+  if (!reader) return { configured: false, advice: null, candidates: null, analysis: null, pending: null, pendingTrades: [], generatedAt };
   const [doc, found, analysed] = await Promise.all([
     reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES), reader.readDocument(ANALYSIS_CONTAINER, ANALYSIS),
   ]);
   const advice = doc ? stocksView(doc.value ?? null, now) : null;
-  const { newest } = await pendingPortfolio(reader, firstUnseen(advice));
+  const { portfolio, trades } = await pendingPortfolio(reader, firstUnseen(advice));
   const analysis = analysed ? analysisView(analysed.value ?? null) : null;
   return {
     configured: true,
@@ -302,7 +317,9 @@ async function loadStocks(reader, now) {
     candidates: found ? candidatesView(found.value ?? null) : null,
     // Claude's view of an earlier close than the advice's says nothing about tonight's: the page shows it as behind.
     analysis: analysis ? { ...analysis, current: !!advice?.asOf && analysis.asOf === advice.asOf } : null,
-    pending: newest,
+    // Sent and not yet applied: the newest whole portfolio, and the trades, which the next run applies in order.
+    pending: portfolio,
+    pendingTrades: trades,
     generatedAt,
   };
 }

@@ -62,7 +62,7 @@ const BODY = JSON.stringify({ id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f', side: 
 test('the owner endpoints are registered under /api/owner', () => {
   assert.deepEqual(Object.values(routes).map((r) => r.route).sort(),
     ['owner/analyst-requests', 'owner/analyst-requests/{day}/{id}', 'owner/control-requests', 'owner/control-requests/{day}/{id}', 'owner/pair-requests', 'owner/pair-requests/{day}/{id}', 'owner/pairs',
-      'owner/requests', 'owner/requests/{day}/{id}', 'owner/stocks-portfolio', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
+      'owner/requests', 'owner/requests/{day}/{id}', 'owner/stocks-portfolio', 'owner/stocks-trade', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
 });
 
 test('the owner creates a request; the same click again is not a second request', async () => {
@@ -529,4 +529,60 @@ test('with too many waiting, or the numbers taken as they are tried, the owner i
   } finally {
     RequestWriter.prototype.create = create;
   }
+});
+
+const TRADE = { clientId: '2d9c2f4e-1a2b-4c3d-8e9f-0a1b2c3d4e5f', trade: { kind: 'sell', symbol: 'epam.us', quantity: '4', price: '182.25', fees: '0', day: '2026-10-29', stop: '170' } };
+const postTrade = (body) => routes['owner-stocks-trade'].handler(request({ method: 'POST', body: JSON.stringify(body) }), context);
+
+test('the owner sends a trade as the next submission, after a portfolio waiting before it; the same dialog again is not sent twice', async () => {
+  writes.length = 0;
+  stored.clear();
+  assert.equal((await postPortfolio(PORTFOLIO)).status, 201);
+  const sold = await postTrade({ ...TRADE, trade: { ...TRADE.trade, symbol: 'EPAM.US' } });
+  assert.equal(sold.status, 201);
+  assert.equal(writes[1].id, 'portfolio-2');
+  // A sell has no stop; fees of 0 are kept as given.
+  assert.deepEqual(writes[1].value.trade, { kind: 'sell', symbol: 'EPAM.US', name: null, quantity: '4', price: '182.25', fees: '0', day: '2026-10-29', stop: null });
+  assert.equal(writes[1].value.capital, undefined);
+  assert.equal(writes[1].value.holdings, undefined);
+
+  const again = await postTrade({ ...TRADE, trade: { ...TRADE.trade, symbol: 'EPAM.US' } });
+  assert.equal(again.status, 200);
+  assert.equal(again.jsonBody.result, 'exists');
+  const edited = await postTrade({ ...TRADE, trade: { ...TRADE.trade, symbol: 'EPAM.US', price: '183' } });
+  assert.equal(edited.status, 409);
+  assert.match(edited.jsonBody.error, /trade was already saved/);
+  assert.equal(writes.length, 2);
+
+  // Another change landed between a lost answer and its retry: the retried trade is still found, not saved again.
+  assert.equal((await postPortfolio({ ...PORTFOLIO, clientId: crypto.randomUUID() })).status, 201);
+  const retried = await postTrade({ ...TRADE, trade: { ...TRADE.trade, symbol: 'EPAM.US' } });
+  assert.equal(retried.status, 200);
+  assert.equal(retried.jsonBody.pending.sequence, 2);
+  assert.equal(writes.length, 3);
+
+  // A buy keeps its stop.
+  const bought = await postTrade({ clientId: crypto.randomUUID(), trade: { kind: 'buy', symbol: 'NIO.US', quantity: '10', price: '5.5', day: '2026-10-29', stop: '4.9' } });
+  assert.equal(bought.status, 201);
+  assert.deepEqual(writes[3].value.trade, { kind: 'buy', symbol: 'NIO.US', name: null, quantity: '10', price: '5.5', fees: null, day: '2026-10-29', stop: '4.9' });
+});
+
+test('a trade the host would refuse is refused before anything is written', async () => {
+  writes.length = 0;
+  stored.clear();
+  for (const [trade, says] of [
+    [{ ...TRADE.trade, kind: 'short' }, 'buy or a sell'],
+    [{ ...TRADE.trade, symbol: 'SAP.XETRA' }, 'US share'],
+    [{ ...TRADE.trade, quantity: '0' }, 'shares'],
+    [{ ...TRADE.trade, price: '-1' }, 'price'],
+    [{ ...TRADE.trade, fees: '-1' }, 'fees'],
+    [{ ...TRADE.trade, day: '' }, 'its day'],
+    [{ ...TRADE.trade, day: '2999-01-01' }, 'after today'],
+  ]) {
+    const answer = await postTrade({ ...TRADE, trade });
+    assert.equal(answer.status, 400, says);
+    assert.match(answer.jsonBody.error, new RegExp(says, 'i'));
+  }
+  assert.equal((await postTrade({ clientId: TRADE.clientId })).status, 400);
+  assert.equal(writes.length, 0);
 });
