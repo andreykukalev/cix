@@ -935,7 +935,7 @@ Check 'setup-ci-deploy.ps1 -For agents (-Yes), protected: trusts only its GitHub
   Expect @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' }).Count 6 'role assignments'
   foreach ($expected in @('trusted only for repo:owner@11/repo@22:environment:citest', 'Trusts repo:owner@11/repo@22:environment:citest.',
       'LIVE_AZURE_CLIENT_ID = 66666666-6666-6666-6666-666666666666', 'LIVE_REGISTRY = crcixcitest1', 'LIVE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa',
-      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'waits in CI for your approval')) {
+      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'for your approval (Review deployments')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   foreach ($never in @('refs/heads/main', 'AGENTS_', ' AZURE_CLIENT_ID', ' AZURE_TENANT_ID', ' AZURE_SUBSCRIPTION_ID')) {
