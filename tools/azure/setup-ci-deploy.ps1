@@ -3,7 +3,9 @@
 .SYNOPSIS
   One-time setup so CI can deploy from main without any secret stored in GitHub (ADR-0010): the dashboard (-For
   dashboard, the default) or the engine and the agent jobs (-For agents). For the protected (live-money) environment,
-  -For agents sets up the live deploy, which runs only after the owner approves it in GitHub (ADR-0019).
+  -For agents sets up the live deploy, which runs only after the owner approves it in GitHub (ADR-0019). Since ADR-0028 CI
+  deploys the engine to the protected environment only: -For agents for another environment makes an identity CI no longer
+  uses (its AGENTS_* variables are ignored).
 
 .DESCRIPTION
   Creates (or reuses) in Microsoft Entra ID and Azure:
@@ -403,6 +405,6 @@ if ($For -eq 'agents' -and $settings.agents.deploy -ne 'apps') {
   Write-CixInfo 'CI can push images now. After provision.ps1 deploys agents.deploy apps, run this again.'
 }
 if ($live) {
-  Write-CixInfo "From now on each change on main that reaches the paper engine waits in CI for your approval (Review deployments, $Environment), then deploys to the live engine, which keeps its mode and strategy."
+  Write-CixInfo "From now on each change on main to the engine or the agents waits in CI, after its checks, for your approval (Review deployments, $Environment), then deploys to the live engine, which keeps its mode and strategy."
 }
 else { Write-CixInfo "Then run CI on main by hand once (Actions, CI, Run workflow) to check it deploys the $For." }
