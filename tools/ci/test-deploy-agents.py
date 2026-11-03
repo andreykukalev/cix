@@ -500,7 +500,7 @@ results += [
              expect_in_output=["only from a push to main or a manual run"], never_gh=True),
     approved("a run ID that isn't a number is refused", approvals=[approval("owner")], run_id="42/../1", expect_rc=1,
              never_gh=True),
-    # approve-paper (ADR-0024): the same check for the paper environment.
+    # Another environment's approval never counts for prod, nor prod's for it (paper had one until ADR-0028).
     approved("the owner's approval for paper lets paper deploy", approvals=[approval("owner", environment="paper")],
              environment="paper", expect_rc=0, expect_in_output=["The owner (Owner) approved this run for paper."]),
     approved("an approval for prod isn't one for paper", approvals=[approval("owner")], environment="paper", expect_rc=1,
@@ -674,29 +674,37 @@ for path, want in [("stocks/src/Cix.Stocks/a.cs", {"stocks": "true", "images": "
     problems = [f"{k}={got.get(k)}, wanted {v}" for k, v in want.items() if got.get(k) != v]
     results.append(report("stocks", f"plan.sh on {path}: " + ", ".join(f"{k}={v}" for k, v in want.items()), problems, ""))
 
-# The paper gate stays wired in (ADR-0024): approve-paper waits in the paper environment and checks the approval, and
-# deploy-agents needs it but stays out of any environment (its Azure trust is for workflows on main).
+# Live gets its images straight from the checks (ADR-0028): no paper deploy in between, and no job is left that deploys
+# to Azure without the owner's approval in prod. deploy-live waits in prod, checks the approval, needs every check and the
+# images, and fails closed on a failed or cancelled check.
 def workflow_job(text, name):
     """One job's lines in ci.yml (two-space indented key to the next one), without PyYAML."""
     m = re.search(rf"^  {re.escape(name)}:\n((?:(?:    .*|\s*)\n)+)", text, re.M)
     return m.group(1) if m else ""
 
 ci_text = open(os.path.join(ROOT, ".github", "workflows", "ci.yml")).read()
-gate, deploy = workflow_job(ci_text, "approve-paper"), workflow_job(ci_text, "deploy-agents")
+live, images = workflow_job(ci_text, "deploy-live"), workflow_job(ci_text, "agents-images")
 problems = []
-if not re.search(r"^    environment: paper$", gate, re.M):
-    problems.append("approve-paper isn't in the paper environment")
-if not re.search(r"APPROVAL_ENVIRONMENT: paper\n\s+run: bash tools/ci/live-approved.sh", gate):
-    problems.append("approve-paper doesn't run live-approved.sh for paper")
-if not re.search(r"^    needs: \[[^]]*\bapprove-paper\b", deploy, re.M):
-    problems.append("deploy-agents doesn't need approve-paper")
-if "needs.approve-paper.result == 'success'" not in deploy:
-    problems.append("deploy-agents doesn't require approve-paper's success")
-if re.search(r"^    environment:", deploy, re.M):
-    problems.append("deploy-agents is in an environment (its OIDC subject would change)")
-if not gate or not deploy:
-    problems.append("approve-paper or deploy-agents not found in ci.yml")
-results.append(report("paper-gate", "approve-paper gates deploy-agents", problems, ""))
+for gone in ["approve-paper", "deploy-agents"]:
+    if workflow_job(ci_text, gone):
+        problems.append(f"{gone} is back in ci.yml (paper was dropped, ADR-0028)")
+if not re.search(r"^    environment: prod$", live, re.M):
+    problems.append("deploy-live isn't in the prod environment")
+if not re.search(r"APPROVAL_ENVIRONMENT: prod\n(?:\s+LIVE_ENVIRONMENT: prod\n)?\s+run: bash tools/ci/live-approved.sh", live):
+    problems.append("deploy-live doesn't run live-approved.sh for prod")
+needs = re.search(r"^    needs: \[([^]]*)\]", live, re.M)
+for job in ["build-test", "containers", "secret-scan", "agents-images"]:
+    if not needs or job not in [n.strip() for n in needs.group(1).split(",")]:
+        problems.append(f"deploy-live doesn't need {job}")
+    elif job != "agents-images" and f"needs.{job}.result != 'failure'" not in live:
+        problems.append(f"deploy-live doesn't stop on a failed {job}")
+if "needs.agents-images.result == 'success'" not in live:
+    problems.append("deploy-live doesn't require the images")
+if "SETTINGS: infra/environments/prod.json" not in images:
+    problems.append("agents-images doesn't decide from prod's settings")
+if not live or not images:
+    problems.append("deploy-live or agents-images not found in ci.yml")
+results.append(report("live-gate", "deploy-live alone deploys the engine, after the checks and the owner's approval", problems, ""))
 
 failed = results.count(False)
 print(f"{len(results) - failed} passed, {failed} failed")

@@ -1,34 +1,34 @@
 'use strict';
-// The owner's requests, under /api/owner/: manual buy and sell requests (ADR-0011, ADR-0012) and their history. Static Web
-// Apps lets only the owner role through (staticwebapp.config.json); each handler checks again (ADR-0014). Nothing here is
-// cached, by the platform or by a browser.
+// The owner's requests, under /api/owner/, all for the live engine, the only crypto engine since ADR-0028 (the manual buy and
+// sell requests of ADR-0011 were paper only and went with it). Static Web Apps lets only the owner role through
+// (staticwebapp.config.json); each handler checks again (ADR-0014). Nothing here is cached, by the platform or by a browser.
 //
-// The owner's strategy switches (#108) are requests too: POST /api/owner/strategy-requests creates one in the same container,
-// and the engine checks it and switches (ADR-0015). GET /api/owner/strategies shows every strategy, explained.
+// The owner's strategy switches (#108) are requests: POST /api/owner/strategy-requests creates one in the live engine's
+// requests container, and the engine checks it and switches (ADR-0015). GET /api/owner/strategies shows every strategy,
+// explained.
 //
 // Adding and removing trading pairs (ADR-0016) works the same way: POST /api/owner/pair-requests creates a request, the engine
 // checks it against config/risk-limits.json, the exchange and the portfolio, and GET /api/owner/pairs shows where things stand.
 //
-// Strategy switches, pair changes, Pause and Resume work for live too (ADR-0018): each goes to the live engine's own requests
-// container, only with confirmLive, and each lookup and view takes ?mode=live.
+// Strategy switches, pair changes, Pause and Resume (ADR-0018) each go to the live engine's own requests container, only
+// with confirmLive; each lookup and view takes ?mode=live (or no mode), and paper is refused.
 //
-// The analyst's Run now (POST /api/owner/analyst-requests) is a request too, for either mode: the engine queues an analyst
-// run outside its schedule, or says why not.
+// The analyst's Run now (POST /api/owner/analyst-requests) is a request too: the engine queues an analyst run outside its
+// schedule, or says why not.
 //
 // The owner's real stocks portfolio (ADR-0026) is a request too: POST /api/owner/stocks-portfolio creates the next
 // submission, portfolio-N, in the stocks database's own requests container, where the same writer identity holds a separate
 // create-only role (provision-stocks.ps1). The stocks host applies the newest on its next nightly run.
 //
-// The writes are POST /api/owner/requests and /api/owner/strategy-requests, with the writer identity whose Cosmos DB role can only create items in the
-// requests container. A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
+// The writes use the writer identity, whose Cosmos DB role can only create items in the requests container. A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
 // cross-origin only after a preflight this API never answers.
 
 const { app } = require('@azure/functions');
 const { readerCache, databaseFor } = require('../cosmos');
 const { RequestWriter, WriterError, WriterNotConfigured } = require('../writer');
 const { isOwner, forbidden } = require('../auth');
-const { requestDocument, historyItem, RequestError } = require('../requests');
-const { loadRequests, loadRequest, loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest } = require('../data');
+const { RequestError } = require('../requests');
+const { loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest } = require('../data');
 const { strategyRequestDocument, requestItem } = require('../strategies');
 const { pairRequestDocument, pairRequestItem } = require('../pairs');
 const {
@@ -45,19 +45,20 @@ const TRADE_SENT_DIFFERENT = 'This trade was already saved with other figures; i
 const MAX_TRADE_BODY = 2_048;
 const STOCKS_NOT_SET_UP = "The Stocks page can't send your portfolio yet: run tools/azure/provision-stocks.ps1 again, after setup-dashboard-requests.ps1.";
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
-const getReader = readerCache(); // each mode's database: live's engine writes to its own (ADR-0017); requests are paper's
+const getReader = readerCache(); // the live engine's own database (ADR-0017)
 const writers = new Map();
+const PAPER_REMOVED = 'Paper trading was removed (ADR-0028): reload the page.';
 const LIVE_NOT_SET_UP = 'Live requests are not set up on this dashboard yet: run tools/azure/setup-dashboard-requests.ps1 -LiveRequests.';
 
 /**
- * The writer for one mode's requests container: paper's database, or the live engine's own (ADR-0018), where the same
- * identity holds a separate create-only role. Live without its database setting is refused, never written to paper's.
+ * The writer for the live engine's requests container (ADR-0018), where the identity holds a create-only role. Without the
+ * live database setting it is refused, never written elsewhere.
  */
 function requireLiveDatabase(mode) {
   if (mode === 'live' && !process.env.COSMOS_LIVE_DATABASE) throw new WriterNotConfigured(LIVE_NOT_SET_UP);
 }
 
-function getWriter(mode = 'paper') {
+function getWriter(mode = 'live') {
   requireLiveDatabase(mode);
   const database = databaseFor(mode);
   if (!writers.has(database)) {
@@ -102,33 +103,14 @@ async function readBody(request, max = MAX_BODY) {
   }
 }
 
-async function createRequest(request, context) {
-  return ownerOnly(request, context, 'request', async () => {
-    const doc = requestDocument(await readBody(request), Date.now());
-    // Ids are unique per day (the partition): a retry just after midnight UTC would be a second request, so look at the
-    // day before first.
-    const earlier = await getReader().readDocument('requests', doc.id, previousDay(doc.day));
-    const result = earlier ? 'exists' : await getWriter().create(doc);
-    context.log(`Owner request ${result}: ${doc.side} ${doc.mode} ${doc.symbol} (${doc.id})`);
-    if (result === 'created') return respond(201, { result, request: historyItem(doc) });
-    // 'exists': this id was sent before (a retry). The first one stands: answer with it, as stored, and say so if the retry
-    // asked for something else.
-    const stored = earlier ?? await getReader().readDocument('requests', doc.id, doc.day);
-    if (!stored) return respond(200, { result, request: historyItem(doc) }); // can't read it yet: the page follows it by id
-    const same = ['side', 'mode', 'symbol', 'portion', 'quoteAmount'].every((k) => (stored[k] ?? null) === (doc[k] ?? null));
-    return same
-      ? respond(200, { result, request: historyItem(stored) })
-      : respond(409, { error: 'This request was already sent with different details; it stands as first sent. Close the dialog to make a new one.', request: historyItem(stored) });
-  });
-}
-
 /**
- * Creates doc in its mode's requests container (paper's, or the live engine's own: ADR-0018), or finds it there from an
- * earlier send of the same dialog. Returns 'created' or 'exists', with the stored document for 'exists' (null when it can't
- * be read back yet). Live is refused before any read, since live's reads would otherwise fall back to paper's database.
+ * Creates doc in the live engine's requests container (ADR-0018), or finds it there from an earlier send of the same
+ * dialog. Returns 'created' or 'exists', with the stored document for 'exists' (null when it can't be read back yet).
+ * Anything but live is refused before any read: there is no paper engine to take it (ADR-0028).
  */
 async function createInMode(doc) {
   const mode = doc.tradingMode;
+  if (mode !== 'live') throw new RequestError(PAPER_REMOVED);
   requireLiveDatabase(mode);
   const earlier = await getReader(mode).readDocument('requests', doc.id, previousDay(doc.day));
   let result;
@@ -276,32 +258,16 @@ async function createStocksTrade(request, context) {
 }
 
 /** The mode a lookup or view asks for: live only when it says so. */
+/** The mode a lookup or view is for: live, the only one (ADR-0028); an older page asking for paper gets a 400. */
 function modeOf(request) {
-  return request.query.get('mode') === 'live' ? 'live' : 'paper';
+  const mode = request.query.get('mode') ?? 'live';
+  if (mode !== 'live') throw new RangeError(PAPER_REMOVED);
+  return mode;
 }
 
 function previousDay(day) {
   return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 }
-
-app.http('owner-requests', {
-  methods: ['GET', 'POST'],
-  authLevel: 'anonymous', // Static Web Apps checks the role before the function runs
-  route: 'owner/requests',
-  handler: (request, context) => (request.method === 'POST'
-    ? createRequest(request, context)
-    : ownerOnly(request, context, 'request history', async () => respond(200, await loadRequests(getReader(), Date.now())))),
-});
-
-app.http('owner-request', {
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  route: 'owner/requests/{day}/{id}',
-  handler: (request, context) => ownerOnly(request, context, 'request lookup', async () => {
-    const item = await loadRequest(getReader(), request.params.day, request.params.id);
-    return item ? respond(200, item) : respond(404, { error: 'Not there yet.' });
-  }),
-});
 
 app.http('owner-strategies', {
   methods: ['GET'],
@@ -310,7 +276,7 @@ app.http('owner-strategies', {
   handler: (request, context) => ownerOnly(request, context, 'strategy view', async () => {
     const mode = modeOf(request);
     requireLiveDatabase(mode); // never paper's database shown as live's
-    return respond(200, await loadStrategies(getReader(mode), mode, Date.now(), getReader('paper')));
+    return respond(200, await loadStrategies(getReader(mode), mode, Date.now()));
   }),
 });
 
@@ -421,5 +387,5 @@ app.http('owner-stocks-trade', {
 });
 
 module.exports = {
-  createRequest, createStrategyRequest, createPairRequest, createControlRequest, createAnalystRequest, createStocksPortfolio, createStocksTrade, readBody, ownerOnly,
+  createStrategyRequest, createPairRequest, createControlRequest, createAnalystRequest, createStocksPortfolio, createStocksTrade, readBody, ownerOnly,
 };

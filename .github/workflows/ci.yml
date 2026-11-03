@@ -9,7 +9,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch: # also publishes the dashboard and deploys the engine and agents (deploy-dashboard, deploy-agents)
+  workflow_dispatch: # also publishes the dashboard and asks to deploy the live engine and agents (deploy-dashboard, deploy-live)
 
 permissions:
   contents: read
@@ -378,7 +378,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write # for the Azure sign-in; only this job, deploy-agents and deploy-live have it
+      id-token: write # for the Azure sign-in; only this job and deploy-live have it
     concurrency:
       group: deploy-dashboard
       cancel-in-progress: false
@@ -473,12 +473,13 @@ jobs:
           done
 
   agents-images:
-    # Step 1 of deploying the paper engine and the agent jobs to Azure Container Apps (after a push to main that changes
-    # them, or a manual run on main), once their deploy identity is set up: build both images here, in a job with no Azure
-    # access, so nothing the build installs runs where credentials are in reach. Hands them to deploy-agents as an artifact.
+    # Step 1 of deploying the live engine and its agent jobs to Azure Container Apps (after a push to main that changes
+    # them, or a manual run on main), once the live deploy is set up: build both images here, in a job with no Azure access,
+    # so nothing the build installs runs where credentials are in reach. Hands them to deploy-live as an artifact. There is
+    # no paper engine to deploy first since ADR-0028: live gets the images once the checks pass and the owner approves.
     needs: plan
     if: >-
-      github.ref == 'refs/heads/main' && vars.AGENTS_AZURE_CLIENT_ID != ''
+      github.ref == 'refs/heads/main' && vars.LIVE_AZURE_CLIENT_ID != ''
       && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.plan.outputs.images == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -496,7 +497,7 @@ jobs:
       - name: Anything to deploy to, and still the tip of main?
         id: tip
         env:
-          SETTINGS: infra/environments/${{ vars.AGENTS_ENVIRONMENT || 'dev' }}.json
+          SETTINGS: infra/environments/prod.json
           GH_TOKEN: ${{ github.token }} # this step only
         run: bash tools/ci/agents-tip.sh
 
@@ -524,134 +525,14 @@ jobs:
           compression-level: 0 # already gzipped
           retention-days: 1
 
-  approve-paper:
-    # Between building the images and deploying paper: the owner's approval (ADR-0024), so a merge can't restart the paper
-    # engine in the middle of an evaluation. The job is in the GitHub environment paper, whose rules (the owner as its only
-    # required reviewer, main only) hold it until the owner presses Approve; tools/ci/live-approved.sh then checks the
-    # approval, so a paper environment without its rules fails closed and deploys nothing. Nothing here signs in to Azure:
-    # deploy-agents keeps its own identity and trust (main), unchanged. The repository variable PAPER_APPROVAL=off turns
-    # the gate off. Agents never approve it (CLAUDE.md rule 8).
-    # After the checks, so the owner is asked only for a run that can deploy.
-    needs: [build-test, containers, secret-scan, agents-images]
-    if: >-
-      !cancelled() && needs.agents-images.result == 'success' && needs.agents-images.outputs.deploy == 'true'
-      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && vars.PAPER_APPROVAL != 'off'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: paper
-    permissions:
-      contents: read
-      actions: read # this run's approvals
-    concurrency:
-      # As for deploy-live: a run waiting for approval holds the group and only the newest run behind it is kept, so reject
-      # a run you won't approve rather than leave it waiting.
-      group: approve-paper
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Approved by the owner, on main?
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APPROVAL_ENVIRONMENT: paper
-        run: bash tools/ci/live-approved.sh
-
-  deploy-agents:
-    # Step 2: sign in to Azure as the agents' deploy identity, which trusts only workflows on main of this repository (an
-    # OIDC federated credential, as for the dashboard: ADR-0010). It may push images to this environment's registry and
-    # update the existing engine app and jobs. It can't create resources or role assignments, nor read Key Vault directly,
-    # but an image it deploys runs with the apps' identities (docs/azure.md). An update could change more than the image
-    # (Azure has no narrower right); tools/ci/deploy-agents.sh sends only the containers. It waits for the engine's new
-    # revision to be healthy, then updates the jobs, and goes back to the previous images if anything fails.
-    # Set up once with tools/azure/setup-ci-deploy.ps1 -For agents (docs/azure.md).
-    needs: [build-test, containers, secret-scan, agents-images, approve-paper]
-    # The checks may have been skipped (they passed on this exact content in the pull request), and so may approve-paper
-    # (PAPER_APPROVAL=off); none may have failed, and cancelling the run stops the deployment (the last step rolls back a
-    # half-done one). A rejected or missing approval fails approve-paper, so nothing deploys.
-    if: >-
-      !cancelled() && needs.agents-images.outputs.deploy == 'true'
-      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
-      && (needs.approve-paper.result == 'success' || vars.PAPER_APPROVAL == 'off')
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      id-token: write # for the Azure sign-in; only this job, deploy-live and deploy-dashboard have it
-    concurrency:
-      group: deploy-agents
-      cancel-in-progress: false
-    outputs:
-      deployed: ${{ steps.deploy.outputs.deployed }} # paper runs this commit's images: deploy-live may follow
-
-    env:
-      AGENTS_AZURE_CLIENT_ID: ${{ vars.AGENTS_AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      AGENTS_REGISTRY: ${{ vars.AGENTS_REGISTRY }}
-      SETTINGS: infra/environments/${{ vars.AGENTS_ENVIRONMENT || 'dev' }}.json
-    steps:
-      - name: Is the deploy identity set up?
-        run: |
-          if [ -z "$AZURE_TENANT_ID" ] || [ -z "$AZURE_SUBSCRIPTION_ID" ] || [ -z "$AGENTS_REGISTRY" ]; then
-            echo "::error::Set the repository variables AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID and AGENTS_REGISTRY too (tools/azure/setup-ci-deploy.ps1 -For agents)."
-            exit 1
-          fi
-
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Still the tip of main?
-        id: tip
-        env:
-          GH_TOKEN: ${{ github.token }} # this step only; the deploy step below doesn't get it
-        # Checked again inside the concurrency group: an older run waiting behind a newer one must not deploy over newer
-        # images.
-        run: bash tools/ci/agents-tip.sh
-
-      - uses: actions/download-artifact@v4
-        if: steps.tip.outputs.deploy == 'true'
-        with:
-          name: agents-images
-
-      - uses: azure/login@v2
-        if: steps.tip.outputs.deploy == 'true'
-        with:
-          client-id: ${{ vars.AGENTS_AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Deploy the engine and the agents
-        id: deploy
-        if: steps.tip.outputs.deploy == 'true'
-        env:
-          ENGINE_SHA256: ${{ needs.agents-images.outputs.engine_sha256 }}
-          TRADER_SHA256: ${{ needs.agents-images.outputs.trader_sha256 }}
-        run: |
-          for h in "$ENGINE_SHA256" "$TRADER_SHA256"; do
-            [[ "$h" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::The images' hashes are missing."; exit 1; }
-          done
-          printf '%s  engine.tar.gz\n%s  trader.tar.gz\n' "$ENGINE_SHA256" "$TRADER_SHA256" | sha256sum -c --strict --quiet -
-          SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" REGISTRY="$AGENTS_REGISTRY" TAG="$GITHUB_SHA" \
-            ENGINE_ARCHIVE=engine.tar.gz TRADER_ARCHIVE=trader.tar.gz ROLLBACK_FILE="$RUNNER_TEMP/agents-rollback.json" \
-            DEPLOY_OUTPUT="$GITHUB_OUTPUT" bash tools/ci/deploy-agents.sh
-
-      - name: Roll back an interrupted deployment
-        # Only does something when the deploy step stopped halfway (cancelled, or timed out) and left the previous images
-        # in the rollback file.
-        if: (cancelled() || failure()) && steps.tip.outputs.deploy == 'true'
-        run: |
-          SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" ROLLBACK_FILE="$RUNNER_TEMP/agents-rollback.json" \
-            bash tools/ci/deploy-agents.sh --roll-back
-
   live-changes:
     # What deploy-live would change, on the run's summary page where the owner approves it (ADR-0019): the commits and files
     # since the commit live got last, with those touching risk, limits, strategies, orders, tools or the deploy flagged.
-    needs: deploy-agents
+    # After the checks, so the owner is asked only about a run that can deploy.
+    needs: [build-test, containers, secret-scan, agents-images]
     if: >-
-      !cancelled() && needs.deploy-agents.result == 'success' && needs.deploy-agents.outputs.deployed == 'true'
+      !cancelled() && needs.agents-images.result == 'success' && needs.agents-images.outputs.deploy == 'true'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
       && vars.LIVE_AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -670,16 +551,21 @@ jobs:
         run: bash tools/ci/live-changes.sh
 
   deploy-live:
-    # The live engine and its jobs (ADR-0019): the images paper now runs, once the owner approves. The job is in the GitHub
+    # The live engine and its jobs (ADR-0019, ADR-0028): this commit's images, once the checks passed and the owner approves.
+    # The checks may have been skipped (they passed on this exact content in the pull request); none may have failed, and
+    # cancelling the run stops the deployment (the last step rolls back a half-done one). The job is in the GitHub
     # environment prod, whose rules (the owner as its only required reviewer, main only, no admin bypass) hold it until the
     # owner presses Approve, and the live deploy identity trusts only jobs in that environment. tools/ci/live-approved.sh
     # checks the approval again, so this workflow fails closed if the environment lost its rules. Only the images change:
     # the live engine keeps the mode, environment and strategy the owner switched it to. Infrastructure, settings and keys
     # stay with provision.ps1. Set up once with tools/azure/setup-ci-deploy.ps1 -Environment prod -For agents
     # (docs/live-trading.md). Agents never approve it (CLAUDE.md rule 8).
-    needs: [agents-images, deploy-agents, live-changes]
+    needs: [build-test, containers, secret-scan, agents-images, live-changes]
     if: >-
-      !cancelled() && needs.deploy-agents.result == 'success' && needs.deploy-agents.outputs.deployed == 'true'
+      !cancelled() && needs.agents-images.result == 'success' && needs.agents-images.outputs.deploy == 'true'
+      && needs.build-test.result != 'failure' && needs.build-test.result != 'cancelled'
+      && needs.containers.result != 'failure' && needs.containers.result != 'cancelled'
+      && needs.secret-scan.result != 'failure' && needs.secret-scan.result != 'cancelled'
       && vars.LIVE_AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -722,7 +608,7 @@ jobs:
         id: tip
         env:
           GH_TOKEN: ${{ github.token }}
-        # Approval can come hours later: by then a newer commit may have deployed paper, and its own run deploys live.
+        # Approval can come hours later: by then a newer commit may be on main, and its own run deploys live.
         run: bash tools/ci/agents-tip.sh
 
       - uses: actions/download-artifact@v4
@@ -747,7 +633,7 @@ jobs:
           for h in "$ENGINE_SHA256" "$TRADER_SHA256"; do
             [[ "$h" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::The images' hashes are missing."; exit 1; }
           done
-          # The same archives paper deployed: the hashes come from the job that built them.
+          # The archives agents-images built: the hashes come from that job's outputs.
           printf '%s  engine.tar.gz\n%s  trader.tar.gz\n' "$ENGINE_SHA256" "$TRADER_SHA256" | sha256sum -c --strict --quiet -
           SUBSCRIPTION_ID="$LIVE_SUBSCRIPTION_ID" REGISTRY="$LIVE_REGISTRY" TAG="$GITHUB_SHA" APPROVED_RUN="$GITHUB_RUN_ID" \
             ENGINE_ARCHIVE=engine.tar.gz TRADER_ARCHIVE=trader.tar.gz ROLLBACK_FILE="$RUNNER_TEMP/live-rollback.json" \

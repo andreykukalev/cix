@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deploys the engine and the agent jobs to Azure Container Apps (ADR-0013, docs/azure.md), after a merge to main: paper's,
-# and then, once paper runs the same images and the owner has approved the run, the live environment's (ADR-0019):
+# Deploys the engine and the agent jobs to Azure Container Apps (ADR-0013, docs/azure.md), after a merge to main: the live
+# environment's, once the checks passed and the owner has approved the run (ADR-0019; no paper engine first, ADR-0028):
 #   1. pushes the two images CI built to the environment's registry, tagged with the commit (agents.deploy platform stops
 #      here: the apps don't exist yet, and provision.ps1 -ImageTag creates them from these images);
 #   2. points the engine at its new image and, when it runs a replica (minimum replicas 1, set by agents.startEngine),

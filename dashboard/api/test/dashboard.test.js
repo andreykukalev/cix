@@ -35,7 +35,7 @@ const OTHER_OWNER = b64({ identityProvider: 'aad', userId: 'redeemed-the-link', 
 const GITHUB_OWNER = b64({ identityProvider: 'github', userId: 'owner-user-id', userRoles: ['authenticated', 'owner'] });
 const context = { log() {}, error() {} };
 const today = new Date().toISOString().slice(0, 10);
-const QUERIES = { dashboard: 'mode=paper', journal: `day=${today}`, activity: 'period=week', 'balance-history': 'mode=live&days=30' };
+const QUERIES = { dashboard: 'mode=live', journal: `day=${today}`, activity: 'period=week', 'balance-history': 'mode=live&days=30' };
 
 function request(name, principal = OWNER, query = QUERIES[name]) {
   const headers = { 'x-ms-client-principal': principal };
@@ -89,7 +89,7 @@ function ruleFor(path, method = 'GET') {
 }
 
 test('the site lets only the owner role into every page and API route', () => {
-  for (const path of ['/', '/index.html', '/app.js', '/view.js', '/anything', '/api/dashboard', '/api/journal', '/api/activity', '/api/owner/requests']) {
+  for (const path of ['/', '/index.html', '/app.js', '/view.js', '/anything', '/api/dashboard', '/api/journal', '/api/activity', '/api/owner/strategies']) {
     for (const method of ['GET', 'POST', 'DELETE']) {
       assert.deepEqual(ruleFor(path, method)?.allowedRoles, ['owner'], `${method} ${path}`);
     }
@@ -114,22 +114,42 @@ test('anyone else is sent to the Microsoft sign-in, or to the signed-out page; G
   for (const provider of ['github', 'twitter']) assert.equal(ruleFor(`/.auth/login/${provider}`)?.statusCode, 404, provider);
 });
 
-test("each mode reads its own engine's database: live's is its own (ADR-0017)", async () => {
+test("every read is the live engine's, from its own database (ADR-0017); paper is refused (ADR-0028)", async () => {
   const cases = [
-    ['dashboard', 'mode=live', 'cix-live'], // paper's dashboard is in the cache from the first test
-    ['journal', `day=${today}&kind=fill&mode=live`, 'cix-live'], ['journal', `day=${today}&kind=fill`, 'cix'],
-    ['activity', 'period=month&mode=live', 'cix-live'], ['activity', 'period=month', 'cix'],
-    ['balance-history', 'mode=live&days=90', 'cix-live'], ['balance-history', 'mode=paper&days=90', 'cix'],
+    ['dashboard', ''], // live's dashboard is in the cache from the first test, under the same key
+    ['journal', `day=${today}&kind=fill&mode=live`], ['journal', `day=${today}&kind=order`],
+    ['activity', 'period=month&mode=live'], ['activity', 'period=day'],
+    ['balance-history', 'mode=live&days=90'], ['balance-history', 'days=7'],
   ];
-  for (const [name, query, database] of cases) {
+  for (const [name, query] of cases) {
     reads.length = 0;
     const r = await routes[name].handler(request(name, OWNER, query), context);
     assert.equal(r.status, 200, `${name} ${query}`);
-    assert.ok(reads.length > 0, `${name} ${query}: read the database, not another mode's cached answer`);
-    assert.deepEqual([...new Set(reads.map((x) => x.database))], [database], `${name} ${query}`);
-    const mode = database === 'cix-live' ? 'live' : 'paper';
+    if (name === 'dashboard') continue;
+    assert.ok(reads.length > 0, `${name} ${query}: read the database`);
+    assert.deepEqual([...new Set(reads.map((x) => x.database))], ['cix-live'], `${name} ${query}`);
     for (const q of reads.filter((x) => x.options?.parameters)) {
-      assert.deepEqual(q.options.parameters.filter((p) => p.name === '@mode'), [{ name: '@mode', value: mode }], `${name} ${query}: ${mode}'s entries only`);
+      assert.deepEqual(q.options.parameters.filter((p) => p.name === '@mode'), [{ name: '@mode', value: 'live' }], `${name} ${query}: live's entries only`);
     }
   }
+  for (const name of Object.keys(QUERIES)) {
+    reads.length = 0;
+    const query = name === 'journal' ? `day=${today}&mode=paper` : name === 'activity' ? 'period=week&mode=paper' : 'mode=paper&days=30';
+    const r = await routes[name].handler(request(name, OWNER, query), context);
+    assert.equal(r.status, 400, `${name}: paper`);
+    assert.match(r.jsonBody.error, /Paper trading was removed/);
+    assert.equal(reads.length, 0, `${name}: paper reads nothing`);
+  }
+});
+
+test('without the live database setting the reads are refused, never served from another database', async () => {
+  const saved = process.env.COSMOS_LIVE_DATABASE;
+  delete process.env.COSMOS_LIVE_DATABASE;
+  try {
+    reads.length = 0;
+    const r = await routes.journal.handler(request('journal', OWNER, `day=${today}&kind=pairs`), context);
+    assert.equal(r.status, 503);
+    assert.match(r.jsonBody.error, /COSMOS_LIVE_DATABASE/);
+    assert.equal(reads.length, 0);
+  } finally { process.env.COSMOS_LIVE_DATABASE = saved; }
 });

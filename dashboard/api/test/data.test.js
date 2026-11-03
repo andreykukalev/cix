@@ -95,7 +95,7 @@ test('journal requests are normalised so equal requests share one cache entry', 
   assert.equal(journalRequest('2026-10-25', '', '150', NOW).top, 200);
 });
 
-const { loadActivity, loadRequests, KINDS } = require('../src/data');
+const { loadActivity, KINDS } = require('../src/data');
 
 test('activity reads only fills, across the day partitions the periods cover', async () => {
   const queries = [];
@@ -109,15 +109,6 @@ test('activity reads only fills, across the day partitions the periods cover', a
   assert.equal(view.current.trades, 1);
   assert.equal(view.truncated, false);
   await assert.rejects(loadActivity(reader, 'year', NOW), RangeError);
-});
-
-test('request history covers the last week, newest first', async () => {
-  let seen;
-  const reader = { async query(container, sql, options) { seen = { container, sql, ...options }; return [{ id: 'a', createdAt: '2026-10-24T00:00:00Z' }, { id: 'b', createdAt: '2026-10-25T00:00:00Z' }]; } };
-  const view = await loadRequests(reader, NOW);
-  assert.equal(seen.container, 'requests');
-  assert.deepEqual(seen.parameters, [{ name: '@from', value: '2026-10-19' }, { name: '@type', value: 'manual-request' }]);
-  assert.deepEqual(view.requests.map((r) => r.id), ['b', 'a']);
 });
 
 test('the journal filter knows the manual and scanner-filter kinds', () => {

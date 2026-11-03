@@ -57,34 +57,22 @@ function request({ method = 'GET', principal = OWNER, headers = {}, body = '', p
   return { method, params, query: new URLSearchParams(query), headers: { get: (n) => all[n.toLowerCase()] ?? null }, text: async () => body };
 }
 
-const BODY = JSON.stringify({ id: '3f2b8c1e-5d4a-4b6c-9e8f-0a1b2c3d4e5f', side: 'sell', mode: 'direct', symbol: 'LINK-EUR', portion: '0.25' });
+// Every crypto request is the live engine's (ADR-0028): it says so, and the owner has ticked the real-money box.
+const live = (body) => ({ ...body, tradingMode: 'live', confirmLive: true });
+const STRATEGY_BODY = JSON.stringify(live({ id: '7c9e6679-7425-40de-944b-e07fc1f90ae7', name: 'balanced', version: 1, note: 'calmer' }));
+const BODY = STRATEGY_BODY;
 
-test('the owner endpoints are registered under /api/owner', () => {
+test('the owner endpoints are registered under /api/owner, and the paper buy and sell requests are gone', () => {
   assert.deepEqual(Object.values(routes).map((r) => r.route).sort(),
     ['owner/analyst-requests', 'owner/analyst-requests/{day}/{id}', 'owner/control-requests', 'owner/control-requests/{day}/{id}', 'owner/pair-requests', 'owner/pair-requests/{day}/{id}', 'owner/pairs',
-      'owner/requests', 'owner/requests/{day}/{id}', 'owner/stocks-portfolio', 'owner/stocks-trade', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
-});
-
-test('the owner creates a request; the same click again is not a second request', async () => {
-  writes.length = 0;
-  stored.clear();
-  const first = await routes['owner-requests'].handler(request({ method: 'POST', body: BODY }), context);
-  assert.equal(first.status, 201);
-  assert.equal(first.jsonBody.result, 'created');
-  assert.equal(first.jsonBody.request.status, 'new');
-  assert.equal(first.headers['cache-control'], 'no-store');
-  const again = await routes['owner-requests'].handler(request({ method: 'POST', body: BODY }), context);
-  assert.equal(again.status, 200);
-  assert.equal(again.jsonBody.result, 'exists');
-  assert.equal(writes[0].requestedBy, 'owner');
-  assert.equal(writes[0].tradingMode, 'paper');
+      'owner/stocks-portfolio', 'owner/stocks-trade', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
 });
 
 test('nobody else can write or read, whatever the route rules say', async () => {
   writes.length = 0;
   for (const principal of [VISITOR, OTHER_OWNER, null, 'garbage']) {
-    for (const name of ['owner-requests', 'owner-request']) {
-      const method = name === 'owner-requests' ? 'POST' : 'GET';
+    for (const name of ['owner-strategy-requests', 'owner-strategy-request', 'owner-strategies', 'owner-pairs']) {
+      const method = name === 'owner-strategy-requests' ? 'POST' : 'GET';
       const r = await routes[name].handler(request({ method, principal, body: BODY }), context);
       assert.equal(r.status, 403, `${name} ${principal}`);
     }
@@ -100,51 +88,57 @@ test('a write needs the page\'s header, a JSON body and a small one', async () =
     request({ method: 'POST', body: BODY, headers: { 'content-type': 'application/x-www-form-urlencoded' } }),
     request({ method: 'POST', body: 'not json' }),
     request({ method: 'POST', body: JSON.stringify({ note: 'x'.repeat(5000) }) }),
-    request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(BODY), tradingMode: 'live' }) }),
   ];
-  for (const r of cases) assert.equal((await routes['owner-requests'].handler(r, context)).status, 400);
+  for (const r of cases) assert.equal((await routes['owner-strategy-requests'].handler(r, context)).status, 400);
   assert.equal(writes.length, 0);
 });
 
-test('history and a single request are read with the read-only key, never cached', async () => {
+test('paper is refused before anything is read or written: there is no paper engine (ADR-0028)', async () => {
+  writes.length = 0;
   reads.length = 0;
-  stored.clear();
-  const list = await routes['owner-requests'].handler(request(), context);
-  assert.equal(list.status, 200);
-  assert.equal(list.jsonBody.requests[0].final, true);
-  assert.equal(reads[0].container, 'requests');
-  assert.equal(list.headers['cache-control'], 'no-store');
-
-  const one = await routes['owner-request'].handler(request({ params: { day: '2026-10-26', id: 'a1b2c3d4-0000-4000-8000-000000000001' } }), context);
-  assert.equal(one.status, 200);
-  assert.equal(one.jsonBody.status, 'placed');
-  assert.equal(reads[1].pk, '2026-10-26');
-  const missing = await routes['owner-request'].handler(request({ params: { day: '2026-10-26', id: '00000000-0000-4000-8000-000000000000' } }), context);
-  assert.equal(missing.status, 404);
-  const bad = await routes['owner-request'].handler(request({ params: { day: '../x', id: 'y' } }), context);
-  assert.equal(bad.status, 400);
+  const id = () => crypto.randomUUID();
+  const posts = [
+    ['owner-strategy-requests', { id: id(), name: 'safe', version: 1 }],
+    ['owner-strategy-requests', { id: id(), name: 'safe', version: 1, tradingMode: 'paper' }],
+    ['owner-pair-requests', { id: id(), action: 'add', symbol: 'SOL-EUR' }],
+    ['owner-control-requests', { id: id(), action: 'pause' }],
+    ['owner-analyst-requests', { id: id() }],
+  ];
+  for (const [name, body] of posts) {
+    const r = await routes[name].handler(request({ method: 'POST', body: JSON.stringify(body) }), context);
+    assert.equal(r.status, 400, `${name} ${JSON.stringify(body)}`);
+    assert.match(r.jsonBody.error, /Paper trading was removed/);
+  }
+  for (const name of ['owner-strategies', 'owner-pairs']) {
+    const r = await routes[name].handler(request({ query: 'mode=paper' }), context);
+    assert.equal(r.status, 400, name);
+  }
+  const lookup = await routes['owner-control-request'].handler(request({ params: { day: '2026-10-27', id: id() }, query: 'mode=paper' }), context);
+  assert.equal(lookup.status, 400);
+  assert.equal(writes.length, 0);
+  assert.equal(reads.length, 0);
 });
 
-test('a retry with other details is refused, and answered with the request as first sent', async () => {
+test('a retry with other details is refused; the request stands as first sent', async () => {
   stored.clear();
   const id = '7a1b2c3d-1111-4222-8333-444455556666';
-  const first = JSON.stringify({ id, side: 'sell', mode: 'direct', symbol: 'LINK-EUR', portion: '0.25' });
-  assert.equal((await routes['owner-requests'].handler(request({ method: 'POST', body: first }), context)).status, 201);
-  const changed = await routes['owner-requests'].handler(request({ method: 'POST', body: first.replace('0.25', '1') }), context);
+  const first = JSON.stringify(live({ id, name: 'safe', version: 3 }));
+  assert.equal((await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: first }), context)).status, 201);
+  const changed = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: first.replace('"version":3', '"version":1') }), context);
   assert.equal(changed.status, 409);
-  assert.equal(changed.jsonBody.request.portion, '0.25');
+  assert.equal(stored.get(id).version, 3);
 });
 
 test('a retry just after midnight finds the request made the day before', async () => {
   stored.clear();
   const id = '8b2c3d4e-2222-4333-8444-555566667777';
   const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-  stored.set(id, { id, day: yesterday, type: 'manual-request', side: 'sell', mode: 'agent', symbol: 'UNI-EUR', portion: '1', status: 'awaiting-agent' });
+  stored.set(id, { id, day: yesterday, type: 'strategy-selection', name: 'risky', version: 4, tradingMode: 'live', status: 'accepted' });
   writes.length = 0;
-  const r = await routes['owner-requests'].handler(request({ method: 'POST', body: JSON.stringify({ id, side: 'sell', mode: 'agent', symbol: 'UNI-EUR', portion: '1' }) }), context);
+  const r = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify(live({ id, name: 'risky', version: 4 })) }), context);
   assert.equal(r.status, 200);
   assert.equal(r.jsonBody.result, 'exists');
-  assert.equal(r.jsonBody.request.status, 'awaiting-agent');
+  assert.equal(r.jsonBody.request.status, 'accepted');
   assert.equal(writes.length, 0, 'not written a second time');
 });
 
@@ -152,7 +146,7 @@ test('without a confirmed owner, nobody is the owner', async () => {
   const saved = process.env.DASHBOARD_OWNER_USER_ID;
   delete process.env.DASHBOARD_OWNER_USER_ID;
   try {
-    assert.equal((await routes['owner-requests'].handler(request(), context)).status, 403);
+    assert.equal((await routes['owner-strategies'].handler(request(), context)).status, 403);
   } finally { process.env.DASHBOARD_OWNER_USER_ID = saved; }
 });
 
@@ -168,7 +162,7 @@ test('with no writer settings, the owner is told requests aren\'t set up', async
   try {
     delete require.cache[require.resolve('../src/functions/owner.js')];
     require('../src/functions/owner.js');
-    const r = await fresh['owner-requests'].handler(request({ method: 'POST', body: JSON.stringify({ id: '9c3d4e5f-3333-4444-8555-666677778888', side: 'sell', mode: 'direct', symbol: 'LINK-EUR', portion: '1' }) }), context);
+    const r = await fresh['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify(live({ id: '9c3d4e5f-3333-4444-8555-666677778888', name: 'safe', version: 3 })) }), context);
     assert.equal(r.status, 503);
     assert.match(r.jsonBody.error, /setup-dashboard-requests/);
   } finally {
@@ -177,86 +171,86 @@ test('with no writer settings, the owner is told requests aren\'t set up', async
   }
 });
 
-const STRATEGY_BODY = JSON.stringify({ id: '7c9e6679-7425-40de-944b-e07fc1f90ae7', name: 'balanced', version: 1, note: 'calmer' });
-
-test('the owner asks to switch strategy: a request in the requests container, never the state', async () => {
+test('the owner asks to switch strategy: a request in the live requests container, never the state', async () => {
   writes.length = 0;
+  writeDatabases.length = 0;
+  stored.clear();
   const first = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: STRATEGY_BODY }), context);
   const again = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: STRATEGY_BODY }), context);
 
   assert.equal(first.status, 201);
+  assert.equal(first.headers['cache-control'], 'no-store');
   assert.equal(again.status, 200); // the same dialog sent twice is one request
-  assert.equal(writes.length, 2);
-  assert.deepEqual({ type: writes[0].type, name: writes[0].name, version: writes[0].version, status: writes[0].status, requestedBy: writes[0].requestedBy },
-    { type: 'strategy-selection', name: 'balanced', version: 1, status: 'new', requestedBy: 'owner' });
+  assert.equal(again.jsonBody.result, 'exists');
+  assert.equal(writes.length, 2, 'the database, not the API, finds the id taken');
+  assert.deepEqual(writeDatabases, ['cix-live', 'cix-live']);
+  assert.deepEqual({ type: writes[0].type, name: writes[0].name, version: writes[0].version, status: writes[0].status, requestedBy: writes[0].requestedBy, tradingMode: writes[0].tradingMode },
+    { type: 'strategy-selection', name: 'balanced', version: 1, status: 'new', requestedBy: 'owner', tradingMode: 'live' });
+  assert.equal('confirmLive' in writes[0], false);
   assert.equal(first.jsonBody.request.name, 'balanced');
 });
 
-test('strategy requests: owner only, live only when confirmed and to the live engine, well formed', async () => {
-  const liveBody = { ...JSON.parse(STRATEGY_BODY), id: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d', name: 'safe', version: 2, tradingMode: 'live' };
-  const visitor = await routes['owner-strategy-requests'].handler(request({ method: 'POST', principal: VISITOR, body: STRATEGY_BODY }), context);
+test('strategy requests: owner only, only when confirmed, well formed, followed in the live engine\'s database', async () => {
+  const liveBody = { ...JSON.parse(STRATEGY_BODY), id: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d', name: 'safe', version: 2 };
+  const visitor = await routes['owner-strategy-requests'].handler(request({ method: 'POST', principal: VISITOR, body: JSON.stringify(liveBody) }), context);
   writeDatabases.length = 0;
-  const unconfirmed = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify(liveBody) }), context);
+  const unconfirmed = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, confirmLive: false }) }), context);
   assert.deepEqual(writeDatabases, [], 'nothing written without the confirmation');
-  const live = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, confirmLive: true }) }), context);
-  const bad = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(STRATEGY_BODY), version: '1' }) }), context);
-  const noHeader = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: STRATEGY_BODY, headers: { 'x-cix-request': null } }), context);
+  const sent = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify(liveBody) }), context);
+  const bad = await routes['owner-strategy-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, id: crypto.randomUUID(), version: '1' }) }), context);
 
   assert.equal(visitor.status, 403);
   assert.equal(unconfirmed.status, 400);
   assert.match(unconfirmed.jsonBody.error, /real-money/);
-  assert.equal(live.status, 201);
+  assert.equal(sent.status, 201);
   assert.deepEqual(writeDatabases, ['cix-live']);
   assert.deepEqual({ name: writes.at(-1).name, version: writes.at(-1).version, tradingMode: writes.at(-1).tradingMode }, { name: 'safe', version: 2, tradingMode: 'live' });
-  assert.equal('confirmLive' in writes.at(-1), false);
   assert.equal(bad.status, 400);
-  assert.equal(noHeader.status, 400);
 
-  // The page follows it in the live engine's database, and a paper lookup never finds it.
   const day = writes.at(-1).day;
   const lookup = (query) => routes['owner-strategy-request'].handler(request({ params: { day, id: liveBody.id }, query }), context);
   assert.equal((await lookup('mode=live')).status, 200);
-  assert.equal((await lookup('')).status, 404);
+  assert.equal((await lookup('')).status, 200, 'no mode is live');
 });
 
-test('the strategy view is the owner\'s only', async () => {
+test('the strategy view is the owner\'s only, and live\'s', async () => {
   const visitor = await routes['owner-strategies'].handler(request({ principal: VISITOR }), context);
   const owner = await routes['owner-strategies'].handler(request(), context);
 
   assert.equal(visitor.status, 403);
   assert.equal(owner.status, 200);
-  assert.equal(owner.jsonBody.mode, 'paper');
+  assert.equal(owner.jsonBody.mode, 'live');
   assert.equal(owner.headers['cache-control'], 'no-store');
 });
 
-const PAIR_BODY = JSON.stringify({ id: 'c56a4180-65aa-42ec-a945-5fd21dec0538', action: 'add', symbol: 'SOL-EUR', note: 'more coins' });
+const PAIR_BODY = JSON.stringify(live({ id: 'c56a4180-65aa-42ec-a945-5fd21dec0538', action: 'add', symbol: 'SOL-EUR', note: 'more coins' }));
 
-test('the owner asks to add a pair: a request in the requests container, never the state', async () => {
+test('the owner asks to add a pair: a request in the live requests container, never the state', async () => {
   writes.length = 0;
   const first = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: PAIR_BODY }), context);
   const again = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: PAIR_BODY }), context);
 
   assert.equal(first.status, 201);
   assert.equal(again.status, 200); // the same dialog sent twice is one request
-  assert.deepEqual({ type: writes[0].type, action: writes[0].action, symbol: writes[0].symbol, status: writes[0].status, requestedBy: writes[0].requestedBy },
-    { type: 'tradable-pair', action: 'add', symbol: 'SOL-EUR', status: 'new', requestedBy: 'owner' });
+  assert.deepEqual({ type: writes[0].type, action: writes[0].action, symbol: writes[0].symbol, status: writes[0].status, requestedBy: writes[0].requestedBy, tradingMode: writes[0].tradingMode },
+    { type: 'tradable-pair', action: 'add', symbol: 'SOL-EUR', status: 'new', requestedBy: 'owner', tradingMode: 'live' });
   assert.equal(first.jsonBody.request.symbol, 'SOL-EUR');
 });
 
-test('pair requests: owner only, live only when confirmed and to the live engine, well formed', async () => {
-  const liveBody = { ...JSON.parse(PAIR_BODY), id: '2c1f7c3e-1b7a-4c1d-8a7e-3f0a9b1c2d3e', tradingMode: 'live' };
-  const visitor = await routes['owner-pair-requests'].handler(request({ method: 'POST', principal: VISITOR, body: PAIR_BODY }), context);
+test('pair requests: owner only, only when confirmed and to the live engine, well formed', async () => {
+  const liveBody = { ...JSON.parse(PAIR_BODY), id: '2c1f7c3e-1b7a-4c1d-8a7e-3f0a9b1c2d3e' };
+  const visitor = await routes['owner-pair-requests'].handler(request({ method: 'POST', principal: VISITOR, body: JSON.stringify(liveBody) }), context);
   writeDatabases.length = 0;
-  const unconfirmed = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify(liveBody) }), context);
+  const unconfirmed = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, confirmLive: undefined }) }), context);
   assert.deepEqual(writeDatabases, [], 'nothing written without the confirmation');
-  const live = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, confirmLive: true }) }), context);
-  const bad = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...JSON.parse(PAIR_BODY), action: 'swap' }) }), context);
-  const noHeader = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: PAIR_BODY, headers: { 'x-cix-request': null } }), context);
+  const sent = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify(liveBody) }), context);
+  const bad = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, id: crypto.randomUUID(), action: 'swap' }) }), context);
+  const noHeader = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify(liveBody), headers: { 'x-cix-request': null } }), context);
 
   assert.equal(visitor.status, 403);
   assert.equal(unconfirmed.status, 400);
   assert.match(unconfirmed.jsonBody.error, /real-money/);
-  assert.equal(live.status, 201);
+  assert.equal(sent.status, 201);
   assert.deepEqual(writeDatabases, ['cix-live']);
   assert.equal(writes.at(-1).tradingMode, 'live');
   assert.equal(bad.status, 400);
@@ -265,76 +259,72 @@ test('pair requests: owner only, live only when confirmed and to the live engine
   const day = writes.at(-1).day;
   const lookup = (query) => routes['owner-pair-request'].handler(request({ params: { day, id: liveBody.id }, query }), context);
   assert.equal((await lookup('mode=live')).status, 200);
-  assert.equal((await lookup('')).status, 404);
 
   const saved = process.env.COSMOS_LIVE_DATABASE;
   delete process.env.COSMOS_LIVE_DATABASE;
   try {
     reads.length = 0;
-    const off = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, id: crypto.randomUUID(), confirmLive: true }) }), context);
-    assert.equal(off.status, 503, 'never written to paper\'s database instead');
-    assert.equal((await lookup('mode=live')).status, 503, 'a live lookup never reads paper\'s database instead');
+    const off = await routes['owner-pair-requests'].handler(request({ method: 'POST', body: JSON.stringify({ ...liveBody, id: crypto.randomUUID() }) }), context);
+    assert.equal(off.status, 503, 'never written to another database instead');
+    assert.equal((await lookup('mode=live')).status, 503, 'a lookup never reads another database instead');
     assert.equal(reads.length, 0);
   } finally { process.env.COSMOS_LIVE_DATABASE = saved; }
   assert.deepEqual(writeDatabases, ['cix-live']);
 });
 
-test('the pairs view is the owner\'s only', async () => {
+test('the pairs view is the owner\'s only, and live\'s', async () => {
   const visitor = await routes['owner-pairs'].handler(request({ principal: VISITOR }), context);
   const owner = await routes['owner-pairs'].handler(request(), context);
 
   assert.equal(visitor.status, 403);
   assert.equal(owner.status, 200);
-  assert.equal(owner.jsonBody.mode, 'paper');
+  assert.equal(owner.jsonBody.mode, 'live');
 });
 
-test("live's strategy view reads the live engine's database, its requests too, with paper's explanations as a stand-in", async () => {
+test("the strategy view reads the live engine's database only, its requests too", async () => {
   reads.length = 0;
-  const live = await routes['owner-strategies'].handler(request({ query: 'mode=live' }), context);
-  assert.equal(live.status, 200);
-  const where = Object.fromEntries(reads.map((r) => [r.id ?? r.container, r.database]));
-  assert.deepEqual(where, { 'strategy-schema-live': 'cix-live', state: 'cix-live', 'engine-status-live': 'cix-live', requests: 'cix-live', 'strategy-schema-paper': 'cix' },
-    "live's own schema first; paper's explanations only while the live engine hasn't written its own (the fake has none)");
-  reads.length = 0;
-  await routes['owner-requests'].handler(request(), context);
-  assert.deepEqual([...new Set(reads.map((r) => r.database))], ['cix']);
+  const view = await routes['owner-strategies'].handler(request({ query: 'mode=live' }), context);
+  assert.equal(view.status, 200);
+  assert.deepEqual([...new Set(reads.map((r) => r.database))], ['cix-live']);
+  assert.ok(reads.some((r) => r.id === 'strategy-schema-live'));
+  assert.ok(reads.some((r) => r.container === 'requests'));
 });
 
-test("Pause and Resume: paper's go to paper's database; live's need the owner's confirmation and go to the live engine's", async () => {
+test("Pause and Resume need the owner's confirmation and go to the live engine's database", async () => {
   const post = (body) => routes['owner-control-requests'].handler(request({ method: 'POST', body: JSON.stringify(body) }), context);
   const id = () => crypto.randomUUID();
 
   writeDatabases.length = 0;
-  const paper = await post({ id: id(), action: 'pause', note: 'lunch' });
-  assert.equal(paper.status, 201);
-  assert.equal(paper.jsonBody.request.action, 'pause');
+  const paused = await post(live({ id: id(), action: 'pause', note: 'lunch' }));
+  assert.equal(paused.status, 201);
+  assert.equal(paused.jsonBody.request.action, 'pause');
   assert.equal(writes.at(-1).type, 'trading-control');
-  assert.equal(writes.at(-1).tradingMode, 'paper');
-  assert.deepEqual(writeDatabases, ['cix']);
+  assert.equal(writes.at(-1).tradingMode, 'live');
+  assert.deepEqual(writeDatabases, ['cix-live']);
 
   const since = '2026-10-27T16:45:00.1234567+00:00'; // as the engine's status writes it
   const unconfirmed = await post({ id: id(), action: 'resume', tradingMode: 'live', haltSince: since });
   assert.equal(unconfirmed.status, 400);
   assert.match(unconfirmed.jsonBody.error, /real-money/);
-  assert.deepEqual(writeDatabases, ['cix'], 'nothing written without the confirmation');
+  assert.deepEqual(writeDatabases, ['cix-live'], 'nothing written without the confirmation');
 
-  const live = await post({ id: id(), action: 'resume', tradingMode: 'live', confirmLive: true, haltSince: since, haltAlsoAt: null });
-  assert.equal(live.status, 201);
-  assert.deepEqual(writeDatabases, ['cix', 'cix-live']);
+  const resumed = await post(live({ id: id(), action: 'resume', haltSince: since, haltAlsoAt: null }));
+  assert.equal(resumed.status, 201);
+  assert.deepEqual(writeDatabases, ['cix-live', 'cix-live']);
   assert.equal(writes.at(-1).haltSince, since, 'the halt the page showed, passed back untouched');
   assert.equal('haltAlsoAt' in writes.at(-1), false);
-  const seenAlso = await post({ id: id(), action: 'resume', haltSince: since, haltAlsoAt: '2026-10-27T17:00:00Z' });
+  const seenAlso = await post(live({ id: id(), action: 'resume', haltSince: since, haltAlsoAt: '2026-10-27T17:00:00Z' }));
   assert.equal(seenAlso.status, 201);
   assert.equal(writes.at(-1).haltAlsoAt, '2026-10-27T17:00:00Z');
 
   for (const bad of [{ id: id(), action: 'sell-all' }, { id: 'nope', action: 'pause' }, { id: id(), action: 'pause', tradingMode: 'demo' },
     { id: id(), action: 'resume' }, { id: id(), action: 'resume', haltSince: 'yesterday' }, { id: id(), action: 'resume', haltSince: since, haltAlsoAt: 5 }]) {
-    assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
+    assert.equal((await post({ ...live(bad), ...bad })).status, 400, JSON.stringify(bad));
   }
 
   writerAnswer = 403; // the live role isn't granted yet
   try {
-    const refused = await post({ id: id(), action: 'pause', tradingMode: 'live', confirmLive: true });
+    const refused = await post(live({ id: id(), action: 'pause' }));
     assert.equal(refused.status, 503);
     assert.match(refused.jsonBody.error, /-LiveRequests/);
   } finally { writerAnswer = null; }
@@ -342,53 +332,51 @@ test("Pause and Resume: paper's go to paper's database; live's need the owner's 
   const saved = process.env.COSMOS_LIVE_DATABASE;
   delete process.env.COSMOS_LIVE_DATABASE;
   try {
-    const off = await post({ id: id(), action: 'pause', tradingMode: 'live', confirmLive: true });
-    assert.equal(off.status, 503, 'never written to paper\'s database instead');
+    const off = await post(live({ id: id(), action: 'pause' }));
+    assert.equal(off.status, 503, 'never written to another database instead');
     assert.match(off.jsonBody.error, /-LiveRequests/);
     reads.length = 0;
     const lookup = await routes['owner-control-request'].handler(request({ params: { day: '2026-10-27', id: id() }, query: 'mode=live' }), context);
-    assert.equal(lookup.status, 503, 'a live lookup never reads paper\'s database instead');
+    assert.equal(lookup.status, 503, 'a lookup never reads another database instead');
     assert.equal(reads.length, 0);
     for (const view of ['owner-strategies', 'owner-pairs']) {
-      assert.equal((await routes[view].handler(request({ query: 'mode=live' }), context)).status, 503, `${view} never shows paper's database as live's`);
+      assert.equal((await routes[view].handler(request({ query: 'mode=live' }), context)).status, 503, `${view} never shows another database as live's`);
     }
     assert.equal(reads.length, 0);
   } finally { process.env.COSMOS_LIVE_DATABASE = saved; }
-  assert.deepEqual(writeDatabases, ['cix', 'cix-live', 'cix']);
+  assert.deepEqual(writeDatabases, ['cix-live', 'cix-live', 'cix-live']);
 });
 
-test("Run now: paper's goes to paper's database; live's needs the owner's confirmation; the lookup reads only its own type and mode", async () => {
+test("Run now needs the owner's confirmation and goes to the live engine; the lookup reads only its own type", async () => {
   const post = (body) => routes['owner-analyst-requests'].handler(request({ method: 'POST', body: JSON.stringify(body) }), context);
   const lookup = (day, id, query = '') => routes['owner-analyst-request'].handler(request({ params: { day, id }, query }), context);
 
   writeDatabases.length = 0;
   const id = crypto.randomUUID();
-  const paper = await post({ id, note: 'ignored' });
-  assert.equal(paper.status, 201);
-  assert.equal(paper.jsonBody.request.status, 'new');
+  const unconfirmed = await post({ id, tradingMode: 'live' });
+  assert.equal(unconfirmed.status, 400);
+  assert.match(unconfirmed.jsonBody.error, /real-money/);
+  const sent = await post(live({ id, note: 'ignored' }));
+  assert.equal(sent.status, 201);
+  assert.equal(sent.jsonBody.request.status, 'new');
   const doc = writes.at(-1);
   assert.deepEqual(Object.keys(doc).sort(), ['createdAt', 'day', 'id', 'requestedBy', 'status', 'tradingMode', 'type'], 'nothing the analyst reads');
   assert.equal(doc.type, 'analyst-run');
-  assert.deepEqual(writeDatabases, ['cix']);
-  const again = await post({ id });
+  assert.deepEqual(writeDatabases, ['cix-live']);
+  const again = await post(live({ id }));
   assert.equal(again.status, 200, 'the same press again is the same request');
   assert.equal(again.jsonBody.result, 'exists');
 
   assert.equal((await lookup(doc.day, id)).status, 200);
-  assert.equal((await lookup(doc.day, id, 'mode=live')).status, 404, "paper's request isn't live's");
-
-  const unconfirmed = await post({ id: crypto.randomUUID(), tradingMode: 'live' });
-  assert.equal(unconfirmed.status, 400);
-  assert.match(unconfirmed.jsonBody.error, /real-money/);
-  const live = await post({ id: crypto.randomUUID(), tradingMode: 'live', confirmLive: true });
-  assert.equal(live.status, 201);
-  assert.deepEqual(writeDatabases, ['cix', 'cix', 'cix-live']);
+  assert.equal((await lookup(doc.day, id, 'mode=live')).status, 200);
+  stored.set('0f0f0f0f-0000-4000-8000-000000000001', { id: '0f0f0f0f-0000-4000-8000-000000000001', day: doc.day, type: 'trading-control', tradingMode: 'live' });
+  assert.equal((await lookup(doc.day, '0f0f0f0f-0000-4000-8000-000000000001')).status, 404, 'another type of request is not a Run now');
 
   for (const bad of [{ id: 'nope' }, { id: crypto.randomUUID(), tradingMode: 'demo' }, []]) {
-    assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
+    assert.equal((await post(Array.isArray(bad) ? bad : { ...live(bad), ...bad })).status, 400, JSON.stringify(bad));
   }
   assert.equal((await lookup('yesterday', id)).status, 400);
-  const visitor = await routes['owner-analyst-requests'].handler(request({ method: 'POST', principal: VISITOR, body: JSON.stringify({ id: crypto.randomUUID() }) }), context);
+  const visitor = await routes['owner-analyst-requests'].handler(request({ method: 'POST', principal: VISITOR, body: JSON.stringify(live({ id: crypto.randomUUID() })) }), context);
   assert.equal(visitor.status, 403);
 });
 

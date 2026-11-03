@@ -134,97 +134,9 @@
     return null;
   }
 
-  const PORTIONS = { '0.25': '25%', '0.5': 'half', '1': 'all' };
-  const SELL_DESCRIPTIONS = { // one per portion: in Russian the words around it change with it
-    '0.25': 'Sell 25% of your {symbol} position (paper). {how} The risk gate checks the order either way.',
-    '0.5': 'Sell half of your {symbol} position (paper). {how} The risk gate checks the order either way.',
-    '1': 'Sell all of your {symbol} position (paper). {how} The risk gate checks the order either way.',
-  };
-
-  /**
-   * The request the page sends for a choice in the dialog, or an error message. id is a fresh UUID per click: sending the
-   * same id again (a retry) is the same request, never a second one.
-   */
-  function requestBody(choice, id) {
-    const { side, mode, symbol } = choice;
-    if (!SYMBOL.test(symbol ?? '')) return { error: t('Pick a coin.') };
-    if (side === 'sell') {
-      if (!(String(choice.portion) in PORTIONS)) return { error: t('Pick how much to sell.') };
-      if (mode !== 'direct' && mode !== 'agent') return { error: t('Pick how to sell.') };
-      return { body: { id, side, mode, symbol, portion: String(choice.portion), note: cleanNote(choice.note), tradingMode: 'paper' } };
-    }
-    if (side === 'buy') {
-      const amount = String(choice.quoteAmount ?? '').trim().replace(',', '.');
-      if (!/^\d+(\.\d{1,2})?$/.test(amount) || !(Number(amount) > 0)) return { error: t('Enter an amount to buy for, like 25.') };
-      if (Number(amount) > 1000) return { error: t('At most 1000 per request.') };
-      return { body: { id, side, mode: 'agent', symbol, quoteAmount: amount, note: cleanNote(choice.note), tradingMode: 'paper' } };
-    }
-    return { error: t('Pick buy or sell.') };
-  }
-
   function cleanNote(note) {
     const text = String(note ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
     return text ? Array.from(text).slice(0, 280).join('') : undefined;
-  }
-
-  /** What the confirmation says will happen, in words. */
-  function describe(body) {
-    const quote = body.symbol.split('-')[1];
-    if (body.side === 'sell') {
-      const how = body.mode === 'direct'
-        ? t('The engine sells at the bid now, without asking the trader.')
-        : t('The trader analyses it first and may decline or sell less.');
-      return t(SELL_DESCRIPTIONS[body.portion], { symbol: body.symbol, how });
-    }
-    return t('Ask the trader to buy {symbol} for {amount} {quote} (paper). It decides, sets a stop-loss, and may decline; the risk gate checks the order.', { symbol: body.symbol, amount: body.quoteAmount, quote });
-  }
-
-  const STATUS = {
-    new: { label: 'Sent, waiting for the engine', tone: 'pending' },
-    'awaiting-agent': { label: 'With the trader', tone: 'pending' },
-    executing: { label: 'Sending the order', tone: 'pending' },
-    placed: { label: 'Order placed, waiting for the fill', tone: 'pending' },
-    unconfirmed: { label: "Sent; the exchange's answer was lost, being reconciled", tone: 'warn' },
-    filled: { label: 'Filled', tone: 'ok' },
-    closed: { label: 'Closed', tone: 'warn' },
-    declined: { label: 'Declined by the trader', tone: 'warn' },
-    rejected: { label: 'Refused', tone: 'bad' }, // by the engine or the risk gate: the rule says which
-    failed: { label: 'Refused by the exchange', tone: 'bad' },
-    invalid: { label: 'Not valid', tone: 'bad' },
-    duplicate: { label: 'Duplicate of a request in progress', tone: 'warn' },
-    expired: { label: 'Expired', tone: 'warn' },
-  };
-
-  /**
-   * Where a request stands, for the page: a label, a tone, whether it's over, and the trader's or the engine's words, in the
-   * page's language when they come in it, each said once (a decline's reason is its rationale: shown once, not twice).
-   */
-  function requestState(item, lang = i18n ? i18n.getLang() : 'en') {
-    const known = STATUS[item?.status] ?? { label: item?.status ?? 'unknown', tone: 'warn' };
-    const o = item?.outcome ?? {};
-    const s = item?.status === 'rejected' && o.rule ? { ...known, label: t('Refused ({rule})', { rule: o.rule }) } : { ...known, label: t(known.label) };
-    const rationale = typeof o.rationale === 'string' && o.rationale.trim() ? o.rationale.trim() : null;
-    const reason = typeof o.reason === 'string' && o.reason.trim() && o.reason.trim() !== rationale ? o.reason.trim() : null;
-    const said = [pick(rationale, o.rationaleRu, lang), pick(reason, o.reasonRu, lang)];
-    const detail = said.map((p) => p.text).filter(Boolean).join(' · ') || null;
-    // Shown in Russian, the English it came from stays a hover away: the trader writes its Russian apart from its English.
-    const english = said.some((p) => p.lang === 'ru') ? [rationale, reason].filter(Boolean).join(' · ') : null;
-    // On the Russian page, a text the trader wrote without its Russian (answers from before it was asked for one).
-    const onlyEnglish = lang === 'ru' && said.some((p) => p.text && p.lang === 'en' && /[A-Za-z]{3,}/.test(p.text));
-    const filled = item?.status === 'filled' && o.filledSize ? (o.averagePrice ? t('{size} at {price}', { size: o.filledSize, price: o.averagePrice }) : String(o.filledSize)) : null;
-    return { label: s.label, tone: s.tone, final: Boolean(item?.final), detail, english, onlyEnglish, filled };
-  }
-
-  /** A request's step as the page lists it: the engine's words in the page's language, and none where they repeat the rationale. */
-  function stepDetail(event, item, lang = i18n ? i18n.getLang() : 'en') {
-    const detail = typeof event?.detail === 'string' && event.detail.trim() ? event.detail.trim() : null;
-    if (!detail || detail === String(item?.outcome?.rationale ?? '').trim()) return null;
-    return pick(detail, event.detailRu, lang).text;
-  }
-
-  function what(item) {
-    if (item.side === 'sell') return t('Sell {portion} {symbol}', { portion: PORTIONS[item.portion] ? t(PORTIONS[item.portion]) : item.portion ?? '', symbol: item.symbol ?? '' }).replace(/\s+/g, ' ').trim();
-    return t('Buy {symbol} for {amount} {quote}', { symbol: item.symbol ?? '', amount: item.quoteAmount ?? '?', quote: String(item.symbol ?? '').split('-')[1] ?? '' }).trim();
   }
 
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -270,16 +182,6 @@
     if (before === 0) return now === 0 ? { text: t('same as before'), dir: 'flat' } : { text: t('none before'), dir: 'up' };
     const pct = ((now - before) / before) * 100;
     return { text: t('{change}% vs previous', { change: `${pct > 0 ? '▲ +' : pct < 0 ? '▼ ' : '■ '}${pct.toFixed(0)}` }), dir: pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat' };
-  }
-
-  /** Whether the engine takes requests now, from the dashboard's engine section: a reason when it doesn't, else null. */
-  function requestsBlocked(engine) {
-    if (!engine || engine.state !== 'running') return t('The engine isn\'t running, so it can\'t take requests now.');
-    const m = engine.manualRequests;
-    if (!m) return t('This engine doesn\'t report manual requests (an older version?).');
-    if (m.state === 'off') return t('Manual requests are switched off in the engine.');
-    if (m.state !== 'ok') return t('The engine can\'t read requests right now (the requests container may be missing).');
-    return null;
   }
 
   // --- Strategy tab (#108) ---------------------------------------------------------------------------------------------
@@ -486,7 +388,6 @@
     databaseWarn: 3 * MIN, databaseBad: 10 * MIN, // the engine writes its status every minute
     scanWarn: 7 * MIN, scanBad: 15 * MIN, // a scan every 5 minutes
     analystWarn: 7 * 60 * MIN, analystBad: 13 * 60 * MIN, // a run every 6 hours; a market view lasts at most 12
-    requestsBad: 2 * MIN, // the engine checks the owner's requests every 5 seconds
     staleOrder: 50 * MIN, // the specs' tidy rule: the trader cancels its orders older than this
   };
   const JOB_STATES = { done: 'Done', failed: 'Failed', 'not-run': "Didn't start", limit: 'Claude limit', running: 'Running now' };
@@ -554,25 +455,6 @@
     if (analystAge !== null && analystAge > HEALTH.analystWarn) {
       out.analyst.tone = analystAge > HEALTH.analystBad ? 'bad' : out.analyst.tone === 'bad' ? 'bad' : 'warn';
       out.analyst.value = t('Overdue');
-    }
-
-    const m = e.manualRequests ?? null;
-    const pollAge = age(m?.lastPollAt, now);
-    const reqJob = jobs['trader-requests'] ?? null;
-    if (!m) out.requests = { tone: 'warn', value: '–', sub: [t('not reported yet')] };
-    // Live takes no buy or sell requests by design (paper only): nothing to warn about there.
-    else if (m.state === 'off' && view?.mode === 'live') out.requests = { tone: null, value: t('Paper only'), sub: [t('buy and sell requests are for paper trading')] };
-    else if (m.state !== 'ok') out.requests = { tone: 'warn', value: t({ off: 'Off', unavailable: 'Unavailable', 'not-used': 'Not used' }[m.state] ?? m.state), sub: [t('the engine takes no requests now')] };
-    else {
-      out.requests = {
-        tone: pollAge === null || pollAge > HEALTH.requestsBad ? 'bad' : reqJob?.last?.state === 'failed' ? 'warn' : 'ok',
-        value: pollAge === null || pollAge > HEALTH.requestsBad ? t('Not checked') : t('Taking requests'),
-        sub: [
-          m.lastPollAt ? t('checked {ago}', { ago: ago(m.lastPollAt) }) : null,
-          m.awaitingAgent > 0 ? t('{n} waiting for the trader', { n: m.awaitingAgent }) : null,
-          reqJob?.last?.state === 'failed' ? t('the last request run failed') : null,
-        ].filter(Boolean),
-      };
     }
 
     const holdings = view?.portfolio?.holdings ?? [];
@@ -655,8 +537,8 @@
   }
 
   return {
-    change, coins, why, removeBlock, BLOCK_DETAILS, WHY_LABELS, stepDetail, requestBody, describe, requestState, requestsBlocked, what, chart, tick, versus, viewer, STATUS, PORTIONS,
-    paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES, pairsNote, SELECTION, SELL_DESCRIPTIONS,
+    change, coins, why, removeBlock, BLOCK_DETAILS, WHY_LABELS, chart, tick, versus, viewer,
+    paramValue, paramRange, paramLimit, strategyChanges, strategyRequestBody, strategyName, selectionState, activeStrategy, PROFILES, pairsNote, SELECTION,
     LEVELS, filterChange, strategyCoins, specName, orderSource, toolAction, ORDER_SOURCES, TOOL_ACTIONS, price,
     contentLang, pick, months, signalItems, monitors, HEALTH,
   };

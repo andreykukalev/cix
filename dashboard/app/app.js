@@ -1,8 +1,8 @@
 'use strict';
-// CIX dashboard: reads /api/dashboard, /api/activity, /api/journal, /api/owner/requests, /api/owner/strategies and /api/owner/pairs
-// and renders them, and sends paper buy and sell requests (ADR-0011, ADR-0012), strategy switches (#108, ADR-0015) and pair
-// additions and removals (ADR-0016): the only writes,
-// each one confirmed first. The whole site is the owner's
+// CIX dashboard: reads /api/dashboard, /api/activity, /api/journal, /api/owner/strategies and /api/owner/pairs for the live
+// engine (the only crypto engine since ADR-0028) and renders them, and sends strategy switches (#108, ADR-0015), pair
+// additions and removals (ADR-0016), Pause and Resume and the analyst's Run now (ADR-0018): the only writes, each one
+// confirmed first. The whole site is the owner's
 // (ADR-0014): the platform sends anyone else to sign in, and the API answers only the confirmed owner.
 // Every value is written with textContent, never as HTML, so journal text can't inject markup. view.js holds the logic.
 // Every word goes through i18n.js (t): the language switch re-renders the whole page in Russian or English at once.
@@ -13,7 +13,7 @@ const POLL_FOR_MS = 15 * 60_000;
 const V = window.CixView;
 const I = window.CixI18n;
 const t = I.t;
-const state = { mode: 'paper', cryptoTab: 'overview', lang: 'ru', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, pending: new Map(), signedOut: false, timer: null, tab: 'overview', strategies: null, pairs: null };
+const state = { mode: 'live', cryptoTab: 'overview', lang: 'ru', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, signedOut: false, timer: null, tab: 'overview', strategies: null, pairs: null };
 const SIGN_IN = '/.auth/login/aad?post_login_redirect_uri=/';
 
 function el(tag, props = {}, ...children) {
@@ -165,7 +165,7 @@ function renderTiles(view) {
     e.halted
       ? [`${e.haltCategory ? t(e.haltCategory) : ''} ${e.haltedSince ? t('since {ago}', { ago: ago(e.haltedSince) }) : ''}`.trim(),
         e.haltAlsoCategory ? el('span', { class: 'line', text: t('Also, {ago}: {category}', { ago: ago(e.haltAlsoAt), category: t(e.haltAlsoCategory) }) }) : null]
-      : view.mode === 'live' ? t('real money') : t('paper money'));
+      : t('real money'));
   renderControl(view);
 
   renderStrategyTile(e);
@@ -186,7 +186,7 @@ function renderTiles(view) {
     s.reconcileProblem ? says(s.reconcileProblem, s.reconcileProblemRu) : t('portfolio checked against the exchange'));
 
   const m = V.monitors(view, Date.now(), ago);
-  for (const [key, id] of [['database', 'tile-database'], ['scanner', 'tile-scanner'], ['trader', 'tile-trader'], ['analyst', 'tile-analyst'], ['requests', 'tile-requests'], ['positions', 'tile-positions']]) {
+  for (const [key, id] of [['database', 'tile-database'], ['scanner', 'tile-scanner'], ['trader', 'tile-trader'], ['analyst', 'tile-analyst'], ['positions', 'tile-positions']]) {
     tile(id, m[key].tone, m[key].value, m[key].sub.map((line) => el('span', { class: 'line', text: line })));
   }
   renderAnalystButton(view);
@@ -234,9 +234,6 @@ function renderPortfolio(view) {
     h.symbol, td(money(h.valueQuote, p.currency), 'num'), td(price(h.entryPrice), 'num'),
     td(h.protected ? price(h.stopLoss) : el('span', { class: 'badge bad', text: t('none') }), 'num'), td(price(h.takeProfit), 'num'), h.planStatus ? t(h.planStatus) : '–',
   ], t('Nothing held.'));
-  // The simulated account's wallets: paper only. Live's cash and coins are the figures and holdings above, from the exchange.
-  document.getElementById('balances-box').hidden = view.mode !== 'paper';
-  if (view.mode === 'paper') rows('balances', p.balances ?? [], (b) => [b.currency, td(amount(b.available), 'num'), td(amount(b.reserved), 'num')], t('No paper account yet.'));
 }
 
 function renderCycle(view) {
@@ -356,13 +353,9 @@ function renderCoins(view) {
   document.getElementById('coins-meta').textContent = b.scanAt
     ? `${t('moves up to the scan at {time} ({ago})', { time: timeOf(b.scanAt), ago: ago(b.scanAt) })}${b.scanStale ? t(', stale') : ''}`
     : t('no scan yet');
-  const trading = state.mode === 'paper'; // requests are paper only
-  const blocked = trading ? V.requestsBlocked(view.engine) : null;
-  if (blocked) document.getElementById('coins-meta').textContent += ` · ${t('requests paused: {reason}', { reason: blocked })}`;
-  for (const node of document.querySelectorAll('#coins .paper-only')) node.hidden = !trading;
   rows('coins', V.coins(view, state.pairs?.mode === state.mode ? state.pairs : null, state.lang), (c) => {
     const r = scan.get(c.symbol) ?? {};
-    const cells = [
+    return [
       [el('span', { class: 'chip', text: c.symbol }), c.level ? [' ', el('span', { class: `badge level ${c.level.tone}`, title: c.level.detail, text: c.level.label })] : null],
       c.held ? el('span', { class: 'badge ok', text: t('held') }) : el('span', { class: 'muted', text: '–' }),
       td(move(c.hour), 'num'), td(move(c.day), 'num'),
@@ -372,8 +365,6 @@ function renderCoins(view) {
       c.signal ? el('span', { class: `badge ${c.signal === 'buy' ? 'ok' : 'bad'}`, text: t(c.signal) }) : '–',
       whyCell(c),
     ];
-    if (trading) cells.push(td(tradeButtons(c), 'actions'));
-    return cells;
   }, t('No scan yet.'));
   renderFilterChange(view.engine?.filterChange ?? null);
 }
@@ -410,19 +401,6 @@ function whyCell(c) {
   ], 'why');
 }
 
-function tradeButtons(c) {
-  const busy = [...state.pending.values()].some((p) => p.symbol === c.symbol);
-  const blocked = V.requestsBlocked(state.view?.engine);
-  const buy = el('button', { type: 'button', class: 'buy', 'aria-label': t('Buy {symbol}', { symbol: c.symbol }), text: t('Buy') });
-  buy.addEventListener('click', () => openRequest('buy', c));
-  const sell = el('button', { type: 'button', class: 'sell', 'aria-label': t('Sell {symbol}', { symbol: c.symbol }), text: t('Sell') });
-  sell.addEventListener('click', () => openRequest('sell', c));
-  if (busy || blocked) {
-    buy.disabled = true; sell.disabled = true;
-    buy.title = sell.title = blocked ?? t('A request for this coin is in progress.');
-  }
-  return c.held ? [buy, ' ', sell] : [buy];
-}
 
 function banner(text, bad, link) {
   const node = document.getElementById('banner');
@@ -455,9 +433,6 @@ async function getJson(url) {
 function signedOut() {
   state.signedOut = true;
   clearInterval(state.timer);
-  for (const p of state.pending.values()) clearInterval(p.timer);
-  state.pending.clear();
-  document.getElementById('request-dialog').close();
   document.getElementById('strategy-dialog').close();
   document.getElementById('pair-dialog').close();
   for (const node of document.querySelectorAll('main > :not(#banner), .tabs')) node.hidden = true;
@@ -483,7 +458,7 @@ async function refresh() {
     banner(t("Couldn't load the dashboard: {error}", { error: error.message }), true);
     document.getElementById('updated').textContent = t('Update failed');
   }
-  if (!state.signedOut) await Promise.all([refreshActivity(), refreshRequests(), state.tab === 'strategy' ? refreshStrategies() : null, state.tab === 'coins' ? refreshPairs() : null]);
+  if (!state.signedOut) await Promise.all([refreshActivity(), state.tab === 'strategy' ? refreshStrategies() : null, state.tab === 'coins' ? refreshPairs() : null]);
 }
 
 /** Everything /api/dashboard feeds, in the page's language: after each refresh, and again when the language changes. */
@@ -550,7 +525,6 @@ function renderVolume(a) {
     card(t('Bought'), `${c.buyVolume} ${a.currency}`, c.buyVolume, p.buyVolume),
     card(t('Sold'), `${c.sellVolume} ${a.currency}`, c.sellVolume, p.sellVolume),
     card(t('Trades'), String(c.trades), c.trades, p.trades, t('{buys} buys · {sells} sells', { buys: c.buys, sells: c.sells })),
-    card(t('Your requests'), String(c.manual), c.manual, p.manual, t('trades from the dashboard')),
     card(t('Fees'), `${c.fees} ${a.currency}`, c.fees, p.fees, t('not in turnover')),
   );
   const chartNode = document.getElementById('volume-chart');
@@ -583,7 +557,7 @@ function setPeriod(period) {
   refreshActivity();
 }
 
-// --- Who is signed in, and the owner's requests -----------------------------------------------------------------------------
+// --- Who is signed in, and where the owner's requests stand --------------------------------------------------------------------
 
 async function loadViewer() {
   try {
@@ -599,36 +573,6 @@ function renderViewer() {
   document.getElementById('who').textContent = state.viewer.signedIn ? state.viewer.name ?? t('Signed in') : '';
 }
 
-async function refreshRequests() {
-  try {
-    const history = await getJson('/api/owner/requests');
-    state.requests = history.requests;
-    renderRequests(history.requests);
-  } catch (error) {
-    if (error instanceof SignedOut) { signedOut(); return; }
-    state.requests = null;
-    rows('requests', [], () => [], t("Couldn't load your requests: {error}", { error: error.message }));
-  }
-}
-
-function renderRequests(items) {
-  rows('requests', items, (r) => {
-    const st = V.requestState(r, state.lang);
-    const steps = el('details', {}, el('summary', { text: t(r.events.length === 1 ? '{n} step' : '{n} steps', { n: r.events.length }) }),
-      el('ol', { class: 'steps' }, r.events.map((e) => {
-        const said = V.stepDetail(e, r, state.lang);
-        return el('li', {}, when(e.at), ` ${t('{status} by {by}', { status: t(e.status ?? ''), by: t(e.by ?? '?') })}${said ? `: ${said}` : ''}`);
-      })));
-    return [
-      when(r.createdAt), V.what(r), r.mode === 'direct' ? t('direct') : t('trader'),
-      el('span', { class: `badge ${st.tone}`, text: st.label }),
-      el('td', { class: 'why', title: st.english ? `EN: ${st.english}` : null },
-        [st.filled ? `${t('Filled {filled}.', { filled: st.filled })} ` : '', st.detail ?? (st.final ? '' : t('in progress'))].join(''),
-        st.onlyEnglish ? el('span', { class: 'only-english muted small', text: t('The trader wrote this answer in English only.') }) : null),
-      steps,
-    ];
-  }, t('No requests in the last 7 days.'));
-}
 
 // The line under the header that follows a request. Its close button hides it until the line says something new.
 let dismissedStatus = null;
@@ -647,110 +591,6 @@ document.getElementById('request-status-close').addEventListener('click', () => 
   dismissedStatus = node.querySelector('.request-status-text').textContent;
   node.hidden = true;
 });
-
-let dialogChoice = null;
-
-function openRequest(side, coin) {
-  const dialog = document.getElementById('request-dialog');
-  const form = document.getElementById('request-form');
-  form.reset();
-  dialogChoice = { side, symbol: coin.symbol, id: crypto.randomUUID() }; // one id per opened dialog: a retry is the same request
-  document.getElementById('request-title').textContent = t(side === 'buy' ? 'Buy {symbol} (paper)' : 'Sell {symbol} (paper)', { symbol: coin.symbol });
-  document.getElementById('sell-options').hidden = side !== 'sell';
-  document.getElementById('sell-mode').hidden = side !== 'sell';
-  document.getElementById('buy-amount').hidden = side !== 'buy';
-  document.getElementById('buy-quote').textContent = coin.quote;
-  if (side === 'sell') { form.elements.portion.value = '1'; form.elements.mode.value = 'agent'; }
-  document.getElementById('request-error').hidden = true;
-  document.getElementById('request-send').disabled = false;
-  document.getElementById('request-send').textContent = t('Send request'); // in the page's language now
-  for (const input of form.querySelectorAll('input')) input.disabled = false;
-  updateSummary();
-  dialog.showModal();
-}
-
-function currentChoice() {
-  const f = document.getElementById('request-form').elements;
-  return {
-    ...dialogChoice,
-    portion: f.portion.value,
-    mode: dialogChoice.side === 'sell' ? f.mode.value : 'agent',
-    quoteAmount: f.quoteAmount.value,
-    note: f.note.value,
-  };
-}
-
-function updateSummary() {
-  if (!dialogChoice) return;
-  const r = V.requestBody(currentChoice(), dialogChoice.id);
-  document.getElementById('request-summary').textContent = r.body ? V.describe(r.body) : r.error;
-}
-
-async function sendRequest(event) {
-  event.preventDefault();
-  const r = V.requestBody(currentChoice(), dialogChoice.id);
-  const error = document.getElementById('request-error');
-  if (r.error) { error.textContent = r.error; error.hidden = false; return; }
-  const send = document.getElementById('request-send');
-  send.disabled = true; // no second click while this one is on its way
-  // From the first send on, this dialog is one request: a retry sends exactly the same thing. To change it, start a new one.
-  for (const input of document.getElementById('request-form').querySelectorAll('input')) input.disabled = true;
-  send.textContent = t('Sending…');
-  try {
-    const response = await api('/api/owner/requests', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-cix-request': '1' },
-      body: JSON.stringify(r.body),
-    });
-    const answer = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(answer.error ? t(answer.error) : t('The dashboard answered {status}.', { status: response.status }));
-    document.getElementById('request-dialog').close();
-    track(answer.request);
-  } catch (e) {
-    if (e instanceof SignedOut) { signedOut(); return; }
-    error.textContent = t('Not confirmed: {error} Send again to retry: it stays the same, single request. To change it, cancel and start a new one.', { error: e.message });
-    error.hidden = false;
-    send.disabled = false;
-  } finally {
-    send.textContent = t('Send request');
-  }
-}
-
-/** Follows a request until it is over (or 15 minutes pass), showing where it stands. */
-function track(item) {
-  if (state.pending.has(item.id)) return;
-  const entry = { symbol: item.symbol, since: Date.now(), timer: null };
-  state.pending.set(item.id, entry);
-  if (state.view) renderCoins(state.view);
-  const show = (it) => {
-    const st = V.requestState(it, state.lang);
-    const extra = [st.filled ? t('filled {filled}', { filled: st.filled }) : null, st.detail].filter(Boolean).join(' · ');
-    requestStatus(`${V.what(it)}: ${st.label}${extra ? ` (${extra})` : ''}${st.final ? '' : '…'}`, st.final ? st.tone : 'pending', st.english);
-    return st.final;
-  };
-  show(item);
-  const stop = () => {
-    clearInterval(entry.timer);
-    state.pending.delete(item.id);
-    if (state.view) renderCoins(state.view);
-    refreshRequests();
-  };
-  entry.timer = setInterval(async () => {
-    if (Date.now() - entry.since > POLL_FOR_MS) {
-      requestStatus(t('{what}: still in progress after 15 minutes; see the Requests tab.', { what: V.what(item) }), 'warn');
-      stop();
-      return;
-    }
-    try {
-      const response = await api(`/api/owner/requests/${encodeURIComponent(item.createdAt.slice(0, 10))}/${encodeURIComponent(item.id)}`);
-      if (response.status === 404) return; // not readable yet
-      if (!response.ok) return; // try again next time
-      if (show(await response.json())) stop();
-    } catch (error) {
-      if (error instanceof SignedOut) signedOut(); // else offline for a moment: try again
-    }
-  }, POLL_MS);
-}
 
 // --- Strategy (#108) ---------------------------------------------------------------------------------------------------------
 
@@ -1324,29 +1164,28 @@ function renderJournal() {
 
 // --- Tabs ---------------------------------------------------------------------------------------------------------------------
 
-// 'stocks' has no tab: it is the mode switch's third button (Paper | Live | Stocks), and hides the crypto tabs while it shows.
-const TABS = ['overview', 'coins', 'strategy', 'activity', 'requests', 'journal', 'stocks'];
+// 'stocks' has no tab: it is the mode switch's second button (Crypto | Stocks), and hides the crypto tabs while it shows.
+// Crypto is the live engine, the only one since paper trading was dropped (ADR-0028).
+const TABS = ['overview', 'coins', 'strategy', 'activity', 'journal', 'stocks'];
 
-/** The mode switch: Stocks pressed while its panel shows, else the crypto mode. The crypto badges hide with Stocks. */
+/** The mode switch: Stocks pressed while its panel shows, else Crypto. The crypto badges hide with Stocks. */
 function renderModeSwitch() {
   const stocksShown = state.tab === 'stocks';
-  const pressed = stocksShown ? 'stocks' : state.mode;
+  const pressed = stocksShown ? 'stocks' : 'crypto';
   for (const button of document.querySelectorAll('[data-mode]')) button.setAttribute('aria-pressed', String(button.dataset.mode === pressed));
   if (!state.signedOut) document.querySelector('.tabs').hidden = stocksShown;
   document.getElementById('mode-badge').hidden = stocksShown;
   document.getElementById('strategy-badge').hidden = stocksShown;
 }
 
-/** A press on the mode switch: Stocks opens its panel; Paper or Live goes back to the crypto tab last open, in that mode. */
+/** A press on the mode switch: Stocks opens its panel; Crypto goes back to the crypto tab last open. */
 function pressMode(mode) {
   if (state.signedOut) return; // the sign-in banner stays: nothing loads until the owner signs in again
   if (mode === 'stocks') {
     if (state.tab !== 'stocks') { setTab('stocks'); window.scrollTo({ top: 0 }); }
     return;
   }
-  if (state.tab !== 'stocks') { if (mode !== state.mode) setMode(mode); return; }
-  if (mode !== state.mode) setMode(mode, { load: false });
-  setTab(state.cryptoTab); // loads the crypto view, which wasn't refreshed while Stocks showed
+  if (state.tab === 'stocks') setTab(state.cryptoTab); // loads the crypto view, which wasn't refreshed while Stocks showed
 }
 
 /** Shows one tab's panel. The tab is kept in the address (#coins), so a reload or a bookmark opens the same one. */
@@ -1436,7 +1275,6 @@ function setLang(lang) {
   else if (!state.signedOut && !(state.loadError && crypto)) document.getElementById('updated').textContent = t('Loading…');
   if (state.journal) renderJournal();
   if (state.activity) renderVolume(state.activity);
-  if (state.requests) renderRequests(state.requests);
   if (state.strategies) renderStrategies(state.strategies);
   if (state.strategiesError) renderStrategiesError();
   if (state.pairs) renderPairs(state.pairs);
@@ -1447,41 +1285,20 @@ function setLang(lang) {
     banner(t("Couldn't load the dashboard: {error}", { error: state.loadError }), true);
     document.getElementById('updated').textContent = t('Update failed');
   }
-  if (document.getElementById('request-dialog').open) updateSummary();
 }
 
 function renderModeBadge() {
   const badge = document.getElementById('mode-badge');
-  badge.textContent = t(state.mode);
-  badge.className = `badge ${state.mode === 'live' ? 'live' : ''}`;
-}
-
-function setMode(mode, { load = true } = {}) {
-  state.mode = mode;
-  state.view = null;
-  state.strategies = null;
-  state.pairs = null;
-  state.activity = null;
-  state.journal = null; // the other mode's journal day
-  state.strategiesError = null;
-  document.getElementById('volume-cards').replaceChildren(); // not the other mode's activity while this one's loads
-  document.getElementById('volume-chart').replaceChildren();
-  state.pairsError = null;
-  try { localStorage.setItem('cix-mode', mode); } catch { /* storage may be unavailable */ }
-  renderModeSwitch();
-  renderModeBadge();
-  renderStrategyTile(null); // not the other mode's strategy while this one's loads
-  if (load) refresh();
+  badge.textContent = t('live');
+  badge.className = 'badge live';
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  let saved = 'paper';
-  try { saved = localStorage.getItem('cix-mode') === 'live' ? 'live' : 'paper'; } catch { /* default */ }
+  try { localStorage.removeItem('cix-mode'); } catch { /* the Paper | Live choice of older versions: nothing to choose now */ }
   for (const button of document.querySelectorAll('[data-mode]')) button.addEventListener('click', () => pressMode(button.dataset.mode));
   let lang = null;
   try { lang = localStorage.getItem('cix-lang'); } catch { /* default */ }
   collectStatics(); // before anything renders: only the page's own English words
-  state.mode = saved;
   for (const button of document.querySelectorAll('[data-lang]')) button.addEventListener('click', () => setLang(button.dataset.lang));
   setLang(lang);
   document.getElementById('refresh').addEventListener('click', refresh);
@@ -1503,11 +1320,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     button.addEventListener('click', () => setPeriod(button.dataset.period));
   }
   setupTabs();
-  const form = document.getElementById('request-form');
-  form.addEventListener('submit', sendRequest);
-  form.addEventListener('input', updateSummary);
-  form.addEventListener('change', updateSummary);
-  document.getElementById('request-cancel').addEventListener('click', () => document.getElementById('request-dialog').close());
   document.getElementById('strategy-form').addEventListener('submit', sendStrategy);
   document.getElementById('strategy-cancel').addEventListener('click', () => document.getElementById('strategy-dialog').close());
   document.getElementById('pairs-add').addEventListener('submit', (event) => {
@@ -1528,6 +1340,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     resized = setTimeout(() => { if (state.activity && state.tab === 'activity') renderVolume(state.activity); }, 200);
   });
   await loadViewer();
-  setMode(saved, { load: state.tab !== 'stocks' }); // Stocks has read its own already; leaving it loads the crypto view
+  renderModeSwitch();
+  renderModeBadge();
+  if (state.tab !== 'stocks') refresh(); // Stocks has read its own already; leaving it loads the crypto view
   state.timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
 });

@@ -1113,7 +1113,7 @@ Check 'setup-dashboard-requests.ps1 accepts the live role once in place, with or
   }
 }
 
-Check 'only the deploy-dashboard, deploy-agents and deploy-live jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
+Check 'only the deploy-dashboard and deploy-live jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
   # A guard against accidents, not a security control: anyone who can change main can change this test too (ADR-0010).
   $files = @(Get-ChildItem (Join-CixPath $repo '.github' 'workflows') -File | Where-Object { $_.Extension -in '.yml', '.yaml' })
   if ($files.Count -eq 0) { throw 'no workflows found' }
@@ -1135,11 +1135,11 @@ Check 'only the deploy-dashboard, deploy-agents and deploy-live jobs may request
     if ($triggers.Count -eq 0) { throw "$($f.Name): couldn't read its triggers" }
     $unexpected = @($triggers | Where-Object { $_ -notin 'push', 'pull_request', 'workflow_dispatch' })
     if ($unexpected.Count -gt 0) { throw "$($f.Name) runs on $($unexpected -join ', '); only push, pull_request and workflow_dispatch are allowed" }
-    # id-token, in any spelling, only in ci.yml: once inside each of the deploy-dashboard, deploy-agents and deploy-live jobs.
+    # id-token, in any spelling, only in ci.yml: once inside each of the deploy-dashboard and deploy-live jobs (no paper deploy since ADR-0028).
     $grants = @([regex]::Matches($text, 'id-token'))
     if ($f.Name -ne 'ci.yml') { if ($grants.Count -gt 0) { throw "$($f.Name) mentions id-token" }; continue }
-    Expect $grants.Count 3 'id-token mentions in ci.yml'
-    foreach ($job in 'deploy-dashboard', 'deploy-agents', 'deploy-live') {
+    Expect $grants.Count 2 'id-token mentions in ci.yml'
+    foreach ($job in 'deploy-dashboard', 'deploy-live') {
       $jobStart = $text.IndexOf("`n  ${job}:")
       if ($jobStart -lt 0) { throw "ci.yml has no $job job" }
       $next = [regex]::Match($text.Substring($jobStart + 1), '\n  [A-Za-z_-]+:')

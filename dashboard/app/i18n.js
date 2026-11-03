@@ -132,10 +132,6 @@
       'выставленные, отклонённые и отменённые ордера: сначала причина, со стопами, целями и риском в цифрах, а под ней технический текст',
     Action: 'Действие',
     Why: 'Почему',
-    'Your requests': 'Ваши запросы',
-    Request: 'Запрос',
-    How: 'Как',
-    Steps: 'Шаги',
     'Journal activity': 'Записи журнала',
     'every entry, by day and kind': 'все записи, по дням и типам',
     Day: 'День',
@@ -151,15 +147,10 @@
     Type: 'Тип',
     Updated: 'Обновлён',
     'What it is': 'Что это',
-    'How much': 'Сколько',
     All: 'Всё',
-    'Direct: sell at the bid now': 'Напрямую: продать по цене покупателя сейчас',
-    'Ask the trader: it analyses first, may decline': 'Через трейдера: он сначала анализирует и может отказаться',
-    Amount: 'Сумма',
-    'Note for the trader': 'Комментарий для трейдера',
     '(optional)': '(необязательно)',
+    Amount: 'Сумма',
     Cancel: 'Отмена',
-    'Send request': 'Отправить запрос',
     'Switch strategy': 'Сменить стратегию',
     'What changes': 'Что изменится',
     'Applies to new trades from the next scan and trader run, after any run in progress ends. Open positions keep their stop and target; changes marked':
@@ -172,8 +163,8 @@
     Pause: 'Пауза',
     'Pause trading': 'Приостановить торговлю',
     'I understand this changes real-money trading on Revolut X.': 'Я понимаю, что это меняет торговлю реальными деньгами на Revolut X.',
-    'Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; strategy switches, pair changes, Pause, Resume and the analyst\'s Run now work for live too, after you confirm. The engine checks each one and every order goes through the risk gate. News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.':
-      'Доступно только владельцу: каждая страница и ответ API требуют входа через ваш аккаунт Microsoft. Запросы на покупку и продажу — только для бумажной торговли; смена стратегии, изменения пар, пауза, возобновление и внеочередной запуск аналитика работают и для реальной торговли, после вашего подтверждения. Движок проверяет каждый запрос, и каждый ордер проходит риск-контроль. Ссылки на новости в обзоре выбраны агентом-аналитиком в интернете и ведут на внешние сайты.',
+    'Private to the owner: every page and API answer needs your Microsoft sign-in. Strategy switches, pair changes, Pause, Resume and the analyst\'s Run now go to the live engine (real money), after you confirm. The engine checks each one and every order goes through the risk gate. News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.':
+      'Доступно только владельцу: каждая страница и ответ API требуют входа через ваш аккаунт Microsoft. Смена стратегии, изменения пар, пауза, возобновление и внеочередной запуск аналитика уходят реальному движку (реальные деньги), после вашего подтверждения. Движок проверяет каждый запрос, и каждый ордер проходит риск-контроль. Ссылки на новости в обзоре выбраны агентом-аналитиком в интернете и ведут на внешние сайты.',
 
     // --- Words app.js and view.js write ------------------------------------------------------------------------------------
     paper: 'бумажная',
@@ -193,7 +184,6 @@
     Active: 'Активна',
     'since {ago}': '{ago}',
     'real money': 'реальные деньги',
-    'paper money': 'бумажные деньги',
     'Risk-on': 'Готовность к риску',
     'Risk-off': 'Избегать риска',
     Neutral: 'Нейтрально',
@@ -339,7 +329,6 @@
     'request via the trader': 'запрос через трейдера',
     'trim to the cap': 'сокращение до лимита',
     sideways: 'боковой',
-    'Paper only': 'Только бумажная',
     'buy and sell requests are for paper trading': 'запросы на покупку и продажу — только для бумажной торговли',
     'Filled {filled}.': 'Исполнено {filled}.',
     'in progress': 'выполняется',
@@ -880,6 +869,8 @@
     'The journal couldn\'t be written; the switch is retried shortly.': 'Не удалось записать журнал; смена будет повторена в ближайшее время.',
     // --- The Stocks tab (stocks.js, ADR-0023) ------------------------------------------------------------------------------
     Stocks: 'Акции',
+    Crypto: 'Крипто',
+    'Crypto: the live engine on Revolut X, real money': 'Крипто: реальный движок на Revolut X, реальные деньги',
     'Stocks advisor': 'Советник по акциям',
     'Stock market': 'Рынок акций',
     'Advice for': 'Советы на',

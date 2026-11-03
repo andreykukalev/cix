@@ -4,7 +4,6 @@
 
 const { summarize, journalItem } = require('./summarize');
 const { activity, fromDay } = require('./activity');
-const { history, historyItem } = require('./requests');
 const { strategiesView, requestItem, REQUEST_TYPE } = require('./strategies');
 const { pairsView, pairRequestItem, REQUEST_TYPE: PAIR_REQUEST_TYPE } = require('./pairs');
 
@@ -173,24 +172,6 @@ async function loadBalanceHistory(reader, days, now, mode = 'paper') {
 
 const REQUEST_DAYS = 7;
 const REQUESTS_MAX = 200;
-
-/** The owner's requests from the last week, newest first, with where each stands. */
-async function loadRequests(reader, now) {
-  const from = utcDay(now - (REQUEST_DAYS - 1) * 24 * 3600 * 1000);
-  const docs = await reader.query('requests', 'SELECT * FROM c WHERE c.day >= @from AND c.type = @type', {
-    parameters: [{ name: '@from', value: from }, { name: '@type', value: 'manual-request' }],
-    maxItems: REQUESTS_MAX,
-  });
-  return { generatedAt: new Date(now).toISOString(), from, requests: history(docs) };
-}
-
-/** One request, for the page to follow it after a click; null if it isn't there (yet). */
-async function loadRequest(reader, day, id) {
-  if (!DAY.test(day ?? '') || !/^[0-9a-f-]{36}$/.test(id ?? '')) throw new RangeError('day and id must be a request\'s');
-  const doc = await reader.readDocument('requests', id, day);
-  return doc && doc.type === 'manual-request' ? historyItem(doc) : null;
-}
-
 const VERSIONS_MAX = 100;
 
 /**
@@ -252,4 +233,4 @@ async function loadPairRequest(reader, day, id, mode = 'paper') {
   return doc && doc.type === PAIR_REQUEST_TYPE && (doc.tradingMode ?? 'paper') === mode ? pairRequestItem(doc) : null;
 }
 
-module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadBalanceHistory, loadRequests, loadRequest, loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest, utcDay, KINDS };
+module.exports = { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadBalanceHistory, loadStrategies, loadStrategyRequest, loadPairs, loadPairRequest, utcDay, KINDS };

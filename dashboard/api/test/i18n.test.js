@@ -55,10 +55,10 @@ test('every word app.js, view.js and stocks.js show has its Russian', () => {
   assert.deepEqual(keys.filter((k) => !I.has(k)), []);
 });
 
-test('every label the page looks up has its Russian: statuses, selections, profiles, sell descriptions', () => {
+test('every label the page looks up has its Russian: selections, profiles, why-no-buy labels', () => {
   const labels = [
-    ...Object.values(V.STATUS).map((s) => s.label), ...Object.values(V.SELECTION).map((s) => s.label),
-    ...Object.values(V.PROFILES).flatMap((p) => [p.title, p.profile]), ...Object.values(V.SELL_DESCRIPTIONS), ...Object.values(V.PORTIONS),
+    ...Object.values(V.SELECTION).map((s) => s.label),
+    ...Object.values(V.PROFILES).flatMap((p) => [p.title, p.profile]),
     ...Object.values(V.BLOCK_DETAILS), ...Object.values(V.WHY_LABELS), ...Object.values(V.ORDER_SOURCES), ...Object.values(V.TOOL_ACTIONS), ...Object.values(V.LEVELS).flatMap((l) => [l.label, l.detail]),
     'Custom', 'Manual', 'May (month)', 'strategy exposure cap reached', 'cooldown until 13:00 UTC',
     'at the stop-loss', 'at the take-profit', 'the trend turned down',
@@ -101,14 +101,8 @@ test('t fills values, and falls back to the English for text it has no Russian f
   assert.equal(I.locale(), undefined);
 });
 
-test('the language switch reaches view.js: statuses, descriptions and the active strategy', () => {
+test('the language switch reaches view.js: dates, changes and the active strategy', () => {
   inRussian(() => {
-    assert.equal(V.requestState({ status: 'filled', final: true }).label, 'Исполнен');
-    assert.equal(V.requestState({ status: 'rejected', outcome: { rule: 'max-order' } }).label, 'Отклонён (max-order)');
-    assert.equal(V.describe({ side: 'buy', symbol: 'SOL-EUR', quoteAmount: '25' }),
-      'Попросить трейдера купить SOL-EUR на 25 EUR (бумажная торговля). Он решает, ставит стоп-лосс и может отказаться; риск-контроль проверяет ордер.');
-    assert.equal(V.describe({ side: 'sell', symbol: 'SOL-EUR', portion: '1', mode: 'direct' }),
-      'Продать всю позицию SOL-EUR (бумажная торговля). Движок продаёт сейчас по цене покупателя, не спрашивая трейдера. Риск-контроль проверяет ордер в любом случае.');
     assert.equal(V.tick('2026-05-01', 'month'), 'май');
     assert.equal(V.tick('2026-05-13', 'day'), '13 мая');
     assert.equal(V.months('May 2026'), 'май 2026');
@@ -125,5 +119,5 @@ test('the language switch reaches view.js: statuses, descriptions and the active
     assert.equal(V.months('13 Oct – 19 Oct'), '13 окт – 19 окт');
     assert.equal(I.locale(), 'ru-RU');
   });
-  assert.equal(V.requestState({ status: 'filled', final: true }).label, 'Filled', 'and back in English');
+  assert.equal(V.strategyName({ name: 'balanced', version: 1 }), 'Balanced v1', 'and back in English');
 });
