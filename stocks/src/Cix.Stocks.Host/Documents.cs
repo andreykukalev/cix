@@ -82,11 +82,12 @@ public sealed record AdviceDocument(
 /// <summary>
 /// One watched stock as the advisor sees it, for the Stocks page's watchlist: its last close, the closing high it must beat
 /// for an entry (<see cref="AdvisorSettings.BreakoutDays"/> days before it), the trend average it must stay above
-/// (<see cref="AdvisorSettings.SlowSmaDays"/> days), and a status (<see cref="WatchStatus"/>).
+/// (<see cref="AdvisorSettings.SlowSmaDays"/> days), and a status (<see cref="WatchStatus"/>). <see cref="Atr"/> (the
+/// advisor's <see cref="AdvisorSettings.AtrDays"/>-day ATR) and <see cref="Moves"/> are for the page's entry plan and moves.
 /// </summary>
 public sealed record WatchLine(
     string Symbol, string? Name, string? Currency, string? Theme, decimal? LastClose, DateOnly? LastDay, decimal? BreakoutHigh,
-    decimal? TrendAverage, string Status);
+    decimal? TrendAverage, string Status, decimal? Atr = null, PriceMoves? Moves = null);
 
 /// <summary>The watchlist's statuses, as the document writes them: <see cref="Advisor.Entry"/>'s verdicts, or held.</summary>
 public static class WatchStatus
@@ -131,7 +132,8 @@ public static class WatchStatus
             _ => NoData,
         };
         return new(item.Symbol, item.Name, item.Currency, item.Theme, entry.Close, bars.Count > 0 ? TrendIndicators.TradingDay(bars[^1]) : null,
-            entry.PriorHigh, entry.SlowAverage is { } s ? Math.Round(s, 4, MidpointRounding.ToEven) : null, status);
+            entry.PriorHigh, entry.SlowAverage is { } s ? Math.Round(s, 4, MidpointRounding.ToEven) : null, status,
+            entry.Atr is { } atr ? Math.Round(atr, 4, MidpointRounding.ToEven) : null, bars.Count > 0 ? TrendIndicators.Moves(bars) : null);
     }
 }
 

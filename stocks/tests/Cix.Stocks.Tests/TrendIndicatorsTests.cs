@@ -16,6 +16,20 @@ public class TrendIndicatorsTests
     }
 
     [Fact]
+    public void MovesAreTheChangesToTheLastCloseOverASessionAWeekAndAMonth()
+    {
+        var bars = AdvisorTests.Line(1m, 1m, Today, count: 25); // closes 1..25
+
+        // 25 / 24, 25 / 20 and 25 / 4, less one, to four places; too short a history for the half year.
+        Assert.Equal(new PriceMoves(0.0417m, 0.25m, 5.25m, null), TrendIndicators.Moves(bars));
+        // 127 / 1 less one over the 126 sessions of half a year.
+        Assert.Equal(126m, TrendIndicators.Moves(AdvisorTests.Line(1m, 1m, Today, count: 127)).HalfYear);
+        // Too short a history for the week and the month: only what it covers.
+        Assert.Equal(new PriceMoves(1m, null, null, null), TrendIndicators.Moves(AdvisorTests.Line(1m, 1m, Today, count: 2)));
+        Assert.Equal(new PriceMoves(null, null, null, null), TrendIndicators.Moves(AdvisorTests.Line(1m, 1m, Today, count: 1)));
+    }
+
+    [Fact]
     public void PriorHighestCloseLeavesOutTheLastBar()
     {
         var bars = AdvisorTests.Line(1m, 1m, Today, count: 5);

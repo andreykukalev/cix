@@ -1064,6 +1064,69 @@
     'No uptrend': 'Нет восходящего тренда',
     above: 'выше',
     'The advice has no watchlist yet: it comes with the next run.': 'В советах пока нет списка наблюдения: он появится со следующим запуском.',
+    // --- The Stocks panel's tabs, and Today's working table ---
+    'Stocks sections': 'Разделы акций',
+    Today: 'Сегодня',
+    Operations: 'Операции',
+    Market: 'Рынок',
+    'On paper': 'На бумаге',
+    'What to buy today': 'Что купить сегодня',
+    Week: 'Неделя',
+    Month: 'Месяц',
+    'Limit up to': 'Лимит до',
+    'Not under': 'Не ниже',
+    'The change over the last session, to its close': 'Изменение за последнюю сессию, до её закрытия',
+    'The change over the last 5 sessions': 'Изменение за последние 5 сессий',
+    'The change over the last 21 sessions': 'Изменение за последние 21 сессию',
+    'The change over the last 126 sessions: the advisor ranks entries by it': 'Изменение за последние 126 сессий: по нему советник ранжирует покупки',
+    'Place it as a stop order (GTC) right after the buy; the share under it is how far the close is above it':
+      'Поставьте стоп-заявку (GTC) сразу после покупки; процент под ним: насколько закрытие выше стопа',
+    "The highest price to pay: a limit order at the close plus half a day's average range":
+      'Самая высокая цена покупки: лимитная заявка по цене закрытия плюс половина среднего дневного диапазона',
+    "Under this the breakout failed (back under its 50-day high) or the stop is near: don't buy today":
+      'Ниже этой цены пробой не удался (цена снова под 50-дневным максимумом) или стоп слишком близко: сегодня не покупать',
+    'How to buy during the session': 'Как покупать в течение дня',
+    'The US market opens at 9:30 New York time.': 'Рынок США открывается в 9:30 по Нью-Йорку.',
+    'The US market opens at 9:30 New York time: {time} your time.': 'Рынок США открывается в 9:30 по Нью-Йорку: в {time} по вашему времени.',
+    "Don't buy in the first 15–30 minutes after the open: prices jump most then. Look at where the price settles.":
+      'Не покупайте в первые 15–30 минут после открытия: в это время цена скачет сильнее всего. Посмотрите, где она успокоится.',
+    'Between “Not under” and “Limit up to”: buy with a limit order at the “Limit up to” price or lower. Opening a little under the close is a better price, not a warning.':
+      'Между «Не ниже» и «Лимит до»: покупайте лимитной заявкой по цене «Лимит до» или ниже. Открытие чуть ниже вчерашнего закрытия: это более выгодная цена, а не тревожный знак.',
+    "Gapped above “Limit up to”: don't chase. Leave a limit order at that price for the day; if the price doesn't come back to it, skip the stock today. Tomorrow's advice works it out again. Bought higher, the loss to the same stop is more than the 1% of capital the shares were sized for.":
+      'Цена улетела выше «Лимит до»: не догоняйте. Оставьте лимитную заявку по этой цене на день; если цена к ней не вернётся, пропустите акцию сегодня. Завтрашний совет пересчитает её заново. Купив дороже, при том же стопе вы рискуете больше, чем 1% капитала, на который рассчитано количество.',
+    "Under “Not under”: the breakout failed or the stop is too close. Don't buy today; if it closes above its high again, the next advice says so.":
+      'Цена ниже «Не ниже»: пробой не удался или стоп слишком близко. Сегодня не покупайте; если акция снова закроется выше максимума, следующий совет это покажет.',
+    'A stock only near its high (“wait for a close above”) is no buy yet: the signal is a close above that price.':
+      'Акция только рядом с максимумом («ждать закрытия выше»): пока не покупка. Сигнал: закрытие выше этой цены.',
+    'Right after the buy, place a stop order at “Stop” (GTC; it works in regular hours only), then press “I bought”. An earnings report within two weeks is marked: a report can gap the price through the stop.':
+      'Сразу после покупки поставьте стоп-заявку по цене «Стоп» (GTC; она работает только в основные часы торгов), затем нажмите «Купил». Отчётность в ближайшие две недели отмечена: после отчёта цена может открыться сразу ниже стопа.',
+    'Claude on the holdings': 'Claude о бумагах в портфеле',
+    'Claude on the market:': 'Claude о рынке:',
+    'Claude left out': 'Claude не советует брать',
+    'Each buy or sell you made at Revolut, as you recorded it: trades waiting for the next nightly run first, then those it applied, newest first. A trade needs a portfolio first: save it on the Portfolio tab.':
+      'Каждая ваша покупка и продажа в Revolut, как вы её записали: сначала сделки, ждущие ночного запуска, затем учтённые им, новые сверху. Сделке нужен портфель: сохраните его на вкладке «Портфель».',
+    "The advisor's own paper portfolio, apart from your account: it carries out every piece of advice at the next open, so its result measures the advice. Nothing here is a trade of yours.":
+      'Собственный бумажный портфель советника, отдельно от вашего счёта: он выполняет каждый совет при следующем открытии, и его результат показывает качество советов. Здесь нет ваших сделок.',
+    "No view of Claude's for this close.": 'По этому закрытию мнения Claude нет.',
+    "Claude's pick and its rank": 'Выбор Claude и его место',
+    'Market search': 'Поиск по рынку',
+    'wait for a close above {price}': 'ждать закрытия выше {price}',
+    "Claude's picks, best first": 'выбор Claude, лучшие сверху',
+    "The rules' buys and the market search's entry signals": 'покупки по правилам и сигналы поиска по рынку',
+    'close of {day}, prices in USD': 'закрытие {day}, цены в USD',
+    'Market risk-off: the advisor buys nothing new until it recovers.': 'Рынок: избегать риска. Советник ничего нового не покупает, пока рынок не восстановится.',
+    'No entry signal tonight: nothing to buy.': 'Сегодня сигналов входа нет: покупать нечего.',
+    'No portfolio yet: save it on the Portfolio tab, then record each buy and sell here.': 'Портфеля пока нет: сохраните его на вкладке «Портфель», затем записывайте здесь каждую покупку и продажу.',
+    'you hold {shares}, bought at {price}': 'у вас {shares} шт., куплено по {price}',
+    '{shares} shares': '{shares} шт.',
+    'limit up to {price}': 'лимит до {price}',
+    'not under {price}': 'не ниже {price}',
+    'stop {price}': 'стоп {price}',
+    'Advice: sell, {reason}': 'Совет: продать, {reason}',
+    'Claude: sell all': 'Claude: продать всё',
+    'Claude: sell half': 'Claude: продать половину',
+    'up to {price}': 'до {price}',
+    'last close {price}': 'закрытие {price}',
     // --- Claude's view on the Stocks page (ADR-0027) ---
     "Claude's view": 'Мнение Claude',
     "Claude reads the news on each stock after the nightly advice. It can only advise less risk: the shares and stops stay the rules'.":

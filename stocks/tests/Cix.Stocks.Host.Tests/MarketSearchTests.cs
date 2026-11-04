@@ -116,7 +116,9 @@ public class MarketSearchTests
         Assert.DoesNotContain(s.Store.Read<StoredUniverse>("state/universe")!.Stocks, l => l.Symbol == "PINK.US");
         // Stop 142.2 − 3 ATR (1) = 139.2; 1% of 10 000 over 3 + 1 is 25 shares, the 20% cap 2000 / 142.2 is 14.
         var line = Assert.Single(page.Candidates);
-        Assert.Equal(new CandidateLine("NEW.US", "New Co", "NASDAQ", "breakout", 142.2m, 142.1m, 132.25m, 139.2m, 14m, line.Momentum, 5e9m), line);
+        // NEW rises 0.1 a day: 0.1 / 142.1, 0.5 / 141.7, 2.1 / 140.1 and 12.6 / 129.6 over a session, five, 21 and 126.
+        Assert.Equal(new CandidateLine("NEW.US", "New Co", "NASDAQ", "breakout", 142.2m, 142.1m, 132.25m, 139.2m, 14m, line.Momentum, 5e9m,
+            1m, new PriceMoves(0.0007m, 0.0035m, 0.015m, 0.0972m)), line);
         Assert.Equal(101, s.Market.Calls);
         Assert.Equal(1, s.Source.Calls - watchlistCalls);
         Assert.Equal(new SearchState(Wednesday, new DateOnly(2026, 10, 29), 102), s.State);

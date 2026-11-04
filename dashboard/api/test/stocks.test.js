@@ -25,7 +25,7 @@ Object.assign(process.env, {
 });
 require('../src/functions/stocks.js');
 Module._load = originalLoad;
-const { stocksView, candidatesView, analysisView, loadStocks, stocksReader } = require('../src/stocks');
+const { stocksView, candidatesView, analysisView, workingTable, entryPlan, loadStocks, stocksReader } = require('../src/stocks');
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const OWNER = b64({ identityProvider: 'aad', userId: 'owner-user-id', userRoles: ['authenticated', 'owner'] });
@@ -84,12 +84,12 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
 
 test('without the stocks settings the tab is not set up, and nothing is read', async () => {
   assert.equal(stocksReader({ COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: 'a2V5' }), null);
-  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, analysis: null, pending: null, pendingTrades: [], generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('no document yet is set up but without advice', async () => {
   const reader = { readDocument: async () => null };
-  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, analysis: null, pending: null, pendingTrades: [], generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('actions come protective first, in the advisor\'s order within a kind', () => {
@@ -347,4 +347,74 @@ test('the answer says whether Claude\'s view is of the advice\'s close', async (
   assert.equal((await loadStocks(reader, NOW)).analysis.current, false);
   delete docs['advice-latest'];
   assert.equal((await loadStocks(reader, NOW)).analysis.current, false);
+});
+
+test('the entry plan: a limit half an ATR over the close, no buy back under the broken high, and only a wait when near it', () => {
+  // 100 + 0.5 × 2; under 98, the high it broke, the breakout failed.
+  assert.deepEqual(entryPlan({ status: 'breakout', close: 100, breakoutHigh: 98, atr: 2, stop: 94 }), { buyUpTo: 101, failsUnder: 98, waitAbove: null });
+  // Whole cents, down: 142.2 + 0.685 is 142.885.
+  assert.equal(entryPlan({ status: 'breakout', close: 142.2, breakoutHigh: 142.1, atr: 1.37, stop: 138.1 }).buyUpTo, 142.88);
+  // A stop above the broken high is the floor; without an ATR (a page from before it) there is no limit.
+  assert.deepEqual(entryPlan({ status: 'breakout', close: 100, breakoutHigh: 90, atr: null, stop: 94 }), { buyUpTo: null, failsUnder: 94, waitAbove: null });
+  assert.deepEqual(entryPlan({ status: 'near-high', close: 100, breakoutHigh: 102, atr: 2, stop: 94 }), { buyUpTo: null, failsUnder: null, waitAbove: 102 });
+  assert.deepEqual(entryPlan({ status: 'breakout', close: null, breakoutHigh: 98, atr: 2, stop: 94 }), { buyUpTo: null, failsUnder: null, waitAbove: null });
+});
+
+const WORKING_ADVICE = {
+  ...ADVICE,
+  owner: { ...OWNER_SECTION },
+  watchlist: [{ symbol: 'XYZ.US', name: 'XYZ Corp', currency: 'USD', lastClose: '142.2', breakoutHigh: '142.1', trendAverage: '132.25', status: 'breakout',
+    atr: '1', moves: { day: '0.0007', week: '0.0035', month: '0.015', halfYear: '0.0972' } }],
+};
+const WORKING_CANDIDATES = {
+  asOf: '2026-10-30', status: 'done', regime: 'risk-on', candidates: [
+    { symbol: 'NEW.US', name: 'New Co', status: 'breakout', close: '50', breakoutHigh: '49', stop: '47', shares: '20', momentum: '0.31', atr: '1', moves: { day: '0.02', week: '-0.01', month: '0.1', halfYear: '0.3' } },
+    { symbol: 'NEAR.US', status: 'near-high', close: '100', breakoutHigh: '102', stop: '94', shares: '3', momentum: '0.2' },
+  ],
+};
+
+test('the working table: Claude\'s picks in its order, each with the figures of the buy or candidate it picked', () => {
+  const advice = stocksView(WORKING_ADVICE, NOW);
+  const found = candidatesView(WORKING_CANDIDATES);
+  const analysis = { ...analysisView({ ...ANALYSIS, picks: [{ symbol: 'NEW.US', reason: 'Strong.' }, { symbol: 'XYZ.US', reason: 'Clean.', earnings: '2026-11-05' }, { symbol: 'GONE.US', reason: 'Gone.' }] }), current: true };
+  const table = workingTable(advice, found, analysis);
+  assert.equal(table.source, 'claude');
+  assert.deepEqual(table.rows.map((r) => [r.rank, r.symbol, r.origin, r.reason, r.earnings]),
+    [[1, 'NEW.US', 'candidate', 'Strong.', null], [2, 'XYZ.US', 'buy', 'Clean.', '2026-11-05'], [3, 'GONE.US', null, 'Gone.', null]]);
+  const [candidate, buy, gone] = table.rows;
+  // The candidate: 20 shares of 50, 3 / 50 to the stop, a limit at 50.5, none under its broken high 49.
+  assert.deepEqual([candidate.amount, candidate.toStop, candidate.buyUpTo, candidate.failsUnder], [1000, 0.06, 50.5, 49]);
+  assert.deepEqual(candidate.moves, { day: 0.02, week: -0.01, month: 0.1, halfYear: 0.3 });
+  // The owner's buy of a watched stock (7 at 142.2, stop 139.2): its high, ATR and moves from the watchlist.
+  assert.deepEqual([buy.name, buy.shares, buy.close, buy.stop, buy.buyUpTo, buy.failsUnder], ['XYZ Corp', 7, 142.2, 139.2, 142.7, 142.1]);
+  assert.deepEqual(buy.moves, { day: 0.0007, week: 0.0035, month: 0.015, halfYear: 0.0972 });
+  assert.deepEqual([gone.close, gone.buyUpTo, gone.moves.day], [null, null, null]);
+});
+
+test('without Claude\'s view of this close the rules\' buys and the search\'s entry signals stand, and none while risk-off', () => {
+  const advice = stocksView(WORKING_ADVICE, NOW);
+  const found = candidatesView(WORKING_CANDIDATES);
+  const behind = { ...analysisView(ANALYSIS), current: false };
+  const table = workingTable(advice, found, behind);
+  assert.equal(table.source, 'rules');
+  // NEAR is only near its high: not an entry.
+  assert.deepEqual(table.rows.map((r) => [r.symbol, r.origin, r.rank]), [['XYZ.US', 'buy', null], ['NEW.US', 'candidate', null]]);
+  assert.deepEqual(workingTable(advice, found, null).rows.map((r) => r.symbol), ['XYZ.US', 'NEW.US']);
+  // The paper portfolio's buys before the owner sends a portfolio.
+  assert.deepEqual(workingTable(stocksView({ ...WORKING_ADVICE, owner: undefined }, NOW), found, null).rows.map((r) => [r.symbol, r.shares]), [['MSFT.US', 4], ['NEW.US', 20]]);
+  // Risk-off: the search's signals are for watching only.
+  assert.deepEqual(workingTable(stocksView({ ...WORKING_ADVICE, regime: 'risk-off' }, NOW), found, null).rows.map((r) => r.symbol), ['XYZ.US']);
+  // Candidates of an older close aren't tonight's.
+  assert.deepEqual(workingTable(advice, candidatesView({ ...WORKING_CANDIDATES, asOf: '2026-10-29' }), null).rows.map((r) => r.symbol), ['XYZ.US']);
+  // The half year falls back on the momentum on a page from before the moves.
+  assert.equal(workingTable(advice, candidatesView({ ...WORKING_CANDIDATES, candidates: [{ ...WORKING_CANDIDATES.candidates[0], moves: undefined }] }), null).rows[1].moves.halfYear, 0.31);
+  assert.deepEqual(workingTable(null, found, null), { source: null, rows: [] });
+  // A candidate's shares are capped by the free cash: 300 buys 6 at 50, not the 20 sized on the capital.
+  const poor = stocksView({ ...WORKING_ADVICE, owner: { ...OWNER_SECTION, cash: '300' } }, NOW);
+  assert.deepEqual(workingTable(poor, found, null).rows.map((r) => [r.symbol, r.shares, r.amount]), [['XYZ.US', 7, 7 * 142.2], ['NEW.US', 6, 300]]);
+});
+
+test('moves and the ATR are checked like every other figure', () => {
+  const view = candidatesView({ status: 'done', candidates: [{ symbol: 'A.US', status: 'breakout', close: '10', atr: '-1', moves: { day: '11', week: 'x', month: 0.5, halfYear: null } }] });
+  assert.deepEqual([view.candidates[0].atr, view.candidates[0].moves], [null, { day: null, week: null, month: 0.5, halfYear: null }]);
 });

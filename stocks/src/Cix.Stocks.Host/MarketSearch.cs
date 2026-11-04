@@ -28,10 +28,13 @@ public static class SearchStatus
     public const string AdviceBehind = "advice-behind";
 }
 
-/// <summary>One candidate as the Stocks page shows it. <see cref="Status"/> is <c>breakout</c> or <c>near-high</c>.</summary>
+/// <summary>
+/// One candidate as the Stocks page shows it. <see cref="Status"/> is <c>breakout</c> or <c>near-high</c>. <see cref="Atr"/>
+/// (the advisor's 20-day ATR) and <see cref="Moves"/> are for the page's entry plan and moves; pages written before them have none.
+/// </summary>
 public sealed record CandidateLine(
     string Symbol, string? Name, string? Venue, string Status, decimal Close, decimal BreakoutHigh, decimal TrendAverage, decimal Stop,
-    decimal Shares, decimal Momentum, decimal? MarketCap);
+    decimal Shares, decimal Momentum, decimal? MarketCap, decimal? Atr = null, PriceMoves? Moves = null);
 
 /// <summary>
 /// The market-wide search's result for one session (<c>candidates-latest</c> in the advice container, stocks/README.md has
@@ -199,7 +202,7 @@ public sealed class MarketSearch(
 
         var lines = Screener.Rank(found, settings).Select(c => new CandidateLine(
             c.Symbol, c.Name, c.Venue, c.State == EntryState.Breakout ? "breakout" : "near-high", c.Close, c.PriorHigh, c.SlowAverage, c.Stop,
-            c.Shares, c.Momentum, c.MarketCap)).ToList();
+            c.Shares, c.Momentum, c.MarketCap, c.Atr, c.Moves)).ToList();
         var page = Page(SearchStatus.Done, bySymbol.Count, shortlist.Count, lines);
         await store.AddCandidatesAsync(DatedId(advice.AsOf), page, cancellationToken).ConfigureAwait(false);
         state = state with { LastDay = advice.AsOf, Calls = calls + used };

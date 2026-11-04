@@ -119,11 +119,15 @@ public class DailyRunTests
 
         // XYZ rises 0.1 a day: the close 142.2 beats the prior 50-day high 142.1 (the day before), above its 200-day average
         // (days 223–422: 100 + 0.1 × 322.5). ABC falls 0.1 a day: its close 157.8 is under the average 200 − 32.25, and its
-        // prior high is the oldest of the 50 closes, 200 − 37.2.
+        // prior high is the oldest of the 50 closes, 200 − 37.2. Both have a daily range of 1 (the ATR), and their moves over a
+        // session, five, 21 and 126 are 0.1, 0.5, 2.1 and 12.6 of the close before: up for XYZ (from 142.1, 141.7, 140.1,
+        // 129.6), down for ABC (from 157.9, 158.3, 159.9, 170.4).
         Assert.Equal(
             [
-                new WatchLine("XYZ.US", "XYZ Corp", "USD", "tech", 142.2m, Wednesday, 142.1m, 132.25m, WatchStatus.Breakout),
-                new WatchLine("ABC.US", "ABC Corp", "USD", null, 157.8m, Wednesday, 162.8m, 167.75m, WatchStatus.BelowTrend),
+                new WatchLine("XYZ.US", "XYZ Corp", "USD", "tech", 142.2m, Wednesday, 142.1m, 132.25m, WatchStatus.Breakout,
+                    1m, new PriceMoves(0.0007m, 0.0035m, 0.015m, 0.0972m)),
+                new WatchLine("ABC.US", "ABC Corp", "USD", null, 157.8m, Wednesday, 162.8m, 167.75m, WatchStatus.BelowTrend,
+                    1m, new PriceMoves(-0.0006m, -0.0032m, -0.0131m, -0.0739m)),
             ],
             s.Latest.Watchlist!);
 
