@@ -117,7 +117,7 @@
 
       <section class="panel" aria-labelledby="h-problems">
         <div class="panel-head"><h2 id="h-problems">Errors and safety events</h2></div>
-        <table id="problems"><thead><tr><th>Time</th><th>Source</th><th>Kind</th><th>What happened</th></tr></thead><tbody></tbody></table>
+        <table id="problems"><thead><tr><th>Time</th><th>Source</th><th>Kind</th><th class="why">What happened</th></tr></thead><tbody></tbody></table>
       </section>
     </div>
 
@@ -128,7 +128,7 @@
           <span id="coins-meta" class="muted small"></span>
         </div>
         <div id="coins-change" class="banner coins-change" role="status" hidden></div>
-        <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num" title="A candle's average range (ATR) as a share of the price: hourly candles, or daily ones for a daily strategy">Range (ATR)</th><th class="num">Volume</th><th>Signal</th><th>Why no buy</th></tr></thead><tbody></tbody></table>
+        <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num" title="A candle's average range (ATR) as a share of the price: hourly candles, or daily ones for a daily strategy">Range (ATR)</th><th class="num">Volume</th><th>Signal</th><th class="why">Why no buy</th></tr></thead><tbody></tbody></table>
         <p class="muted small coins-legend"><span class="why-kind filtered">Filtered out</span> the market filters dropped it before ranking (trading volume, spread, volatility, costs, too few prices, or not a tradable pair), with the figure and the limit. <span class="why-kind rule">Strategy rule</span> ranked, but the strategy's entry rules turned it down (trend, pullback, last hour). <span class="why-kind blocked">Held back</span> not the rules: a limit or a block stopped it, such as the strategy's buy signals per scan already taken by higher-ranked coins, a pause between buys, a news flag from the market analyst, a holding or an open order.</p>
         <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan.</p>
       </section>
@@ -144,7 +144,7 @@
         </form>
         <p class="muted small">Every order in an added pair still goes through all the safety limits. A pair can be removed only when nothing is held or working in it.</p>
         <h3 class="small">Your pair changes <span class="muted">(last 7 days)</span></h3>
-        <table id="pair-requests"><thead><tr><th>Sent</th><th>Change</th><th>Status</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+        <table id="pair-requests"><thead><tr><th>Sent</th><th>Change</th><th>Status</th><th class="why">Outcome</th></tr></thead><tbody></tbody></table>
       </section>
     </div>
 
@@ -167,12 +167,12 @@
 
       <section class="panel" aria-labelledby="h-mandatory">
         <div class="panel-head"><h2 id="h-mandatory">Mandatory safety limits</h2><span class="muted small">enforced by the engine whatever the strategy; only you change them</span></div>
-        <table id="mandatory"><thead><tr><th>Limit</th><th class="num">Set to</th><th>What it does</th><th>Set in</th></tr></thead><tbody></tbody></table>
+        <table id="mandatory"><thead><tr><th>Limit</th><th class="num">Set to</th><th class="why">What it does</th><th>Set in</th></tr></thead><tbody></tbody></table>
       </section>
 
       <section class="panel" aria-labelledby="h-switches">
         <div class="panel-head"><h2 id="h-switches">Your strategy switches</h2><span class="muted small">last 7 days</span></div>
-        <table id="switches"><thead><tr><th>Sent</th><th>Strategy</th><th>Status</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+        <table id="switches"><thead><tr><th>Sent</th><th>Strategy</th><th>Status</th><th class="why">Outcome</th></tr></thead><tbody></tbody></table>
       </section>
     </div>
 
@@ -201,7 +201,7 @@
 
       <section class="panel" aria-labelledby="h-decisions">
         <div class="panel-head"><h2 id="h-decisions">Decisions</h2><span id="decisions-meta" class="muted small">orders placed, refused or cancelled: the reason first, with stops, targets and risk in figures, and the technical text under it</span></div>
-        <table id="decisions"><thead><tr><th>Time</th><th>By</th><th>Action</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Price</th><th>Status</th><th>Why</th></tr></thead><tbody></tbody></table>
+        <table id="decisions"><thead><tr><th>Time</th><th>By</th><th>Action</th><th>Coin</th><th>Side</th><th class="num">Size</th><th class="num">Price</th><th>Status</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
       </section>
     </div>
 
@@ -223,12 +223,12 @@
             <button type="button" id="journal-recent" class="ghost">Recent</button>
           </form>
         </div>
-        <table id="activity"><thead><tr><th>Time</th><th>Kind</th><th>Actor</th><th>Run</th><th>Summary</th><th>Entry</th></tr></thead><tbody></tbody></table>
+        <table id="activity"><thead><tr><th>Time</th><th>Kind</th><th>Actor</th><th>Run</th><th class="why">Summary</th><th>Entry</th></tr></thead><tbody></tbody></table>
       </section>
 
       <section class="panel" aria-labelledby="h-state">
         <div class="panel-head"><h2 id="h-state">State documents</h2><span class="muted small">what the engine knows now (see docs/persistence.md)</span></div>
-        <table id="state"><thead><tr><th>Document</th><th>Type</th><th>Updated</th><th>What it is</th></tr></thead><tbody></tbody></table>
+        <table id="state"><thead><tr><th>Document</th><th>Type</th><th>Updated</th><th class="why">What it is</th></tr></thead><tbody></tbody></table>
       </section>
     </div>
 
@@ -251,11 +251,11 @@
         <div id="stocks-analysis-body" hidden>
           <p id="stocks-analysis-market"></p>
           <h3>Holdings</h3>
-          <table id="stocks-analysis-holdings"><thead><tr><th class="stock">Stock</th><th class="tag">Claude says</th><th>Earnings</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-analysis-holdings"><thead><tr><th class="stock">Stock</th><th class="tag">Claude says</th><th class="date">Earnings</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
           <h3>Picks among tonight's buys and candidates</h3>
-          <table id="stocks-analysis-picks"><thead><tr><th class="num rank">Rank</th><th class="stock">Stock</th><th>Earnings</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-analysis-picks"><thead><tr><th class="num rank">Rank</th><th class="stock">Stock</th><th class="date">Earnings</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
           <h3>Left out</h3>
-          <table id="stocks-analysis-skips"><thead><tr><th class="stock">Stock</th><th>Earnings</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-analysis-skips"><thead><tr><th class="stock">Stock</th><th class="date">Earnings</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
         </div>
       </section>
 

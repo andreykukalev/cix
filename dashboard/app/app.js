@@ -393,7 +393,7 @@ function renderFilterChange(change) {
 
 /** Why there is no buy: the kind (filtered out, a strategy rule, held back, a new pair), the reason, and the figures behind it. */
 function whyCell(c) {
-  if (!c.why) return td(c.note ?? '', 'muted');
+  if (!c.why) return td(c.note ?? '', 'why');
   return td([
     el('span', { class: `why-kind ${c.why.kind}${c.why.alarm ? ' alarm' : ''}`, text: c.why.label }), ' ', c.why.text,
     c.why.detail ? el('span', { class: 'why-detail', text: c.why.detail }) : null,

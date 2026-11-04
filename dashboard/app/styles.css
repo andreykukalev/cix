@@ -140,30 +140,39 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line
 th { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; }
 td.num, th.num { text-align: right; }
 td.why { min-width: 260px; max-width: 560px; color: var(--muted); }
-/* Coins table: the figures between the coin and the reason are centred, and the held badge stays on one line. */
+/* Desktop tables: a row's name (the first column) and its text (why, summary, outcome) read from the left; every column of
+   short values between them is centred, numbers too. Forms keep their own alignment. */
 @media (min-width: 641px) {
-  #coins th:nth-child(n+2):nth-child(-n+9), #coins td:nth-child(n+2):nth-child(-n+9) { text-align: center; }
+  table:not(.form-table) th, table:not(.form-table) td { text-align: center; }
+  table:not(.form-table) th:first-child:not(.num), table:not(.form-table) td:first-child:not(.num),
+  table:not(.form-table) th.why, table:not(.form-table) td.why, table:not(.form-table) tr.empty td { text-align: left; }
   #coins th:nth-child(2), #coins td:nth-child(2) { min-width: 110px; }
 }
-#coins td .badge { white-space: nowrap; }
+#coins td .badge, #coins td .chip { white-space: nowrap; }
 #coins th { white-space: normal; vertical-align: bottom; } /* two-word headings take two lines: the table fits without scrolling */
 #coins td:nth-child(6) { white-space: nowrap; }
 #coins td.why { min-width: 200px; }
 #decisions td:nth-child(3), #decisions td:nth-child(4), #trades td:nth-child(2), #orders td:nth-child(2) { white-space: nowrap; } /* a coin or an action isn't split */
 #coins td.actions button { padding: 3px 8px; }
 /* Stocks tables (desktop), as on the Coins tab: each table keeps its columns where its header puts them (fixed layout), so
-   tables with the same columns line up, figures are centred, and long text wraps inside its own column. */
+   tables with the same columns line up; everything between the stock and the reason is centred; the reason takes the
+   room the other columns leave, and long text wraps inside its own column. */
 @media (min-width: 641px) {
   #panel-stocks table { table-layout: fixed; }
   #panel-stocks th { white-space: normal; vertical-align: bottom; }
-  #panel-stocks th.num, #panel-stocks td.num { text-align: center; }
+  /* Here the stock names its row, wherever it stands; a first column of actions or days is centred like the rest. */
+  #panel-stocks table:not(.form-table) th:first-child, #panel-stocks table:not(.form-table) td:first-child { text-align: center; }
+  #panel-stocks table:not(.form-table) th.stock, #panel-stocks table:not(.form-table) td:has(> .chip),
+  #panel-stocks table:not(.form-table) tr.empty td { text-align: left; }
   #panel-stocks td { overflow-wrap: anywhere; }
-  #panel-stocks th.stock { width: 24%; }
+  #panel-stocks th.stock { width: 220px; }
+  #stocks-analysis-body th.stock { width: 130px; } /* Claude's view names the ticker only */
   #panel-stocks th.action, #panel-stocks th.tag { width: 190px; }
   #panel-stocks th.rank { width: 64px; }
+  #panel-stocks th.date { width: 130px; }
+  #panel-stocks table:has(th.why) th.num { width: 110px; } /* with a reason beside them, figures keep to their width */
   #stocks-watchlist th.tag { width: 240px; } /* its longest status, in Russian, is the widest badge on the tab */
   #panel-stocks td .badge { white-space: nowrap; } /* a badge stays one line: its column is sized for the longest */
-  #panel-stocks th.why { width: 38%; }
   #panel-stocks td.why { min-width: 0; max-width: none; }
 }
 .why-kind {
