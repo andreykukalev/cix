@@ -38,7 +38,7 @@ CosmosReader.prototype.readDocument = async function readDocument(container, id,
   return id === 'a1b2c3d4-0000-4000-8000-000000000001' && pk === '2026-10-26' ? { id, type: 'manual-request', status: 'placed' } : null;
 };
 Object.assign(process.env, {
-  COSMOS_ENDPOINT: 'https://acct.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('k').toString('base64'), COSMOS_DATABASE: 'cix',
+  COSMOS_ENDPOINT: 'https://acct.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('k').toString('base64'),
   COSMOS_LIVE_DATABASE: 'cix-live', DASHBOARD_OWNER_USER_ID: 'owner-user-id',
   COSMOS_WRITER_TENANT_ID: '11111111-2222-3333-4444-555555555555', COSMOS_WRITER_CLIENT_ID: 'app', COSMOS_WRITER_SECRET: ['x', 'y'].join(''),
   STOCKS_COSMOS_ENDPOINT: 'https://stocks.documents.azure.com', STOCKS_COSMOS_READONLY_KEY: Buffer.from('s').toString('base64'),
