@@ -18,7 +18,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 IDENTITY_HEADER = "identity-" + os.urandom(4).hex()
-ENGINE_TOKEN = "eyJ" + ".".join(os.urandom(8).hex() for _ in range(3))   # JWT-shaped, built at run time: not a secret
+
+
+def _hex_without_401(n):
+    """Random hex without "401": run-trader.sh reads a 401 anywhere in Claude's output as rejected credentials."""
+    while "401" in (value := os.urandom(n).hex()):
+        pass
+    return value
+
+
+ENGINE_TOKEN = "eyJ" + ".".join(_hex_without_401(8) for _ in range(3))   # JWT-shaped, built at run time: not a secret
 STORAGE_TOKEN = "storage-token-" + os.urandom(8).hex()
 AUDIENCE = "api://cix-engine-test"
 

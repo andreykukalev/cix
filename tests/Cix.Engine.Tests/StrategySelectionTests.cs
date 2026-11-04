@@ -276,13 +276,13 @@ public sealed class StrategySelectionTests
 
     private sealed class Setup
     {
-        public Setup(StrategySpec? initial = null, AgentRunScheduler? runs = null, FixedLease? lease = null, TradingMode mode = TradingMode.Paper)
+        public Setup(StrategySpec? initial = null, AgentRunScheduler? runs = null, FixedLease? lease = null, TradingMode mode = TradingMode.Paper, RiskLimits? limits = null)
         {
             Mode = mode;
             Journal = new FailingJournal(Entries);
             Specs = new RuntimeStrategySpecs(initial ?? StrategySchemaTests.Load("good", 1));
             Service = new StrategySelectionService(
-                Specs, Repository, StrategySchemaTests.Limits, new TradingContext(mode), Journal, Time, NullLogger<StrategySelectionService>.Instance, lease, runs, Requests);
+                Specs, Repository, limits ?? StrategySchemaTests.Limits, new TradingContext(mode), Journal, Time, NullLogger<StrategySelectionService>.Instance, lease, runs, Requests);
         }
 
         public TradingMode Mode { get; }
@@ -689,7 +689,8 @@ public sealed class StrategySelectionTests
         var folder = LiveFolder();
         try
         {
-            var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live);
+            // The live engine's own limits file, which every live spec must fit (swing v1's 50 EUR orders need it).
+            var setup = new Setup(StrategySchemaTests.Load("safe", 2), mode: TradingMode.Live, limits: RiskLimitsOptions.LoadFor(TradingMode.Live, AppContext.BaseDirectory));
             // The repository's files the owner marked live (safe v2, and any added since), plus safe v90; never a draft or paper spec.
             var expected = Directory.EnumerateFiles(folder, "*.json")
                 .Select(f => JsonNode.Parse(File.ReadAllText(f))!)
