@@ -64,8 +64,7 @@ Check 'Cosmos DB signing matches the documented example' {
 Check 'settings load as nested hashtables, with the shared account settings, on every version' {
   $s = Read-CixEnvironment -Name dev
   if ($s -isnot [hashtable] -or $s.cosmos -isnot [hashtable] -or $s.tags -isnot [hashtable] -or $s.shared -isnot [hashtable]) { throw 'not hashtables' }
-  Expect $s.cosmos.databaseName 'cix' 'databaseName'
-  Expect $s.cosmos.databaseThroughput 400 'databaseThroughput'
+  Expect $s.cosmos.databaseName '' 'databaseName (dev has none since ADR-0028)'
   Expect ($s.protected -is [bool]) $true 'protected is a bool'
   Expect $s.shared.resourceGroup 'rg-shared' 'shared resource group'
   Expect $s.shared.enableFreeTier $true 'shared free tier'
@@ -113,7 +112,8 @@ Check 'deployment parameters: valid JSON, no byte-order mark, arrays stay arrays
         Expect $p.resourceGroupName.value 'rg-cix-dev' 'resource group'
         Expect $p.sharedResourceGroupName.value 'rg-shared' 'shared resource group'
         Expect $p.sharedAccountName.value 'cosmos-shared-test' 'shared account'
-        Expect $p.databaseThroughput.value 400 'databaseThroughput'
+        Expect $p.databaseName.value '' 'databaseName: none'
+        Expect $p.databaseThroughput.value 400 'databaseThroughput (within the template''s range, though unused)'
         Expect $p.tags.value.purpose 'cix-dashboard' 'tags'
       }
     }
@@ -515,6 +515,23 @@ Check 'Cosmos DB requests: headers, retry on 429, continuation, 404' {
   if ($seen[2] -notmatch '(?im)^x-ms-documentdb-partitionkey: \["engine-status-paper"\]$') { throw 'partition key header' }
 }
 
+# dev has had no database since ADR-0028. The reset and the writer's paper role still serve an environment with one, so their
+# tests run the scripts from a copy of tools/azure beside environment files whose dev.json names its database 'cix', as
+# dev's did before; removed at the end.
+function New-PaperDbCopy {
+  $root = Join-Path ([IO.Path]::GetTempPath()) "cix-paperdb-$([guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Path (Join-Path $root 'tools'), (Join-Path $root 'infra') | Out-Null
+  Copy-Item -Recurse $azureTools (Join-Path $root 'tools')
+  foreach ($d in 'environments', 'shared') { Copy-Item -Recurse (Join-CixPath $repo 'infra' $d) (Join-Path $root 'infra') }
+  $dev = Join-CixPath $root 'infra' 'environments' 'dev.json'
+  $json = [regex]::Replace([IO.File]::ReadAllText($dev), '"databaseName":\s*""', '"databaseName": "cix", "databaseThroughput": 400')
+  if ($json -notmatch '"databaseName": "cix"') { throw 'dev.json has no empty databaseName to replace' }
+  [IO.File]::WriteAllText($dev, $json)
+  return $root
+}
+$paperDb = New-PaperDbCopy
+$paperDbTools = Join-CixPath $paperDb 'tools' 'azure'
+
 $devTags = '{"cix-environment":"dev","cix-protected":"false","cix-database":"cix","cix-cosmos-account":"cosmos-shared-x"}'
 $ownClaim = "[{`"name`":`"rg-cix-dev`",`"tags`":$devTags}]"
 $sharedAccount = '[{"name":"cosmos-shared-x","documentEndpoint":"https://cosmos-shared-x.documents.azure.com:443/","tags":{"shared-role":"cosmos"}}]'
@@ -542,7 +559,7 @@ Check 'reset-database.ps1 dry run end to end: finds the tagged account, reads th
   $dir = New-FakeAz -CosmosAccounts $accounts -GroupExists 'true' -GroupTags $devTags -GroupList $ownClaim
   $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
   $seen = @()
-  try { Assert-FakeAzFirst $dir; $output = & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All 6>&1 | Out-String }
+  try { Assert-FakeAzFirst $dir; $output = & (Join-Path $paperDbTools 'reset-database.ps1') -Environment dev -Target All 6>&1 | Out-String }
   finally {
     $env:PATH = $savedPath
     Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
@@ -568,7 +585,7 @@ Check 'reset-database.ps1 State plans every document of the mode, and -IncludeRe
   $dir = New-FakeAz -CosmosAccounts $accounts -GroupExists 'true' -GroupTags $devTags -GroupList $ownClaim
   $env:PATH = "$dir$([IO.Path]::PathSeparator)$savedPath"
   $seen = @()
-  try { Assert-FakeAzFirst $dir; $output = & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target State -IncludeRequests 6>&1 | Out-String }
+  try { Assert-FakeAzFirst $dir; $output = & (Join-Path $paperDbTools 'reset-database.ps1') -Environment dev -Target State -IncludeRequests 6>&1 | Out-String }
   finally {
     $env:PATH = $savedPath
     Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
@@ -591,7 +608,7 @@ foreach ($case in @(
     @{ Fake = @{ GroupExists = 'true'; GroupTags = '{"cix-environment":"dev","cix-protected":"false"}'; CosmosAccounts = $sharedAccount; GroupList = '[]' }; Says = "isn't tagged cix-database=cix and cix-cosmos-account=cosmos-shared-x" },
     @{ Fake = @{ GroupExists = 'true'; GroupTags = $devTags; CosmosAccounts = $sharedAccount; GroupList = "[$($ownClaim.Trim('[', ']')),$prodClaim]" }; Says = "is claimed by resource group(s) rg-cix-prod" })) {
   Check "reset-database.ps1 refuses: $($case.Says)" {
-    $r = Invoke-WithFakeAz $case.Fake { & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All }
+    $r = Invoke-WithFakeAz $case.Fake { & (Join-Path $paperDbTools 'reset-database.ps1') -Environment dev -Target All }
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
   }
 }
@@ -657,7 +674,9 @@ Check 'reset-database.ps1 -LiveWhenFlat plans the live state of a flat account, 
 # A copy of dev.json as environment 'citest' (its own group and database), with agents.deploy set here and the engine
 # stopped, rather than whatever dev.json has; written to infra/environments/citest.json by the helpers below, and removed after.
 function Get-CitestJson([string]$Deploy) {
-  $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest').Replace('"databaseName": "cix"', '"databaseName": "cix-citest"')
+  $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest')
+  $json = [regex]::Replace($json, '"databaseName":\s*""', '"databaseName": "cix-citest", "databaseThroughput": 400')
+  if ($json -notmatch '"databaseName": "cix-citest"') { throw 'dev.json has no empty databaseName to replace' }
   if ($json -notmatch '"deploy": "(none|platform|apps)"') { throw 'dev.json has no agents.deploy to replace' }
   if ($json -notmatch '"startEngine": (true|false)') { throw 'dev.json has no agents.startEngine to replace' }
   $json = [regex]::Replace($json, '"startEngine": (true|false)', '"startEngine": false')
@@ -1018,7 +1037,7 @@ function Invoke-SetupWriter([hashtable]$Base, [hashtable]$Overrides = @{}, [hash
   $extra = @{}; foreach ($k in $Base.Keys) { $extra[$k] = $Base[$k] }
   foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
   return Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $writerAccount; Extra = $extra } {
-    & (Join-Path $azureTools 'setup-dashboard-requests.ps1') -Environment dev -OwnerAccount 'owner@example.com' -Yes @More
+    & (Join-Path $paperDbTools 'setup-dashboard-requests.ps1') -Environment dev -OwnerAccount 'owner@example.com' -Yes @More
   }
 }
 
@@ -1113,6 +1132,58 @@ Check 'setup-dashboard-requests.ps1 accepts the live role once in place, with or
   }
 }
 
+# dev itself, with no database since ADR-0028: no paper role; a leftover one is deleted, and the live role is the only one.
+$oldPaperRole = $writerRole.Replace('"name":"r1"', '"name":"r1"') # its scope, dbs/cix, is the deleted database's
+$oldPaperAssignment = $writerAssignment.Replace('{"principalId"', '{"name":"a1","principalId"')
+function Invoke-SetupWriterDev([hashtable]$Base, [hashtable]$Overrides = @{}, [hashtable]$More = @{}) {
+  $extra = @{}; foreach ($k in $Base.Keys) { $extra[$k] = $Base[$k] }
+  foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
+  return Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $writerAccount; Extra = $extra } {
+    & (Join-Path $azureTools 'setup-dashboard-requests.ps1') -Environment dev -OwnerAccount 'owner@example.com' -Yes @More
+  }
+}
+
+Check 'setup-dashboard-requests.ps1 on dev (no database) deletes the leftover paper role, keeps the live one, and creates none' {
+  $r = Invoke-SetupWriterDev $existingWriter @{ 'cosmosdb sql role definition list' = $bothRoles; 'cosmosdb sql role assignment list' = "[$oldPaperAssignment,$liveAssignment]" } @{ LiveRequests = $true }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -notmatch 'cosmosdb sql role assignment delete .*--role-assignment-id a1 --yes') { throw "the paper role's assignment wasn't deleted: $($r.Calls)" }
+  if ($r.Calls -notmatch 'cosmosdb sql role definition delete .*--id r1 --yes') { throw "the paper role wasn't deleted: $($r.Calls)" }
+  if ($r.Calls -match '--id r2|role-assignment-id (?!a1)') { throw "it deleted more than the paper role: $($r.Calls)" }
+  if ($r.Calls -match '(?m)\bcreate\b|credential reset|--method put|users invite') { throw "it changed something else: $($r.Calls)" }
+}
+
+Check 'setup-dashboard-requests.ps1 on dev (no database) gives a new identity the live role only' {
+  $r = Invoke-SetupWriterDev $newWriter @{ 'cosmosdb sql role definition create' = '{"id":"/role/r2","name":"r2"}' } @{ LiveRequests = $true }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if (@([regex]::Matches($r.Calls, 'role definition create')).Count -ne 1) { throw "it created more than the live role: $($r.Calls)" }
+  if ($r.Calls -notmatch 'role assignment create .*--scope /dbs/cix-live/colls/requests ') { throw "the live role isn't assigned on cix-live/requests: $($r.Calls)" }
+  if ($r.Calls -match '/dbs/cix/') { throw "it touched the paper database: $($r.Calls)" }
+}
+
+Check 'setup-dashboard-requests.ps1 on dev (no database) without -LiveRequests says the requests need it' {
+  $r = Invoke-SetupWriterDev $existingWriter @{ 'cosmosdb sql role definition list' = $liveRoleJson; 'cosmosdb sql role assignment list' = "[$liveAssignment]" }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Output -notmatch 'pass -LiveRequests') { throw "no hint: $($r.Output)" }
+  if ($r.Calls -match '(?m)\bcreate\b|delete|credential reset|--method put|users invite') { throw "it changed something: $($r.Calls)" }
+}
+
+Check 'reset-database.ps1 refuses dev: it has no database' {
+  $r = Invoke-WithFakeAz @{ GroupExists = 'true'; GroupTags = '{"cix-environment":"dev","cix-protected":"false"}'; CosmosAccounts = $sharedAccount; GroupList = '[]' } {
+    & (Join-Path $azureTools 'reset-database.ps1') -Environment dev -Target All
+  }
+  if (-not $r.Error -or -not $r.Error.Contains('names no database')) { throw "got: $($r.Error)" }
+}
+
+Check 'the CIX template deploys a database, and the engine roles on it, only when it names one' {
+  $main = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'main.bicep'))
+  if ($main -notmatch "module database 'modules/cosmos-database\.bicep' = if \(hasDatabase\)") { throw 'the database is deployed unconditionally' }
+  if ($main -notmatch "module engineCosmosAccess 'modules/cosmos-engine-access\.bicep' = if \(agentsDeploy != 'none' && hasDatabase\)") { throw 'engine roles without a database' }
+  if ([IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'dashboard.bicep')) -match 'COSMOS_DATABASE:') { throw 'the dashboard still gets COSMOS_DATABASE' }
+}
+
+Import-Module (Join-Path $azureTools 'CixAzure.psm1') -Force # the copy's scripts imported the copy's module
+Remove-Item $paperDb -Recurse -Force -ErrorAction SilentlyContinue
+
 Check 'only the deploy-dashboard and deploy-live jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
   # A guard against accidents, not a security control: anyone who can change main can change this test too (ADR-0010).
   $files = @(Get-ChildItem (Join-CixPath $repo '.github' 'workflows') -File | Where-Object { $_.Extension -in '.yml', '.yaml' })
@@ -1177,14 +1248,30 @@ Check 'provision.ps1 refuses to create the shared account over an untagged one' 
 }
 
 Check 'two environment files sharing one database are refused' {
-  $copy = Join-CixPath $repo 'infra' 'environments' 'devcopy.json'
-  [IO.File]::WriteAllText($copy, (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"devcopy"'))
+  $copy = Join-CixPath $repo 'infra' 'environments' 'prodcopy.json'
+  [IO.File]::WriteAllText($copy, (Get-Content (Join-CixPath $repo 'infra' 'environments' 'prod.json') -Raw).Replace('"prod"', '"prodcopy"'))
   try {
     $message = $null
-    try { Read-CixEnvironment -Name dev | Out-Null } catch { $message = $_.Exception.Message }
-    if (-not $message -or -not $message.Contains("is also used by devcopy.json")) { throw "got: $message" }
+    try { Read-CixEnvironment -Name prod | Out-Null } catch { $message = $_.Exception.Message }
+    if (-not $message -or -not $message.Contains("is also used by prodcopy.json")) { throw "got: $message" }
   }
   finally { Remove-Item $copy -Force }
+}
+
+Check 'an environment may name no database unless it is protected or runs an engine' {
+  foreach ($case in @(
+      @{ Name = 'nodbprot'; Edit = { param($j) $j.Replace('"protected": false', '"protected": true') }; Says = 'a protected environment needs cosmos.databaseName' },
+      @{ Name = 'nodbapps'; Edit = { param($j) [regex]::Replace($j, '"deploy": "(none|platform|apps)"', '"deploy": "apps"') }; Says = 'agents.deploy apps runs an engine, which needs cosmos.databaseName' })) {
+    $file = Join-CixPath $repo 'infra' 'environments' "$($case.Name).json"
+    $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', "`"$($case.Name)`"").Replace('rg-cix-dev', "rg-cix-$($case.Name)")
+    [IO.File]::WriteAllText($file, (& $case.Edit $json))
+    try {
+      $message = $null
+      try { Read-CixEnvironment -Name $case.Name | Out-Null } catch { $message = $_.Exception.Message }
+      if (-not $message -or -not $message.Contains($case.Says)) { throw "$($case.Name): got: $message" }
+    }
+    finally { Remove-Item $file -Force }
+  }
 }
 
 # The engine and agents in Azure (agents.deploy apps), against a fake az: an environment file of its own, removed after.
@@ -1856,6 +1943,17 @@ if (-not (Test-Path (Join-CixPath $repo 'secrets' 'claude_token'))) {
     if (-not $r.Error -or -not $r.Error.Contains('has no claude-token. Run tools/setup-secrets.ps1')) { throw "got: $($r.Error)" }
     if ($r.Calls.Contains('ad app create') -or $r.Calls.Contains('deployment sub create')) { throw 'went on anyway' }
   }
+}
+
+Check 'provision.ps1 on dev previews CIX with no database, claims none and writes no engine settings' {
+  $r = Invoke-WithFakeAz @{ GroupExists = 'true'; CosmosAccounts = $sharedAccount; GroupList = '[]'; DatabaseExists = $true; Extra = $agentsFake } {
+    & (Join-Path $azureTools 'provision.ps1') -Environment dev -WhatIfOnly
+  }
+  if ($r.Error) { throw $r.Error }
+  foreach ($expected in @('no database of its own', "==> CIX (rg-cix-dev, no database of its own)", 'Preview only: nothing was changed.')) {
+    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+  }
+  if ($r.Calls -match 'cosmosdb sql database show|--tag cix-database') { throw "it checked a database claim: $($r.Calls)" }
 }
 
 Write-Host ''

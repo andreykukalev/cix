@@ -72,9 +72,18 @@ function Read-CixEnvironment {
   if ($s.environmentName -ne $Name) { throw "$path says environmentName '$($s.environmentName)', not '$Name'." }
   if ($s.protected -isnot [bool]) { throw "${path}: 'protected' must be true or false." }
   if ($s.resourceGroup -notmatch '^[\w\-\.\(\)]{1,90}$') { throw "${path}: resourceGroup isn't a valid name." }
-  if ($s.cosmos.databaseName -notmatch '^[a-zA-Z0-9-]{1,64}$') { throw "${path}: cosmos.databaseName isn't a valid name." }
-  if (-not ($s.cosmos.databaseThroughput -is [int] -or $s.cosmos.databaseThroughput -is [long]) -or $s.cosmos.databaseThroughput -lt 400 -or $s.cosmos.databaseThroughput -gt 1000) {
-    throw "${path}: cosmos.databaseThroughput must be a whole number from 400 to 1000."
+  if ($s.cosmos -isnot [hashtable]) { throw "${path}: 'cosmos' must be an object." }
+  # An empty databaseName: the environment has no database of its own (dev since ADR-0028: its dashboard reads the live
+  # engine's). Only an environment without an engine may go without one.
+  if (-not $s.cosmos.ContainsKey('databaseName') -or -not $s.cosmos.databaseName) {
+    if ($s.protected) { throw "${path}: a protected environment needs cosmos.databaseName, its engine's database." }
+    $s.cosmos['databaseName'] = ''
+  }
+  else {
+    if ($s.cosmos.databaseName -notmatch '^[a-zA-Z0-9-]{1,64}$') { throw "${path}: cosmos.databaseName isn't a valid name." }
+    if (-not ($s.cosmos.databaseThroughput -is [int] -or $s.cosmos.databaseThroughput -is [long]) -or $s.cosmos.databaseThroughput -lt 400 -or $s.cosmos.databaseThroughput -gt 1000) {
+      throw "${path}: cosmos.databaseThroughput must be a whole number from 400 to 1000."
+    }
   }
   if ($s.subscriptionId -and $s.subscriptionId -notmatch '^[0-9a-fA-F-]{36}$') { throw "${path}: subscriptionId must be a GUID or empty." }
   $s['path'] = $path
@@ -83,19 +92,22 @@ function Read-CixEnvironment {
   foreach ($other in Get-ChildItem (Split-Path $path) -Filter *.json) {
     if ($other.FullName -eq (Resolve-Path $path).Path -or $other.Name -like '*.example.json') { continue }
     $o = Get-Content $other.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($o.PSObject.Properties['sharedCosmos'] -and $o.sharedCosmos -eq $s.sharedCosmos -and $o.PSObject.Properties['cosmos'] -and
+    if ($s.cosmos.databaseName -and $o.PSObject.Properties['sharedCosmos'] -and $o.sharedCosmos -eq $s.sharedCosmos -and $o.PSObject.Properties['cosmos'] -and
         $o.cosmos.PSObject.Properties['databaseName'] -and $o.cosmos.databaseName -eq $s.cosmos.databaseName) {
       throw "${path}: database '$($s.cosmos.databaseName)' is also used by $($other.Name) in the same shared account. Give each environment its own."
     }
     # The protected environment's database in the same account, for this one's dashboard to show its live engine (ADR-0017).
     if (-not $s.protected -and $o.PSObject.Properties['protected'] -and $o.protected -eq $true -and $o.PSObject.Properties['sharedCosmos'] -and
-        $o.sharedCosmos -eq $s.sharedCosmos -and $o.PSObject.Properties['cosmos'] -and $o.cosmos.PSObject.Properties['databaseName']) {
+        $o.sharedCosmos -eq $s.sharedCosmos -and $o.PSObject.Properties['cosmos'] -and $o.cosmos.PSObject.Properties['databaseName'] -and $o.cosmos.databaseName) {
       if (-not $s.ContainsKey('liveDatabases')) { $s['liveDatabases'] = @() }
       $s['liveDatabases'] += [string]$o.cosmos.databaseName
     }
   }
   if ($s.shared.resourceGroup -eq $s.resourceGroup) { throw "${path}: the shared Cosmos DB account needs its own resource group, not $($s.resourceGroup)." }
   if ($s.ContainsKey('agents')) { Assert-CixAgentSettings -Settings $s -Path $path }
+  if (-not $s.cosmos.databaseName -and $s.ContainsKey('agents') -and $s.agents.deploy -eq 'apps') {
+    throw "${path}: agents.deploy apps runs an engine, which needs cosmos.databaseName."
+  }
   return $s
 }
 
@@ -289,7 +301,7 @@ function Get-CixDeploymentValues {
     sharedResourceGroupName = $Settings.shared.resourceGroup
     sharedAccountName       = $SharedAccountName
     databaseName            = $Settings.cosmos.databaseName
-    databaseThroughput      = [int]$Settings.cosmos.databaseThroughput
+    databaseThroughput      = if ($Settings.cosmos.databaseName) { [int]$Settings.cosmos.databaseThroughput } else { 400 } # unused without one
     protectedEnvironment    = [bool]$Settings.protected
     deployDashboard         = [bool]$Settings.deployDashboard
     tags                    = $tags
@@ -407,6 +419,10 @@ function Assert-CixDatabaseClaim {
   #>
   param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$AccountName, [switch]$RequireOwn)
   $db = $Settings.cosmos.databaseName
+  if (-not $db) {
+    if ($RequireOwn) { throw "$($Settings.path) names no database (cosmos.databaseName is empty): there is nothing of this environment's to change." }
+    return # no database of its own: nothing to claim
+  }
   $ownManaged = "(?i)^/subscriptions/[^/]+/resourceGroups/$([regex]::Escape($Settings.resourceGroup))/providers/Microsoft\.App/managedEnvironments/[^/]+$"
   $claims = @(Invoke-CixAz @('group', 'list', '--tag', "cix-database=$db", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
       Where-Object { $_.tags -and $_.tags.PSObject.Properties['cix-cosmos-account'] -and $_.tags.'cix-cosmos-account' -eq $AccountName } |

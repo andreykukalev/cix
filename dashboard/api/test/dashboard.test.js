@@ -22,7 +22,7 @@ CosmosReader.prototype.readDocument = async function readDocument(container, id)
   return null;
 };
 Object.assign(process.env, {
-  COSMOS_ENDPOINT: 'https://acct.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('k').toString('base64'), COSMOS_DATABASE: 'cix',
+  COSMOS_ENDPOINT: 'https://acct.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('k').toString('base64'),
   COSMOS_LIVE_DATABASE: 'cix-live', DASHBOARD_OWNER_USER_ID: 'owner-user-id',
 });
 require('../src/functions/dashboard.js');

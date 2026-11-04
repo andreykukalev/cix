@@ -1,5 +1,6 @@
 // CIX in Azure: its own resource group with the read-only dashboard (Static Web Apps, Free), and its own database in the
-// shared Cosmos DB account (infra/shared/main.bicep, deployed first). Until agents is 'apps', the engine and the agents run
+// shared Cosmos DB account (infra/shared/main.bicep, deployed first), unless databaseName is empty: dev has none since
+// ADR-0028, its dashboard reading the live engine's database. Until agents is 'apps', the engine and the agents run
 // in Docker on the owner's PC and connect to the database over HTTPS with the account key. In Azure the engine uses its
 // managed identity instead, with roles on CIX's containers only (modules/cosmos-engine-access.bicep).
 // agents (ADR-0013): 'platform' adds what the engine and the agent jobs run on (modules/agents-platform.bicep); 'apps'
@@ -33,9 +34,8 @@ param sharedResourceGroupName string
 @description('The shared Cosmos DB account\'s name.')
 param sharedAccountName string
 
-@description('CIX\'s database in the shared account; the engine uses Cosmos:Database.')
-@minLength(1)
-param databaseName string = 'cix'
+@description('CIX\'s database in the shared account; the engine uses Cosmos:Database. Empty: none (no engine here).')
+param databaseName string = ''
 
 // The protected environment's database in the same account (ADR-0017), which the dashboard reads for its live view.
 @description('The protected environment\'s database in the same account, for the dashboard. Empty when there is none.')
@@ -99,16 +99,19 @@ param ownerObjectId string = ''
 // A protected environment (real money) gets the same engine and agents, pinned to paper like every other, plus the exchange
 // keys from its own Key Vault: its engine stands by until the owner switches it from their own sign-in (ADR-0017).
 var agentsDeploy = agents
+var hasDatabase = !empty(databaseName)
 
 // cix-database and cix-cosmos-account claim the database for this environment: the scripts refuse to deploy over, or
 // reset, a database that no group or another group claims.
+// An environment without a database claims none.
 var allTags = union(tags, {
   'cix-environment': environmentName
   'cix-component': 'cix'
   'cix-protected': protectedEnvironment ? 'true' : 'false'
+}, hasDatabase ? {
   'cix-database': databaseName
   'cix-cosmos-account': sharedAccountName
-})
+} : {})
 
 resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
@@ -116,7 +119,7 @@ resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   tags: allTags
 }
 
-module database 'modules/cosmos-database.bicep' = {
+module database 'modules/cosmos-database.bicep' = if (hasDatabase) {
   name: 'cix-${environmentName}-database'
   scope: resourceGroup(sharedResourceGroupName)
   params: {
@@ -134,7 +137,6 @@ module dashboard 'modules/dashboard.bicep' = if (deployDashboard) {
     location: dashboardLocation
     cosmosAccountName: sharedAccountName
     cosmosResourceGroupName: sharedResourceGroupName
-    databaseName: databaseName
     liveDatabaseName: liveDatabaseName
     tags: allTags
   }
@@ -171,7 +173,7 @@ module engineAlerts 'modules/engine-alerts.bicep' = if (agentsDeploy != 'none' &
 }
 
 // The engine's access to CIX's database, granted where the account is, once the database and the identity exist.
-module engineCosmosAccess 'modules/cosmos-engine-access.bicep' = if (agentsDeploy != 'none') {
+module engineCosmosAccess 'modules/cosmos-engine-access.bicep' = if (agentsDeploy != 'none' && hasDatabase) {
   name: 'cix-${environmentName}-engine-cosmos-access'
   scope: resourceGroup(sharedResourceGroupName)
   dependsOn: [database]
@@ -206,8 +208,13 @@ module agentsApps 'modules/agents-apps.bicep' = if (agentsDeploy == 'apps') {
   }
 }
 
+resource sharedAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
+  name: sharedAccountName
+  scope: resourceGroup(sharedResourceGroupName)
+}
+
 output cosmosAccountName string = sharedAccountName
-output cosmosEndpoint string = database.outputs.endpoint
+output cosmosEndpoint string = sharedAccount.properties.documentEndpoint
 output staticWebAppName string = deployDashboard ? dashboard!.outputs.name : ''
 output dashboardUrl string = deployDashboard ? dashboard!.outputs.url : ''
 output registryName string = agentsDeploy != 'none' ? agentsPlatform!.outputs.registryName : ''

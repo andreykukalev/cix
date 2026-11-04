@@ -26,7 +26,7 @@ class CosmosReader {
    * @param {{endpoint: string, key: string, database: string, fetchImpl?: typeof fetch, now?: () => Date, timeoutMs?: number}} options
    */
   constructor({ endpoint, key, database, fetchImpl = fetch, now = () => new Date(), timeoutMs = 8000 }) {
-    if (!endpoint || !key || !database) throw new Error('COSMOS_ENDPOINT, COSMOS_READONLY_KEY and COSMOS_DATABASE must be set.');
+    if (!endpoint || !key || !database) throw new Error('COSMOS_ENDPOINT, COSMOS_READONLY_KEY and a database must be set.');
     const url = new URL(endpoint);
     if (url.protocol !== 'https:') throw new Error('COSMOS_ENDPOINT must be https.');
     this.base = url.origin;
@@ -99,11 +99,11 @@ class DatabaseNotConfigured extends Error {}
 
 /**
  * The database one mode's engine writes to. The live engine, the only one the dashboard shows since ADR-0028, has its own
- * (ADR-0017), named by COSMOS_LIVE_DATABASE; without that setting live is refused, never read from another database.
- * COSMOS_DATABASE names the old paper engine's, which the dashboard no longer reads.
+ * (ADR-0017), named by COSMOS_LIVE_DATABASE; without that setting live is refused, never read from another database. The
+ * paper engine and its database are gone: paper is refused too.
  */
 function databaseFor(mode, env = process.env) {
-  if (mode !== 'live') return env.COSMOS_DATABASE ?? 'cix';
+  if (mode !== 'live') throw new DatabaseNotConfigured('The dashboard shows the live engine only (ADR-0028): there is no paper database.');
   if (!env.COSMOS_LIVE_DATABASE) throw new DatabaseNotConfigured("The dashboard's COSMOS_LIVE_DATABASE isn't set: deploy the dashboard (provision.ps1 or CI).");
   return env.COSMOS_LIVE_DATABASE;
 }

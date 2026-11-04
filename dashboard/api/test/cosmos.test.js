@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { authToken, CosmosReader, CosmosError } = require('../src/cosmos');
+const { authToken, CosmosReader, CosmosError, DatabaseNotConfigured, databaseFor } = require('../src/cosmos');
 
 // Microsoft's documented example (access-control-on-cosmosdb-resources). Assembled at runtime: it is a published sample, not a key.
 const SAMPLE_KEY = ['dsZQi3KtZmCv1ljt3VNWNm7sQUF1y5rJfC6kv5Jiwv', 'W0EndXdDku/dkKBp8/ufDToSxLzR4y+O/0H/t4bQtVNw=='].join('');
@@ -78,4 +78,10 @@ test('a cross-partition query says so; a failure names no request details', asyn
 test('refuses plain http and missing settings', () => {
   assert.throws(() => new CosmosReader({ endpoint: 'http://acct', key: SAMPLE_KEY, database: 'cix' }));
   assert.throws(() => new CosmosReader({ endpoint: 'https://acct', key: '', database: 'cix' }));
+});
+
+test('the dashboard reads the live engine\'s database only: no paper database since ADR-0028', () => {
+  assert.equal(databaseFor('live', { COSMOS_LIVE_DATABASE: 'cix-live', COSMOS_DATABASE: 'cix' }), 'cix-live');
+  assert.throws(() => databaseFor('live', { COSMOS_DATABASE: 'cix' }), DatabaseNotConfigured);
+  assert.throws(() => databaseFor('paper', { COSMOS_LIVE_DATABASE: 'cix-live', COSMOS_DATABASE: 'cix' }), DatabaseNotConfigured);
 });

@@ -91,9 +91,10 @@ if ($DeployDashboard) {
 Write-CixStep "Environment '$Environment'"
 $settings = Read-CixEnvironment -Name $Environment
 $shared = $settings.shared
+$databaseText = if ($settings.cosmos.databaseName) { "database '$($settings.cosmos.databaseName)'" } else { 'no database of its own' }
 Write-CixInfo "Settings:        $($settings.path)"
 Write-CixInfo "Shared account:  resource group $($shared.resourceGroup) ($($shared.location)), free tier $($shared.enableFreeTier) ($($shared.path))"
-Write-CixInfo "CIX:             resource group $($settings.resourceGroup) ($($settings.location)), database '$($settings.cosmos.databaseName)' at $($settings.cosmos.databaseThroughput) RU/s"
+Write-CixInfo "CIX:             resource group $($settings.resourceGroup) ($($settings.location)), $(if ($settings.cosmos.databaseName) { "$databaseText at $($settings.cosmos.databaseThroughput) RU/s" } else { "$databaseText (the dashboard reads the live engine's)" })"
 Write-CixInfo "Dashboard:       $(if ($settings.deployDashboard) { "Static Web App (Free) in $($settings.dashboardLocation)" } else { 'not deployed' })"
 $agents = if ($settings.ContainsKey('agents')) { $settings.agents.deploy } else { 'none' }
 Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "$(if ($settings.protected) { 'the engine (on standby until you switch it)' } else { 'an engine in paper mode' }) and three jobs, in $($settings.agents.location)" } })"
@@ -118,6 +119,10 @@ if ($settings.protected) {
   Write-CixWarn 'This environment is protected (real money). Deploying changes its infrastructure. Its engine stays pinned to paper and stands by with the exchange keys until you switch it (docs/live-trading.md).'
   Write-CixWarn "Its database is its own, in the shared account, whose read-write key reaches every database there (docs/research/azure-hosting.md, 'Risk that remains')."
   if (-not $SkipEngineConfig) { Write-CixInfo 'The engine settings on this PC (.env, secrets/cosmos_key) stay as they are: they are for paper.'; $SkipEngineConfig = $true }
+}
+if (-not $settings.cosmos.databaseName -and -not $SkipEngineConfig) {
+  Write-CixInfo 'The engine settings on this PC (.env, secrets/cosmos_key) stay as they are: this environment has no database for an engine.'
+  $SkipEngineConfig = $true
 }
 
 Write-CixStep 'Signing in'
@@ -243,13 +248,13 @@ if (-not $SkipInfrastructure) {
     }
   }
 
-  Write-CixStep "CIX ($($settings.resourceGroup), database '$($settings.cosmos.databaseName)')"
+  Write-CixStep "CIX ($($settings.resourceGroup), $databaseText)"
   Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -Agents $agentValues -WhatIf | Out-Null
   if ($WhatIfOnly) {
     if ($rebuild) { Write-CixInfo "The deployment would first delete $what (the preview above doesn't show that)." }
     Write-CixInfo 'Preview only: nothing was changed.'; return
   }
-  Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"
+  Confirm-Step $(if ($settings.cosmos.databaseName) { "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?" } else { "Deploy CIX to $($settings.resourceGroup)?" })
   # The deployment sets the dashboard's settings to exactly what infra/ says, which would drop the writer identity's and the
   # confirmed owner (setup-dashboard-requests.ps1) and the Stocks tab's read access (provision-stocks.ps1): keep them in memory
   # and put them back. They are never printed.
@@ -331,7 +336,8 @@ else {
 Write-CixStep 'Resources'
 Write-CixInfo "Cosmos DB account:  $cosmosAccount (shared, in $($shared.resourceGroup))"
 Write-CixInfo "Cosmos DB endpoint: $cosmosEndpoint"
-Write-CixInfo "Database:           $($settings.cosmos.databaseName) (containers: journal, state, requests)"
+if ($settings.cosmos.databaseName) { Write-CixInfo "Database:           $($settings.cosmos.databaseName) (containers: journal, state, requests)" }
+else { Write-CixInfo 'Database:           none of its own' }
 if ($dashboardUrl) { Write-CixInfo "Dashboard:          $dashboardUrl" }
 
 if (-not $SkipEngineConfig) {

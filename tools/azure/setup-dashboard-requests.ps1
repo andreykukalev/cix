@@ -22,6 +22,9 @@
   The identity can't read, change or delete anything, in CIX's database or any other in the shared account; the engine
   checks every request again before acting on it. The secret lives only in the dashboard's server-side settings.
 
+  An environment with no database of its own (cosmos.databaseName empty: dev since ADR-0028, no paper engine) gets no
+  paper role: only the live one, with -LiveRequests. A paper role left from its old database is deleted, once you confirm.
+
   Everything is checked before anything changes, and each change is confirmed first. Running it again changes nothing that
   is already in place; -RotateSecret replaces the secret (do it before the year is up).
   Needs rights to create app registrations, and to manage Cosmos DB role assignments on the shared account.
@@ -76,16 +79,17 @@ $appName = "stapp-$($settings.namePrefix)-$($settings.environmentName)"
 $database = $settings.cosmos.databaseName
 $identityName = "cix-dashboard-writer-$Environment"
 $roleName = "CIX dashboard request writer ($Environment)"
-$relativeScope = "/dbs/$database/colls/requests"
+$relativeScope = if ($database) { "/dbs/$database/colls/requests" } else { $null }
 # The live engine's database in the same account (Read-CixEnvironment), for the second role (ADR-0018).
 $liveDatabases = @(if ($settings.ContainsKey('liveDatabases')) { $settings.liveDatabases }) # @(): one stays an array, none is empty
 $liveDatabase = if ($liveDatabases.Count -eq 1) { [string]$liveDatabases[0] } else { $null }
 if ($LiveRequests -and -not $liveDatabase) { throw "-LiveRequests needs exactly one protected environment in this environment's Cosmos DB account; found $($liveDatabases.Count)." }
+if (-not $database -and -not $LiveRequests) { Write-CixWarn "$($settings.path) names no database of its own, so the dashboard's requests go to the live engine only: pass -LiveRequests to allow them." }
 if ($liveDatabase -and $liveDatabase -eq $database) { throw "The protected environment's database is $database too: refusing." }
 $liveRoleName = "CIX dashboard live request writer ($Environment)"
 $liveRelativeScope = if ($liveDatabase) { "/dbs/$liveDatabase/colls/requests" } else { $null }
 Write-CixInfo "Static Web App:  $appName in $($settings.resourceGroup)"
-Write-CixInfo "Identity:        $identityName, may only create items in $database/requests"
+Write-CixInfo "Identity:        $identityName, may only create items in $(if ($database) { "$database/requests" } else { 'the requests containers below' })"
 if ($LiveRequests) { Write-CixInfo "Live requests:   also in $liveDatabase/requests, the engine that trades real money" }
 
 Write-CixStep 'Signing in'
@@ -94,8 +98,8 @@ $site = Invoke-CixAz @('staticwebapp', 'show', '--name', $appName, '--resource-g
 if (-not $site) { throw "Static Web App $appName not found in $($settings.resourceGroup); run provision.ps1 first." }
 $cosmos = Get-CixCosmosAccount -Settings $settings
 $cosmosGroup = $settings.shared.resourceGroup
-$fullScope = "$($cosmos.id)$relativeScope"
-$inScope = { param($s) "$s" -eq $fullScope -or "$s" -eq $relativeScope }
+$fullScope = if ($relativeScope) { "$($cosmos.id)$relativeScope" } else { $null }
+$inScope = { param($s) [bool]$relativeScope -and ("$s" -eq $fullScope -or "$s" -eq $relativeScope) }
 $liveFullScope = if ($liveRelativeScope) { "$($cosmos.id)$liveRelativeScope" } else { $null }
 $inLiveScope = { param($s) [bool]$liveRelativeScope -and ("$s" -eq $liveFullScope -or "$s" -eq $liveRelativeScope) }
 
@@ -167,12 +171,16 @@ function Get-CixCheckedRole([string]$Name, [scriptblock]$InScope, [string]$Conta
   }
   return $r
 }
-$role = Get-CixCheckedRole $roleName $inScope "$database/requests"
+# Without a database of its own, a paper role of that name is a leftover from the old one: deleted below, whatever its scope.
+$role = if ($database) { Get-CixCheckedRole $roleName $inScope "$database/requests" } else { $null }
+$oldRoles = @(if (-not $database) { $allRoles | Where-Object { $_.PSObject.Properties['roleName'] -and $_.roleName -ceq $roleName } })
+$oldRoleIds = @($oldRoles | ForEach-Object { $_.id })
 $liveRole = Get-CixCheckedRole $liveRoleName $inLiveScope "$liveDatabase/requests"
 $isWriter = { param($a) [bool]$role -and $a.roleDefinitionId -eq $role.id -and (& $inScope $a.scope) }
 $isLiveWriter = { param($a) [bool]$liveRole -and $a.roleDefinitionId -eq $liveRole.id -and (& $inLiveScope $a.scope) }
-# The identity's only Cosmos DB role assignments may be those roles, each on its own container.
-$strays = @($roleAssignments | Where-Object { -not (& $isWriter $_) -and -not (& $isLiveWriter $_) })
+$isOld = { param($a) $oldRoleIds -contains $a.roleDefinitionId }
+# The identity's only Cosmos DB role assignments may be those roles, each on its own container (or the leftover, to delete).
+$strays = @($roleAssignments | Where-Object { -not (& $isWriter $_) -and -not (& $isLiveWriter $_) -and -not (& $isOld $_) })
 if ($strays.Count -gt 0) {
   throw "$identityName holds other Cosmos DB role assignments ($(($strays | ForEach-Object { "$($_.roleDefinitionId) on $($_.scope)" }) -join '; ')). Remove them first (az cosmosdb sql role assignment delete)."
 }
@@ -185,6 +193,9 @@ foreach ($r in @($role, $liveRole) | Where-Object { $_ }) {
 }
 $writerAssigned = @($roleAssignments | Where-Object { & $isWriter $_ }).Count -gt 0
 $liveAssigned = @($roleAssignments | Where-Object { & $isLiveWriter $_ }).Count -gt 0
+if (-not $database -and -not $LiveRequests -and -not $liveAssigned) {
+  throw "$($settings.path) names no database of its own, so the identity would have nothing to write to: run this again with -LiveRequests."
+}
 Write-CixInfo 'All checks passed.'
 
 # --- Make the changes. -------------------------------------------------------------------------------------------------------
@@ -200,27 +211,46 @@ if (-not $sp) {
   Write-CixInfo 'Created its service principal.'
 }
 
-Write-CixStep "Cosmos DB role: create items in $database/requests, nothing else"
-if (-not $role) {
-  Confirm-Step "Create the Cosmos DB role '$roleName' in $($cosmos.name) (readMetadata and items/create, on $database/requests only)?"
-  $file = Write-CixTempJson ([ordered]@{
-      RoleName         = $roleName
-      Type             = 'CustomRole'
-      AssignableScopes = @($relativeScope)
-      Permissions      = @(@{ DataActions = $DataActions })
-    })
-  try { $role = Invoke-CixAz @('cosmosdb', 'sql', 'role', 'definition', 'create', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup, '--body', "@$file", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson }
-  finally { Remove-Item $file -ErrorAction SilentlyContinue }
-  Write-CixInfo 'Created.'
+if (-not $database) {
+  if ($oldRoles.Count -gt 0) {
+    Write-CixStep "Leftover paper role '$roleName'"
+    $oldAssignments = @($allAssignments | Where-Object { & $isOld $_ })
+    $holders = @($oldAssignments | ForEach-Object { if ($sp -and $_.principalId -eq $sp.id) { $identityName } else { "$($_.principalId)" } } | Select-Object -Unique)
+    Confirm-Step "This environment has no paper database any more: delete '$roleName' and its $($oldAssignments.Count) assignment(s)$(if ($holders.Count) { " (held by $($holders -join ', '))" })? The live role stays."
+    foreach ($a in $oldAssignments) {
+      Invoke-CixAz @('cosmosdb', 'sql', 'role', 'assignment', 'delete', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup,
+        '--role-assignment-id', "$($a.name)", '--yes', '--only-show-errors', '-o', 'none') | Out-Null
+    }
+    foreach ($r in $oldRoles) {
+      Invoke-CixAz @('cosmosdb', 'sql', 'role', 'definition', 'delete', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup,
+        '--id', "$($r.name)", '--yes', '--only-show-errors', '-o', 'none') | Out-Null
+    }
+    Write-CixInfo 'Deleted.'
+  }
 }
-else { Write-CixInfo 'Exists, with exactly those two actions on that container.' }
-
-if ($writerAssigned) { Write-CixInfo "Already assigned to $identityName." }
 else {
-  Confirm-Step "Assign '$roleName' to $identityName on $database/requests?"
-  Invoke-CixAz @('cosmosdb', 'sql', 'role', 'assignment', 'create', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup,
-    '--role-definition-id', $role.id, '--principal-id', $sp.id, '--scope', $relativeScope, '--only-show-errors', '-o', 'none') | Out-Null
-  Write-CixInfo 'Assigned.'
+  Write-CixStep "Cosmos DB role: create items in $database/requests, nothing else"
+  if (-not $role) {
+    Confirm-Step "Create the Cosmos DB role '$roleName' in $($cosmos.name) (readMetadata and items/create, on $database/requests only)?"
+    $file = Write-CixTempJson ([ordered]@{
+        RoleName         = $roleName
+        Type             = 'CustomRole'
+        AssignableScopes = @($relativeScope)
+        Permissions      = @(@{ DataActions = $DataActions })
+      })
+    try { $role = Invoke-CixAz @('cosmosdb', 'sql', 'role', 'definition', 'create', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup, '--body', "@$file", '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson }
+    finally { Remove-Item $file -ErrorAction SilentlyContinue }
+    Write-CixInfo 'Created.'
+  }
+  else { Write-CixInfo 'Exists, with exactly those two actions on that container.' }
+
+  if ($writerAssigned) { Write-CixInfo "Already assigned to $identityName." }
+  else {
+    Confirm-Step "Assign '$roleName' to $identityName on $database/requests?"
+    Invoke-CixAz @('cosmosdb', 'sql', 'role', 'assignment', 'create', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup,
+      '--role-definition-id', $role.id, '--principal-id', $sp.id, '--scope', $relativeScope, '--only-show-errors', '-o', 'none') | Out-Null
+    Write-CixInfo 'Assigned.'
+  }
 }
 
 if ($LiveRequests) {
@@ -249,7 +279,7 @@ if ($LiveRequests) {
   }
   $shown = (Get-CixStaticSiteSettings -SiteId $site.id)['COSMOS_LIVE_DATABASE']
   if ($shown -ne $liveDatabase) { Write-CixWarn "The dashboard's COSMOS_LIVE_DATABASE is '$shown', not ${liveDatabase}: deploy the dashboard (provision.ps1 or CI) so its live buttons write there." }
-  Write-CixInfo "To revoke: delete this one role assignment (az cosmosdb sql role assignment list, then delete); paper requests keep working."
+  Write-CixInfo "To revoke: delete this one role assignment (az cosmosdb sql role assignment list, then delete)$(if ($database) { '; paper requests keep working' })."
 }
 elseif ($liveAssigned) { Write-CixInfo "Live requests are allowed ('$liveRoleName' on $liveDatabase/requests); delete that role assignment to revoke them." }
 

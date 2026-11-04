@@ -19,7 +19,7 @@ CosmosReader.prototype.readDocument = async function readDocument(container, id)
   return id === 'advice-latest' ? latest : null;
 };
 Object.assign(process.env, {
-  COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('crypto').toString('base64'), COSMOS_DATABASE: 'cix',
+  COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: Buffer.from('crypto').toString('base64'),
   STOCKS_COSMOS_ENDPOINT: 'https://stocks.documents.azure.com', STOCKS_COSMOS_READONLY_KEY: Buffer.from('stocks').toString('base64'),
   DASHBOARD_OWNER_USER_ID: 'owner-user-id',
 });

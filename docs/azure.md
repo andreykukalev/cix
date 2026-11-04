@@ -35,7 +35,7 @@ The what-if preview should show only the new container. Until it exists, the eng
 | Resource | Plan | Expected cost |
 |---|---|---|
 | Shared Cosmos DB account (`rg-shared`) | Free tier | **$0** for the first 1000 RU/s and 25 GB across all its databases |
-| CIX's database `cix`, 400 RU/s shared by `journal`, `state` and `requests` | Inside the free tier | **$0**. It leaves 600 RU/s of the free tier for other projects. |
+| The live engine's database `cix-live`, 400 RU/s shared by `journal`, `state` and `requests` | Inside the free tier | **$0**. It leaves 600 RU/s of the free tier for other projects. `dev` has had no database since ADR-0028. |
 | Static Web App with managed API (`rg-cix-dev`) | Free | **$0** (includes 100 GB of bandwidth a month) |
 | Data sent from Azure to your PC | | Well under the free 100 GB a month |
 
@@ -198,7 +198,18 @@ Recommended: delete CI's old paper deploy identity. It still trusts any workflow
 Optional tidying, none of it costs anything if left:
 - GitHub, *Settings*: delete the environment `paper`, and the variables `AGENTS_AZURE_CLIENT_ID`, `AGENTS_REGISTRY`, `AGENTS_ENVIRONMENT` and `PAPER_APPROVAL` (agents never touch these, CLAUDE.md rule 8).
 - Entra: the app registration `cix-engine-dev` (the paper engine's audience), the same way.
-- The paper database `cix` stays: it is free in the shared account, `provision.ps1` deploys it for `dev`, and the dashboard's writer holds a role on it.
+
+#### Deleting the paper database
+
+`dev.json` names no database (`cosmos.databaseName` empty), so `provision.ps1` no longer deploys `cix`, takes the `cix-database` claim off `rg-cix-dev` and gives the dashboard no `COSMOS_DATABASE`. The dashboard reads only `cix-live`. Once that change is on `main`, delete the old paper database. This can't be undone: its journal and state go. It frees 400 of the free tier's 1000 RU/s.
+
+```powershell
+.\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig        # dev as dev.json now says: no database, no claim
+az cosmosdb sql database delete --account-name <shared account> --resource-group rg-shared --name cix
+.\tools\azure\setup-dashboard-requests.ps1 -Environment dev -LiveRequests   # deletes the writer's leftover paper role, keeps the live one
+```
+
+The shared account's name is in `az cosmosdb list -g rg-shared --query "[].name" -o tsv`. The paper engine's Cosmos DB role assignments named `cix` and its containers point at nothing once the database is gone; they are harmless and can be left.
 
 The engine's trading mode isn't a template parameter: these templates only deploy paper, and a test fails if any template sets another mode or `Production`, or names the exchange outside the two key files. Those are mounted in a protected environment's engine only, which then stands by in paper until the owner switches it from their own sign-in ([live-trading.md](live-trading.md), ADR-0017). CI deploys only new images there, after the owner approves each run, and the engine keeps the settings it was switched to (ADR-0019).
 
