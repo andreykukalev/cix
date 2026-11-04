@@ -1,8 +1,10 @@
 # Paper trading locally
 
+> Paper trading runs only on your PC since ADR-0028: no paper engine runs in Azure, and the dashboard shows the live engine (Crypto) and Stocks.
+>
 > The simplest way to run everything is Docker Compose: see [docker.md](docker.md). The steps below run the engine and trader directly with `dotnet run` and PowerShell, which is handy while developing.
 
-The engine runs on your PC with simulated money and live Revolut X prices. A Claude Code agent trades through the engine's tools once an hour, following the active strategy (`strategies/good.v1.json` by default). Nothing here can touch your real account: paper mode holds no trading keys.
+The engine runs on your PC with simulated money and live Revolut X prices. A Claude Code agent trades through the engine's tools once an hour, following the active strategy (`strategies/balanced.v3.json` by default). Nothing here can touch your real account: paper mode holds no trading keys.
 
 ## Once
 
@@ -21,7 +23,7 @@ The engine runs on your PC with simulated money and live Revolut X prices. A Cla
    ```
    The engine creates the `cix` database on start. Browse it at http://localhost:1234. `--restart unless-stopped` brings the emulator back after a reboot; its data lives in the container, so don't remove the container. Without Cosmos, paper balances reset whenever the engine stops.
 
-5. Choose what can be traded. No pair list lives in configuration (ADR-0021). `config/risk-limits.json`, which only you edit, holds one rule: `"AllowedQuoteCurrency": "EUR"` and `"MaxTradableSymbols"` (1 to 50). You add and remove coins on the dashboard's Coins tab: every added coin is watched (prices, candles, the scan), and it trades only while it passes the running strategy's filters. Each coin shows its level: trading, filtered out (with the reason), flagged by the market analyst, waiting for data, held outside the strategy, just added, or on the account (held but not added by you, so the strategy doesn't buy it until you add it). Coins the account holds are always watched, and a held coin can't be removed. Before you switch strategy, the switch dialog lists which coins would enter and leave trading and which of those you hold; after a switch that changes the coin filters, the Coins tab shows what changed until you dismiss it. A new environment starts with nothing watched. Symbols the exchange doesn't list or has suspended are skipped at every scan.
+5. Choose what can be traded. No pair list lives in configuration (ADR-0021). `config/risk-limits.json`, which only you edit, holds one rule: `"AllowedQuoteCurrency": "EUR"` and `"MaxTradableSymbols"` (1 to 50). You add and remove coins on the dashboard's Coins tab: every added coin is watched (prices, candles, the scan), and it trades only while it passes the running strategy's filters. Each coin shows its level: trading, filtered out (with the reason), flagged by the market analyst, waiting for data, held outside the strategy, just added, or on the account (held but not added by you, so the strategy doesn't buy it until you add it). Coins the account holds are always watched, and a held coin can't be removed. Before you switch strategy, the switch dialog lists which coins would enter and leave trading and which of those you hold; after a switch that changes the coin filters, the Coins tab shows what changed until you dismiss it. A new environment starts with nothing watched. Symbols the exchange doesn't list or has suspended are skipped at every scan. Since ADR-0028 the Azure dashboard shows only the live engine, so for a local engine write the `tradable-pair` request into the emulator's `requests` container by hand ([persistence.md](persistence.md), the Coins tab's request).
 
 ## Every session
 
@@ -57,6 +59,10 @@ Then ask things like "summarise today's journal" or "pause trading". Or read the
 
 To pause everything: stop the run script, or call `pause_trading` with the owner key. The engine also halts on its own at the hard drawdown ceiling, when a held coin, or every watched coin, has had no fresh market data for 15 minutes (a quiet coin nobody holds is only left out of trading), after repeated risk-gate rejections, or when it finds an order it didn't place.
 
+## The paper balance
+
+A new paper account starts with `Paper:InitialBalances` in `src/Cix.Engine/appsettings.json` (1000 EUR, to match `AllocationQuote` in `config/risk-limits.json`). The account is saved, so a change there applies only to a new one: reset paper's state to start over (`docs/azure.md`, "Resetting the database"). A reset also clears the open paper positions and the watched coins.
+
 ## Changing the strategy
 
-There are two strategies, `good` and `risky` (see `strategies/README.md`); pick one with `Strategy:Name` in `src/Cix.Engine/appsettings.json`. To change one, copy it to the next version (for example `good.v2.json`), edit the copy (raise the version inside too), and set `Strategy:Version`. Never edit a version that has already run.
+The presets are Safe, Balanced and Risky (see `strategies/README.md`); the engine starts with the one named by `Strategy:Name` and `Strategy:Version` in `src/Cix.Engine/appsettings.json`. To change one, copy it to the next version (for example `balanced.v4.json`), edit the copy (raise the version inside too), and set `Strategy:Version`. Never edit a version that has already run.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Whether this run deploys the engine and the agents (agents-images, deploy-agents in ci.yml): writes deploy=true or
+# Whether this run deploys the engine and the agents (agents-images, deploy-live in ci.yml): writes deploy=true or
 # deploy=false to $GITHUB_OUTPUT.
 #   - Not while the environment has nothing in Azure (agents.deploy none in SETTINGS).
 #   - Runs can finish out of order, and an older one must not deploy over newer images. It deploys when it is the tip of
@@ -13,10 +13,10 @@ out="${GITHUB_OUTPUT:-/dev/stdout}"
 # The files plan.sh sets `images` for, or makes it run everything for: CI itself, and any file it doesn't classify (all
 # but the ones `quiet` lists, which never change the images). test-deploy-agents.py checks that the two agree.
 images='^(src/|Cix\.slnx$|Directory\.Build\.props$|global\.json$|NuGet\.config$|\.editorconfig$|config/|strategies/|docker/|docker-compose[^/]*\.yml$|\.dockerignore$|tools/trader/|\.claude/agents/|\.claude/hooks/|\.claude/settings\.json$|\.github/workflows/|tools/ci/)'
-quiet='^(tests/|tools/azure/|infra/|dashboard/|docs/|\.claude/skills/|\.gitleaks\.toml$|\.gitignore$|\.gitattributes$|LICENSE$)|\.md$'
+quiet='^(tests/|stocks/|tools/azure/|infra/|dashboard/|docs/|\.claude/skills/|\.gitleaks\.toml$|\.gitignore$|\.gitattributes$|LICENSE$)|\.md$'
 
 if [[ ! -f "${SETTINGS:-}" ]]; then
-  echo "::error::No environment file ${SETTINGS:-} (AGENTS_ENVIRONMENT names it)."
+  echo "::error::No environment file ${SETTINGS:-}."
   exit 1
 fi
 deploy="$(jq -r '.agents.deploy // "none"' "$SETTINGS")"

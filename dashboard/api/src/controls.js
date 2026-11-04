@@ -4,12 +4,17 @@
 // the halt the page showed: it sends that halt's since and the later cause found beside it (haltAlsoAt), and the engine
 // refuses any other. A live request is taken only with confirmLive, which the page sends once the owner has ticked the box
 // that names real money. The engine checks everything again. Pure functions: tested on their own.
+//
+// The analyst's Run now button works the same way: an analyst-run request the engine of that mode takes
+// (src/Cix.Engine/AgentRuns/AnalystRunRequestService.cs), which queues an analyst run outside its schedule unless one is in
+// flight, one ran within the cooldown, or today's cap is reached. It carries nothing the analyst reads.
 
 const { cleanNote, RequestError } = require('./requests');
 const { engineTextRu } = require('./engineText');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REQUEST_TYPE = 'trading-control';
+const ANALYST_REQUEST_TYPE = 'analyst-run';
 const ACTIONS = new Set(['pause', 'resume']);
 const MODES = new Set(['paper', 'live']);
 // An ISO time as the engine's status writes it, passed back untouched.
@@ -71,4 +76,46 @@ function controlRequestItem(doc) {
   };
 }
 
-module.exports = { controlRequestDocument, controlRequestItem, REQUEST_TYPE };
+/**
+ * The request document for the analyst's Run now, or a RequestError saying what is wrong.
+ * @param {object} body id (a fresh UUID per press), tradingMode, confirmLive.
+ * @param {number} now Milliseconds since the epoch: the request's time is the server's.
+ */
+function analystRequestDocument(body, now) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError('The request must be a JSON object.');
+  const { id } = body;
+  if (typeof id !== 'string' || !UUID.test(id)) throw new RequestError('id must be a UUID.');
+  const tradingMode = body.tradingMode ?? 'paper';
+  if (!MODES.has(tradingMode)) throw new RequestError('tradingMode must be paper or live.');
+  if (tradingMode === 'live' && body.confirmLive !== true) throw new RequestError('Confirm that this changes real-money trading.');
+  const at = new Date(now).toISOString();
+  return {
+    id: id.toLowerCase(),
+    day: at.slice(0, 10),
+    createdAt: at,
+    type: ANALYST_REQUEST_TYPE,
+    requestedBy: 'owner', // a role, never the account's name or email
+    tradingMode,
+    status: 'new',
+  };
+}
+
+/** A Run now request as the page follows it. */
+function analystRequestItem(doc) {
+  const events = Array.isArray(doc.events) ? doc.events : [];
+  const last = events[events.length - 1] ?? {};
+  return {
+    id: doc.id,
+    day: doc.day ?? null,
+    createdAt: doc.createdAt ?? null,
+    tradingMode: doc.tradingMode ?? 'paper',
+    status: doc.status ?? 'new',
+    detail: last.detail ?? null,
+    detailRu: engineTextRu(last.detail),
+    updatedAt: doc.updatedAt ?? null,
+  };
+}
+
+module.exports = {
+  controlRequestDocument, controlRequestItem, analystRequestDocument, analystRequestItem, REQUEST_TYPE, ANALYST_REQUEST_TYPE,
+};

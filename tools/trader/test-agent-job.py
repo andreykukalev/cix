@@ -127,6 +127,11 @@ FAKE_CLAUDE = """#!/usr/bin/env bash
 case "${FAKE_CLAUDE_MODE:-done}" in
   done) echo '{"is_error":false,"result":"cycle finished","total_cost_usd":0.02,"num_turns":4,"modelUsage":{"claude-sonnet":{}}}' ;;
   limit) echo '{"is_error":true,"result":"Claude AI usage limit reached","total_cost_usd":0,"num_turns":0}' ;;
+  # Today's Claude Code wording for a subscription limit, as the JSON result and as a plain message on stderr.
+  session-limit) echo '{"is_error":true,"result":"You\\u2019ve hit your session limit \\u00b7 resets 7:20pm (UTC)","total_cost_usd":0,"num_turns":1}' ;;
+  weekly-limit) echo "You've hit your weekly limit · resets Nov 2, 10am (UTC)" >&2; exit 1 ;;
+  # A run that did work and whose answer mentions a limit is still a failure, so it counts toward the caps.
+  worked) echo '{"is_error":true,"result":"Sources say you have hit your limit of news; stopping.","total_cost_usd":0.31,"num_turns":25}' ;;
   error) echo 'not json'; echo "boom: bearer $CIX_ENGINE_TOKEN, key $(cat "$CLAUDE_TOKEN_FILE")" >&2; exit 2 ;;
 esac
 """
@@ -259,7 +264,28 @@ def main():
             reset("runs-trader", [("m7", 0, message("run-20261026-160600-dddddd", "trader"))])
             code, out, _ = run("run-trader.sh", "trader", port, tmp, claude_mode="limit")
             assert code == 0, out
-            assert [json.loads(o[2]) for o in calls("POST", "/outcome")] == [{"outcome": "not-run"}]
+            assert [json.loads(o[2]) for o in calls("POST", "/outcome")] == [{"outcome": "not-run", "reason": "usage-limit"}]
+
+        def todays_claude_limit_wording_is_not_run():
+            # Claude Code's current wording, in the JSON result or as a plain message: a limit, not a failure.
+            for i, mode in enumerate(("session-limit", "weekly-limit")):
+                reset("runs-analyst", [(f"m14{i}", 0, message(f"analyst-20261028-164500-0a1b2{i}", "analyst", "analyst"))])
+                code, out, _ = run("run-analyst.sh", "analyst", port, tmp, claude_mode=mode)
+                assert code == 0, (mode, out)
+                assert "usage or rate limit reached" in out, (mode, out)
+                assert [json.loads(o[2]) for o in calls("POST", "/outcome")] == [{"outcome": "not-run", "reason": "usage-limit"}], mode
+
+        def a_run_that_worked_is_failed_whatever_its_text():
+            reset("runs-analyst", [("m15", 0, message("analyst-20261028-164600-0a1b2c", "analyst", "analyst"))])
+            code, out, _ = run("run-analyst.sh", "analyst", port, tmp, claude_mode="worked")
+            assert code != 0, out
+            assert [json.loads(o[2]) for o in calls("POST", "/outcome")] == [{"outcome": "failed"}]
+
+        def expired_credentials_are_not_run():
+            reset("runs-analyst", [("m16", 0, message("analyst-20261028-164700-0a1b2c", "analyst", "analyst"))])
+            code, out, claude = run("run-analyst.sh", "analyst", port, tmp, CLAUDE_TOKEN_EXPIRES="2020-01-01")
+            assert code == 0 and claude is None, out
+            assert [json.loads(o[2]) for o in calls("POST", "/outcome")] == [{"outcome": "not-run", "reason": "credentials"}]
 
         def failed_run_is_reported():
             reset("runs-trader", [("m8", 0, message("run-20261026-160700-eeeeee", "trader"))])

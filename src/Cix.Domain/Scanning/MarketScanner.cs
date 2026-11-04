@@ -66,8 +66,43 @@ public sealed record ScannerParameters
     /// <summary>When true (the default), a held position in a downtrend gets a trend-down exit; when false, only its stop or target.</summary>
     public bool TrendExits { get; init; } = true;
 
-    /// <summary>Hourly candles needed in the last 24 hours to judge liquidity.</summary>
+    /// <summary>Hourly candles needed in the last 24 hours to judge liquidity (hourly strategies).</summary>
     public int MinHourlyCandles24h { get; init; } = 12;
+
+    /// <summary>Candles the strategy trades on: <see cref="Hourly"/> (the default) or <see cref="Daily"/>. Set by the spec's top-level <c>timeframe</c>.</summary>
+    public string Timeframe { get; init; } = Hourly;
+
+    public const string Hourly = "1h";
+
+    /// <summary>
+    /// Daily candles (ADR-0029): EMAs, ATR, volume and the trend come from daily candles, an entry needs a daily close above
+    /// the highest high of the <see cref="BreakoutCandles"/> days before it, and the trend exit is a daily close below the slow EMA.
+    /// </summary>
+    public const string Daily = "1d";
+
+    /// <summary>
+    /// Longest EMA the scan's daily candles can support: the engine keeps 320 (see the engine's FeatureService), so even a
+    /// 150-day EMA's starting average weighs about a tenth.
+    /// </summary>
+    public const int MaxDailyEmaPeriod = 150;
+
+    /// <summary>Daily: the breakout looks back this many daily candles, before the one that closed last.</summary>
+    public int BreakoutCandles { get; init; } = 20;
+
+    /// <summary>
+    /// Daily: new buys only while BTC's last daily close (BTC in the coin's quote currency, which must be watched) is above its
+    /// EMA of this many days. 0 turns the regime filter off.
+    /// </summary>
+    public int RegimeEmaPeriod { get; init; }
+
+    /// <summary>Daily: the most the ask may be above the breakout's daily close at entry, in daily ATRs, so a late buy doesn't chase.</summary>
+    public decimal EntryMaxAboveBreakoutAtr { get; init; } = 0.5m;
+
+    /// <summary>
+    /// Daily: a trailing stop, in daily ATRs below the highest daily close since the buy filled. The engine raises a held
+    /// position's stop to it, never lowers it. 0 (the default) keeps the stop where the buy set it.
+    /// </summary>
+    public decimal TrailAtr { get; init; }
 
     public void Validate()
     {
@@ -77,26 +112,41 @@ public sealed record ScannerParameters
             throw new InvalidOperationException("Scanner fee and slippage must be between 0 and 0.1.");
         if (MomentumWeight < 0 || TrendWeight < 0 || VolumeWeight < 0 || CostWeight < 0)
             throw new InvalidOperationException("Scanner weights can't be negative.");
-        if (EntryMaxAboveEma20Atr < 0 || StopAtr <= 0 || RewardRisk <= 0 || RiskPerTradeQuote <= 0 || OrderQuote <= 0)
-            throw new InvalidOperationException("Scanner entry, stop, reward and sizing values must be positive.");
+        if (EntryMaxAboveEma20Atr < 0 || StopAtr <= 0 || RewardRisk < 0 || RiskPerTradeQuote <= 0 || OrderQuote <= 0)
+            throw new InvalidOperationException("Scanner entry, stop and sizing values must be positive, and rewardRisk at least 0 (0 means no target).");
         if (MaxEntrySignals is < 0 or > 10 || MinHourlyCandles24h is < 1 or > 24)
             throw new InvalidOperationException("Scanner MaxEntrySignals must be 0-10 and MinHourlyCandles24h 1-24.");
-        if (FastEmaPeriod < 3 || SlowEmaPeriod > MaxEmaPeriod || FastEmaPeriod >= SlowEmaPeriod)
-            throw new InvalidOperationException($"Scanner EMA periods must satisfy 3 <= fast < slow <= {MaxEmaPeriod}.");
+        if (Timeframe is not (Hourly or Daily))
+            throw new InvalidOperationException($"Scanner timeframe must be \"{Hourly}\" or \"{Daily}\".");
+        var daily = Timeframe == Daily;
+        var maxEma = daily ? MaxDailyEmaPeriod : MaxEmaPeriod;
+        if (FastEmaPeriod < 3 || SlowEmaPeriod > maxEma || FastEmaPeriod >= SlowEmaPeriod)
+            throw new InvalidOperationException($"Scanner EMA periods must satisfy 3 <= fast < slow <= {maxEma}.");
+        if (BreakoutCandles is < 2 or > 100 || RegimeEmaPeriod is < 0 or 1 or > MaxDailyEmaPeriod || EntryMaxAboveBreakoutAtr < 0 || TrailAtr is < 0 or (> 0 and < 1) or > 10)
+            throw new InvalidOperationException($"Scanner breakoutCandles must be 2-100, regimeEmaPeriod 0 or 2-{MaxDailyEmaPeriod}, entryMaxAboveBreakoutAtr at least 0 and trailAtr 0 or 1-10 (a tighter trail would sell almost at once).");
+        if (!daily && (RegimeEmaPeriod != 0 || TrailAtr != 0))
+            throw new InvalidOperationException("Scanner regimeEmaPeriod and trailAtr work on daily candles only (timeframe 1d).");
     }
 }
 
 /// <summary>A position the account holds, with the plan recorded when it was bought (null when unknown).</summary>
-public sealed record HeldPosition(string Symbol, decimal SellableBaseSize, decimal? StopLoss, decimal? TakeProfit);
+/// <param name="FilledAt">When the buy behind it filled, for a trailing stop; null when unknown.</param>
+public sealed record HeldPosition(string Symbol, decimal SellableBaseSize, decimal? StopLoss, decimal? TakeProfit, DateTimeOffset? FilledAt = null);
 
-/// <summary>Everything the scanner needs about one universe symbol. <paramref name="Hourly"/> is oldest first.</summary>
+/// <summary>
+/// Everything the scanner needs about one universe symbol. <paramref name="Hourly"/> and <paramref name="Daily"/> are closed
+/// candles, oldest first; a daily strategy needs <paramref name="Daily"/>.
+/// </summary>
+/// <param name="LastSoldAt">When the engine last sold this coin, if recently: a daily strategy doesn't buy it again on the same breakout.</param>
 public sealed record ScanInput(
     string Symbol,
     FeatureSet Features,
     IReadOnlyList<Candle> Hourly,
     PairInfo? Pair,
     bool Allowed,
-    bool HasOpenOrder);
+    bool HasOpenOrder,
+    IReadOnlyList<Candle>? Daily = null,
+    DateTimeOffset? LastSoldAt = null);
 
 public sealed record ScanRow(
     string Symbol,
@@ -118,7 +168,7 @@ public sealed record ScanRow(
 /// <param name="Return24h">The move over the last 24 hours, when its data allows.</param>
 public sealed record ScanExclusion(string Symbol, string Reason, string Detail, decimal? Return1h = null, decimal? Return24h = null);
 
-/// <summary>A suggested buy: a limit at the ask, with the stop and target to pass to place_order.</summary>
+/// <summary>A suggested buy: a limit at the ask, with the stop and target to pass to place_order (no target when the strategy sets none).</summary>
 public sealed record EntrySignal(
     string Symbol,
     int Rank,
@@ -126,26 +176,31 @@ public sealed record EntrySignal(
     decimal BaseSize,
     decimal QuoteSize,
     decimal StopLoss,
-    decimal TakeProfit,
+    decimal? TakeProfit,
     decimal RiskQuote,
     string Reason);
 
 /// <summary>A suggested exit: sell the whole sellable size with a limit at the bid. None while the symbol has an open order.</summary>
 public sealed record ExitSignal(string Symbol, decimal BaseSize, decimal LimitPrice, string Reason, string Detail);
 
+/// <summary>A held position's stop raised to its trailing level (<see cref="ScannerParameters.TrailAtr"/>); the engine applies it.</summary>
+public sealed record StopRaise(string Symbol, decimal From, decimal To, string Detail);
+
+/// <param name="StopRaises">Trailing-stop raises for held positions; null or empty when the strategy trails none.</param>
 public sealed record ScanResult(
     DateTimeOffset AsOf,
     IReadOnlyList<ScanRow> Ranked,
     IReadOnlyList<ScanExclusion> Excluded,
     IReadOnlyList<EntrySignal> Entries,
-    IReadOnlyList<ExitSignal> Exits);
+    IReadOnlyList<ExitSignal> Exits,
+    IReadOnlyList<StopRaise>? StopRaises = null);
 
 /// <summary>
 /// Deterministic market scan (ADR-0006): filters a curated universe for liquidity, spread, volatility and cost, ranks what
 /// passes by risk-adjusted momentum, suggests sized entries for the best pullbacks in uptrends, and flags held positions
 /// that hit their stop, target or a downtrend. Pure arithmetic: no I/O, same inputs give the same result.
 /// </summary>
-public static class MarketScanner
+public static partial class MarketScanner
 {
     /// <summary>Momentum is the 24h return measured in hourly ATRs, clamped so one spike can't dominate.</summary>
     public const decimal MomentumClamp = 5m;
@@ -166,7 +221,9 @@ public static class MarketScanner
         ArgumentNullException.ThrowIfNull(inputs);
         ArgumentNullException.ThrowIfNull(held);
         ArgumentNullException.ThrowIfNull(parameters);
-        inputs = inputs.Select(i => WithTrend(i, parameters)).ToList();
+        var daily = parameters.Timeframe == ScannerParameters.Daily;
+        inputs = inputs.Select(i => daily ? WithDailyFeatures(i, parameters) : WithTrend(i, parameters)).ToList();
+        var regimes = new Dictionary<string, Regime>(StringComparer.Ordinal);
 
         var heldBySymbol = held.ToDictionary(h => h.Symbol, StringComparer.Ordinal);
         var excluded = new List<ScanExclusion>();
@@ -183,11 +240,11 @@ public static class MarketScanner
                 continue;
             }
 
-            var (metrics, exclusion) = Evaluate(input, parameters);
+            var (metrics, exclusion) = daily ? EvaluateDaily(input, parameters, now) : Evaluate(input, parameters);
             if (exclusion is not null)
                 excluded.Add(exclusion with { Return1h = moves.Hour, Return24h = moves.Day });
             else
-                eligible.Add((input, metrics!, Score(input.Features, metrics!, parameters)));
+                eligible.Add((input, metrics!, daily ? DailyScore(input.Features, metrics!, parameters) : Score(input.Features, metrics!, parameters)));
         }
 
         var ranked = new List<ScanRow>();
@@ -211,7 +268,9 @@ public static class MarketScanner
             {
                 // The entry rules first, then the limit: a coin the rules turn down says why, and only one that passes them
                 // can be held back by the limit.
-                var (signal, reason, why) = Entry(input, metrics, rank, parameters);
+                var (signal, reason, why) = daily
+                    ? DailyEntry(input, metrics, rank, parameters, RegimeFor(input, inputs, parameters, now, regimes))
+                    : Entry(input, metrics, rank, parameters);
                 (noEntry, detail) = (reason, why);
                 if (signal is not null && entries.Count >= parameters.MaxEntrySignals)
                     (noEntry, detail) = ("signal limit reached", SignalLimitDetail(entries, parameters.MaxEntrySignals));
@@ -228,11 +287,14 @@ public static class MarketScanner
 
         var inputsBySymbol = inputs.ToDictionary(i => i.Symbol, StringComparer.Ordinal);
         var exits = held.OrderBy(h => h.Symbol, StringComparer.Ordinal)
-            .Select(h => inputsBySymbol.GetValueOrDefault(h.Symbol) is { HasOpenOrder: false } input ? Exit(h, input.Features, parameters.TrendExits) : null)
+            .Select(h => inputsBySymbol.GetValueOrDefault(h.Symbol) is { HasOpenOrder: false } input
+                ? Exit(h, input.Features, parameters.TrendExits, daily, daily ? DailyTrendDown(input, parameters, now) : null)
+                : null)
             .OfType<ExitSignal>()
             .ToList();
+        var raises = daily && parameters.TrailAtr > 0 ? Trail(held, inputsBySymbol, exits, parameters, now) : [];
 
-        return new ScanResult(now, ranked, excluded, entries, exits);
+        return new ScanResult(now, ranked, excluded, entries, exits, raises);
     }
 
     /// <summary>
@@ -257,21 +319,16 @@ public static class MarketScanner
     public static decimal RoundTripCost(decimal spreadFraction, ScannerParameters parameters) =>
         (2m * parameters.TakerFeeRate) + spreadFraction + (2m * parameters.SlippageFraction);
 
-    internal sealed record Metrics(decimal QuoteVolume24h, decimal? VolumeRatio, decimal RoundTripCost);
+    /// <param name="Daily">The daily figures a daily strategy's ranking and entry use; null for hourly strategies.</param>
+    internal sealed record Metrics(decimal QuoteVolume24h, decimal? VolumeRatio, decimal RoundTripCost, DailyFigures? Daily = null);
 
     private static (Metrics? Metrics, ScanExclusion? Exclusion) Evaluate(ScanInput input, ScannerParameters p)
     {
         ScanExclusion Out(string reason, string detail) => new(input.Symbol, reason, detail);
         var f = input.Features;
 
-        if (!input.Allowed)
-            return (null, Out("not-allowed", "Not among the tradable pairs (the owner adds them from the dashboard, within the owner's limits file)."));
-        if (input.Pair is null)
-            return (null, Out("not-listed", "The exchange doesn't list this pair."));
-        if (!input.Pair.Active)
-            return (null, Out("inactive", "The exchange has suspended trading in this pair."));
-        if (f.IsStale)
-            return (null, Out("stale", "Market data is stale."));
+        if (Unusable(input) is { } unusable)
+            return (null, unusable);
         if (f.Price is not > 0 || f.AtrFraction is not > 0 || f.Atr14 is not > 0 || f.SpreadFraction is null || f.Ema20 is null)
             return (null, Out("insufficient-history", "Not enough candles yet for EMA, ATR or spread."));
 
@@ -296,6 +353,21 @@ public static class MarketScanner
             return (null, Out("costs-exceed-volatility", Inv($"Hourly ATR {f.AtrFraction.Value:0.##%} is under {p.MinAtrToCostRatio:0.##}× the round-trip cost {cost:0.##%}.")));
 
         return (new Metrics(quoteVolume, volumeRatio, cost), null);
+    }
+
+    /// <summary>The exclusion that applies whatever the timeframe (not tradable, not listed, suspended, stale), or null.</summary>
+    private static ScanExclusion? Unusable(ScanInput input)
+    {
+        ScanExclusion Out(string reason, string detail) => new(input.Symbol, reason, detail);
+        if (!input.Allowed)
+            return Out("not-allowed", "Not among the tradable pairs (the owner adds them from the dashboard, within the owner's limits file).");
+        if (input.Pair is null)
+            return Out("not-listed", "The exchange doesn't list this pair.");
+        if (!input.Pair.Active)
+            return Out("inactive", "The exchange has suspended trading in this pair.");
+        if (input.Features.IsStale)
+            return Out("stale", "Market data is stale.");
+        return null;
     }
 
     /// <summary>
@@ -341,12 +413,24 @@ public static class MarketScanner
         if (p.RequireUptrendPullback && (f.Return1h is null || return1h < 0))
             return (null, "last hour falling", Inv($"Last hour {hour}; the strategy waits for an hour that isn't falling."));
 
-        var entry = f.Ask.Value;
+        var setup = p.RequireUptrendPullback ? "uptrend pullback" : Inv($"test entry (trend {trend}),");
+        var reason = Inv($"{setup} {aboveEma:0.##} ATR above EMA20, 1h {hour}, 24h {(f.Return24h ?? 0m):+0.##%;-0.##%;0%}");
+        return Sized(input, m, rank, p, f.Ask.Value, atr, reason);
+    }
+
+    /// <summary>
+    /// A buy at <paramref name="entry"/> (the ask) with its stop <see cref="ScannerParameters.StopAtr"/> ATRs below and its
+    /// target (none when <see cref="ScannerParameters.RewardRisk"/> is 0), sized so a stop-out loses about the risk per trade.
+    /// </summary>
+    private static (EntrySignal? Signal, string? NoEntryReason, string? Detail) Sized(
+        ScanInput input, Metrics m, int rank, ScannerParameters p, decimal entry, decimal atr, string reason)
+    {
+        var pair = input.Pair!;
         var r = p.StopAtr * atr;
         var stop = FloorToStep(entry - r, pair.QuoteStep);
         if (stop <= 0)
             return (null, "stop below zero", Inv($"A stop {p.StopAtr:0.##} ATR below the ask would be at or below zero."));
-        var target = CeilToStep(entry + (p.RewardRisk * r), pair.QuoteStep);
+        decimal? target = p.RewardRisk > 0 ? CeilToStep(entry + (p.RewardRisk * r), pair.QuoteStep) : null;
         if (stop > entry * (1 - MinExitDistanceFraction) || target < entry * (1 + MinExitDistanceFraction))
             return (null, "stop or target too close", // place_order would refuse it, and the next scan would offer it again
                 Inv($"The stop ({p.StopAtr:0.##} ATR below the ask) or the target is within {MinExitDistanceFraction:0.0%} of the ask; an order needs at least {MinExitDistanceFraction:0.0%}."));
@@ -365,8 +449,6 @@ public static class MarketScanner
                 ? Inv($"The sized order, {quote:0.##} {pair.Quote} (at most {p.OrderQuote:0.##} per order and {p.RiskPerTradeQuote:0.##} at risk), is below the exchange minimum of {pair.MinOrderSizeQuote:0.##} {pair.Quote}.")
                 : Inv($"The sized order, {size:0.########} {pair.Base} (at most {p.OrderQuote:0.##} {pair.Quote} per order and {p.RiskPerTradeQuote:0.##} at risk), is below the exchange minimum of {pair.MinOrderSize:0.########} {pair.Base}."));
 
-        var setup = p.RequireUptrendPullback ? "uptrend pullback" : Inv($"test entry (trend {trend}),");
-        var reason = Inv($"{setup} {aboveEma:0.##} ATR above EMA20, 1h {hour}, 24h {(f.Return24h ?? 0m):+0.##%;-0.##%;0%}");
         return (new EntrySignal(
             input.Symbol, rank, entry, size, Math.Round(quote, 2), stop, target, Math.Round(size * lossPerUnit, 2), reason), null, null);
     }
@@ -374,7 +456,9 @@ public static class MarketScanner
     /// <summary>Least distance of a stop or target from the entry; the same rule as place_order's.</summary>
     public const decimal MinExitDistanceFraction = 0.005m;
 
-    private static ExitSignal? Exit(HeldPosition h, FeatureSet? f, bool trendExits)
+    /// <param name="daily">A daily strategy: its trend exit is <paramref name="dailyTrendDown"/>, not the fast EMA below the slow one.</param>
+    /// <param name="dailyTrendDown">The detail when the last daily close is below the slow EMA, or null when it isn't (or can't be told).</param>
+    private static ExitSignal? Exit(HeldPosition h, FeatureSet? f, bool trendExits, bool daily = false, string? dailyTrendDown = null)
     {
         if (f is null || f.IsStale || f.Bid is not > 0 || h.SellableBaseSize <= 0)
             return null; // no fresh price: nothing to judge (the stale exclusion shows why)
@@ -385,6 +469,8 @@ public static class MarketScanner
         if (h.TakeProfit is { } target && bid >= target)
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "target", Inv($"bid {bid} at or above target {target}"));
         // Without trend exits a position relies on its stop; one without a recorded stop still leaves on a downtrend.
+        if (daily)
+            return dailyTrendDown is not null && (trendExits || h.StopLoss is null) ? new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "trend-down", dailyTrendDown) : null;
         if ((trendExits || h.StopLoss is null) && f.Trend == Trend.Down)
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "trend-down", "the fast EMA crossed below the slow EMA");
         return null;

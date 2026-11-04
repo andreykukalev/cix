@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
+using Cix.Domain.Scanning;
+using Cix.Engine.Analysis;
 using Cix.Engine.Journal;
 using Cix.Engine.Manual;
 using Cix.Engine.Persistence;
@@ -80,10 +82,15 @@ public interface IAgentRunSignals
     AgentRunInputs Read();
 }
 
-/// <summary>The scanner's latest signals and the owner's waiting requests: what the shell loops read from <c>/signals</c>.</summary>
-public sealed class EngineAgentRunSignals(MarketScanService scanner, ManualRequestService requests) : IAgentRunSignals
+/// <summary>
+/// The scanner's latest signals and the owner's waiting requests: what the shell loops read from <c>/signals</c>. Also when a
+/// risk-off market view ends, for its recheck.
+/// </summary>
+public sealed class EngineAgentRunSignals(MarketScanService scanner, ManualRequestService requests, MarketViewStore views) : IAgentRunSignals
 {
-    public AgentRunInputs Read() => new(scanner.Latest is not null, scanner.SignalDriven, scanner.SignalKey, requests.AgentKey);
+    public AgentRunInputs Read() => new(
+        scanner.Latest is not null, scanner.SignalDriven, scanner.SignalKey, requests.AgentKey,
+        views.Current is { Regime: MarketRegime.RiskOff } view ? view.ValidUntil : null);
 }
 
 /// <summary>
@@ -233,7 +240,14 @@ public sealed partial class AgentRunScheduler(
     }
 
     /// <summary>How a claimed run ended. No if there is no such claimed run for that job (unknown, or reported already).</summary>
-    public async Task<AgentRunAnswer> CompleteAsync(string runId, string? role, AgentRunOutcome outcome, CancellationToken cancellationToken)
+    public Task<AgentRunAnswer> CompleteAsync(string runId, string? role, AgentRunOutcome outcome, CancellationToken cancellationToken) =>
+        CompleteAsync(runId, role, outcome, null, cancellationToken);
+
+    /// <summary>
+    /// How a claimed run ended, and for a not-run why it didn't start (<see cref="AgentRunKinds.ParseNotRunReason"/>). The
+    /// reason is journaled only when the run counts as not run, so the dashboard can show a Claude limit apart from a failure.
+    /// </summary>
+    public async Task<AgentRunAnswer> CompleteAsync(string runId, string? role, AgentRunOutcome outcome, string? notRunReason, CancellationToken cancellationToken)
     {
         if (!ToolCallContext.IsSafeLabel(runId) || AgentRunKinds.ForRole(role) is not { } kind)
             return AgentRunAnswer.No;
@@ -250,13 +264,44 @@ public sealed partial class AgentRunScheduler(
             await SaveAsync(state, cancellationToken).ConfigureAwait(false);
             _usedRuns.TryRemove(runId, out _);
             LogCompleted(logger, run.Id, outcome.Name());
-            var note = reported == outcome ? string.Empty : $" (reported {reported.Name()}, but it made tool calls)";
-            await JournalAsync(run, outcome.Name(), Inv($"{Label(run)} {run.Id} ended: {outcome.Name()}{note}")).ConfigureAwait(false);
+            var reason = outcome == AgentRunOutcome.NotRun ? AgentRunKinds.ParseNotRunReason(notRunReason) : null;
+            var note = reported != outcome ? $" (reported {reported.Name()}, but it made tool calls)"
+                : reason is not null ? $" ({AgentRunKinds.NotRunReasonText(reason)})" : string.Empty;
+            await JournalAsync(run, outcome.Name(), Inv($"{Label(run)} {run.Id} ended: {outcome.Name()}{note}"), reason).ConfigureAwait(false);
             return AgentRunAnswer.Yes;
         }
         catch (AgentRunsUnavailableException)
         {
             return AgentRunAnswer.Unavailable;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The owner's Run now button (<see cref="AgentRunPlanner.RunAnalystNow"/>): queues an analyst run at once. Yes with what
+    /// was queued, No with why not, or Unavailable when this engine can't decide now (ask again at the next poll).
+    /// </summary>
+    public async Task<(AgentRunAnswer Answer, string Detail)> RunAnalystNowAsync(CancellationToken cancellationToken)
+    {
+        const string Unavailable = "This engine can't queue runs right now.";
+        if (!IsActive || !await _gate.WaitAsync(JobWait, cancellationToken).ConfigureAwait(false))
+            return (AgentRunAnswer.Unavailable, Unavailable);
+        try
+        {
+            var (state, run, refusal) = _planner.RunAnalystNow(await LoadAsync(cancellationToken).ConfigureAwait(false), time.GetUtcNow());
+            if (run is null)
+                return (AgentRunAnswer.No, refusal!);
+            await SaveAsync(state, cancellationToken).ConfigureAwait(false); // before the send, as for every run
+            return await TrySendAsync(run, cancellationToken).ConfigureAwait(false)
+                ? (AgentRunAnswer.Yes, Inv($"Analyst run {run.Id} queued; its market view usually arrives within 10 minutes. The next scheduled run is {_options.AnalystIntervalHours} hours after this one."))
+                : (AgentRunAnswer.No, "The analyst run couldn't be queued; press the button again in a minute.");
+        }
+        catch (AgentRunsUnavailableException)
+        {
+            return (AgentRunAnswer.Unavailable, Unavailable);
         }
         finally
         {
@@ -368,10 +413,12 @@ public sealed partial class AgentRunScheduler(
 
     private static string Reason(AgentRun run) => run.Key.Length > 0 ? $"{run.Purpose} {run.Key}" : run.Purpose;
 
-    private async Task JournalAsync(AgentRun? run, string step, string summary)
+    private async Task JournalAsync(AgentRun? run, string step, string summary, string? reason = null)
     {
         var now = time.GetUtcNow();
         var data = new Dictionary<string, string>(StringComparer.Ordinal) { ["step"] = step };
+        if (reason is not null)
+            data["reason"] = reason;
         if (run is not null)
         {
             data["job"] = run.Kind.Role();
@@ -427,7 +474,8 @@ public static class AgentRunRegistration
 {
     /// <summary>
     /// The agent-run scheduler, in Queue mode only; Compose keeps its shell loops (Off). Register after the scanner and the
-    /// manual requests, and before AddCixCosmos, which replaces the in-memory state store.
+    /// manual requests (the Run now requests share their container), and before AddCixCosmos, which replaces the in-memory
+    /// state store.
     /// </summary>
     public static IServiceCollection AddCixAgentRuns(this IServiceCollection services, AgentRunOptions options, ToolServerAuth auth, bool durableState)
     {
@@ -435,6 +483,10 @@ public static class AgentRunRegistration
         ArgumentNullException.ThrowIfNull(options);
         options.Validate(auth, durableState);
         services.AddSingleton(options);
+
+        // The owner's Run now button, in both modes: without the scheduler (Off) each request is refused and says why.
+        services.AddSingleton<AnalystRunRequestService>();
+        services.AddHostedService(sp => sp.GetRequiredService<AnalystRunRequestService>());
         if (options.Mode == AgentRunMode.Off)
             return services;
 

@@ -1,0 +1,19 @@
+{
+  "$comment": "Settings for the stocks advisory's Azure resources (infra/stocks/main.bicep), read by tools/azure/provision-stocks.ps1. No secrets here: the EODHD key goes to the vault from the script's prompt or a file. The image is pulled from the CIX registry of registryEnvironment (infra/environments/<name>.json). schedule is a cron expression in UTC; it must start after stocks/config/stocks.json's dataReadyUtc. The Claude analyst (ADR-0027) runs at analystSchedule, after the nightly run, with analystModel and Claude Code claudeCodeVersion (an exact x.y.z, so a new release changes nothing until you change it; latest is allowed and warns); claudeTokenExpires (YYYY-MM-DD) makes it warn before your Claude token expires, and is taken from registryEnvironment's agents.claudeTokenExpires when empty.",
+  "subscriptionId": "",
+  "resourceGroup": "rg-cix-stocks",
+  "location": "polandcentral",
+  "namePrefix": "cix",
+  "registryEnvironment": "dev",
+  "dashboardEnvironment": "dev",
+  "schedule": "0 2 * * 2-6",
+  "analystSchedule": "40 2,6,12,13 * * 1-6",
+  "analystModel": "opus",
+  "claudeCodeVersion": "2.1.316",
+  "claudeTokenExpires": "",
+  "monthlyBudget": 5,
+  "budgetStartDate": "2026-11-01",
+  "tags": {
+    "purpose": "cix-stocks-advisory"
+  }
+}

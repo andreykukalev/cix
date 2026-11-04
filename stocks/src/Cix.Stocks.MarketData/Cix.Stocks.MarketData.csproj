@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Cix.Stocks\Cix.Stocks.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Cix.Stocks.MarketData.Tests" />
+  </ItemGroup>
+</Project>

@@ -114,7 +114,7 @@ Check 'deployment parameters: valid JSON, no byte-order mark, arrays stay arrays
         Expect $p.sharedResourceGroupName.value 'rg-shared' 'shared resource group'
         Expect $p.sharedAccountName.value 'cosmos-shared-test' 'shared account'
         Expect $p.databaseThroughput.value 400 'databaseThroughput'
-        Expect $p.tags.value.purpose 'cix-paper-trading' 'tags'
+        Expect $p.tags.value.purpose 'cix-dashboard' 'tags'
       }
     }
     finally { Remove-Item $path -ErrorAction SilentlyContinue }
@@ -188,6 +188,21 @@ Check 'the engine queues agent runs only when startEngine is true' {
   $apps = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-apps.bicep'))
   if ($apps -notmatch "\{ name: 'AgentRuns__Mode', value: startEngine \? 'Queue' : 'Off' \}") { throw 'AgentRuns__Mode does not follow startEngine' }
   if (([regex]::Matches($apps, 'AgentRuns__Mode')).Count -ne 1) { throw 'AgentRuns__Mode is set more than once' }
+}
+
+# No VNet of its own (Azure bills a load balancer and an IP for one, and CIX uses neither): the engine stays private through
+# its environment-only ingress, in an environment that takes no traffic from the internet.
+Check 'the Container Apps environment has no VNet, takes no public traffic, and the engine''s ingress stays inside it' {
+  $platform = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-platform.bicep'))
+  if ($platform -match '(?m)^\s*(vnetConfiguration|infrastructureSubnetId)\b|Microsoft\.Network/') { throw 'the environment is put on a VNet (a billed load balancer and IP)' }
+  if (([regex]::Matches($platform, "(?m)^\s*publicNetworkAccess: 'Disabled'")).Count -ne 1) { throw 'the environment accepts public traffic' }
+  $apps = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'agents-apps.bicep'))
+  if ($apps -notmatch '(?m)^\s*external: false\b') { throw 'the engine''s ingress reaches outside its environment' }
+  if ($apps -match '(?m)^\s*external: true\b') { throw 'an app''s ingress reaches outside its environment' }
+  # Either would let traffic from outside the environment reach an app with internal ingress.
+  foreach ($name in Get-ChildItem (Join-CixPath $repo 'infra') -Recurse -Filter *.bicep) {
+    if ([IO.File]::ReadAllText($name.FullName) -match '(?i)httpRouteConfigs|privateEndpoints') { throw "$($name.Name) routes outside traffic into the environment" }
+  }
 }
 
 # The engine in Azure signs in to Cosmos DB with its identity: no account key anywhere in the agents' templates, and its
@@ -920,7 +935,7 @@ Check 'setup-ci-deploy.ps1 -For agents (-Yes), protected: trusts only its GitHub
   Expect @($calls -split "`n" | Where-Object { $_ -match 'role assignment create' }).Count 6 'role assignments'
   foreach ($expected in @('trusted only for repo:owner@11/repo@22:environment:citest', 'Trusts repo:owner@11/repo@22:environment:citest.',
       'LIVE_AZURE_CLIENT_ID = 66666666-6666-6666-6666-666666666666', 'LIVE_REGISTRY = crcixcitest1', 'LIVE_TENANT_ID = 00000000-0000-0000-0000-0000000000aa',
-      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'waits in CI for your approval')) {
+      'LIVE_SUBSCRIPTION_ID = 00000000-0000-0000-0000-000000000001', 'for your approval (Review deployments')) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   foreach ($never in @('refs/heads/main', 'AGENTS_', ' AZURE_CLIENT_ID', ' AZURE_TENANT_ID', ' AZURE_SUBSCRIPTION_ID')) {
@@ -1098,7 +1113,7 @@ Check 'setup-dashboard-requests.ps1 accepts the live role once in place, with or
   }
 }
 
-Check 'only the deploy-dashboard, deploy-agents and deploy-live jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
+Check 'only the deploy-dashboard and deploy-live jobs may request Azure sign-in tokens, and workflows run only on push, pull_request or workflow_dispatch' {
   # A guard against accidents, not a security control: anyone who can change main can change this test too (ADR-0010).
   $files = @(Get-ChildItem (Join-CixPath $repo '.github' 'workflows') -File | Where-Object { $_.Extension -in '.yml', '.yaml' })
   if ($files.Count -eq 0) { throw 'no workflows found' }
@@ -1120,11 +1135,11 @@ Check 'only the deploy-dashboard, deploy-agents and deploy-live jobs may request
     if ($triggers.Count -eq 0) { throw "$($f.Name): couldn't read its triggers" }
     $unexpected = @($triggers | Where-Object { $_ -notin 'push', 'pull_request', 'workflow_dispatch' })
     if ($unexpected.Count -gt 0) { throw "$($f.Name) runs on $($unexpected -join ', '); only push, pull_request and workflow_dispatch are allowed" }
-    # id-token, in any spelling, only in ci.yml: once inside each of the deploy-dashboard, deploy-agents and deploy-live jobs.
+    # id-token, in any spelling, only in ci.yml: once inside each of the deploy-dashboard and deploy-live jobs (no paper deploy since ADR-0028).
     $grants = @([regex]::Matches($text, 'id-token'))
     if ($f.Name -ne 'ci.yml') { if ($grants.Count -gt 0) { throw "$($f.Name) mentions id-token" }; continue }
-    Expect $grants.Count 3 'id-token mentions in ci.yml'
-    foreach ($job in 'deploy-dashboard', 'deploy-agents', 'deploy-live') {
+    Expect $grants.Count 2 'id-token mentions in ci.yml'
+    foreach ($job in 'deploy-dashboard', 'deploy-live') {
       $jobStart = $text.IndexOf("`n  ${job}:")
       if ($jobStart -lt 0) { throw "ci.yml has no $job job" }
       $next = [regex]::Match($text.Substring($jobStart + 1), '\n  [A-Za-z_-]+:')
@@ -1299,9 +1314,10 @@ Check 'provision.ps1 agents apps keeps the images the engine and the jobs run, b
   if ($r.Calls -cmatch '(^|\s)containerapp ') { throw "used the containerapp extension: $($r.Calls)" }
 }
 
-# A protected environment (ADR-0017): the citest copy marked protected, its images promoted from dev's registry.
+# A protected environment (ADR-0017): the citest copy marked protected, its images from its own registry, where CI pushes them
+# (nothing is promoted from a paper environment since ADR-0028; dev's registry stays in the fake to show it is never read).
 $devApps = '/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.App'
-function Get-PromoteFake([string]$RunningDigest = "sha256:$('5' * 64)") {
+function Get-ProtectedFake([string]$RunningDigest = "sha256:$('5' * 64)") {
   <# Both registries, and dev's engine and trader job running $RunningDigest (the fake gives every image the 5s digest). #>
   return @{
     'acr list'      = '[{"name":"crcixcitest1","tags":{"cix-environment":"citest"}},{"name":"crcixdev1","tags":{"cix-environment":"dev"}}]'
@@ -1309,7 +1325,7 @@ function Get-PromoteFake([string]$RunningDigest = "sha256:$('5' * 64)") {
     'resource show' = "[{`"type`":`"Microsoft.App/containerApps`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdev1.azurecr.io/cix-engine@$RunningDigest`"}]}}},{`"type`":`"Microsoft.App/jobs`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdev1.azurecr.io/cix-trader@$RunningDigest`"}]}}}]"
   }
 }
-$promoteFake = Get-PromoteFake
+$protectedFake = Get-ProtectedFake
 function New-FakeKeyFiles {
   <# Two files standing in for the exchange keys, with content built at run time: not a secret. #>
   $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-keys-$([guid]::NewGuid().ToString('N'))"
@@ -1321,24 +1337,22 @@ function New-FakeKeyFiles {
   return @{ Dir = $dir; Api = (Join-Path $dir 'api.txt'); Pem = (Join-Path $dir 'private.pem'); Bom = (Join-Path $dir 'bom.txt'); Marker = $marker }
 }
 
-Check 'provision.ps1 protected apps (-Yes): checks access, promotes dev''s images by digest, uploads the keys unseen, then deploys' {
+Check 'provision.ps1 protected apps (-Yes): checks access, takes its own registry''s images by digest, uploads the keys unseen, then deploys' {
   $keys = New-FakeKeyFiles
   try {
-    $r = Invoke-AgentsProvision $promoteFake @{ Yes = $true; ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = $keys.Api; ExchangePrivateKeyFile = $keys.Pem } 'apps' $true
+    $r = Invoke-AgentsProvision $protectedFake @{ Yes = $true; ImageTag = 'abc123'; ExchangeApiKeyFile = $keys.Api; ExchangePrivateKeyFile = $keys.Pem } 'apps' $true
   }
   finally { Remove-Item $keys.Dir -Recurse -Force }
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   $calls = $r.Calls.Replace('"', '') # Windows logs arguments with spaces in quotes
   foreach ($call in @('role assignment list --all', 'role assignment list --scope /subscriptions/00000000-0000-0000-0000-000000000001 --include-inherited',
-      'acr repository show-tags --name crcixdev1 --repository cix-engine',
-      "acr import --name crcixcitest1 --source crcixdev1.azurecr.io/cix-engine@$digest5 --image cix-engine:abc123 --force",
-      "acr import --name crcixcitest1 --source crcixdev1.azurecr.io/cix-trader@$digest5 --image cix-trader:abc123 --force",
+      'acr repository show --name crcixcitest1',
       "keyvault secret set --vault-name kvcixcitest1 --name revolutx-api-key --file $($keys.Api)",
       "keyvault secret set --vault-name kvcixcitest1 --name revolutx-private-key --file $($keys.Pem)",
       '--content-type Exchange key')) {
     if (-not $calls.Contains($call)) { throw "no '$call' in: $($r.Calls)" }
   }
-  if ($calls.IndexOf('acr import') -gt $calls.IndexOf('acr repository show --name crcixcitest1')) { throw 'read the digests to deploy before copying them' }
+  if ($calls.Contains('acr import') -or $calls.Contains('crcixdev1')) { throw "copied or read images from another registry: $($r.Calls)" }
   if ($calls.IndexOf('keyvault secret set') -gt $calls.IndexOf('deployment sub create')) { throw 'uploaded the keys after the deployment that mounts them' }
   if ($r.Output.Contains($keys.Marker) -or $r.Calls.Contains($keys.Marker)) { throw 'showed a key' }
   if ($calls.Contains('cosmosdb keys')) { throw "read the account key for this PC's paper engine" }
@@ -1418,21 +1432,17 @@ Check 'provision.ps1 protected: the live deploy''s expected roles pass, anything
 }
 
 foreach ($case in @(
-    @{ Name = 'an exchange key file for a paper environment'; Protected = $false; Deploy = 'apps'; Arguments = @{ ExchangeApiKeyFile = 'KEYFILE' }; Says = 'are for a protected environment only' },
-    @{ Name = '-PromoteFrom for a paper environment'; Protected = $false; Deploy = 'apps'; Arguments = @{ PromoteFrom = 'dev'; ImageTag = 'abc123' }; Says = 'are for a protected environment only' },
-    @{ Name = '-PromoteFrom without -ImageTag'; Protected = $true; Deploy = 'apps'; Arguments = @{ PromoteFrom = 'dev' }; Says = '-PromoteFrom needs -ImageTag' },
+    @{ Name = 'an exchange key file for an unprotected environment'; Protected = $false; Deploy = 'apps'; Arguments = @{ ExchangeApiKeyFile = 'KEYFILE' }; Says = 'are for a protected environment only' },
     @{ Name = 'key files without the apps'; Protected = $true; Deploy = 'platform'; Arguments = @{ ExchangeApiKeyFile = 'KEYFILE' }; Says = 'go with agents.deploy apps' },
     @{ Name = 'a key file with a byte-order mark'; Protected = $true; Deploy = 'apps'; Arguments = @{ ExchangeApiKeyFile = 'BOMFILE' }; Says = 'starts with a UTF-8 byte-order mark' },
     @{ Name = 'a key file that is not there'; Protected = $true; Deploy = 'apps'; Arguments = @{ ExchangePrivateKeyFile = 'no-such-key.pem' }; Says = 'no-such-key.pem: no such file' },
-    @{ Name = 'no exchange keys given or in Key Vault'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev' }; Says = 'has no revolutx-api-key' },
-    @{ Name = 'promoting from a protected environment'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'citest'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = '-PromoteFrom citest is protected' },
-    @{ Name = 'promoting images paper doesn''t run'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $promoteFake['acr list'] }; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = "dev doesn't run the images tagged abc123 now: promote the images paper runs" },
-    @{ Name = 'a protected environment without secrets/claude_token'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $promoteFake['acr list']; 'keyvault secret list' = '[]' }; Arguments = @{ ImageTag = 'abc123'; PromoteFrom = 'dev'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = 'has no claude-token'; NoLocalToken = $true })) {
+    @{ Name = 'no exchange keys given or in Key Vault'; Protected = $true; Deploy = 'apps'; Arguments = @{ ImageTag = 'abc123' }; Says = 'has no revolutx-api-key' },
+    @{ Name = 'a protected environment without secrets/claude_token'; Protected = $true; Deploy = 'apps'; Fake = @{ 'acr list' = $protectedFake['acr list']; 'keyvault secret list' = '[]' }; Arguments = @{ ImageTag = 'abc123'; ExchangeApiKeyFile = 'KEYFILE'; ExchangePrivateKeyFile = 'KEYFILE' }; Says = 'has no claude-token'; NoLocalToken = $true })) {
   Check "provision.ps1 refuses $($case.Name), before any change" {
     $keys = New-FakeKeyFiles
     $arguments = @{ Yes = $true }
     foreach ($k in $case.Arguments.Keys) { $arguments[$k] = switch ($case.Arguments[$k]) { 'KEYFILE' { $keys.Api } 'BOMFILE' { $keys.Bom } default { $_ } } }
-    $fakeAnswers = if ($case['Fake']) { $case.Fake } else { $promoteFake }
+    $fakeAnswers = if ($case['Fake']) { $case.Fake } else { $protectedFake }
     # Skipped where a developer has secrets/claude_token (it is never in the repo), as below.
     if ($case['NoLocalToken'] -and (Test-Path (Join-CixPath $repo 'secrets' 'claude_token'))) { Remove-Item $keys.Dir -Recurse -Force; return }
     try { $r = Invoke-AgentsProvision $fakeAnswers $arguments $case.Deploy $case.Protected }
@@ -1440,6 +1450,77 @@ foreach ($case in @(
     if (-not $r.Error -or -not $r.Error.Contains($case.Says)) { throw "got: $($r.Error)" }
     if ($r.Calls -match '(?m)\b(create|import|secret set)\b') { throw "it changed something before refusing: $($r.Calls)" }
   }
+}
+
+# An environment deployed before 2026-10-28 sits on its own VNet (a billed load balancer and IP): provision.ps1 rebuilds it.
+$vnetId = "$citestGroup/providers/Microsoft.Network/virtualNetworks/vnet-cix-citest"
+$vnetFake = @{
+  'resource list' = '[' + ((@("$citestGroup/providers/Microsoft.App/managedEnvironments/cae-cix-citest", "$citestGroup/providers/Microsoft.App/containerApps/ca-cix-citest-engine",
+          "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-trader", "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-requests",
+          "$citestGroup/providers/Microsoft.App/jobs/caj-cix-citest-analyst", $vnetId) | ForEach-Object { "{`"id`":`"$_`"}" }) -join ',') + ']'
+  'resource show' = "{`"properties`":{`"vnetConfiguration`":{`"infrastructureSubnetId`":`"$vnetId/subnets/snet-apps`",`"internal`":true}}}"
+  'lock list'     = '[]'
+}
+Check 'provision.ps1 agents apps rebuilds an environment on a VNet: apps, environment, then VNet, before the deployment' {
+  $r = Invoke-AgentsProvision $vnetFake @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  $calls = $r.Calls.Replace('"', '')
+  $positions = @('Microsoft.App/containerApps/ca-cix-citest-engine', 'Microsoft.App/jobs/caj-cix-citest-trader', 'Microsoft.App/jobs/caj-cix-citest-requests',
+    'Microsoft.App/jobs/caj-cix-citest-analyst', 'Microsoft.App/managedEnvironments/cae-cix-citest', 'Microsoft.Network/virtualNetworks/vnet-cix-citest') |
+    ForEach-Object { $calls.IndexOf("resource delete --ids $citestGroup/providers/$_ ") }
+  if (@($positions | Where-Object { $_ -lt 0 }).Count -gt 0) { throw "not everything was deleted: $($r.Calls)" }
+  for ($i = 1; $i -lt $positions.Count; $i++) { if ($positions[$i] -lt $positions[$i - 1]) { throw "deleted out of order: $($r.Calls)" } }
+  if ($positions[-1] -gt $calls.IndexOf('deployment sub create')) { throw 'deployed before the old environment was gone' }
+  if (-not $r.Output.Contains('setup-ci-deploy.ps1 -Environment citest -For agents again')) { throw "no reminder about CI's roles in: $($r.Output)" }
+  if (-not $r.Output.Contains("The images now are cix-engine@$digest5")) { throw "the images to redeploy weren't shown before deleting: $($r.Output)" }
+}
+
+Check 'provision.ps1 agents apps on a VNet: a preview deletes nothing, and -Yes never rebuilds the protected environment' {
+  $r = Invoke-AgentsProvision $vnetFake @{ WhatIfOnly = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if (-not $r.Output.Contains('The deployment would first delete ca-cix-citest-engine, caj-cix-citest-trader')) { throw "no notice in: $($r.Output)" }
+  if ($r.Calls.Contains('resource delete')) { throw "a preview deleted something: $($r.Calls)" }
+  $r = Invoke-AgentsProvision $vnetFake @{ Yes = $true; ImageTag = 'abc123' } 'apps' $true
+  if (-not $r.Error -or -not $r.Error.Contains('run without -Yes, to confirm it yourself')) { throw "got: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -match '(?m)\b(resource delete|deployment|import|secret set)\b') { throw "it changed something before refusing: $($r.Calls)" }
+  $r = Invoke-AgentsProvision $vnetFake @{ Yes = $true; SkipEngineConfig = $true } 'platform'
+  if (-not $r.Error -or -not $r.Error.Contains('set it to apps, so the rebuild recreates them')) { throw "got: $($r.Error)" }
+  if ($r.Calls.Contains('resource delete')) { throw "deleted apps platform wouldn't recreate: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents apps on a VNet refuses, changing nothing, when an app it wouldn''t recreate or a lock is in the group' {
+  $extra = $vnetFake['resource list'].Replace(']', ",{`"id`":`"$citestGroup/providers/Microsoft.App/containerApps/someone-elses`"}]")
+  $r = Invoke-AgentsProvision @{ 'resource list' = $extra; 'resource show' = $vnetFake['resource show'] } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains('also holds someone-elses')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match '(?m)\b(resource delete|deployment)\b') { throw "changed something: $($r.Calls)" }
+  $locked = @{}; foreach ($k in $vnetFake.Keys) { $locked[$k] = $vnetFake[$k] }
+  $locked['lock list'] = '[{"name":"keep"}]'
+  $r = Invoke-AgentsProvision $locked @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains('has locks (keep)')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match '(?m)\b(resource delete|deployment)\b') { throw "changed something: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents apps leaves an environment without a VNet as it is' {
+  $r = Invoke-AgentsProvision @{ 'resource list' = $vnetFake['resource list']; 'resource show' = '{"properties":{"vnetConfiguration":null,"publicNetworkAccess":"Disabled"}}' } @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if ($r.Calls.Contains('resource delete')) { throw "deleted something: $($r.Calls)" }
+  if (-not $r.Calls.Contains("resource show --ids $citestGroup/providers/Microsoft.App/managedEnvironments/cae-cix-citest")) { throw "didn't look at the environment: $($r.Calls)" }
+}
+
+Check 'provision.ps1 agents apps on a VNet keeps a VNet that isn''t its own, and deletes nothing if the dashboard''s settings can''t be read' {
+  $foreign = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/vnet-hub'
+  $fake = @{}; foreach ($k in $vnetFake.Keys) { $fake[$k] = $vnetFake[$k] }
+  $fake['resource show'] = "{`"properties`":{`"vnetConfiguration`":{`"infrastructureSubnetId`":`"$foreign/subnets/apps`"}}}"
+  $r = Invoke-AgentsProvision $fake @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  if (-not $r.Calls.Contains('resource delete --ids ' + "$citestGroup/providers/Microsoft.App/managedEnvironments/cae-cix-citest")) { throw "the environment wasn't rebuilt: $($r.Calls)" }
+  if ($r.Calls.Contains("resource delete --ids $foreign")) { throw 'deleted a VNet the template never made' }
+  $fake = @{}; foreach ($k in $vnetFake.Keys) { $fake[$k] = $vnetFake[$k] }
+  $fake['staticwebapp show'] = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-cix-citest/providers/Microsoft.Web/staticSites/stapp-cix-citest'
+  $fake['rest --method post'] = 'not json'
+  $r = Invoke-AgentsProvision $fake @{ Yes = $true; SkipEngineConfig = $true; ImageTag = 'abc123' }
+  if (-not $r.Error -or -not $r.Error.Contains("Couldn't read the dashboard's settings")) { throw "got: $($r.Error) -- $($r.Calls)" }
+  if ($r.Calls.Contains('resource delete')) { throw "deleted the apps before a check that failed: $($r.Calls)" }
 }
 
 Check 'provision.ps1 agents platform: no budget without an address that gets mail, and nothing for the apps' {
@@ -1496,6 +1577,276 @@ foreach ($case in @(
     if ($r.Calls.Contains('deployment sub create')) { throw 'deployed anyway' }
     if ($r.Calls.Contains('ad app create') -or $r.Calls.Contains('keyvault secret set')) { throw 'changed Entra or Key Vault before refusing' }
   }
+}
+
+Check 'the stocks templates: their own account, no deletes, pull-only on the registry, and the key from the vault' {
+  $dir = Join-CixPath $repo 'infra' 'stocks'
+  $all = (Get-ChildItem $dir -Recurse -Filter *.bicep | ForEach-Object { [IO.File]::ReadAllText($_.FullName) }) -join "`n"
+  $platform = [IO.File]::ReadAllText((Join-CixPath $dir 'modules' 'stocks-platform.bicep'))
+  $job = [IO.File]::ReadAllText((Join-CixPath $dir 'modules' 'stocks-job.bicep'))
+  $pull = [IO.File]::ReadAllText((Join-CixPath $dir 'modules' 'stocks-registry-pull.bicep'))
+  if ($all -match '(?i)items/delete|\{item\}/delete|items/\*|containers/\*|sqlDatabases/\*|databaseAccounts/\*') { throw 'a Cosmos DB role allows deletes or wildcards' }
+  if ($all -match '(?i)rg-shared|cosmos-shared|Read-CixSharedSettings') { throw 'the stocks templates reference the shared (crypto) Cosmos DB account' }
+  if ($platform -notmatch "EnableServerless") { throw 'the stocks account should be serverless' }
+  if ($platform -notmatch 'disableKeyBasedMetadataWriteAccess: true') { throw 'keys could change the database or containers' }
+  if ($job -match 'listKeys') { throw 'the job gets an account key; it signs in with its identity' }
+  if ($job -notmatch "keyVaultUrl: '\$\{vault\.properties\.vaultUri\}secrets/\$\{eodhdSecret\}'") { throw 'the EODHD key should come from the vault' }
+  if ($pull -notmatch "acrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'" -or ([regex]::Matches($pull, 'roleAssignments@')).Count -ne 1) { throw 'the registry grant should be AcrPull alone' }
+}
+
+# --- provision-stocks.ps1: the stocks advisory's own group, key, image and job (ADR-0023) -----------------------------------
+$stocksHead = "$(& git -C $repo rev-parse HEAD)".Trim()
+$stocksDigest = "sha256:$('a' * 64)"
+$stocksJobId = '/subscriptions/x/resourceGroups/rg-cix-stocks/providers/Microsoft.App/jobs/caj-cix-stocks-daily'
+$stocksEndpoint = 'https://cosmos-cix-stocks-x.documents.azure.com:443/'
+$fakeEodhdKey = @('fake', 'eodhd', '9c41') -join '.' # built at run time; must never appear in output or on a command line
+$newStocks = @{
+  'bicep'                   = 'Bicep CLI version 0.33.0'
+  'provider show'           = '{"resourceTypes":[{"resourceType":"jobs","locations":["Poland Central"]},{"resourceType":"containerApps","locations":["Poland Central"]},{"resourceType":"managedEnvironments","locations":["Poland Central"]}]}'
+  'ad signed-in-user'       = '{"id":"11111111-2222-3333-4444-555555555555","mail":"owner@example.com"}'
+  'acr list'                = '[{"name":"crcixdevabc123","tags":{"cix-environment":"dev"}}]'
+  'resource list'           = '[]'
+  'consumption budget list' = '[]'
+  'deployment sub create'   = "{`"properties`":{`"outputs`":{`"cosmosAccountName`":{`"value`":`"cosmos-cix-stocks-x`"},`"cosmosEndpoint`":{`"value`":`"$stocksEndpoint`"},`"databaseName`":{`"value`":`"cix-stocks`"},`"keyVaultName`":{`"value`":`"kvcixstocksx`"},`"registryName`":{`"value`":`"crcixdevabc123`"},`"jobName`":{`"value`":`"caj-cix-stocks-daily`"}}}}"
+  'keyvault secret list'    = '[]'
+  'group show'              = '{"name":"rg-cix-stocks","tags":{"cix-component":"stocks"}}'
+  'acr build'               = "{`"runId`":`"ca1`",`"status`":`"Succeeded`",`"outputImages`":[{`"registry`":`"crcixdevabc123.azurecr.io`",`"repository`":`"cix-stocks`",`"tag`":`"$stocksHead-20261031120000`",`"digest`":`"$stocksDigest`"}]}"
+  'resource show'           = $stocksJobId
+  'staticwebapp show'       = '/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft.Web/staticSites/stapp-cix-dev'
+  'rest'                    = '{"properties":{"COSMOS_ENDPOINT":"https://cosmos-shared-x.documents.azure.com:443/"}}'
+}
+function Invoke-ProvisionStocks([hashtable]$Overrides = @{}, [hashtable]$Arguments = @{ Yes = $true }) {
+  $extra = @{}; foreach ($k in $newStocks.Keys) { $extra[$k] = $newStocks[$k] }
+  foreach ($k in $Overrides.Keys) { $extra[$k] = $Overrides[$k] }
+  $keyDir = Join-Path ([IO.Path]::GetTempPath()) "cix-test-$([guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Path $keyDir | Out-Null
+  $keyFile = Join-Path $keyDir 'eodhd.txt'
+  [IO.File]::WriteAllText($keyFile, "$fakeEodhdKey`n")
+  # An empty secrets folder: the script never finds (or reads) the token setup-secrets.ps1 wrote on this machine.
+  $secretsDir = Join-Path $keyDir 'secrets'
+  New-Item -ItemType Directory -Path $secretsDir | Out-Null
+  $before = $env:CIX_SECRETS_DIR
+  $env:CIX_SECRETS_DIR = $secretsDir
+  try {
+    return Invoke-WithFakeAz @{ GroupExists = 'true'; Extra = $extra } {
+      & (Join-Path $azureTools 'provision-stocks.ps1') -EodhdKeyFile $keyFile @Arguments
+    }
+  }
+  finally { $env:CIX_SECRETS_DIR = $before; Remove-Item $keyDir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+Check 'provision-stocks.ps1 (-Yes) first run: deploys, stores the key unseen, builds the commit, deploys the job, gives the dashboard read access' {
+  $r = Invoke-ProvisionStocks
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 2) { throw "expected two deployments (resources, then the job): $($r.Calls)" }
+  if ($r.Calls -notmatch 'keyvault secret set --vault-name kvcixstocksx --name eodhd-api-token --file ') { throw "the key wasn't stored from a file: $($r.Calls)" }
+  if ($r.Output.Contains($fakeEodhdKey) -or $r.Calls.Contains($fakeEodhdKey)) { throw 'the EODHD key was printed or put on a command line' }
+  if ($r.Calls -notmatch "acr build --registry crcixdevabc123 --image cix-stocks:$stocksHead-\d{14} --file stocks/Dockerfile .*--no-logs ") { throw "the commit's image wasn't built in the dev registry, waiting for the run: $($r.Calls)" }
+  if ($r.Calls -match '--no-wait') { throw 'az acr build --no-wait prints no run, so there is no digest to deploy' }
+  if ($r.Calls -match 'acr repository show ') { throw 'looked the image up by tag, which anyone with push rights could move' }
+  if ($r.Calls -notmatch "acr repository update --name crcixdevabc123 --image cix-stocks:$stocksHead-20261031120000 --write-enabled false --delete-enabled false") { throw 'the built tag was not locked' }
+  if ($r.Calls -notmatch 'cosmosdb keys list --resource-group rg-cix-stocks --name cosmos-cix-stocks-x --type read-only-keys') { throw 'the dashboard should get the read-only key of the stocks account only' }
+  if ($r.Calls -notmatch 'rest --method put --url https://management\.azure\.com/subscriptions/x/resourceGroups/rg-cix-dev/providers/Microsoft\.Web/staticSites/stapp-cix-dev/config/appsettings\S* --body @') { throw "the dashboard's settings weren't written from a file: $($r.Calls)" }
+  if ($r.Output.Contains($sample) -or $r.Calls.Contains($sample)) { throw 'the read-only key was printed or put on a command line' }
+  if ($r.Calls -match '/start\?') { throw 'started a run without -RunNow' }
+  foreach ($group in 'rg-cix-prod', 'rg-shared') { if ($r.Calls -match "deployment group create .*$group") { throw "touched $group" } }
+}
+
+Check 'provision-stocks.ps1 lets the dashboard''s own writer identity, and no other, create portfolio submissions' {
+  $writerApp = 'aaaaaaaa-1111-2222-3333-444444444444'
+  $settings = "{`"properties`":{`"COSMOS_ENDPOINT`":`"https://cosmos-shared-x.documents.azure.com:443/`",`"COSMOS_WRITER_CLIENT_ID`":`"$writerApp`",`"COSMOS_WRITER_SECRET`":`"$sample`"}}"
+  $sp = { param($name, $app) "{`"id`":`"bbbbbbbb-1111-2222-3333-444444444444`",`"appId`":`"$app`",`"displayName`":`"$name`"}" }
+  $r = Invoke-ProvisionStocks @{ 'rest' = $settings; 'ad sp show' = (& $sp 'cix-dashboard-writer-dev' $writerApp) }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -notmatch "ad sp show --id $writerApp") { throw "the writer wasn't looked up by the dashboard's own setting: $($r.Calls)" }
+  if ($r.Output -notmatch 'Dashboard writer: cix-dashboard-writer-dev') { throw "no writer found: $($r.Output)" }
+  if ($r.Output.Contains($sample) -or $r.Calls.Contains($sample)) { throw "the dashboard's settings were printed" }
+
+  # Another identity under the setting (a name that isn't the writer's, the name in other case, another app's): no grant.
+  foreach ($other in @(@('someone-else', $writerApp), @('CIX-dashboard-writer-dev', $writerApp), @('cix-dashboard-writer-dev', 'cccccccc-1111-2222-3333-444444444444'))) {
+    $r = Invoke-ProvisionStocks @{ 'rest' = $settings; 'ad sp show' = (& $sp $other[0] $other[1]) }
+    if ($r.Error) { throw "failed: $($r.Error)" }
+    if ($r.Output -notmatch "doesn't name cix-dashboard-writer-dev" -or $r.Output -match 'Dashboard writer: ') { throw "granted another identity ($($other -join ', ')): $($r.Output)" }
+  }
+
+  # No writer set up on the dashboard, or a setting that isn't a client id: no lookup, no grant, and the owner is told.
+  foreach ($missing in @('{"properties":{}}', '{"properties":{"COSMOS_WRITER_CLIENT_ID":"not-a-guid"}}')) {
+    $r = Invoke-ProvisionStocks @{ 'rest' = $missing }
+    if ($r.Error) { throw "failed: $($r.Error)" }
+    if ($r.Calls -match 'ad sp show') { throw "looked up a writer that isn't set: $($r.Calls)" }
+    if ($r.Output -notmatch 'No dashboard writer found' -or $r.Output -match 'Dashboard writer: ') { throw "no warning for a missing writer: $($r.Output)" }
+  }
+}
+
+Check 'provision-stocks.ps1 run again changes nothing that is in place: no build, no job deployment, no key, no settings' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $settings = "{`"properties`":{`"STOCKS_COSMOS_ENDPOINT`":`"$stocksEndpoint`",`"STOCKS_COSMOS_DATABASE`":`"cix-stocks`",`"STOCKS_COSMOS_READONLY_KEY`":`"$sample`"}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'            = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"}]"
+    'resource show'            = $job
+    'keyvault secret list'     = '[{"name":"eodhd-api-token"}]'
+    'acr repository show'      = "{`"digest`":`"$stocksDigest`",`"tags`":[`"$stocksHead-20261030120000`"]}"
+    'rest'                     = $settings
+  }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 1) { throw "expected the resources' deployment only: $($r.Calls)" }
+  foreach ($call in 'acr build', 'keyvault secret set', 'rest --method put') { if ($r.Calls.Contains($call)) { throw "called $call" } }
+}
+
+Check 'provision-stocks.ps1 rebuilds when the job runs another commit''s image' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@sha256:$('b' * 64)`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'        = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"}]"
+    'resource show'        = $job
+    'keyvault secret list' = '[{"name":"eodhd-api-token"}]'
+    'acr repository show'  = "{`"digest`":`"sha256:$('b' * 64)`",`"tags`":[`"$('0' * 40)-20261030120000`"]}"
+  }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -notmatch 'acr build ') { throw 'did not build the new commit' }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 2) { throw "expected the job to be redeployed: $($r.Calls)" }
+}
+
+Check 'provision-stocks.ps1 deploys nothing when the image build fails' {
+  $r = Invoke-ProvisionStocks @{ 'acr build' = '{"runId":"ca2","status":"Failed","outputImages":[]}' }
+  if (-not $r.Error -or -not $r.Error.Contains("didn't succeed")) { throw "got: $($r.Error)" }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 1) { throw "the job was deployed anyway: $($r.Calls)" }
+  if ($r.Calls -match 'acr repository update') { throw 'locked a failed build' }
+}
+
+Check 'provision-stocks.ps1 refuses a resource group that is not the stocks advisory''s' {
+  $r = Invoke-ProvisionStocks @{ 'group show' = '{"name":"rg-cix-stocks","tags":{"cix-environment":"dev"}}' }
+  if (-not $r.Error -or -not $r.Error.Contains("isn't the stocks advisory's")) { throw "got: $($r.Error)" }
+  if ($r.Calls -match 'deployment sub ') { throw 'deployed anyway' }
+}
+
+Check 'provision-stocks.ps1 -WhatIfOnly previews and changes nothing' {
+  $r = Invoke-ProvisionStocks @{} @{ WhatIfOnly = $true }
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -notmatch 'deployment sub what-if') { throw 'no preview' }
+  foreach ($call in 'deployment sub create', 'keyvault secret set', 'acr build', 'rest --method put') { if ($r.Calls.Contains($call)) { throw "called $call" } }
+}
+
+Check 'the stocks analyst template: its own identity, the Claude token alone, and no EODHD key' {
+  $job = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'stocks' 'modules' 'stocks-analyst-job.bicep'))
+  if ($job -notmatch "keyVaultUrl: '\$\{vault\.properties\.vaultUri\}secrets/\$\{claudeSecret\}'") { throw 'the Claude token should come from the vault' }
+  if ($job -match 'listKeys') { throw 'the analyst gets an account key; it signs in with its identity' }
+  if ($job -match 'initContainers' -or $job -cmatch 'eodhd' -or $job -cmatch '\bsecretName\b') { throw 'the analyst job should never reach the EODHD key (the nightly run writes the brief)' }
+  if ($job -notmatch 'names\.analystIdentity' -or $job -match 'names\.jobIdentity') { throw 'the analyst should run as its own identity, not the nightly job''s' }
+  if (([regex]::Matches($job, "secretRef:")).Count -ne 1) { throw 'the analyst should get one secret, the Claude token' }
+  if ($job -notmatch 'replicaRetryLimit: 0') { throw 'a failed analyst run should not be retried at once (it records why; the next slot tries again)' }
+  $platform = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'stocks' 'modules' 'stocks-platform.bicep'))
+  $role = $platform.Substring($platform.IndexOf('resource analystRole'), $platform.IndexOf('resource analystAssignment') - $platform.IndexOf('resource analystRole'))
+  if ($role -match 'delete' -or $role -notmatch 'assignableScopes: \[analysisScope\]') { throw 'the analyst should write its own analysis container alone, without delete' }
+  $read = $platform.Substring($platform.IndexOf('resource analystReadRole'), $platform.IndexOf('resource analystReadAssignment') - $platform.IndexOf('resource analystReadRole'))
+  if ($read -notmatch 'assignableScopes: \[adviceScope\]' -or $read -match '/create|/upsert|/replace|/delete') { throw 'the analyst should only read the advice the owner trades from' }
+  $run = [IO.File]::ReadAllText((Join-CixPath $repo 'stocks' 'analyst' 'run.sh'))
+  if ($run -notmatch 'denied="Bash,Read,Edit,Write' -or $run -notmatch '--strict-mcp-config' -or $run -notmatch '--tools "WebSearch,WebFetch"') { throw 'Claude should have web search and fetch alone: no shell, file or MCP tools' }
+  if ($run -notmatch 'host=\(env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY ') { throw 'the host processes should not get the Claude token' }
+}
+
+$fakeClaudeToken = (@('sk', 'ant', 'oat01') -join '-') + '-' + ('x9' * 20) # built at run time; never in output or on a command line
+function Invoke-ProvisionStocksWithToken([hashtable]$Overrides = @{}, [string]$Token = $fakeClaudeToken, [hashtable]$Arguments = @{ Yes = $true }) {
+  $dir = Join-Path ([IO.Path]::GetTempPath()) "cix-test-$([guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Path $dir | Out-Null
+  $file = Join-Path $dir 'claude_token'
+  [IO.File]::WriteAllText($file, "$Token`n")
+  try { return Invoke-ProvisionStocks $Overrides ($Arguments + @{ ClaudeTokenFile = $file }) }
+  finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+$withAnalyst = $newStocks['deployment sub create'].Replace('"jobName"', '"analystJobName":{"value":"caj-cix-stocks-analyst"},"jobName"')
+
+Check 'provision-stocks.ps1 stores the Claude token unseen and deploys the analyst job with the image and the pinned Claude Code' {
+  $r = Invoke-ProvisionStocksWithToken @{ 'deployment sub create' = $withAnalyst }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -notmatch 'keyvault secret set --vault-name kvcixstocksx --name claude-token --file ') { throw "the token wasn't stored from a file: $($r.Calls)" }
+  if ($r.Output.Contains($fakeClaudeToken) -or $r.Calls.Contains($fakeClaudeToken)) { throw 'the Claude token was printed or put on a command line' }
+  if ($r.Calls -notmatch 'acr build .*--build-arg CLAUDE_CODE_VERSION=2\.1\.316 ') { throw "Claude Code's version wasn't passed to the build: $($r.Calls)" }
+  if (($r.Output -replace '\s+', ' ') -notmatch 'Deployed caj-cix-stocks-analyst') { throw "the analyst job wasn't deployed: $($r.Output)" }
+  if ($r.Calls -match '/start\?') { throw 'started a run without -RunNow or -RunAnalystNow' }
+}
+
+Check 'provision-stocks.ps1 refuses a Claude token file that holds something else, and stores nothing' {
+  $r = Invoke-ProvisionStocksWithToken @{} 'not-a-token value'
+  if (-not $r.Error -or -not $r.Error.Contains("doesn't hold one Claude setup token")) { throw "got: $($r.Error)" }
+  if ($r.Calls -match 'name claude-token') { throw 'stored it anyway' }
+  if ($r.Error.Contains('not-a-token')) { throw 'the file''s content was shown' }
+}
+
+Check 'provision-stocks.ps1 without a Claude token deploys the nightly job alone, and says so' {
+  $r = Invoke-ProvisionStocks
+  if ($r.Error) { throw "failed: $($r.Error)" }
+  if ($r.Calls -match 'name claude-token') { throw 'stored a token it was not given' }
+  if (($r.Output -replace '\s+', ' ') -notmatch "the analyst job isn't deployed") { throw "no warning: $($r.Output)" }
+}
+
+Check 'provision-stocks.ps1 keeps a Claude token already in the vault, and deploys the analyst once it is there' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'         = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"}]"
+    'resource show'         = $job
+    'keyvault secret list'  = '[{"name":"eodhd-api-token"},{"name":"claude-token"}]'
+    'acr repository show'   = "{`"digest`":`"$stocksDigest`",`"tags`":[`"$stocksHead-20261030120000`"]}"
+    'deployment sub create' = $withAnalyst
+  }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -match 'keyvault secret set') { throw 'replaced a secret without being asked' }
+  if ($r.Calls -match 'acr build') { throw 'rebuilt the image the job runs already' }
+  if (([regex]::Matches($r.Calls, 'deployment sub create')).Count -ne 2) { throw "the analyst job should be deployed with the running image: $($r.Calls)" }
+}
+
+Check 'provision-stocks.ps1 -ReplaceClaudeToken -Yes without a token file stops before changing anything' {
+  $r = Invoke-ProvisionStocks @{} @{ Yes = $true; ReplaceClaudeToken = $true }
+  if (-not $r.Error -or -not $r.Error.Contains('needs the new token in a file')) { throw "got: $($r.Error)" }
+  if ($r.Calls -match 'deployment sub create|keyvault secret set') { throw "changed something first: $($r.Calls)" }
+}
+
+Check 'provision-stocks.ps1 -KeepImage does not deploy a new analyst on an image that may be from before it' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'         = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"}]"
+    'resource show'         = $job
+    'keyvault secret list'  = '[{"name":"eodhd-api-token"},{"name":"claude-token"}]'
+    'deployment sub create' = $withAnalyst
+  } @{ Yes = $true; KeepImage = $true }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -notmatch "the analyst isn't deployed now") { throw "no warning: $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -match 'Deployed caj-cix-stocks-analyst') { throw 'deployed the analyst on the kept image' }
+}
+
+$analystJobId = $stocksJobId.Replace('caj-cix-stocks-daily', 'caj-cix-stocks-analyst')
+$withBothJobs = "[{`"id`":`"$stocksJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-daily`"},{`"id`":`"$analystJobId`",`"type`":`"Microsoft.App/jobs`",`"name`":`"caj-cix-stocks-analyst`"},{`"id`":`"/x/vault`",`"type`":`"Microsoft.KeyVault/vaults`",`"name`":`"kvcixstocksx`"}]"
+
+Check 'provision-stocks.ps1 recovers an analyst whose Claude token was deleted: no analyst until the token is back' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'        = $withBothJobs
+    'resource show'        = $job
+    'keyvault secret list' = '[{"name":"eodhd-api-token"}]'
+    'acr repository show'  = "{`"digest`":`"$stocksDigest`",`"tags`":[`"$stocksHead-20261030120000`"]}"
+  }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -notmatch "Claude token isn't in the vault") { throw "no warning: $($r.Output)" }
+  if (($r.Output -replace '\s+', ' ') -match 'Deployed caj-cix-stocks-analyst') { throw 'deployed the analyst without its token' }
+}
+
+Check 'provision-stocks.ps1 -RunNow -RunAnalystNow starts the nightly run alone, since the analyst needs its brief' {
+  $job = "{`"id`":`"$stocksJobId`",`"properties`":{`"template`":{`"containers`":[{`"image`":`"crcixdevabc123.azurecr.io/cix-stocks@$stocksDigest`"}]}}}"
+  $r = Invoke-ProvisionStocks @{
+    'resource list'         = $withBothJobs
+    'resource show'         = $job
+    'keyvault secret list'  = '[{"name":"eodhd-api-token"},{"name":"claude-token"}]'
+    'acr repository show'   = "{`"digest`":`"$stocksDigest`",`"tags`":[`"$stocksHead-20261030120000`"]}"
+    'deployment sub create' = $withAnalyst
+  } @{ Yes = $true; RunNow = $true; RunAnalystNow = $true }
+  if ($r.Error) { throw "failed: $($r.Error) -- $($r.Output)" }
+  if ($r.Calls -notmatch 'caj-cix-stocks-daily/start\?') { throw "the nightly run wasn't started: $($r.Calls)" }
+  if ($r.Calls -match 'caj-cix-stocks-analyst/start\?') { throw 'started the analyst before its brief exists' }
+  if (($r.Output -replace '\s+', ' ') -notmatch 'once that run has finished') { throw "no explanation: $($r.Output)" }
+}
+
+Check 'provision.ps1 keeps the Stocks tab''s settings through a dashboard deployment' {
+  $script = [IO.File]::ReadAllText((Join-Path $azureTools 'provision.ps1'))
+  if ($script -notmatch [regex]::Escape("`$_ -like 'STOCKS_COSMOS_*'")) { throw 'STOCKS_COSMOS_* is not kept' }
 }
 
 # Without secrets/claude_token (it is never in the repo; skipped where a developer has one), a vault without claude-token stops.

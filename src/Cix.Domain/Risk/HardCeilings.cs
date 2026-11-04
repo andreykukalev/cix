@@ -2,12 +2,12 @@ namespace Cix.Domain.Risk;
 
 /// <summary>
 /// Absolute ceilings that configuration can tighten but never loosen.
-/// HUMAN-ONLY FILE: agents are blocked from editing it (see CLAUDE.md rule 3).
+/// OWNER-ONLY FILE: agents change it only on the owner's explicit request (see CLAUDE.md rule 3).
 /// </summary>
 public static class HardCeilings
 {
     /// <summary>Largest allocation the bot may ever manage, in quote currency.</summary>
-    public const decimal MaxAllocationQuote = 1_000m;
+    public const decimal MaxAllocationQuote = 10_000m;
 
     /// <summary>Largest single order as a fraction of the allocation.</summary>
     public const decimal MaxOrderFractionOfAllocation = 0.25m;

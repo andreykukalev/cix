@@ -24,7 +24,7 @@ Only the engine has to run all the time. The agents run for a few minutes, about
 ## Recommended design
 
 ```
-GitHub Actions ─OIDC─► ACR (images) ─► Container Apps environment: workload profiles, Consumption profile, own VNet
+GitHub Actions ─OIDC─► ACR (images) ─► Container Apps environment: workload profiles, Consumption profile, no VNet (since 2026-10-28)
                                       ┌───────────────────────────────────────────────────────────┐
  Key Vault ─ managed identities ────► │ app cix-engine  1 replica, 0.25 vCPU / 0.5 GiB           │──► Revolut X
  (Claude token, Cosmos key)           │     tool server: internal ingress, Entra tokens only      │
@@ -41,7 +41,7 @@ GitHub Actions ─OIDC─► ACR (images) ─► Container Apps environment: wor
    - Its only ingress is internal: apps and jobs in the same environment can reach it, and the internet can't.
    - A health probe uses the existing `/healthz`.
    - The app sets `ASPNETCORE_ENVIRONMENT=Azure` and `Trading__Mode=Paper` explicitly. .NET treats a missing environment name as Production, which would remove the guard in `TradingMode.cs` that refuses Live outside Production.
-2. **The environment uses workload profiles, the Consumption profile, and its own VNet** from the start. It costs the same as a plain Consumption environment. A fixed outbound IP for the live engine (decided with the live engine) later needs a NAT gateway on that VNet, and a VNet can't be added to an existing environment.
+2. **The environment uses workload profiles, the Consumption profile, and its own VNet** from the start. It costs the same as a plain Consumption environment. (Corrected 2026-10-28: it doesn't. On a VNet, Azure adds a Standard Load Balancer and a static egress IP, about $22 a month per environment, so the environment no longer has a VNet; ADR-0013, amended.) A fixed outbound IP for the live engine (decided with the live engine) later needs a NAT gateway on that VNet, and a VNet can't be added to an existing environment.
 3. **Each agent is a Container Apps Job with its own managed identity**, billed only while it runs.
    - The three jobs are `cix-trader` (strategy runs), `cix-trader-requests` (runs that answer owner requests) and `cix-analyst`.
    - Each job watches its own queue, with `maxExecutions: 1` so runs happen one at a time.
@@ -96,7 +96,7 @@ Consumption prices (USD, East US, Oct 2026; Poland Central may differ slightly a
 | Container Registry | Basic | ≈ $5 | ≈ $5 |
 | Storage account (queues), Key Vault | a few thousand operations a day | < $1 | < $1 |
 | Log Analytics | under the free 5 GB with a daily cap | $0 | $0 |
-| VNet | no NAT gateway | $0 | $0 |
+| VNet | none since 2026-10-28 (with one: a load balancer and an IP, ≈ $22) | $0 | $0 |
 | Cosmos DB, Static Web App | free tier, Free plan | $0 | $0 |
 | **Total** | | **≈ $23 a month** | **≈ $35 a month** |
 
@@ -135,7 +135,7 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 3. **An agent-run scheduler in the engine:** caps, gap, heartbeat, refunds and retries, carried over from the shell loops. It works with queue publishers behind an interface (a fake in tests) and a run-outcome endpoint. (Built: "Agent runs in Azure" in [architecture.md](../architecture.md). The engine's identity needs "Storage Queue Data Message Sender" on the three run queues.)
 4. **Job entrypoints:** a run-once mode in `run-trader.sh` and `run-analyst.sh` that claims one message (deleting it, and moving it to the poison queue after 3 dequeues), checks with the engine, runs and reports the outcome. Compose keeps today's loops. (Built: `tools/trader/agent-job.sh`. The jobs' identities need "Storage Queue Data Message Processor" on their own queue and "Storage Queue Data Message Sender" on `runs-poison`. The jobs reach the engine at its internal https address: Container Apps redirects plain http to https unless ingress allows insecure traffic, and the job script accepts plain http only for a single-label name inside the environment.)
 5. **Images:** configuration files built in, logs to stdout. (Already true of both images; in job mode a failed run's stderr goes to stdout too, masked.)
-6. **Bicep:** the workload-profiles environment with its VNet, the engine app (explicit environment name and paper mode), three jobs, ACR, a storage account with the queues, Key Vault, Log Analytics, identities and role assignments, and the budget. (Templates built: `infra/modules/agents-platform.bicep` and `agents-apps.bicep`, behind `agents.deploy`, off by default. `provision.ps1` deploys both; for `apps` it creates the engine's Entra app, uploads `claude-token` and checks the images.) Before CI deploys the apps, or anything live runs there, the security review asks for:
+6. **Bicep:** the workload-profiles environment with its VNet (no VNet since 2026-10-28, see item 2), the engine app (explicit environment name and paper mode), three jobs, ACR, a storage account with the queues, Key Vault, Log Analytics, identities and role assignments, and the budget. (Templates built: `infra/modules/agents-platform.bicep` and `agents-apps.bicep`, behind `agents.deploy`, off by default. `provision.ps1` deploys both; for `apps` it creates the engine's Entra app, uploads `claude-token` and checks the images.) Before CI deploys the apps, or anything live runs there, the security review asks for:
    - the engine on Cosmos DB data-plane RBAC, scoped to its database and without delete on the journal, instead of the account key, which writes and deletes across the whole shared account (done: `infra/modules/cosmos-engine-access.bicep` gives the engine's identity one role per container, within CIX's database, with no delete and the journal append-only. Key Vault keeps no Cosmos DB key, and `provision.ps1` deletes the `cosmos-key` an earlier template left there);
    - CI deploying with a custom role that only updates the apps' images, with every role assignment left to the owner's deployments;
    - the engine's Entra app requiring an app role assignment, held only by the three job identities (done: `provision.ps1` sets up the `CIX.Agent` role and its assignments after each deployment, and the engine checks the role in each token as well as the identity);
@@ -159,7 +159,7 @@ Goal: application changes merged to `main` reach Azure with no manual step, noth
 
 1. **Region: Poland Central**, where the Cosmos DB account is. If Container Apps environments with workload profiles aren't offered there, use **Germany West Central**. Microsoft's workload-profiles page lists the Consumption profile for "all supported regions" without naming them. Before provisioning, `provision.ps1` checks that `Microsoft.App/managedEnvironments` lists the region (`az provider show -n Microsoft.App`) and stops if it doesn't. Prices are re-checked for the chosen region.
 2. **Claude credentials:** the `claude setup-token` subscription token, kept in Key Vault. Switch to an API key only if the subscription's limits get in the way.
-3. **No NAT gateway now.** The fixed outbound IP is decided together with the live engine. The environment still gets its own VNet, so a NAT gateway can be added later without rebuilding it.
+3. **No NAT gateway now.** The fixed outbound IP is decided together with the live engine. The environment still gets its own VNet, so a NAT gateway can be added later without rebuilding it. (Amended 2026-10-28: the VNet is gone to save its load balancer and IP, so a NAT gateway now means rebuilding the environment on a VNet; ADR-0013.)
 4. **The owner's merge is the only gate.** There is no auto-merge for agent pull requests.
 5. **Cosmos DB stays free: one account, no second one.** When live comes, the live engine uses its own database in the shared free account, and signs in to it with its own identity and roles, as the paper engine does. The live engine and its Key Vault (the Revolut X keys) go in a separate resource group, `rg-cix-live`, where CI and the agents have no role. The account's read-write key reaches every database, so the cutover rotates it and keeps it only where it is still needed (Cutover, step 5). What risk remains is below.
 6. **Paper stays as the dev environment.** Paper keeps running in `rg-cix-dev`, deployed by CI on each merge that changes the images, next to live. Live moves only when the owner promotes an image that has run on paper, pinned by digest, from their own sign-in. Live pulls either from the dev registry by that digest or from a registry of its own (about $5 a month), never by a tag CI can move.

@@ -589,6 +589,64 @@ function Get-CixAgentsDeployTargets {
     @('trader', 'requests', 'analyst' | ForEach-Object { "Microsoft.App/jobs/$(& $take "caj-$p-$_" 32)" })
 }
 
+function Get-CixVnetRebuild {
+  <#
+    What must go before this environment's Container Apps environment can leave its own VNet, or $null when it isn't on one
+    (or doesn't exist yet). On a VNet, Azure bills a Standard Load Balancer and a static egress IP for it (about $22 a month)
+    that CIX doesn't use (agents-platform.bicep), and an environment's network can't be changed in place: its apps go first
+    (the engine and the three jobs: the deployment recreates them), then the environment (Azure deletes its ME_ group with
+    it), then the VNet. Returns @{ Environment; Apps; Vnet } as resource IDs (Vnet '' when it isn't this environment's own).
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings)
+  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return $null }
+  $p = "$($Settings.namePrefix)-$($Settings.environmentName)"
+  $inGroup = @(Invoke-CixAz @('resource', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson |
+      ForEach-Object { "$($_.id)" })
+  $envId = @($inGroup | Where-Object { $_ -match "(?i)/providers/Microsoft\.App/managedEnvironments/cae-$([regex]::Escape($p))$" })
+  if ($envId.Count -eq 0) { return $null }
+  $environment = Invoke-CixAz @('resource', 'show', '--ids', $envId[0], '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson
+  $props = $environment.properties
+  $vnet = if ($props.PSObject.Properties['vnetConfiguration'] -and $props.vnetConfiguration) { $props.vnetConfiguration } else { $null }
+  $subnet = if ($vnet -and $vnet.PSObject.Properties['infrastructureSubnetId']) { "$($vnet.infrastructureSubnetId)" } else { '' }
+  if (-not $subnet) { return $null }
+  $groupPrefix = $envId[0].Substring(0, $envId[0].IndexOf('/providers/'))
+  $apps = @(Get-CixAgentsDeployTargets -Settings $Settings | ForEach-Object { "$groupPrefix/providers/$_" } |
+      Where-Object { $inGroup -contains $_ })
+  # Checked before anything is deleted: an app the template doesn't recreate, or a lock, would stop the environment's deletion
+  # after the engine had gone, and leave it gone.
+  $others = @($inGroup | Where-Object { $_ -match '(?i)/providers/Microsoft\.App/(containerApps|jobs)/' -and $apps -notcontains $_ })
+  if ($others.Count -gt 0) { throw "The Container Apps environment is on a VNet and has to be rebuilt, but $($Settings.resourceGroup) also holds $(($others | ForEach-Object { $_.Split('/')[-1] }) -join ', '), which the template doesn't recreate. Move or delete them first; nothing was changed." }
+  $locks = @(Invoke-CixAz @('lock', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+  if ($locks.Count -gt 0) { throw "The Container Apps environment is on a VNet and has to be rebuilt, but $($Settings.resourceGroup) has locks ($(($locks | ForEach-Object { "$($_.name)" }) -join ', ')) that would stop it halfway. Remove them for the rebuild; nothing was changed." }
+  # Only the VNet the template made (vnet-<prefix>-<environment>, in this group) is deleted; any other is left alone.
+  $ownVnet = "$groupPrefix/providers/Microsoft.Network/virtualNetworks/vnet-$p"
+  $vnetId = $subnet -replace '(?i)/subnets/[^/]+$', ''
+  return @{ Environment = $envId[0]; Apps = $apps; Vnet = $(if ($vnetId -ieq $ownVnet) { $vnetId } else { '' }) }
+}
+
+function Remove-CixVnetEnvironment {
+  <#
+    Deletes what Get-CixVnetRebuild found, in order; each az call waits for its deletion to finish. The subnet stays delegated
+    for a while after the environment is gone, so the VNet is retried for up to 15 minutes before giving up (it costs nothing).
+  #>
+  param([Parameter(Mandatory)][hashtable]$Rebuild)
+  foreach ($id in $Rebuild.Apps) {
+    Write-CixInfo "Deleting $($id.Split('/')[-1])..."
+    Invoke-CixAz @('resource', 'delete', '--ids', $id, '--only-show-errors') | Out-Null
+  }
+  Write-CixInfo "Deleting $($Rebuild.Environment.Split('/')[-1]) and its load balancer (several minutes)..."
+  Invoke-CixAz @('resource', 'delete', '--ids', $Rebuild.Environment, '--only-show-errors') | Out-Null
+  if (-not $Rebuild.Vnet) { return }
+  for ($attempt = 1; ; $attempt++) {
+    Write-CixInfo "Deleting $($Rebuild.Vnet.Split('/')[-1])..."
+    try { Invoke-CixAz @('resource', 'delete', '--ids', $Rebuild.Vnet, '--only-show-errors') | Out-Null; return }
+    catch {
+      if ($attempt -ge 15) { Write-CixWarn "Couldn't delete $($Rebuild.Vnet.Split('/')[-1]) yet ($($_.Exception.Message)). It costs nothing; delete it later in the portal."; return }
+      Start-Sleep -Seconds 60
+    }
+  }
+}
+
 function Get-CixLiveDeployerGrants {
   <#
     The role assignments the live deploy's identity (ADR-0019) is expected to hold, as 'principal id|role|scope' keys in lower

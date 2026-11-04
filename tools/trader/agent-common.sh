@@ -84,6 +84,10 @@ wait_for_engine() {
 # Used by the scripts that source this file:
 # shellcheck disable=SC2034
 NOT_RUN=3
+# Why a run returned NOT_RUN, for the engine's journal and the dashboard: usage-limit (Claude's usage or rate limit) or
+# credentials (missing, malformed or expired). Set by the run just before it returns NOT_RUN.
+# shellcheck disable=SC2034
+not_run_reason=""
 
 # Where to read a failed run's output ($1: log directory, $2: run ID). In Compose, its files under logs/. A job's files go
 # with its container, so job mode prints the end of the run's stderr instead, for the job's log. Masked first: the
@@ -118,7 +122,11 @@ renew_hint() {
 # Succeeds if a run ($1: JSON log, $2: stderr) was refused for usage or rate limits before doing any work. Judged from the
 # structured result when there is one: an error that cost nothing and whose message names a limit. Text inside a run that
 # did work (news about "rate limits", a turn count of 429) never counts, so such a run can't escape the run caps.
-limit_pattern='usage limit|limit reached|rate[ _-]?limit|too many requests|api error: ?429|status:? ?429|overloaded'
+# Claude Code words a subscription limit as "You've hit your session limit · resets 7pm", "You've hit your weekly limit",
+# "You've reached your Opus limit" or "You're out of extra usage"; older versions said "Claude AI usage limit reached". "ve"
+# rather than "You've", so a typographic apostrophe matches too.
+limit_pattern="usage limit|limit reached|rate[ _-]?limit|too many requests|api error: ?429|status:? ?429|overloaded"
+limit_pattern+="|(ve|have) (hit|reached) your|out of (extra )?usage|requires usage credits|usage allocation has been disabled"
 hit_usage_limit() {
   if jq -e . "$1" >/dev/null 2>&1; then
     [[ "$(jq -r '.is_error // false' "$1")" == "true" ]] || return 1

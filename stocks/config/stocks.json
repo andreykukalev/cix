@@ -1,0 +1,46 @@
+// The stocks advisor's daily run (stocks/src/Cix.Stocks.Host). No secrets here: the EODHD key comes from Key Vault.
+// The EODHD key is on the paid EOD All World plan (since 2026-11-02): 100 000 calls a day. A night needs one call for the
+// benchmark, one for each watched stock and one for each of the owner's holdings (at most 50): 65 at most, under 100 a run.
+{
+  "baseCurrency": "USD",
+  "capital": 10000,
+  "benchmark": "SPY.US",
+  "historyDays": 365,
+  "maxCallsPerRun": 100,
+  "maxCallsPerDay": 200,
+  "dataReadyUtc": "01:00:00",
+  "advisor": {
+    // The owner's cap on one share's price, in the base currency: dearer ones are noted "too-expensive" every day.
+    "maxSharePrice": 200,
+    // At most 40% of the allocation in one theme (two positions at the 20% cap), so one sector selloff can't take most of it.
+    "maxThemeFraction": 0.4,
+    // Not bought while overheated or too jumpy (the owner's choice, 2026-11-03): the close at most 20% above the 50-day
+    // average and at most 15% up in 5 days, and the 20-day ATR at most 5% of the close. null turns one off. Tighter limits
+    // (15% and 4%) halved the backtest's return on the demo tickers (2012-2026) without lowering its drawdown.
+    // The Stocks page's rule text states these numbers too (dashboard/app/index.html, i18n.js): change it with them.
+    "maxAboveFastAverage": 0.2,
+    "maxRecentGain": 0.15,
+    "maxAtrFraction": 0.05
+  },
+  // The market-wide search (ADR-0025), on the paid key's whole-market download: about 100 + 1 + 40 calls a night of its own
+  // budget (screener.maxCallsPerDay, 300), beside maxCallsPerDay above.
+  "screener": {
+    "enabled": true
+  },
+  "watchlist": [
+    { "symbol": "EPAM.US", "name": "EPAM Systems", "currency": "USD", "theme": "software" },
+    { "symbol": "NIO.US", "name": "NIO", "currency": "USD", "theme": "china-ev" },
+    { "symbol": "CYRX.US", "name": "Cryoport", "currency": "USD", "theme": "life-sciences" },
+    { "symbol": "AMD.US", "name": "Advanced Micro Devices", "currency": "USD", "theme": "semis" },
+    { "symbol": "INTC.US", "name": "Intel", "currency": "USD", "theme": "semis" },
+    { "symbol": "MU.US", "name": "Micron Technology", "currency": "USD", "theme": "semis" },
+    { "symbol": "QCOM.US", "name": "Qualcomm", "currency": "USD", "theme": "semis" },
+    { "symbol": "CSCO.US", "name": "Cisco Systems", "currency": "USD", "theme": "networking" },
+    { "symbol": "UBER.US", "name": "Uber Technologies", "currency": "USD", "theme": "internet" },
+    { "symbol": "PYPL.US", "name": "PayPal", "currency": "USD", "theme": "fintech" },
+    { "symbol": "SOFI.US", "name": "SoFi Technologies", "currency": "USD", "theme": "fintech" },
+    { "symbol": "SHOP.US", "name": "Shopify", "currency": "USD", "theme": "software" },
+    { "symbol": "DDOG.US", "name": "Datadog", "currency": "USD", "theme": "software" },
+    { "symbol": "NET.US", "name": "Cloudflare", "currency": "USD", "theme": "software" }
+  ]
+}

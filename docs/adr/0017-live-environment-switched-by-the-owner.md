@@ -1,6 +1,6 @@
 # 0017. The live environment: paper's templates, switched on by the owner
 
-- Status: accepted; amended by [ADR-0019](0019-live-deploys-from-ci-after-owner-approval.md) (CI deploys new images to live after the owner approves each run)
+- Status: accepted; amended by [ADR-0019](0019-live-deploys-from-ci-after-owner-approval.md) (CI deploys new images to live after the owner approves each run); amended by [ADR-0028](0028-no-paper-trading.md) (no paper engine in Azure; live's images come from its own registry, not promoted from paper)
 - Date: 2026-10-27
 
 ## Context

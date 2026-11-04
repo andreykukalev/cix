@@ -25,7 +25,7 @@ cosmos  (emulator, data in a Docker volume)  ◄── engine (paper exchange, r
    - It creates `secrets\operator_key` (random) and `secrets\claude_token` (you paste the token; nothing is shown).
    - It writes the token's expiry date to `.env`.
    - All three files are git-ignored. The two secret files are readable only by you; `.env` holds no secret.
-5. Choose what can be traded on the dashboard's Coins tab once the engine runs. `config\risk-limits.json`, which only you edit, sets the quote currency and the most coins at once; it lists no pairs (see paper-trading.md).
+5. Choose what can be traded once the engine runs (a `tradable-pair` request written by hand, since the dashboard shows only the live engine: ADR-0028). `config\risk-limits.json`, which only you edit, sets the quote currency and the most coins at once; it lists no pairs (see paper-trading.md).
 
 ## Start and stop
 
@@ -71,7 +71,7 @@ The `analyst` container runs every 6 hours (`ANALYST_INTERVAL_HOURS`) on Opus (`
   - `docker compose logs analyst` shows the run itself.
   - The `market-view` entries in the journal (Data Explorer) show its summary and sources.
   - The engine's scan lines show `risk-off (market view)` or `news` when it is in effect.
-- **Its rules:** `strategies/analyst.v3.json` (ADR-0007); v2 added the highlights shown in the dashboard's market briefing, and v3 writes the summary and highlights in Russian as well.
+- **Its rules:** `strategies/analyst.v4.json` (ADR-0007); v2 added the highlights shown in the dashboard's market briefing, v3 writes the summary and highlights in Russian as well, and v4 keeps risk-off short (3 hours) and for market-wide shocks only.
 
 ## When Claude isn't available
 

@@ -9,7 +9,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch: # also publishes the dashboard and deploys the engine and agents (deploy-dashboard, deploy-agents)
+  workflow_dispatch: # also publishes the dashboard and asks to deploy the live engine and agents (deploy-dashboard, deploy-live)
 
 permissions:
   contents: read
@@ -41,6 +41,7 @@ jobs:
       secrets: ${{ steps.plan.outputs.secrets }}
       dashboard: ${{ steps.plan.outputs.dashboard }}
       images: ${{ steps.plan.outputs.images }}
+      stocks: ${{ steps.plan.outputs.stocks }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -119,6 +120,47 @@ jobs:
           name: test-results
           path: TestResults
 
+  # The stocks advisory (ADR-0023): its own solution, without the engine's tests or the Cosmos DB emulator. It references
+  # Cix.Domain, so plan.sh runs it on changes there too. Nothing deploys it yet.
+  stocks:
+    needs: plan
+    if: needs.plan.outputs.stocks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore stocks/Cix.Stocks.slnx
+
+      - name: Build
+        run: dotnet build stocks/Cix.Stocks.slnx --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test stocks/Cix.Stocks.slnx --no-build --configuration Release --logger "trx;LogFilePrefix=stocks" --results-directory TestResults
+
+      # As in build-test: failed tests as annotations, readable through the API.
+      - name: Report failed tests
+        if: failure()
+        shell: python
+        run: |
+          import glob, xml.etree.ElementTree as ET
+          ns = {"t": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
+          esc = lambda s: (s or "").replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for path in glob.glob("TestResults/**/*.trx", recursive=True):
+              for r in ET.parse(path).getroot().iterfind(".//t:UnitTestResult[@outcome='Failed']", ns):
+                  msg = r.findtext(".//t:ErrorInfo/t:Message", "", ns)
+                  trace = r.findtext(".//t:ErrorInfo/t:StackTrace", "", ns)
+                  print(f"::error title={esc(r.get('testName'))}::{esc((msg + chr(10) + trace)[:1500])}")
+
   # The Compose images build, and the engine starts in its container against the emulator (paper, no exchange keys).
   containers:
     needs: plan
@@ -132,7 +174,7 @@ jobs:
         run: |
           set -o pipefail
           shellcheck -x -f gcc tools/trader/run-trader.sh tools/trader/run-analyst.sh tools/trader/agent-common.sh \
-            tools/trader/agent-job.sh tools/ci/deploy-agents.sh tools/ci/agents-tip.sh \
+            tools/trader/agent-job.sh tools/ci/deploy-agents.sh tools/ci/agents-tip.sh stocks/analyst/run.sh \
             | sed -E 's/^([^:]+):([0-9]+):[0-9]+: (.*)$/::error file=\1,line=\2::\3/'
 
       - name: Agent job mode (Azure), against a mock engine, queues and identity endpoint
@@ -207,7 +249,7 @@ jobs:
       - name: Bicep builds and lints cleanly
         run: |
           az bicep install
-          for f in infra/main.bicep infra/shared/main.bicep; do
+          for f in infra/main.bicep infra/shared/main.bicep infra/stocks/main.bicep; do
             az bicep build --file "$f" --stdout > /dev/null
             az bicep lint --file "$f"
           done
@@ -336,7 +378,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write # for the Azure sign-in; only this job, deploy-agents and deploy-live have it
+      id-token: write # for the Azure sign-in; only this job and deploy-live have it
     concurrency:
       group: deploy-dashboard
       cancel-in-progress: false
@@ -431,12 +473,13 @@ jobs:
           done
 
   agents-images:
-    # Step 1 of deploying the paper engine and the agent jobs to Azure Container Apps (after a push to main that changes
-    # them, or a manual run on main), once their deploy identity is set up: build both images here, in a job with no Azure
-    # access, so nothing the build installs runs where credentials are in reach. Hands them to deploy-agents as an artifact.
+    # Step 1 of deploying the live engine and its agent jobs to Azure Container Apps (after a push to main that changes
+    # them, or a manual run on main), once the live deploy is set up: build both images here, in a job with no Azure access,
+    # so nothing the build installs runs where credentials are in reach. Hands them to deploy-live as an artifact. There is
+    # no paper engine to deploy first since ADR-0028: live gets the images once the checks pass and the owner approves.
     needs: plan
     if: >-
-      github.ref == 'refs/heads/main' && vars.AGENTS_AZURE_CLIENT_ID != ''
+      github.ref == 'refs/heads/main' && vars.LIVE_AZURE_CLIENT_ID != ''
       && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.plan.outputs.images == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -454,7 +497,7 @@ jobs:
       - name: Anything to deploy to, and still the tip of main?
         id: tip
         env:
-          SETTINGS: infra/environments/${{ vars.AGENTS_ENVIRONMENT || 'dev' }}.json
+          SETTINGS: infra/environments/prod.json
           GH_TOKEN: ${{ github.token }} # this step only
         run: bash tools/ci/agents-tip.sh
 
@@ -482,98 +525,14 @@ jobs:
           compression-level: 0 # already gzipped
           retention-days: 1
 
-  deploy-agents:
-    # Step 2: sign in to Azure as the agents' deploy identity, which trusts only workflows on main of this repository (an
-    # OIDC federated credential, as for the dashboard: ADR-0010). It may push images to this environment's registry and
-    # update the existing engine app and jobs. It can't create resources or role assignments, nor read Key Vault directly,
-    # but an image it deploys runs with the apps' identities (docs/azure.md). An update could change more than the image
-    # (Azure has no narrower right); tools/ci/deploy-agents.sh sends only the containers. It waits for the engine's new
-    # revision to be healthy, then updates the jobs, and goes back to the previous images if anything fails.
-    # Set up once with tools/azure/setup-ci-deploy.ps1 -For agents (docs/azure.md).
-    needs: [build-test, containers, secret-scan, agents-images]
-    # The checks may have been skipped (they passed on this exact content in the pull request); none may have failed,
-    # and cancelling the run stops the deployment (the last step rolls back a half-done one).
-    if: >-
-      !cancelled() && needs.agents-images.outputs.deploy == 'true'
-      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      id-token: write # for the Azure sign-in; only this job, deploy-live and deploy-dashboard have it
-    concurrency:
-      group: deploy-agents
-      cancel-in-progress: false
-    outputs:
-      deployed: ${{ steps.deploy.outputs.deployed }} # paper runs this commit's images: deploy-live may follow
-
-    env:
-      AGENTS_AZURE_CLIENT_ID: ${{ vars.AGENTS_AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      AGENTS_REGISTRY: ${{ vars.AGENTS_REGISTRY }}
-      SETTINGS: infra/environments/${{ vars.AGENTS_ENVIRONMENT || 'dev' }}.json
-    steps:
-      - name: Is the deploy identity set up?
-        run: |
-          if [ -z "$AZURE_TENANT_ID" ] || [ -z "$AZURE_SUBSCRIPTION_ID" ] || [ -z "$AGENTS_REGISTRY" ]; then
-            echo "::error::Set the repository variables AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID and AGENTS_REGISTRY too (tools/azure/setup-ci-deploy.ps1 -For agents)."
-            exit 1
-          fi
-
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Still the tip of main?
-        id: tip
-        env:
-          GH_TOKEN: ${{ github.token }} # this step only; the deploy step below doesn't get it
-        # Checked again inside the concurrency group: an older run waiting behind a newer one must not deploy over newer
-        # images.
-        run: bash tools/ci/agents-tip.sh
-
-      - uses: actions/download-artifact@v4
-        if: steps.tip.outputs.deploy == 'true'
-        with:
-          name: agents-images
-
-      - uses: azure/login@v2
-        if: steps.tip.outputs.deploy == 'true'
-        with:
-          client-id: ${{ vars.AGENTS_AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Deploy the engine and the agents
-        id: deploy
-        if: steps.tip.outputs.deploy == 'true'
-        env:
-          ENGINE_SHA256: ${{ needs.agents-images.outputs.engine_sha256 }}
-          TRADER_SHA256: ${{ needs.agents-images.outputs.trader_sha256 }}
-        run: |
-          for h in "$ENGINE_SHA256" "$TRADER_SHA256"; do
-            [[ "$h" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::The images' hashes are missing."; exit 1; }
-          done
-          printf '%s  engine.tar.gz\n%s  trader.tar.gz\n' "$ENGINE_SHA256" "$TRADER_SHA256" | sha256sum -c --strict --quiet -
-          SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" REGISTRY="$AGENTS_REGISTRY" TAG="$GITHUB_SHA" \
-            ENGINE_ARCHIVE=engine.tar.gz TRADER_ARCHIVE=trader.tar.gz ROLLBACK_FILE="$RUNNER_TEMP/agents-rollback.json" \
-            DEPLOY_OUTPUT="$GITHUB_OUTPUT" bash tools/ci/deploy-agents.sh
-
-      - name: Roll back an interrupted deployment
-        # Only does something when the deploy step stopped halfway (cancelled, or timed out) and left the previous images
-        # in the rollback file.
-        if: (cancelled() || failure()) && steps.tip.outputs.deploy == 'true'
-        run: |
-          SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" ROLLBACK_FILE="$RUNNER_TEMP/agents-rollback.json" \
-            bash tools/ci/deploy-agents.sh --roll-back
-
   live-changes:
     # What deploy-live would change, on the run's summary page where the owner approves it (ADR-0019): the commits and files
     # since the commit live got last, with those touching risk, limits, strategies, orders, tools or the deploy flagged.
-    needs: deploy-agents
+    # After the checks, so the owner is asked only about a run that can deploy.
+    needs: [build-test, containers, secret-scan, agents-images]
     if: >-
-      !cancelled() && needs.deploy-agents.result == 'success' && needs.deploy-agents.outputs.deployed == 'true'
+      !cancelled() && needs.agents-images.result == 'success' && needs.agents-images.outputs.deploy == 'true'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
       && vars.LIVE_AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -592,16 +551,23 @@ jobs:
         run: bash tools/ci/live-changes.sh
 
   deploy-live:
-    # The live engine and its jobs (ADR-0019): the images paper now runs, once the owner approves. The job is in the GitHub
+    # The live engine and its jobs (ADR-0019, ADR-0028): this commit's images, once the checks passed and the owner approves.
+    # The checks may have been skipped (they passed on this exact content in the pull request); none may have failed, and
+    # cancelling the run stops the deployment (the last step rolls back a half-done one). Without live-changes' summary the
+    # owner isn't asked: with no paper canary (ADR-0028) it is the owner's view of what the run changes. The job is in the GitHub
     # environment prod, whose rules (the owner as its only required reviewer, main only, no admin bypass) hold it until the
     # owner presses Approve, and the live deploy identity trusts only jobs in that environment. tools/ci/live-approved.sh
     # checks the approval again, so this workflow fails closed if the environment lost its rules. Only the images change:
     # the live engine keeps the mode, environment and strategy the owner switched it to. Infrastructure, settings and keys
     # stay with provision.ps1. Set up once with tools/azure/setup-ci-deploy.ps1 -Environment prod -For agents
     # (docs/live-trading.md). Agents never approve it (CLAUDE.md rule 8).
-    needs: [agents-images, deploy-agents, live-changes]
+    needs: [build-test, containers, secret-scan, agents-images, live-changes]
     if: >-
-      !cancelled() && needs.deploy-agents.result == 'success' && needs.deploy-agents.outputs.deployed == 'true'
+      !cancelled() && needs.agents-images.result == 'success' && needs.agents-images.outputs.deploy == 'true'
+      && needs.build-test.result != 'failure' && needs.build-test.result != 'cancelled'
+      && needs.containers.result != 'failure' && needs.containers.result != 'cancelled'
+      && needs.secret-scan.result != 'failure' && needs.secret-scan.result != 'cancelled'
+      && needs.live-changes.result == 'success'
       && vars.LIVE_AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -636,6 +602,7 @@ jobs:
       - name: Approved by the owner, on main?
         env:
           GH_TOKEN: ${{ github.token }} # this step and the next only
+          APPROVAL_ENVIRONMENT: prod
           LIVE_ENVIRONMENT: prod
         run: bash tools/ci/live-approved.sh
 
@@ -643,7 +610,7 @@ jobs:
         id: tip
         env:
           GH_TOKEN: ${{ github.token }}
-        # Approval can come hours later: by then a newer commit may have deployed paper, and its own run deploys live.
+        # Approval can come hours later: by then a newer commit may be on main, and its own run deploys live.
         run: bash tools/ci/agents-tip.sh
 
       - uses: actions/download-artifact@v4
@@ -668,7 +635,7 @@ jobs:
           for h in "$ENGINE_SHA256" "$TRADER_SHA256"; do
             [[ "$h" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::The images' hashes are missing."; exit 1; }
           done
-          # The same archives paper deployed: the hashes come from the job that built them.
+          # The archives agents-images built: the hashes come from that job's outputs.
           printf '%s  engine.tar.gz\n%s  trader.tar.gz\n' "$ENGINE_SHA256" "$TRADER_SHA256" | sha256sum -c --strict --quiet -
           SUBSCRIPTION_ID="$LIVE_SUBSCRIPTION_ID" REGISTRY="$LIVE_REGISTRY" TAG="$GITHUB_SHA" APPROVED_RUN="$GITHUB_RUN_ID" \
             ENGINE_ARCHIVE=engine.tar.gz TRADER_ARCHIVE=trader.tar.gz ROLLBACK_FILE="$RUNNER_TEMP/live-rollback.json" \

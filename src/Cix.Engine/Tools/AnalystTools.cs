@@ -192,7 +192,7 @@ public sealed class AnalystTools(
 
     [McpServerTool(Name = "record_market_view", Destructive = false, Idempotent = false)]
     [Description(
-        "Records your market view. regime: risk-on, neutral or risk-off. Risk-off stops new entries for validHours (exits continue); "
+        "Records your market view. regime: risk-on, neutral or risk-off. Risk-off stops new entries for validHours, at most riskOffHours if your parameters have it (exits continue); "
         + "avoidSymbols get no new entries for the same time. summary: your reasoning for the owner (never shown to the trader). "
         + "sources: the https links you relied on. The view expires after validHours (1-12); an expired view means neutral. "
         + "highlights: up to 5 of the most important news items or market events for the owner's dashboard, each with a source that "
@@ -252,6 +252,11 @@ public sealed class AnalystTools(
                 avoid.Add(symbol);
         }
 
+        // The spec's riskOffHours (from analyst v4) caps a risk-off view, since risk-off pauses buys in every coin.
+        if (parsed == MarketRegime.RiskOff && analystSpec.Active?.Parameters.GetValueOrDefault("riskOffHours") is { ValueKind: System.Text.Json.JsonValueKind.Number } cap
+            && cap.TryGetInt32(out var capHours) && capHours >= 1)
+            validHours = Math.Min(validHours, capHours);
+
         var now = time.GetUtcNow();
         var until = now.AddHours(validHours);
         var view = new MarketView(parsed, now, until, avoid.Select(s => new SymbolFlag(s, until)).ToList());
@@ -276,7 +281,7 @@ public sealed class AnalystTools(
             highlights = cleanHighlights.Count,
             highlightsDropped = droppedHighlights, // "index:reason"; fix and record again only if they matter
             translationsDropped, // "summary-ru-length" or "index:title-ru-length"; the dashboard shows the English instead
-            riskOffHours = riskOffFor is { } d ? Math.Round(d.TotalHours, 1) : (double?)null,
+            riskOffForHours = riskOffFor is { } d ? Math.Round(d.TotalHours, 1) : (double?)null,
             effect = parsed == MarketRegime.RiskOff
                 ? "No new entries until validUntil; exits continue."
                 : avoid.Count > 0 ? "No new entries in the avoided symbols until validUntil." : "No restriction.",

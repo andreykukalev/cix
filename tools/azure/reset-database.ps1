@@ -45,8 +45,6 @@
   .\tools\azure\reset-database.ps1 -Environment dev -Target All -Mode all -IncludeSpecArchive -IncludeRequests -Apply   # a fresh start
 .EXAMPLE
   .\tools\azure\reset-database.ps1 -Environment prod -LiveWhenFlat -Target All -IncludeRequests -Apply   # live, account all cash
-.EXAMPLE
-  .\tools\azure\reset-paper-and-live.ps1 -Target All -IncludeRequests -Apply   # both: dev's paper, then prod's live
 #>
 [CmdletBinding()]
 param(

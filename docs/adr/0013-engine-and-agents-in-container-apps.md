@@ -15,7 +15,9 @@ The research memo is [docs/research/azure-hosting.md](../research/azure-hosting.
 
 ## Decision
 
-Run the engine as a Container App and the agents as Container Apps Jobs. They share one environment with workload profiles, the Consumption profile and its own VNet.
+Run the engine as a Container App and the agents as Container Apps Jobs. They share one environment with workload profiles, the Consumption profile and its own VNet (amended below: no VNet).
+
+Amended 2026-10-28: **no VNet.** On its own VNet, a workload-profiles environment comes with a Standard Load Balancer and a static egress IP that Azure bills to the subscription (in the environment's `ME_` resource group): about $18 + $3.65 a month per environment, $44 for dev and prod, more than the rest of CIX. Nothing used the VNet: the engine is private because its ingress is limited to its environment and every call needs an Entra token, and Cosmos DB, Storage and Key Vault have no network rules. The environment now runs on the network Azure manages, with public network access disabled, and `provision.ps1` rebuilds an environment still on a VNet (after asking). A fixed outbound IP (a NAT gateway, about $33 a month more) would need a VNet again, and so another rebuild.
 
 - **Region.** Poland Central, next to Cosmos DB. If workload-profile environments aren't offered there, Germany West Central.
 - **Engine.** Exactly one replica in single-revision mode, with internal ingress only. `ASPNETCORE_ENVIRONMENT=Azure` and `Trading__Mode=Paper` are set explicitly.
@@ -51,5 +53,5 @@ Run the engine as a Container App and the agents as Container Apps Jobs. They sh
 - **Testable run rules.** The trader and analyst loops' rules move into the engine, where they can be tested. Compose keeps the loops.
 - **Approval gate.** A merge to `main` deploys paper, and there is no auto-merge. The owner's merge is the gate, because GitHub Free has no required reviewers for deployments in a private repository.
 - **Infrastructure stays manual.** Infrastructure changes remain a manual, owner-run step.
-- **No NAT gateway yet.** The live engine's fixed outbound IP is decided with the live engine. The VNet is there from the start.
+- **No NAT gateway yet.** The live engine's fixed outbound IP is decided with the live engine. ~~The VNet is there from the start.~~ The VNet is gone (amendment above): adding a NAT gateway means rebuilding the environment on a VNet.
 - **Paper and live later** means a second engine app with its own lease, identity, Key Vault and resource group, which CI can't reach, and its own database. The paper engine signs in to Cosmos DB with its managed identity, whose roles reach CIX's paper database only (`infra/modules/cosmos-engine-access.bicep`), so CI's identity can't reach a live database by running an image as the paper engine. The owner decided (2026-10-26) that Cosmos DB stays free: the live database sits in the shared free account, which revisits ADR-0009's "before live money" note. The live engine and its Key Vault go in `rg-cix-live`, where CI and the agents have no role; paper stays in `rg-cix-dev` as the dev environment, and live runs only images the owner promotes from it by digest. The account's read-write key still writes every database, so the cutover rotates it and keeps it only where it is still needed. The risk that remains is listed in the hosting memo.

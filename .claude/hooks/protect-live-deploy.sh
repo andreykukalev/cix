@@ -24,8 +24,8 @@ fi
 if printf '%s' "$flat" | grep -qiE '(approve|reject)Deployments|(create|update|delete)Environment|(create|update|delete)DeploymentProtectionRule'; then
   block
 fi
-# The LIVE_* variables, however the command orders its arguments (gh variable set|delete, the REST variables paths).
-if printf '%s' "$flat" | grep -qiE '(^|[^a-z_])LIVE_[A-Z_]+' && printf '%s' "$flat" | grep -qiE 'gh[[:space:]]+variable|actions/variables|/variables([/?"'"'"'[:space:]]|$)|createRepositoryVariable|updateRepositoryVariable'; then
+# The LIVE_* variables and the paper gate's switch (ADR-0024), however the command orders its arguments (gh variable set|delete, the REST variables paths).
+if printf '%s' "$flat" | grep -qiE '(^|[^a-z_])(LIVE_[A-Z_]+|PAPER_APPROVAL)' &&printf '%s' "$flat" | grep -qiE 'gh[[:space:]]+variable|actions/variables|/variables([/?"'"'"'[:space:]]|$)|createRepositoryVariable|updateRepositoryVariable'; then
   block
 fi
 # The live deploy identity, and secrets or trusts on any app registration.

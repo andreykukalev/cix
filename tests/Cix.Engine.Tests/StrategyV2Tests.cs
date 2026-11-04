@@ -14,7 +14,7 @@ namespace Cix.Engine.Tests;
 
 public sealed class StrategyV2Tests
 {
-    private static string SpecPath(string name) => Path.Combine(AppContext.BaseDirectory, "strategies", $"{name}.v1.json");
+    private static string SpecPath(string name) => StrategyFixtures.Path(name, 1);
 
     private static StrategySpec Spec(string parametersJson)
     {

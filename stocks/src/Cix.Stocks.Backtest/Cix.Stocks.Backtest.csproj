@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The backtest runner (ADR-0023): fetches daily bars from EODHD (cached on disk), replays the advisor, writes a report. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Cix.Stocks\Cix.Stocks.csproj" />
+    <ProjectReference Include="..\Cix.Stocks.MarketData\Cix.Stocks.MarketData.csproj" />
+  </ItemGroup>
+</Project>

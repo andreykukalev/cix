@@ -71,6 +71,31 @@ public static class AgentRunKinds
         "not-run" => AgentRunOutcome.NotRun,
         _ => null,
     };
+
+    /// <summary>Claude's usage or rate limit stopped the run before it did any work.</summary>
+    public const string UsageLimit = "usage-limit";
+
+    /// <summary>The Claude credential was missing, malformed or expired.</summary>
+    public const string Credentials = "credentials";
+
+    /// <summary>
+    /// Why a job says its run didn't start: <see cref="UsageLimit"/> or <see cref="Credentials"/>; null for anything else, so
+    /// an unknown reason is dropped rather than journaled.
+    /// </summary>
+    public static string? ParseNotRunReason(string? value) => value switch
+    {
+        UsageLimit => UsageLimit,
+        Credentials => Credentials,
+        _ => null,
+    };
+
+    /// <summary>The reason in words, for the journal.</summary>
+    public static string NotRunReasonText(string reason) => reason switch
+    {
+        UsageLimit => "Claude usage limit",
+        Credentials => "Claude credentials",
+        _ => throw new ArgumentOutOfRangeException(nameof(reason)),
+    };
 }
 
 /// <summary>
@@ -120,6 +145,21 @@ public sealed class AgentRunOptions
     public int AnalystRetryMinutes { get; set; } = 30;
 
     /// <summary>
+    /// A risk-off view gets an extra analyst run this long before it ends (0: none), so the pause ends or is renewed on fresh
+    /// news rather than at the next slot. Long enough for the run to finish before the view ends.
+    /// </summary>
+    public int RiskOffRecheckMinutes { get; set; } = 20;
+
+    /// <summary>At most this many risk-off rechecks a UTC day, for this engine.</summary>
+    public int MaxRiskOffRechecksPerDay { get; set; } = 8;
+
+    /// <summary>The owner's Run now button: an analyst run at least this long after the last one of any kind.</summary>
+    public int AnalystNowCooldownMinutes { get; set; } = 30;
+
+    /// <summary>The owner's Run now button: at most this many such runs a UTC day, for this engine (paper and live count apart).</summary>
+    public int MaxAnalystNowPerDay { get; set; } = 8;
+
+    /// <summary>
     /// A run its job hasn't claimed this long after it was queued is dropped and counts as not run. The queue message
     /// expires at the same time, so a job that comes back later finds nothing old to do.
     /// </summary>
@@ -145,6 +185,10 @@ public sealed class AgentRunOptions
 
     public TimeSpan AnalystRetry => TimeSpan.FromMinutes(AnalystRetryMinutes);
 
+    public TimeSpan AnalystNowCooldown => TimeSpan.FromMinutes(AnalystNowCooldownMinutes);
+
+    public TimeSpan RiskOffRecheck => TimeSpan.FromMinutes(RiskOffRecheckMinutes);
+
     /// <summary>Quick analyst retries never add up to more than one interval; then it waits for its normal slot.</summary>
     public int MaxAnalystRetries => AnalystIntervalHours * 60 / AnalystRetryMinutes;
 
@@ -162,6 +206,14 @@ public sealed class AgentRunOptions
         Positive(MaxRunsPerDay, nameof(MaxRunsPerDay));
         Positive(MaxRequestRunsPerDay, nameof(MaxRequestRunsPerDay));
         Positive(AnalystRetryMinutes, nameof(AnalystRetryMinutes));
+        if (AnalystNowCooldownMinutes is < 10 or > 720)
+            throw new InvalidOperationException("AgentRuns:AnalystNowCooldownMinutes must be between 10 and 720: each run spends the owner's Claude usage.");
+        if (RiskOffRecheckMinutes is < 0 or > 60)
+            throw new InvalidOperationException("AgentRuns:RiskOffRecheckMinutes must be between 0 (off) and 60.");
+        if (MaxRiskOffRechecksPerDay is < 1 or > 24)
+            throw new InvalidOperationException("AgentRuns:MaxRiskOffRechecksPerDay must be between 1 and 24: each run spends the owner's Claude usage.");
+        if (MaxAnalystNowPerDay is < 1 or > 24)
+            throw new InvalidOperationException("AgentRuns:MaxAnalystNowPerDay must be between 1 and 24: each run spends the owner's Claude usage.");
         Positive(ClaimTimeoutMinutes, nameof(ClaimTimeoutMinutes));
         Positive(RunTimeoutMinutes, nameof(RunTimeoutMinutes));
         if (RunTimeoutMinutes <= JobReplicaTimeoutMinutes)

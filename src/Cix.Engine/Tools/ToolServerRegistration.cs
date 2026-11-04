@@ -186,11 +186,11 @@ public static class ToolServerRegistration
 
     /// <summary>
     /// The agent jobs' side of the run queues. A job claims its run before it starts Claude (<c>{"wanted": false}</c> means
-    /// drop the message), then reports <c>{"outcome": "done" | "failed" | "not-run"}</c>. The job is known by its token's
-    /// role, so it can claim and report only its own kind of run. 503 while this engine can't answer (it doesn't hold the
-    /// engine lease, a look is in progress for more than 10 seconds, or another engine saved the state): the job should
-    /// try again shortly. 404 without the scheduler (Compose). A change is saved whether or not the caller is still
-    /// waiting, so a dropped connection can't leave a claim half made.
+    /// drop the message), then reports <c>{"outcome": "done" | "failed" | "not-run"}</c>, and for a not-run the reason
+    /// (<see cref="RunOutcomeBody"/>). The job is known by its token's role, so it can claim and report only its own kind of
+    /// run. 503 while this engine can't answer (it doesn't hold the engine lease, a look is in progress for more than 10
+    /// seconds, or another engine saved the state): the job should try again shortly. 404 without the scheduler (Compose). A
+    /// change is saved whether or not the caller is still waiting, so a dropped connection can't leave a claim half made.
     /// </summary>
     private static void MapAgentRuns(WebApplication app)
     {
@@ -211,7 +211,7 @@ public static class ToolServerRegistration
                 return Results.NotFound();
             if (AgentRuns.AgentRunKinds.ParseOutcome(body.Outcome) is not { } outcome)
                 return Results.BadRequest();
-            return await scheduler.CompleteAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, outcome, CancellationToken.None).ConfigureAwait(false) switch
+            return await scheduler.CompleteAsync(id, http.Items[ToolCallContext.AuthenticatedAgentItem] as string, outcome, body.Reason, CancellationToken.None).ConfigureAwait(false) switch
             {
                 AgentRuns.AgentRunAnswer.Yes => Results.NoContent(),
                 AgentRuns.AgentRunAnswer.Unavailable => Results.StatusCode(StatusCodes.Status503ServiceUnavailable),
@@ -223,8 +223,11 @@ public static class ToolServerRegistration
     /// <summary>The body of <c>POST /runs/{id}/claim</c>: the job execution's name, so it can repeat a claim whose answer it lost.</summary>
     public sealed record RunClaimBody(string? Claimant);
 
-    /// <summary>The body of <c>POST /runs/{id}/outcome</c>.</summary>
-    public sealed record RunOutcomeBody(string? Outcome);
+    /// <summary>
+    /// The body of <c>POST /runs/{id}/outcome</c>. <c>reason</c>, for a not-run: <c>usage-limit</c> or <c>credentials</c>; any
+    /// other value is ignored.
+    /// </summary>
+    public sealed record RunOutcomeBody(string? Outcome, string? Reason = null);
 
     /// <summary>
     /// Listens on the configured port: on loopback only, or on every interface with Entra authentication. Endpoints from

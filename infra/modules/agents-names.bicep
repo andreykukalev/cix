@@ -18,7 +18,6 @@ var poisonQueue = 'runs-poison'
 @description('The names of the agents\' resources in a resource group (its ID makes the globally unique ones unique).')
 func agentsNames(namePrefix string, environmentName string, resourceGroupId string) object => {
   logs: 'log-${namePrefix}-${environmentName}'
-  vnet: 'vnet-${namePrefix}-${environmentName}'
   appsEnvironment: 'cae-${namePrefix}-${environmentName}'
   registry: take('cr${namePrefix}${replace(environmentName, '-', '')}${take(uniqueString(resourceGroupId), 6)}', 50)
   storage: take('st${namePrefix}${replace(environmentName, '-', '')}${take(uniqueString(resourceGroupId), 6)}', 24)

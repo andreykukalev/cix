@@ -8,7 +8,7 @@
       the shared account (infra/main.bicep, settings in infra/environments/<Environment>.json).
   The engine and agents keep running in Docker on this PC, unless agents.deploy in the settings says otherwise (ADR-0013):
     - platform: what the engine and the agent jobs run on (registry, queues, Key Vault, environment, logs, budget);
-    - apps: also the paper engine and the three jobs. Needs platform deployed first, claude-token in its Key Vault
+    - apps: also the engine and the three jobs. Needs platform deployed first, claude-token in its Key Vault
       (uploaded from secrets/claude_token, which tools/setup-secrets.ps1 writes, without showing it), and images CI pushed.
       Creates the engine's Entra app registration (cix-engine-<environment>) when missing.
 
@@ -22,8 +22,9 @@
      to .env, and the account key to secrets/cosmos_key (readable only by you; never printed).
   6. With -DeployDashboard, publishes dashboard/ to the Static Web App.
 
-  Nothing is deleted, and no data is copied: the engine starts with an empty paper account in Azure. Switching the engine to
-  Azure is a separate, manual step (docs/azure.md).
+  Nothing is deleted, and no data is copied. Since ADR-0028 only the protected environment (prod) runs an engine in Azure;
+  dev holds the dashboard and, with agents.deploy platform, the registry the stocks image is built in. The one exception: a Container Apps environment still on its own VNet
+  (deployed before 2026-10-28) is deleted with its apps and VNet, after you confirm it, and recreated without one.
 
 .EXAMPLE
   .\tools\azure\provision.ps1 -Environment dev -WhatIfOnly      # preview only
@@ -32,16 +33,12 @@
 .EXAMPLE
   .\tools\azure\provision.ps1 -Environment dev -DeployDashboard -SkipInfrastructure -SkipEngineConfig   # publish the dashboard only
 .EXAMPLE
-  .\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig -ImageTag <commit SHA>   # agents.deploy apps, first time
-.EXAMPLE
-  .\tools\azure\provision.ps1 -Environment prod -PromoteFrom dev -ImageTag <commit SHA>   # the protected environment (ADR-0017)
+  .\tools\azure\provision.ps1 -Environment prod -ImageTag <commit SHA>   # the protected environment (ADR-0017), images CI pushed there
 .PARAMETER ImageTag
-  agents.deploy apps: the images to run, by the tag CI gave them (the commit SHA). They are deployed by digest, so what runs
-  can't change if the tag is pushed again. Without it, the images the engine and the jobs run now are kept (CI deploys new ones).
-.PARAMETER PromoteFrom
-  A protected environment only, with -ImageTag: first copy the images CI tagged with it from that (paper) environment's
-  registry into this one's, by digest, and deploy those. Live runs only images that ran on paper; CI deploys new ones there only
-  after the owner approves each run (ADR-0019).
+  agents.deploy apps: the images to run, by the tag CI gave them in this environment's registry (the commit SHA). They are
+  deployed by digest, so what runs can't change if the tag is pushed again. Without it, the images the engine and the jobs run
+  now are kept (CI deploys new ones, after the owner approves each run: ADR-0019). The paper environment the images used to
+  be promoted from is gone (ADR-0028).
 .PARAMETER ExchangeApiKeyFile
   A protected environment only: upload this file (the exchange API key) to its Key Vault as revolutx-api-key, without showing
   it. With -ExchangePrivateKeyFile, before the apps are deployed, and again to rotate (docs/live-trading.md).
@@ -63,7 +60,6 @@ param(
   [switch]$DeployDashboard,
   [switch]$UpdateShared,
   [ValidatePattern('^[A-Za-z0-9._-]{1,128}$')][string]$ImageTag,
-  [ValidatePattern('^[a-z0-9-]{2,12}$')][string]$PromoteFrom,
   [string]$ExchangeApiKeyFile,
   [string]$ExchangePrivateKeyFile,
   [switch]$UploadClaudeToken,
@@ -100,15 +96,14 @@ Write-CixInfo "Shared account:  resource group $($shared.resourceGroup) ($($shar
 Write-CixInfo "CIX:             resource group $($settings.resourceGroup) ($($settings.location)), database '$($settings.cosmos.databaseName)' at $($settings.cosmos.databaseThroughput) RU/s"
 Write-CixInfo "Dashboard:       $(if ($settings.deployDashboard) { "Static Web App (Free) in $($settings.dashboardLocation)" } else { 'not deployed' })"
 $agents = if ($settings.ContainsKey('agents')) { $settings.agents.deploy } else { 'none' }
-Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "$(if ($settings.protected) { 'the engine (on standby until you switch it)' } else { 'the paper engine' }) and three jobs, in $($settings.agents.location)" } })"
+Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "$(if ($settings.protected) { 'the engine (on standby until you switch it)' } else { 'an engine in paper mode' }) and three jobs, in $($settings.agents.location)" } })"
 $exchangeKeyFiles = @{ ExchangeApiKeyFile = $ExchangeApiKeyFile; ExchangePrivateKeyFile = $ExchangePrivateKeyFile }
-if (-not $settings.protected -and ($PromoteFrom -or $ExchangeApiKeyFile -or $ExchangePrivateKeyFile)) {
-  throw "-PromoteFrom, -ExchangeApiKeyFile and -ExchangePrivateKeyFile are for a protected environment only; '$Environment' isn't one."
+if (-not $settings.protected -and ($ExchangeApiKeyFile -or $ExchangePrivateKeyFile)) {
+  throw "-ExchangeApiKeyFile and -ExchangePrivateKeyFile are for a protected environment only; '$Environment' isn't one."
 }
-if (($PromoteFrom -or $ExchangeApiKeyFile -or $ExchangePrivateKeyFile) -and $agents -ne 'apps') {
-  throw "-PromoteFrom, -ExchangeApiKeyFile and -ExchangePrivateKeyFile go with agents.deploy apps; $($settings.path) says $agents."
+if (($ExchangeApiKeyFile -or $ExchangePrivateKeyFile) -and $agents -ne 'apps') {
+  throw "-ExchangeApiKeyFile and -ExchangePrivateKeyFile go with agents.deploy apps; $($settings.path) says $agents."
 }
-if ($PromoteFrom -and -not $ImageTag) { throw '-PromoteFrom needs -ImageTag: the tag CI gave the images to promote (the commit SHA).' }
 foreach ($name in @($exchangeKeyFiles.Keys)) {
   $file = $exchangeKeyFiles[$name]
   if (-not $file) { continue }
@@ -140,7 +135,20 @@ if ($settings.protected) {
   }
 }
 
+$rebuild = $null # the old VNet environment to replace, if any (below)
 if (-not $SkipInfrastructure) {
+  # An environment still on its own VNet (before 2026-10-28) leaves it by being rebuilt: found now, deleted only once you say yes.
+  $rebuild = if ($agents -ne 'none') { Get-CixVnetRebuild -Settings $settings } else { $null }
+  if ($rebuild) {
+    if ($agents -ne 'apps' -and $rebuild.Apps.Count -gt 0) { throw "The Container Apps environment is on a VNet and has apps, but $($settings.path) says agents.deploy ${agents}: set it to apps, so the rebuild recreates them." }
+    $what = @(@($rebuild.Apps) + @($rebuild.Environment, $rebuild.Vnet) | Where-Object { $_ } | ForEach-Object { $_.Split('/')[-1] }) -join ', '
+    Write-CixWarn "The Container Apps environment is on its own VNet, which costs a load balancer and a static IP (about 22 USD a month) and can't be removed in place. Before deploying, this deletes $what; the deployment recreates the environment and the apps without a VNet."
+    if ($settings.protected) {
+      if ($Yes -and -not $WhatIfOnly) { throw 'Rebuilding the protected environment stops its engine: run without -Yes, to confirm it yourself.' }
+      Write-CixWarn 'The live engine is gone while it is rebuilt (10-20 minutes): no stop-loss checks or protective exits run then. Do it with no open positions, or accept the gap. Afterwards it stands by in paper until you switch it on again.'
+    }
+  }
+
   Write-CixStep "Shared Cosmos DB account ($($shared.resourceGroup))"
   $existing = Find-CixSharedCosmos -Settings $settings
   if ($existing -and -not $UpdateShared) {
@@ -195,29 +203,8 @@ if (-not $SkipInfrastructure) {
       if ($uploadClaudeToken -and -not (Test-Path $claudeToken)) { throw "Key Vault $vault has no claude-token. Run tools/setup-secrets.ps1 (it writes secrets/claude_token), then run this again: it uploads the file without showing it." }
       # The engine's Entra app registration, looked up now (it is created only once you have said yes, below).
       $audience = Get-CixEngineAudience -Settings $settings -OwnerId $me.Id
-      # Checked before anything is changed: the images (for a protected environment, copied by digest from paper's registry)...
-      if ($PromoteFrom) {
-        $source = Read-CixEnvironment -Name $PromoteFrom
-        if ($source.protected) { throw "-PromoteFrom $PromoteFrom is protected: promote from the paper environment." }
-        $sourceRegistry = Find-CixAgentsResource -Settings $source -Kind acr
-        if (-not $sourceRegistry) { throw "Environment '$PromoteFrom' has no registry to promote from." }
-        $promoted = Resolve-CixImageDigests -Settings $source -Registry $sourceRegistry -Tag $ImageTag
-        # Only what paper runs now: a tag CI pushed again, or an image that never ran there, isn't promoted.
-        $onPaper = Resolve-CixImageDigests -Settings $source -Registry $sourceRegistry
-        if (-not $onPaper -or $onPaper.Engine -ne $promoted.Engine -or $onPaper.Agent -ne $promoted.Agent) {
-          throw "$PromoteFrom doesn't run the images tagged $ImageTag now$(if ($onPaper) { " (it runs cix-engine@$($onPaper.Engine), cix-trader@$($onPaper.Agent))" }): promote the images paper runs. Nothing was changed."
-        }
-        foreach ($image in @(@{ Repository = 'cix-engine'; Digest = $promoted.Engine }, @{ Repository = 'cix-trader'; Digest = $promoted.Agent })) {
-          $from = "$($sourceRegistry.ToLowerInvariant()).azurecr.io/$($image.Repository)@$($image.Digest)"
-          if ($WhatIfOnly) { Write-CixInfo "Would copy $from to $registry as $($image.Repository):$ImageTag."; continue }
-          Confirm-Step "Copy $from to $registry as $($image.Repository):${ImageTag}?"
-          Invoke-CixAz -Quiet @('acr', 'import', '--name', $registry, '--source', $from, '--image', "$($image.Repository):$ImageTag", '--force', '--only-show-errors') | Out-Null
-        }
-      }
-      $images = if ($PromoteFrom -and $WhatIfOnly) { $promoted } else { Resolve-CixImageDigests -Settings $settings -Registry $registry -Tag $ImageTag }
-      if ($PromoteFrom -and $images -and ($images.Engine -ne $promoted.Engine -or $images.Agent -ne $promoted.Agent)) {
-        throw "The images tagged $ImageTag in $registry aren't the ones copied from $PromoteFrom; nothing was deployed."
-      }
+      # Checked before anything is changed: the images, from this environment's own registry...
+      $images = Resolve-CixImageDigests -Settings $settings -Registry $registry -Tag $ImageTag
       if (-not $images) { throw 'Nothing runs yet, so there is no image to keep: pass -ImageTag with a tag CI pushed (the commit SHA).' }
       $agentValues['engineImageDigest'] = $images.Engine
       $agentValues['agentImageDigest'] = $images.Agent
@@ -258,10 +245,14 @@ if (-not $SkipInfrastructure) {
 
   Write-CixStep "CIX ($($settings.resourceGroup), database '$($settings.cosmos.databaseName)')"
   Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -Agents $agentValues -WhatIf | Out-Null
-  if ($WhatIfOnly) { Write-CixInfo 'Preview only: nothing was changed.'; return }
+  if ($WhatIfOnly) {
+    if ($rebuild) { Write-CixInfo "The deployment would first delete $what (the preview above doesn't show that)." }
+    Write-CixInfo 'Preview only: nothing was changed.'; return
+  }
   Confirm-Step "Deploy CIX to $($settings.resourceGroup) and its database to ${sharedName}?"
   # The deployment sets the dashboard's settings to exactly what infra/ says, which would drop the writer identity's and the
-  # confirmed owner (setup-dashboard-requests.ps1): keep them in memory and put them back. They are never printed.
+  # confirmed owner (setup-dashboard-requests.ps1) and the Stocks tab's read access (provision-stocks.ps1): keep them in memory
+  # and put them back. They are never printed.
   $writerSettings = @{}
   $siteId = $null
   if ($settings.deployDashboard) {
@@ -270,8 +261,17 @@ if (-not $SkipInfrastructure) {
       $siteId = "$found".Trim()
       try { $current = Get-CixStaticSiteSettings -SiteId $siteId }
       catch { throw "Couldn't read the dashboard's settings (to keep the writer identity's through the deployment); nothing was deployed." }
-      foreach ($k in @($current.Keys | Where-Object { $_ -like 'COSMOS_WRITER_*' -or $_ -eq 'DASHBOARD_OWNER_USER_ID' })) { $writerSettings[$k] = $current[$k] }
+      foreach ($k in @($current.Keys | Where-Object { $_ -like 'COSMOS_WRITER_*' -or $_ -like 'STOCKS_COSMOS_*' -or $_ -eq 'DASHBOARD_OWNER_USER_ID' })) { $writerSettings[$k] = $current[$k] }
     }
+  }
+  # Last, once every check has passed: from here on the old apps are gone.
+  if ($rebuild) {
+    Confirm-Step "Delete $what now, and recreate the environment and the apps without a VNet?"
+    if ($agentValues.ContainsKey('engineImageDigest')) {
+      $again = '-ImageTag <a tag CI pushed>'
+      Write-CixWarn "If the deployment fails after this, nothing runs to keep images from: run this again with $again. The images now are cix-engine@$($agentValues.engineImageDigest) and cix-trader@$($agentValues.agentImageDigest)."
+    }
+    Remove-CixVnetEnvironment -Rebuild $rebuild
   }
   try { $outputs = Invoke-CixDeployment -Settings $settings -SharedAccountName $sharedName -Agents $agentValues }
   catch {
@@ -373,6 +373,10 @@ if ($DeployDashboard) {
 }
 
 Write-CixStep 'Next steps'
+if ($rebuild -and $rebuild.Apps.Count -gt 0) {
+  # CI's deploy identity holds its roles on the engine and each job, and those went with the deleted apps.
+  Write-CixWarn "The engine and the jobs were recreated, and CI's roles on them went with the old ones: run .\tools\azure\setup-ci-deploy.ps1 -Environment $Environment -For agents again before CI's next deploy."
+}
 if ($settings.protected) {
   Write-CixInfo "The engine stands by: it holds the exchange keys in paper mode, so it runs nothing. Switching it is yours alone: docs/live-trading.md, 'Switching the engine on'."
   Write-CixInfo 'A deployment of this environment puts the engine back on standby until you switch it again.'

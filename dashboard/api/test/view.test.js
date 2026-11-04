@@ -34,44 +34,6 @@ test('coins: the scan\'s coins plus anything held, held first, then by rank', ()
   assert.deepEqual(V.coins({}), []);
 });
 
-test('a sell request: portion and mode as chosen, paper, a note cleaned', () => {
-  const r = V.requestBody({ side: 'sell', mode: 'direct', symbol: 'LINK-EUR', portion: '0.5', note: ' take\nprofit ' }, ID);
-  assert.deepEqual(r.body, { id: ID, side: 'sell', mode: 'direct', symbol: 'LINK-EUR', portion: '0.5', note: 'take profit', tradingMode: 'paper' });
-  assert.match(V.describe(r.body), /^Sell half of your LINK-EUR position \(paper\)\. The engine sells at the bid now/);
-  assert.match(V.describe({ ...r.body, mode: 'agent', portion: '1' }), /^Sell all .* The trader analyses it first/);
-  assert.ok(V.requestBody({ side: 'sell', mode: 'direct', symbol: 'LINK-EUR', portion: '0.3' }, ID).error);
-  assert.ok(V.requestBody({ side: 'sell', mode: 'now', symbol: 'LINK-EUR', portion: '1' }, ID).error);
-});
-
-test('a buy request always goes to the trader, for an amount in the quote currency', () => {
-  const r = V.requestBody({ side: 'buy', mode: 'direct', symbol: 'UNI-EUR', quoteAmount: '25,5' }, ID);
-  assert.deepEqual(r.body, { id: ID, side: 'buy', mode: 'agent', symbol: 'UNI-EUR', quoteAmount: '25.5', note: undefined, tradingMode: 'paper' });
-  assert.match(V.describe(r.body), /^Ask the trader to buy UNI-EUR for 25.5 EUR \(paper\)/);
-  for (const amount of ['', '0', '-5', 'ten', '1001', '1.234']) {
-    assert.ok(V.requestBody({ side: 'buy', symbol: 'UNI-EUR', quoteAmount: amount }, ID).error, amount);
-  }
-  assert.ok(V.requestBody({ side: 'hold', symbol: 'UNI-EUR' }, ID).error);
-  assert.ok(V.requestBody({ side: 'buy', symbol: '<b>', quoteAmount: '5' }, ID).error);
-});
-
-test('every engine status has words, and only final ones end the wait', () => {
-  for (const status of ['new', 'awaiting-agent', 'executing', 'placed', 'unconfirmed', 'filled', 'closed', 'declined', 'rejected', 'failed', 'invalid', 'duplicate', 'expired']) {
-    assert.ok(V.STATUS[status], status);
-  }
-  const done = V.requestState({ status: 'filled', final: true, outcome: { filledSize: '0.5', averagePrice: '10.2' } });
-  assert.deepEqual(done, { label: 'Filled', tone: 'ok', final: true, detail: null, english: null, onlyEnglish: false, filled: '0.5 at 10.2' });
-  const declined = V.requestState({ status: 'declined', final: true, outcome: { rationale: 'Trend still up.' } });
-  assert.equal(declined.detail, 'Trend still up.');
-  // On the Russian page, an answer from before the trader wrote Russian says it is English only; one with its Russian doesn't.
-  const old = { status: 'declined', final: true, outcome: { rationale: 'The strategy only buys uptrend pullbacks.' } };
-  assert.equal(V.requestState(old, 'ru').onlyEnglish, true);
-  assert.equal(V.requestState({ ...old, outcome: { ...old.outcome, rationaleRu: 'Стратегия покупает только откаты в восходящем тренде.' } }, 'ru').onlyEnglish, false);
-  assert.equal(V.requestState(old, 'en').onlyEnglish, false);
-  assert.equal(V.requestState({ status: 'awaiting-agent', final: false }).tone, 'pending');
-  assert.equal(V.what({ side: 'sell', portion: '0.25', symbol: 'LINK-EUR' }), 'Sell 25% LINK-EUR');
-  assert.equal(V.what({ side: 'buy', quoteAmount: '20', symbol: 'UNI-EUR' }), 'Buy UNI-EUR for 20 EUR');
-});
-
 test('a long price shows at 9 significant digits with the exact value on hover; a short one as written', () => {
   assert.deepEqual(V.price('72243.89539084'), { text: '72243.8954', title: '72243.89539084' });
   assert.deepEqual(V.price('-123.4567890123'), { text: '-123.456789', title: '-123.4567890123' });
@@ -124,21 +86,6 @@ test('the header names whoever is signed in', () => {
   assert.deepEqual(V.viewer({ clientPrincipal: { identityProvider: 'aad', userDetails: 'me@example.com', userRoles: ['anonymous', 'authenticated', 'owner'] } }), { signedIn: true, name: 'me@example.com' });
   assert.deepEqual(V.viewer({ clientPrincipal: null }), { signedIn: false, name: null });
   assert.equal(V.viewer(null).signedIn, false);
-});
-
-test('requests pause, with a reason, when the engine can\'t take them', () => {
-  const ok = { state: 'running', manualRequests: { state: 'ok' } };
-  assert.equal(V.requestsBlocked(ok), null);
-  assert.match(V.requestsBlocked({ ...ok, state: 'stale' }), /isn't running/);
-  assert.match(V.requestsBlocked({ ...ok, manualRequests: { state: 'off' } }), /switched off/);
-  assert.match(V.requestsBlocked({ ...ok, manualRequests: { state: 'unavailable' } }), /can't read requests/);
-  assert.match(V.requestsBlocked({ state: 'running', manualRequests: null }), /doesn't report/);
-  assert.ok(V.requestsBlocked(undefined));
-});
-
-test('a refusal names its rule: the engine refuses some, the risk gate others', () => {
-  assert.equal(V.requestState({ status: 'rejected', final: true, outcome: { rule: 'daily-cap', reason: 'At most 20 a day.' } }).label, 'Refused (daily-cap)');
-  assert.equal(V.requestState({ status: 'rejected', final: true, outcome: {} }).label, 'Refused');
 });
 
 test('strategy parameters read in words, with their range and whose limit they are', () => {
@@ -224,23 +171,6 @@ test('the active strategy: name, risk profile and mode, and where it came from, 
     'a switch that ran stays the source while the database is unreadable');
 });
 
-test('a declined request says its reason once, in the page language, and the step does not repeat it', () => {
-  const declined = {
-    status: 'declined', final: true,
-    outcome: { rationale: 'Trend still up; hold.', rationaleRu: 'Тренд ещё вверх; держим.', reason: 'Trend still up; hold.', reasonRu: null },
-    events: [{ status: 'declined', by: 'trader', detail: 'Trend still up; hold.' }, { status: 'awaiting-agent', by: 'engine', detail: 'Sent to the trader to analyse.', detailRu: 'Передан трейдеру на анализ.' }],
-  };
-  assert.equal(V.requestState(declined, 'en').detail, 'Trend still up; hold.');
-  assert.equal(V.requestState(declined, 'ru').detail, 'Тренд ещё вверх; держим.');
-  assert.equal(V.requestState(declined, 'ru').english, 'Trend still up; hold.', 'the English it came from, for a hover');
-  assert.equal(V.requestState(declined, 'en').english, null);
-  assert.equal(V.stepDetail(declined.events[0], declined, 'ru'), null);
-  assert.equal(V.stepDetail(declined.events[1], declined, 'ru'), 'Передан трейдеру на анализ.');
-  assert.equal(V.stepDetail(declined.events[1], declined, 'en'), 'Sent to the trader to analyse.');
-  const placed = { status: 'filled', outcome: { rationale: 'Agreed.', reason: 'Within all limits.', reasonRu: 'В пределах всех лимитов.' } };
-  assert.equal(V.requestState(placed, 'ru').detail, 'Agreed. · В пределах всех лимитов.', 'no Russian rationale: the English as written');
-});
-
 test('the coins say why there is no buy: filtered out, a strategy rule, or held back, with the figure behind it', () => {
   const view = {
     briefing: {
@@ -258,12 +188,14 @@ test('the coins say why there is no buy: filtered out, a strategy rule, or held 
   };
   const rows = Object.fromEntries(V.coins(view, { tradable: [{ symbol: 'BTC-EUR' }, { symbol: 'VVV-EUR' }] }, 'en').map((r) => [r.symbol, r]));
   assert.equal(rows['BTC-EUR'].why, null);
-  assert.deepEqual(rows['LINK-EUR'].why, { kind: 'blocked', label: 'Held back', text: 'signal limit reached', detail: view.briefing.market[1].detail });
+  assert.deepEqual(rows['LINK-EUR'].why, { kind: 'blocked', label: 'Held back', text: 'signal limit reached', detail: view.briefing.market[1].detail, alarm: false });
   assert.equal(rows['SOL-EUR'].why.kind, 'rule');
   assert.equal(rows['ETH-EUR'].why.detail, 'Already in the portfolio: the strategy opens no second position in a coin.');
   assert.deepEqual([rows['DOGE-EUR'].why.kind, rows['DOGE-EUR'].why.detail], ['filtered', 'Spread 0.31% is above the maximum 0.2%.']);
   // The analyst's news flag is a block, not a market filter, although the scanner drops the coin before ranking.
   assert.equal(rows['XRP-EUR'].why.kind, 'blocked');
+  // ...and a market alarm (red), unlike a routine limit such as already held (orange).
+  assert.deepEqual([rows['XRP-EUR'].why.alarm, rows['ETH-EUR'].why.alarm], [true, false]);
   // A pair just added shows at once, before the engine's first scan of it.
   assert.deepEqual([rows['VVV-EUR'].why.kind, rows['VVV-EUR'].note, rows['VVV-EUR'].inScan], ['pending', 'waiting for its first scan', false]);
   assert.equal(V.coins(view, null, 'ru').find((r) => r.symbol === 'LINK-EUR').why.detail, 'Прошла все правила входа…');
@@ -290,7 +222,7 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   const at = (min) => new Date(now - min * 60e3).toISOString();
   const ago = (iso) => `${Math.round((now - Date.parse(iso)) / 60e3)} min ago`;
   const healthy = {
-    engine: { manualRequests: { state: 'ok', awaitingAgent: 0, lastPollAt: at(0.1) } },
+    engine: {},
     sync: { database: at(1) },
     cycle: { lastScan: { at: at(2), ranked: 10, excluded: 1 }, ordersInFlight: [] },
     jobs: {
@@ -302,7 +234,7 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   };
   const ok = V.monitors(healthy, now, ago);
   assert.deepEqual(Object.fromEntries(Object.entries(ok).map(([k, m]) => [k, m.tone])),
-    { database: 'ok', scanner: 'ok', trader: 'ok', analyst: 'ok', requests: 'ok', positions: 'ok' });
+    { database: 'ok', scanner: 'ok', trader: 'ok', analyst: 'ok', positions: 'ok' });
   assert.deepEqual([ok.trader.value, ...ok.trader.sub], ['Done', 'last run 10 min ago · position review']);
   assert.equal(ok.scanner.sub[1], '10 of 11 coins ranked');
 
@@ -312,11 +244,10 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   sick.jobs.trader.last = { runId: 'run-2', purpose: 'signals', state: 'done', at: at(5) };
   sick.agents.trader.recentRuns.unshift({ runId: 'run-2', orders: 0 });
   sick.jobs.analyst = { last: { runId: 'analyst-2', purpose: 'analyst', state: 'failed', at: at(60) }, failedToday: 1, notRunToday: 0, cappedAt: null };
-  sick.engine.manualRequests.lastPollAt = at(5);
   sick.portfolio.holdings.push({ symbol: 'SOL-EUR', protected: false });
   sick.cycle.ordersInFlight = [{ symbol: 'ETH-EUR', sentAt: at(55) }];
   const m = V.monitors(sick, now, ago);
-  assert.deepEqual([m.database.tone, m.scanner.tone, m.trader.tone, m.analyst.tone, m.requests.tone, m.positions.tone], ['bad', 'warn', 'warn', 'bad', 'bad', 'bad']);
+  assert.deepEqual([m.database.tone, m.scanner.tone, m.trader.tone, m.analyst.tone, m.positions.tone], ['bad', 'warn', 'warn', 'bad', 'bad']);
   assert.ok(m.trader.sub.includes('it placed no order for the signals: see its report'));
   assert.deepEqual(m.positions.sub, ['without a stop-loss: SOL-EUR', 'orders older than 50 min: ETH-EUR']);
 
@@ -330,14 +261,17 @@ test('the health monitors flag a late scan, a failed or overdue agent, a signal 
   selling.engine.protection = { armed: 1, exiting: ['BTC-EUR'], blocked: [] };
   assert.deepEqual([V.monitors(selling, now, ago).positions.tone, V.monitors(selling, now, ago).positions.value], ['warn', 'Selling']);
 
+  // Claude's usage limit is shown as such, and only warns: the engine retries the run by itself.
+  const limited = structuredClone(healthy);
+  limited.jobs.analyst = { last: { runId: 'analyst-3', purpose: 'analyst', state: 'limit', at: at(30) }, failedToday: 0, notRunToday: 0, limitedToday: 2, cappedAt: null };
+  const l = V.monitors(limited, now, ago).analyst;
+  assert.deepEqual([l.tone, l.value, ...l.sub],
+    ['warn', 'Claude limit', 'last run 30 min ago · market check', 'Claude usage or rate limit: runs again later', '2 stopped by the Claude limit today']);
+
   const overdue = structuredClone(healthy);
   overdue.jobs.analyst.last.at = at(14 * 60);
   assert.deepEqual([V.monitors(overdue, now, ago).analyst.tone, V.monitors(overdue, now, ago).analyst.value], ['bad', 'Overdue']);
   assert.equal(V.monitors({}, now, ago).trader.value, 'No runs yet');
-  // Live takes no buy or sell requests by design: its tile says so without a warning; paper's switched off still warns.
-  const off = (mode) => V.monitors({ ...structuredClone(healthy), mode, engine: { ...structuredClone(healthy.engine), manualRequests: { state: 'off' } } }, now, ago).requests;
-  assert.deepEqual([off('live').tone, off('live').value], [null, 'Paper only']);
-  assert.deepEqual([off('paper').tone, off('paper').value], ['warn', 'Off']);
 });
 
 test('each watched coin shows its level: trading, filtered out, waiting for data, held outside the strategy, just added, on the account', () => {

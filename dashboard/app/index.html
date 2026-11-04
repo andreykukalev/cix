@@ -10,20 +10,21 @@
   <script src="i18n.js" defer></script>
   <script src="view.js" defer></script>
   <script src="app.js" defer></script>
+  <script src="stocks.js" defer></script>
 </head>
 <body>
   <header class="top">
     <div class="brand">
       <span class="logo" aria-hidden="true">◆</span>
       <h1>CIX</h1>
-      <span id="mode-badge" class="badge">paper</span>
+      <span id="mode-badge" class="badge live">live</span>
       <a id="strategy-badge" class="badge strategy" href="#strategy" title="The strategy the engine runs now: open the Strategy tab">–</a>
     </div>
     <div class="controls">
       <div class="switches">
-        <div class="segmented" role="group" aria-label="Trading mode">
-          <button type="button" data-mode="paper" aria-pressed="true">Paper</button>
-          <button type="button" data-mode="live" aria-pressed="false">Live</button>
+        <div class="segmented" role="group" aria-label="Mode">
+          <button type="button" data-mode="crypto" aria-pressed="true" title="Crypto: the live engine on Revolut X, real money">Crypto</button>
+          <button type="button" data-mode="stocks" aria-pressed="false" title="The stocks advisor: one paper portfolio of its own, apart from crypto">Stocks</button>
         </div>
         <div class="segmented" role="group" aria-label="Language" title="Language of the whole dashboard; coin tickers and figures stay as they are">
           <button type="button" data-lang="ru" lang="ru" aria-pressed="true">RU</button>
@@ -41,7 +42,6 @@
       <button type="button" role="tab" id="tab-coins" data-tab="coins" aria-controls="panel-coins" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">◎</span>Coins</button>
       <button type="button" role="tab" id="tab-strategy" data-tab="strategy" aria-controls="panel-strategy" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">◇</span>Strategy</button>
       <button type="button" role="tab" id="tab-activity" data-tab="activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">▤</span>Activity</button>
-      <button type="button" role="tab" id="tab-requests" data-tab="requests" aria-controls="panel-requests" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">⇄</span>Requests</button>
       <button type="button" role="tab" id="tab-journal" data-tab="journal" aria-controls="panel-journal" aria-selected="false" tabindex="-1"><span class="icon" aria-hidden="true">☰</span>Journal</button>
     </nav>
   </header>
@@ -69,8 +69,7 @@
         <h2 class="health-title">Agents and orders</h2>
         <div class="tiles">
           <article class="tile" id="tile-trader"><h2>Trader</h2><p class="value">–</p><p class="sub">–</p></article>
-          <article class="tile" id="tile-analyst"><h2>Analyst</h2><p class="value">–</p><p class="sub">–</p></article>
-          <article class="tile" id="tile-requests"><h2>Owner requests</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-analyst"><h2>Analyst</h2><p class="value">–</p><p class="sub">–</p><button type="button" id="run-analyst-open" class="ghost tile-action" hidden>Run now</button></article>
           <article class="tile" id="tile-positions"><h2>Positions and orders</h2><p class="value">–</p><p class="sub">–</p></article>
         </div>
       </section>
@@ -82,10 +81,6 @@
           <div>
             <h3>Holdings</h3>
             <table id="holdings"><thead><tr><th>Coin</th><th class="num">Value</th><th class="num">Entry</th><th class="num">Stop</th><th class="num">Target</th><th>Plan</th></tr></thead><tbody></tbody></table>
-          </div>
-          <div id="balances-box">
-            <h3>Balances <span class="muted small">(paper account)</span></h3>
-            <table id="balances"><thead><tr><th>Currency</th><th class="num">Available</th><th class="num">Reserved</th></tr></thead><tbody></tbody></table>
           </div>
         </div>
       </section>
@@ -133,7 +128,7 @@
           <span id="coins-meta" class="muted small"></span>
         </div>
         <div id="coins-change" class="banner coins-change" role="status" hidden></div>
-        <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Why no buy</th><th class="paper-only" hidden>Trade</th></tr></thead><tbody></tbody></table>
+        <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Why no buy</th></tr></thead><tbody></tbody></table>
         <p class="muted small coins-legend"><span class="why-kind filtered">Filtered out</span> the market filters dropped it before ranking (trading volume, spread, volatility, costs, too few prices, or not a tradable pair), with the figure and the limit. <span class="why-kind rule">Strategy rule</span> ranked, but the strategy's entry rules turned it down (trend, pullback, last hour). <span class="why-kind blocked">Held back</span> not the rules: a limit or a block stopped it, such as the strategy's buy signals per scan already taken by higher-ranked coins, a pause between buys, a news flag from the market analyst, a holding or an open order.</p>
         <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan.</p>
       </section>
@@ -210,13 +205,6 @@
       </section>
     </div>
 
-    <div class="tab-panel" role="tabpanel" id="panel-requests" aria-labelledby="tab-requests" hidden>
-      <section class="panel" aria-labelledby="h-requests">
-        <div class="panel-head"><h2 id="h-requests">Your requests</h2><span class="muted small">last 7 days, paper</span></div>
-        <table id="requests"><thead><tr><th>Sent</th><th>Request</th><th>How</th><th>Status</th><th>Outcome</th><th>Steps</th></tr></thead><tbody></tbody></table>
-      </section>
-    </div>
-
     <div class="tab-panel" role="tabpanel" id="panel-journal" aria-labelledby="tab-journal" hidden>
       <section class="panel" id="journal-panel" aria-labelledby="h-activity">
         <div class="panel-head">
@@ -243,32 +231,82 @@
         <table id="state"><thead><tr><th>Document</th><th>Type</th><th>Updated</th><th>What it is</th></tr></thead><tbody></tbody></table>
       </section>
     </div>
-  </main>
 
-  <dialog id="request-dialog" aria-labelledby="request-title">
-    <form id="request-form" method="dialog">
-      <h2 id="request-title">Request</h2>
-      <fieldset id="sell-options">
-        <legend>How much</legend>
-        <label><input type="radio" name="portion" value="0.25"> 25%</label>
-        <label><input type="radio" name="portion" value="0.5"> 50%</label>
-        <label><input type="radio" name="portion" value="1"> All</label>
-      </fieldset>
-      <fieldset id="sell-mode">
-        <legend>How</legend>
-        <label><input type="radio" name="mode" value="direct"> Direct: sell at the bid now</label>
-        <label><input type="radio" name="mode" value="agent"> Ask the trader: it analyses first, may decline</label>
-      </fieldset>
-      <label id="buy-amount" class="field">Amount <input type="text" name="quoteAmount" inputmode="decimal" autocomplete="off" placeholder="25"> <span id="buy-quote" class="muted"></span></label>
-      <label class="field">Note for the trader <span class="muted small">(optional)</span><input type="text" name="note" maxlength="280" autocomplete="off"></label>
-      <p id="request-summary" class="summary"></p>
-      <p id="request-error" class="error" role="alert" hidden></p>
-      <div class="actions">
-        <button type="button" value="cancel" id="request-cancel" class="ghost">Cancel</button>
-        <button type="submit" value="send" id="request-send" class="primary">Send request</button>
-      </div>
-    </form>
-  </dialog>
+    <div class="tab-panel" id="panel-stocks" aria-label="Stocks" hidden>
+      <section class="health" aria-label="Stocks advisor">
+        <div class="tiles">
+          <article class="tile" id="tile-stocks-market"><h2>Stock market</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-stocks-advice"><h2>Advice for</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-stocks-account"><h2>Stocks portfolio</h2><p class="value">–</p><p class="sub">–</p></article>
+          <article class="tile" id="tile-stocks-next"><h2>Next update</h2><p class="value">–</p><p class="sub">–</p></article>
+        </div>
+      </section>
+      <p id="stocks-banner" class="banner" role="status" hidden></p>
+
+      <section class="panel" aria-labelledby="h-stocks-analysis">
+        <div class="panel-head"><h2 id="h-stocks-analysis">Claude's view</h2><span id="stocks-analysis-meta" class="muted small"></span></div>
+        <p class="muted small">Claude reads the news on each stock after the nightly advice. It can only advise less risk: the shares and stops stay the rules'.</p>
+        <p id="stocks-analysis-banner" class="banner" role="status" hidden></p>
+        <ul id="stocks-analysis-cards" class="cards" hidden></ul>
+        <div id="stocks-analysis-body" hidden>
+          <p id="stocks-analysis-market"></p>
+          <h3>Holdings</h3>
+          <table id="stocks-analysis-holdings"><thead><tr><th>Stock</th><th>Claude says</th><th>Earnings</th><th>Why</th></tr></thead><tbody></tbody></table>
+          <h3>Picks among tonight's buys and candidates</h3>
+          <table id="stocks-analysis-picks"><thead><tr><th class="num">Rank</th><th>Stock</th><th>Earnings</th><th>Why</th></tr></thead><tbody></tbody></table>
+          <h3>Left out</h3>
+          <table id="stocks-analysis-skips"><thead><tr><th>Stock</th><th>Earnings</th><th>Why</th></tr></thead><tbody></tbody></table>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-stocks-owner">
+        <div class="panel-head"><h2 id="h-stocks-owner">My portfolio</h2><span id="stocks-owner-meta" class="muted small"></span><span class="head-actions"><button type="button" id="stocks-trade-buy" class="ghost" hidden>I bought</button><button type="button" id="stocks-trade-sell" class="ghost" hidden>I sold</button><button type="button" id="stocks-portfolio-open" class="ghost">Edit portfolio</button></span></div>
+        <p id="stocks-owner-banner" class="banner" role="status" hidden></p>
+        <div id="stocks-owner-body" hidden>
+          <h3>What to do in Revolut</h3>
+          <table id="stocks-owner-actions"><thead><tr><th>Action</th><th>Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th>Why</th></tr></thead><tbody></tbody></table>
+          <h3>My holdings</h3>
+          <table id="stocks-owner-holdings"><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Bought at</th><th class="num">Last close</th><th class="num">Change</th><th class="num">Stop</th><th class="num" title="How far the price can fall before the stop sells">To the stop</th><th>Opened</th></tr></thead><tbody></tbody></table>
+          <h3>Notes</h3>
+          <table id="stocks-owner-notes"><thead><tr><th>Stock</th><th>Why there is no action</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div id="stocks-owner-trades-part" hidden>
+          <h3>My trades</h3>
+          <table id="stocks-owner-trades"><thead><tr><th>Day</th><th>Trade</th><th>Stock</th><th class="num">Shares</th><th class="num">Price</th><th class="num">Fees</th><th class="num" title="For a sale: what it earned or lost against the average price paid, fees off">Profit</th></tr></thead><tbody></tbody></table>
+        </div>
+        <p class="muted small">Your real account at Revolut's broker, in dollars: the advice is sized on the capital you give it, less what your holdings cost. After a buy or a sell at Revolut, record it with I bought or I sold; the next nightly run recomputes the capital and the holdings from it. Edit the portfolio only to correct it as a whole. A stop the advice sets or raises is taken as placed.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="h-stocks-actions">
+        <div class="panel-head"><h2 id="h-stocks-actions">What to do in Revolut</h2><span id="stocks-meta" class="muted small"></span></div>
+        <table id="stocks-actions"><thead><tr><th>Action</th><th>Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th>Why</th></tr></thead><tbody></tbody></table>
+        <p class="muted small">Advice, not orders: CIX can't trade on Revolut, so you place each order and stop yourself. Sells and stops come first, then buys. A stop is only ever raised, never lowered.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="h-stocks-candidates">
+        <div class="panel-head"><h2 id="h-stocks-candidates">Candidates from the whole market</h2><span id="stocks-candidates-meta" class="muted small"></span></div>
+        <p id="stocks-candidates-banner" class="banner" role="status" hidden></p>
+        <table id="stocks-candidates"><thead><tr><th>Stock</th><th>Signal</th><th class="num">Close price</th><th class="num">50-day high</th><th class="num">Stop</th><th class="num" title="Shares by the advisor's rules: the loss to the stop, plus a gap, is 1% of the capital, and at most 20% of it goes into one stock">Shares</th><th class="num">Amount</th><th class="num" title="The change over about six months: the advisor's ranking">6 months</th><th title="Claude's view of it: a pick and its rank, or left out">Claude</th></tr></thead><tbody></tbody></table>
+        <p class="muted small">Large, liquid US common stocks on the main exchanges, up to your price cap, that pass the same entry rule as the watchlist: entry signals first, then uptrends just under their high. Not in the watchlist or the holdings. You choose: nothing here is bought by itself.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="h-stocks-holdings">
+        <div class="panel-head"><h2 id="h-stocks-holdings">Holdings and stops</h2></div>
+        <table id="stocks-holdings"><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Bought at</th><th class="num">Last close</th><th class="num">Change</th><th class="num">Stop</th><th class="num" title="How far the price can fall before the stop sells">To the stop</th><th>Opened</th></tr></thead><tbody></tbody></table>
+      </section>
+
+      <section class="panel" aria-labelledby="h-stocks-watchlist">
+        <div class="panel-head"><h2 id="h-stocks-watchlist">Watchlist</h2><span class="muted small">every watched stock at the last close</span></div>
+        <table id="stocks-watchlist"><thead><tr><th>Stock</th><th>Theme</th><th class="num">Last close</th><th class="num" title="The highest close of the 50 trading days before the last one: closing above it in an uptrend is the entry signal">50-day high</th><th class="num" title="How far the price must rise to close above its 50-day high">To the high</th><th class="num" title="How far the last close is above or under the 200-day average">vs 200-day</th><th>Status</th></tr></thead><tbody></tbody></table>
+        <p class="muted small">An uptrend is a close above the 200-day average with the 50-day average above it. A close above the 50-day high in an uptrend is the entry signal, unless the stock is overheated (over 20% above its 50-day average, or up over 15% in five days) or too jumpy (a daily range over 5% of its price). The advisor buys it unless the market, the cash, the price cap or the theme limit stops it, and the notes say which.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="h-stocks-notes">
+        <div class="panel-head"><h2 id="h-stocks-notes">Notes</h2></div>
+        <table id="stocks-notes"><thead><tr><th>Stock</th><th>Why there is no action</th></tr></thead><tbody></tbody></table>
+      </section>
+    </div>
+  </main>
 
   <dialog id="strategy-dialog" aria-labelledby="strategy-title">
     <form id="strategy-form" method="dialog">
@@ -317,8 +355,58 @@
     </form>
   </dialog>
 
+  <dialog id="run-analyst-dialog" aria-labelledby="run-analyst-title">
+    <form id="run-analyst-form" method="dialog">
+      <h2 id="run-analyst-title">Run the analyst now</h2>
+      <p id="run-analyst-summary" class="summary"></p>
+      <label id="run-analyst-live" class="confirm"><input type="checkbox" name="confirmLive"> <span>I understand the new market view steers real-money trading on Revolut X.</span></label>
+      <p id="run-analyst-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="run-analyst-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="run-analyst-send" class="primary">Run the analyst</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="stocks-portfolio-dialog" class="wide" aria-labelledby="stocks-portfolio-title">
+    <form id="stocks-portfolio-form" method="dialog">
+      <h2 id="stocks-portfolio-title">My portfolio</h2>
+      <p class="muted small">Everything you hold at Revolut's broker now, and the capital the advisor may plan with. Applied at the next nightly run, after the US close.</p>
+      <label class="field">Capital, USD <input type="text" name="capital" inputmode="decimal" autocomplete="off"></label>
+      <table id="stocks-portfolio-rows" class="form-table"><thead><tr><th>Ticker</th><th class="num">Shares</th><th class="num">Price paid, USD</th><th class="num">Stop, USD</th><th>Bought on</th><th></th></tr></thead><tbody></tbody></table>
+      <p><button type="button" id="stocks-portfolio-add" class="ghost">Add a holding</button></p>
+      <p class="muted small">A US ticker, like EPAM or EPAM.US. The price paid is the average per share; leave the stop empty if none is placed.</p>
+      <p id="stocks-portfolio-trades" class="banner warn" hidden></p>
+      <p id="stocks-portfolio-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="stocks-portfolio-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="stocks-portfolio-send" class="primary">Save portfolio</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="stocks-trade-dialog" aria-labelledby="stocks-trade-title">
+    <form id="stocks-trade-form" method="dialog">
+      <h2 id="stocks-trade-title">I bought</h2>
+      <p id="stocks-trade-help" class="muted small"></p>
+      <label class="field">Ticker <input type="text" name="symbol" list="stocks-trade-held" placeholder="EPAM" maxlength="24" autocomplete="off"></label>
+      <datalist id="stocks-trade-held"></datalist>
+      <label class="field">Shares <input type="text" name="quantity" inputmode="decimal" autocomplete="off"></label>
+      <label class="field">Price per share, USD <input type="text" name="price" inputmode="decimal" autocomplete="off"></label>
+      <label class="field">Fees, USD <input type="text" name="fees" inputmode="decimal" autocomplete="off" placeholder="0"></label>
+      <label class="field">Day of the trade <input type="date" name="day"></label>
+      <label class="field" id="stocks-trade-stop">Stop placed, USD <input type="text" name="stop" inputmode="decimal" autocomplete="off"></label>
+      <p id="stocks-trade-waiting" class="muted small" hidden></p>
+      <p id="stocks-trade-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="stocks-trade-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="stocks-trade-send" class="primary">Save trade</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer class="muted small">
-    Private to the owner: every page and API answer needs your Microsoft sign-in. Buy and sell requests are paper only; strategy switches, pair changes, Pause and Resume work for live too, after you confirm. The engine checks each one and every order goes through the risk gate.
+    Private to the owner: every page and API answer needs your Microsoft sign-in. Strategy switches, pair changes, Pause, Resume and the analyst's Run now go to the live engine (real money), after you confirm. The engine checks each one and every order goes through the risk gate.
     News links in the briefing were chosen by the analyst agent from the web and lead to outside sites.
   </footer>
 </body>

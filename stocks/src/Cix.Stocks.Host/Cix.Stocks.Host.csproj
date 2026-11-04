@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The stocks advisor's daily run (ADR-0023): after the US close it fetches daily bars within the EODHD call budget,
+       carries the previous advice out in the paper portfolio and writes the new advice for the dashboard. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.63.0" />
+    <PackageReference Include="Azure.Identity" Version="1.20.0" />
+    <!-- The Cosmos SDK still needs it at run time, though documents go through System.Text.Json (StocksJson). -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Cix.Stocks\Cix.Stocks.csproj" />
+    <ProjectReference Include="..\Cix.Stocks.MarketData\Cix.Stocks.MarketData.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\config\stocks.json" Link="config\stocks.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Cix.Stocks.Host.Tests" />
+  </ItemGroup>
+</Project>

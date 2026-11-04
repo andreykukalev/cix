@@ -6,12 +6,12 @@ CIX runs Claude agents that trade an allocated budget on Revolut X, on a determi
 
 1. **The risk gate is final.** Every order path goes through `RiskGate.Evaluate`. Never add a code path that places an order without it.
 2. **Agents reach the exchange only through tool server tools.** No MCP tool may call the exchange directly; tools call engine services.
-3. **Hard ceilings are human-only.** Do not edit `src/Cix.Domain/Risk/HardCeilings.cs`, `config/risk-limits.json` or the live engine's `config/risk-limits.live.json`; a hook blocks it. If a change seems needed, explain why and ask the owner.
+3. **Hard ceilings and limits change only when the owner asks.** Edit `src/Cix.Domain/Risk/HardCeilings.cs`, `config/risk-limits.json` or the live engine's `config/risk-limits.live.json` only on the owner's explicit request, never on your own initiative and never to make a strategy or a test pass. If a change seems needed, explain why and ask the owner. Say plainly in the PR which limits change.
 4. **The journal is append-only.** No update or delete operations on journal entries.
 5. **No secrets in the repo, prompts, logs or tool output.** Keys come from user secrets locally and Key Vault in Azure. Never print a key, even partially.
 6. **Paper trading is the default.** Live trading needs an explicit configuration switch that only the owner sets; a hook blocks agents from setting it in files or commands. Test against `PaperExchange`, never the real account.
 7. **Money is `decimal`.** Never use `double` or `float` for prices, sizes or balances.
-8. **Live deploys are approved by the owner alone** (ADR-0019). You act with the owner's GitHub account, so GitHub can't tell your approval from theirs: never approve or reject a pending deployment, and never change GitHub environments, the repository's OIDC settings, the `LIVE_*` variables or the `cix-agents-deploy-prod` identity. A hook blocks it. Code you merge reaches live money once the owner approves its run, so say plainly in the PR when a change touches orders, risk, strategies or the deploy.
+8. **Live and paper deploys are approved by the owner alone** (ADR-0019, ADR-0024). You act with the owner's GitHub account, so GitHub can't tell your approval from theirs: never approve or reject a pending deployment, and never change GitHub environments, the repository's OIDC settings, the `LIVE_*` variables, the paper gate's switch or the `cix-agents-deploy-prod` identity. A hook blocks it. Code you merge reaches live money once the owner approves its run, so say plainly in the PR when a change touches orders, risk, strategies or the deploy.
 
 ## Layout
 
@@ -19,6 +19,7 @@ CIX runs Claude agents that trade an allocated budget on Revolut X, on a determi
 - `src/Cix.Exchange.RevolutX`: Revolut X REST client and request signing.
 - `src/Cix.Engine`: the host: market data, execution, portfolio, journal.
 - `tests/`: xUnit tests, one project per source project.
+- `stocks/`: the stocks advisory (ADR-0023), its own solution `stocks/Cix.Stocks.slnx`; changes there never deploy the crypto engine.
 - `tools/spike`: the Revolut X API spike script.
 - `docs/`: architecture, ADRs, research memos.
 

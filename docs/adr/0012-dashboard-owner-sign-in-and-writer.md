@@ -29,6 +29,7 @@ The shared account's read-write key reaches every project's database.
 **Writes.** A dedicated service principal, `cix-dashboard-writer-<env>`, with one client secret.
 - Its only right is a Cosmos DB data-plane custom role: `readMetadata` and `items/create`, scoped to `<database>/requests`.
 - It can't read, replace, upsert or delete anything, in CIX's database or any other database in the shared account.
+- The stocks advisory (ADR-0026) gives the same identity one more role of the same kind in its own account: `readMetadata` and `items/create` on `cix-stocks/requests` only, granted by `provision-stocks.ps1` to the identity the dashboard's own settings name.
 - The API signs in with client credentials and calls the Cosmos DB REST API with the AAD token.
 - The secret lives only in the Static Web App's server-side settings (`COSMOS_WRITER_*`).
 - `tools/azure/setup-dashboard-requests.ps1` creates all of this. The owner runs it, it checks a reused identity for any other access first, and it confirms each change.

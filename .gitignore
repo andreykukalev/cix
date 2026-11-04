@@ -27,3 +27,7 @@ secrets/
 
 # Dashboard API dependencies (installed when publishing)
 node_modules/
+
+# Stocks backtest output and its EODHD cache
+backtest-out/
+.cache/

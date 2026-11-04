@@ -19,6 +19,12 @@ public static class AgentRunPurpose
 
     /// <summary>The analyst's slot, or its retry.</summary>
     public const string Analyst = "analyst";
+
+    /// <summary>The owner asked for an analyst run now, from the dashboard.</summary>
+    public const string Owner = "owner";
+
+    /// <summary>A risk-off view is about to end: the analyst looks again, so it ends or is renewed on fresh news.</summary>
+    public const string Recheck = "recheck";
 }
 
 /// <summary>A run the engine queued and hasn't heard the end of.</summary>
@@ -81,6 +87,15 @@ public sealed record AgentRunState
 
     public int AnalystRetries { get; init; }
 
+    /// <summary>When the last analyst run of any kind was queued: the owner's Run now waits a cooldown after it.</summary>
+    public DateTimeOffset? LastAnalystRun { get; init; }
+
+    /// <summary>Analyst runs the owner asked for today.</summary>
+    public int OwnerAnalystRuns { get; init; }
+
+    /// <summary>Risk-off rechecks queued today.</summary>
+    public int RiskOffRechecks { get; init; }
+
     /// <summary>At most one run of each kind at a time, like the jobs (<c>maxExecutions: 1</c>).</summary>
     public IReadOnlyList<AgentRun> InFlight { get; init; } = [];
 
@@ -92,7 +107,8 @@ public sealed record AgentRunState
 /// <param name="SignalDriven">Whether the active strategy uses the scanner (scan_market).</param>
 /// <param name="SignalKey">The latest scan's signals, like <c>buy:SOL-EUR|sell:BTC-EUR:stop</c>.</param>
 /// <param name="RequestsKey">The owner's requests waiting for the trader, like <c>manual:&lt;id&gt;|...</c>.</param>
-public sealed record AgentRunInputs(bool Scanned, bool SignalDriven, string SignalKey, string RequestsKey);
+/// <param name="RiskOffUntil">When the current market view ends, if it is risk-off; null otherwise.</param>
+public sealed record AgentRunInputs(bool Scanned, bool SignalDriven, string SignalKey, string RequestsKey, DateTimeOffset? RiskOffUntil = null);
 
 /// <summary>A run given up on: never claimed (not run) or never reported (failed).</summary>
 public sealed record ExpiredRun(AgentRun Run, AgentRunOutcome Outcome);
@@ -131,7 +147,7 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
 
         s = PlanRequests(s, inputs, now, dispatch, notices);
         s = PlanTrader(s, inputs, now, dispatch, notices);
-        s = PlanAnalyst(s, now, dispatch);
+        s = PlanAnalyst(s, inputs, now, dispatch);
         return new AgentRunPlan(s, dispatch, expired, notices);
     }
 
@@ -168,13 +184,61 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(run);
-        return state.InFlight.Any(r => r.Id == run.Id) ? Apply(RollDay(state, now), run, AgentRunOutcome.NotRun, now) : state;
+        if (state.InFlight.All(r => r.Id != run.Id))
+            return state;
+        var s = Apply(RollDay(state, now), run, AgentRunOutcome.NotRun, now);
+        if (run.Kind != AgentRunKind.Analyst)
+            return s;
+        // A recheck that never left isn't queued again for the same view.
+        if (run.Purpose == AgentRunPurpose.Recheck)
+            return s;
+        // An analyst run that never left doesn't hold back the owner's next press, and the owner's own doesn't count.
+        s = s with { LastAnalystRun = null };
+        return run.Purpose == AgentRunPurpose.Owner ? s with { OwnerAnalystRuns = Math.Max(0, s.OwnerAnalystRuns - 1) } : s;
+    }
+
+    /// <summary>
+    /// The owner's Run now button: an analyst run outside its schedule. Refused, with the reason in words, while the analyst
+    /// is off or a run of it is in flight, within <see cref="AgentRunOptions.AnalystNowCooldown"/> of the last analyst run,
+    /// or after <see cref="AgentRunOptions.MaxAnalystNowPerDay"/> such runs today: each run spends the owner's Claude usage.
+    /// A run that ends restarts the cadence: the next scheduled run is an interval after it, not straight after it. One that
+    /// never starts (<see cref="AgentRunOutcome.NotRun"/>) isn't retried and leaves the schedule as it was.
+    /// </summary>
+    public (AgentRunState State, AgentRun? Run, string? Refusal) RunAnalystNow(AgentRunState state, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var s = RollDay(state, now);
+        if (!options.Analyst)
+            return (state, null, "The analyst is off on this engine (AgentRuns:Analyst).");
+        if (s.InFlightOf(AgentRunKind.Analyst) is { } running)
+        {
+            return (state, null, running.ClaimedAt is null
+                ? "The analyst is already queued to run; its view arrives a few minutes after it starts."
+                : "The analyst is running now; its view arrives when the run ends.");
+        }
+
+        if (s.LastAnalystRun is { } last && now - last < options.AnalystNowCooldown)
+        {
+            var wait = (int)Math.Ceiling((last + options.AnalystNowCooldown - now).TotalMinutes);
+            var since = Math.Max(0, (int)(now - last).TotalMinutes); // another engine's clock may be a little ahead
+            return (state, null, string.Create(CultureInfo.InvariantCulture,
+                $"The analyst was queued {since} min ago; ask again in {wait} min ({options.AnalystNowCooldownMinutes} min between runs, to spare the Claude limit)."));
+        }
+
+        if (s.OwnerAnalystRuns >= options.MaxAnalystNowPerDay)
+        {
+            return (state, null, string.Create(CultureInfo.InvariantCulture,
+                $"You have asked for {options.MaxAnalystNowPerDay} analyst runs today, the most a day; the scheduled runs go on (AgentRuns:MaxAnalystNowPerDay)."));
+        }
+
+        var run = new AgentRun(AgentRun.NewId(AgentRunKind.Analyst, now), AgentRunKind.Analyst, AgentRunPurpose.Owner, string.Empty, now);
+        return (s with { LastAnalystRun = now, OwnerAnalystRuns = s.OwnerAnalystRuns + 1, InFlight = [.. s.InFlight, run] }, run, null);
     }
 
     private static AgentRunState RollDay(AgentRunState s, DateTimeOffset now)
     {
         var today = DateOnly.FromDateTime(now.UtcDateTime);
-        return today == s.Day ? s : s with { Day = today, Runs = 0, Refunds = 0, RequestRuns = 0, RequestRefunds = 0 };
+        return today == s.Day ? s : s with { Day = today, Runs = 0, Refunds = 0, RequestRuns = 0, RequestRefunds = 0, OwnerAnalystRuns = 0, RiskOffRechecks = 0 };
     }
 
     // Owner requests first: the owner is waiting, and each request expires in the engine if it isn't answered in time.
@@ -257,13 +321,31 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
         return s with { Runs = s.Runs + 1, LastRun = now, InFlight = [.. s.InFlight, run] };
     }
 
-    private AgentRunState PlanAnalyst(AgentRunState s, DateTimeOffset now, List<AgentRun> dispatch)
+    private AgentRunState PlanAnalyst(AgentRunState s, AgentRunInputs inputs, DateTimeOffset now, List<AgentRun> dispatch)
     {
-        if (!options.Analyst || s.InFlightOf(AgentRunKind.Analyst) is not null || (s.NextAnalyst is { } next && now < next))
+        if (!options.Analyst || s.InFlightOf(AgentRunKind.Analyst) is not null)
             return s;
+        if (s.NextAnalyst is { } next && now < next)
+            return RecheckRiskOff(s, inputs, now, dispatch);
         var run = new AgentRun(AgentRun.NewId(AgentRunKind.Analyst, now), AgentRunKind.Analyst, AgentRunPurpose.Analyst, string.Empty, now);
         dispatch.Add(run);
-        return s with { AnalystSlot = s.AnalystSlot ?? now, InFlight = [.. s.InFlight, run] }; // the first run is at start
+        return s with { AnalystSlot = s.AnalystSlot ?? now, LastAnalystRun = now, InFlight = [.. s.InFlight, run] }; // the first run is at start
+    }
+
+    // A risk-off view gets one more look shortly before it ends, so a shock that has passed doesn't keep buys paused until the
+    // next slot, and one still going on is renewed without a gap. Once per view: any analyst run in that lead counts. Not when
+    // the next slot is within a cooldown of the view's end, and at most a few a day, since each run spends the owner's Claude
+    // usage and a misled analyst could record short risk-off views over and over.
+    private AgentRunState RecheckRiskOff(AgentRunState s, AgentRunInputs inputs, DateTimeOffset now, List<AgentRun> dispatch)
+    {
+        if (options.RiskOffRecheck <= TimeSpan.Zero || inputs.RiskOffUntil is not { } until || s.RiskOffRechecks >= options.MaxRiskOffRechecksPerDay)
+            return s;
+        var from = until - options.RiskOffRecheck;
+        if (now < from || now >= until || (s.LastAnalystRun is { } last && last >= from) || s.NextAnalyst <= until + options.AnalystNowCooldown)
+            return s;
+        var run = new AgentRun(AgentRun.NewId(AgentRunKind.Analyst, now), AgentRunKind.Analyst, AgentRunPurpose.Recheck, string.Empty, now);
+        dispatch.Add(run);
+        return s with { LastAnalystRun = now, RiskOffRechecks = s.RiskOffRechecks + 1, InFlight = [.. s.InFlight, run] };
     }
 
     private AgentRunState Apply(AgentRunState s, AgentRun run, AgentRunOutcome outcome, DateTimeOffset now)
@@ -292,6 +374,19 @@ public sealed class AgentRunPlanner(AgentRunOptions options)
                 return run.Purpose == AgentRunPurpose.Scheduled && s.NextScheduled is { } next && next <= now
                     ? s with { NextScheduled = now + options.Interval }
                     : s;
+
+            case AgentRunKind.Analyst when run.Purpose == AgentRunPurpose.Recheck:
+                return s; // extra to the schedule: not retried, and the cadence stays as it was
+
+            case AgentRunKind.Analyst when run.Purpose == AgentRunPurpose.Owner:
+                // The owner's run: one that never started isn't retried and leaves the schedule alone (the owner can press
+                // again after the cooldown); one that ran restarts the cadence from when it was queued.
+                if (outcome == AgentRunOutcome.NotRun)
+                    return s;
+                var after = run.DispatchedAt + options.AnalystInterval;
+                if (after <= now)
+                    after = now + options.AnalystInterval;
+                return s with { AnalystRetries = 0, AnalystSlot = after, NextAnalyst = after };
 
             case AgentRunKind.Analyst:
                 // A run that couldn't use Claude is retried soon; the slot it missed isn't made up twice.

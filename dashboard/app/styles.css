@@ -124,6 +124,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; }
 .panel-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+.panel-head .head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .split { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
 
 .figures { display: flex; flex-wrap: wrap; gap: 10px 28px; }
@@ -156,7 +157,8 @@ td.why { min-width: 260px; max-width: 560px; color: var(--muted); }
 }
 .why-kind.filtered { background: var(--chip); color: var(--muted); }
 .why-kind.rule { background: var(--warn-bg); color: var(--warn); }
-.why-kind.blocked { background: var(--bad-bg); color: var(--bad); }
+.why-kind.blocked { background: var(--warn-bg); color: var(--warn); }
+.why-kind.blocked.alarm { background: var(--bad-bg); color: var(--bad); }
 .why-kind.pending { background: var(--ok-bg); color: var(--ok); }
 .why-detail { display: block; font-size: 12px; margin-top: 2px; }
 .coins-legend { margin: 8px 0 0; line-height: 1.7; }
@@ -180,6 +182,7 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .card .meta { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
 .card ul.reasons { margin: 4px 0 0; padding-left: 18px; color: var(--muted); }
 .chip { display: inline-block; padding: 1px 6px; border-radius: 4px; background: var(--chip); font-family: var(--mono); font-size: 12px; }
+.chip.avoid { background: var(--bad-bg); color: var(--bad); }
 a { color: var(--accent); }
 details > summary { cursor: pointer; margin-top: 14px; color: var(--muted); font-size: 13px; }
 details[open] > summary { margin-bottom: 6px; }
@@ -193,8 +196,6 @@ details[open] > summary { margin-bottom: 6px; }
 .legend { margin: 8px 0 0; }
 td.actions { white-space: nowrap; }
 td.actions button { padding: 3px 10px; font-weight: 600; }
-button.buy { color: var(--ok); border-color: var(--ok); }
-button.sell { color: var(--bad); border-color: var(--bad); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .request-status { margin: 0 0 10px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--chip);
@@ -211,6 +212,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .badge.pending { background: var(--chip); color: var(--accent); }
 
 dialog { border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; background: var(--panel); color: var(--text); width: min(480px, calc(100vw - 32px)); }
+dialog.wide { width: min(760px, calc(100vw - 32px)); }
+.form-table input { width: 100%; min-width: 0; }
+.form-table td { padding: 3px 4px; }
+.form-table .remove { padding: 2px 8px; }
 dialog::backdrop { background: rgba(10, 14, 20, 0.55); }
 dialog h2 { margin-bottom: 12px; }
 dialog fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; padding: 8px 12px; display: grid; gap: 6px; }
@@ -291,6 +296,9 @@ ol.steps { margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: var(--mu
   }
   .tabs [role="tab"][aria-selected="true"] { border-top-color: var(--accent); }
   .tabs .icon { font-size: 18px; }
+  @media (max-width: 400px) { /* seven tabs since the Stocks tab: the Russian labels fit a 360px phone only smaller */
+    .tabs [role="tab"] { min-width: 0; padding: 6px 0; font-size: 10px; letter-spacing: -0.2px; }
+  }
 
   /* Tables become cards: one card per row, the first column as its title and each other value under its column's name
      (data-label, set by app.js), two to a line; long text and the buttons take the whole width */
@@ -306,6 +314,14 @@ ol.steps { margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: var(--mu
   .panel tr.empty { display: block; border-style: dashed; }
   .panel td.actions { display: flex; gap: 8px; padding-top: 4px; }
   .panel td.actions button { flex: 1 1 0; }
+
+  /* The portfolio dialog's rows as cards too, each field under its name */
+  .form-table, .form-table tbody { display: block; width: 100%; }
+  .form-table thead { display: none; }
+  .form-table tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 0 0 8px; }
+  .form-table td { display: block; padding: 0; text-align: left; }
+  .form-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 11px; }
+  .form-table td:last-child { align-self: end; justify-self: end; }
 
   /* The Buy and Sell dialog as a sheet from the bottom, with large choices */
   dialog { width: 100%; max-width: none; margin: auto 0 0; border-radius: 16px 16px 0 0; max-height: 92vh; overflow-y: auto;

@@ -1,8 +1,11 @@
 // What the engine and the agent jobs run on in Azure (ADR-0013, docs/research/azure-hosting.md), without the apps themselves
 // (agents-apps.bicep): costs nothing until something runs, except the registry (Basic, about $5 a month).
 //   - Log Analytics, capped at 0.1 GB a day and kept 30 days (inside the free 5 GB a month);
-//   - a VNet and a Container Apps environment on it: workload profiles, Consumption only, internal (no public endpoint). A
-//     NAT gateway for a fixed outbound address can be added to this VNet later, without rebuilding the environment;
+//   - a Container Apps environment: workload profiles, Consumption only, on the network Azure manages, with public network
+//     access disabled (nothing reaches it from the internet). No VNet of its own: one costs a Standard Load Balancer and a
+//     static IP (about $22 a month), and nothing here uses it; the engine is kept private by its environment-only ingress
+//     and Entra tokens. A fixed outbound address (a NAT gateway) would need a VNet again, which means rebuilding the
+//     environment (provision.ps1 does it, after asking);
 //   - the container registry (Basic, no admin user: the apps pull with their identities);
 //   - the run queues (runs-trader, runs-requests, runs-analyst and runs-poison), in a storage account with shared keys off;
 //   - Key Vault (RBAC), holding claude-token (set by the owner); the engine reaches the database with its identity
@@ -57,34 +60,14 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   }
 }
 
-resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
-  name: names.vnet
-  location: location
-  tags: tags
-  properties: {
-    addressSpace: { addressPrefixes: ['10.42.0.0/16'] }
-    subnets: [
-      {
-        name: 'snet-apps'
-        properties: {
-          addressPrefix: '10.42.0.0/24' // workload profiles need at least a /27
-          delegations: [{ name: 'apps', properties: { serviceName: 'Microsoft.App/environments' } }]
-        }
-      }
-    ]
-  }
-}
-
-resource appsEnvironment 'Microsoft.App/managedEnvironments@2025-01-01' = {
+resource appsEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' = {
   name: names.appsEnvironment
   location: location
   tags: tags
   properties: {
     workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
-    vnetConfiguration: {
-      infrastructureSubnetId: vnet.properties.subnets[0].id
-      internal: true // no public endpoint: the engine's ingress is reachable from inside the environment only
-    }
+    // No inbound traffic from the internet at all; the engine's ingress is for the jobs in this environment only anyway.
+    publicNetworkAccess: 'Disabled'
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
