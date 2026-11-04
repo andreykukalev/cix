@@ -20,11 +20,12 @@ internal sealed class RevolutXTransport
     private readonly HttpClient _http;
     private readonly RevolutXOptions _options;
     private readonly RevolutXAuth? _auth;
-    private readonly SlidingWindowRateLimiter _limiter;
+    private readonly PriorityRateLimiter _limiter;
     private readonly TimeProvider _time;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
 
     /// <param name="auth">Null for public endpoints: requests are sent unsigned.</param>
+    /// <param name="urgentShare">The share of each rate window only urgent requests may use (<see cref="PriorityRateLimiter"/>).</param>
     public RevolutXTransport(
         HttpClient http,
         RevolutXOptions options,
@@ -32,14 +33,15 @@ internal sealed class RevolutXTransport
         int requestsPerSecond,
         int requestsPerMinute,
         TimeProvider time,
-        Func<TimeSpan, CancellationToken, Task>? delay)
+        Func<TimeSpan, CancellationToken, Task>? delay,
+        decimal urgentShare = 0m)
     {
         _http = http ?? throw new ArgumentNullException(nameof(http));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         Validate(options);
         _auth = auth;
         _time = time;
-        _limiter = new SlidingWindowRateLimiter(requestsPerSecond, requestsPerMinute);
+        _limiter = new PriorityRateLimiter(requestsPerSecond, requestsPerMinute, urgentShare);
         _delay = delay ?? ((d, ct) => Task.Delay(d, _time, ct));
     }
 
@@ -49,6 +51,8 @@ internal sealed class RevolutXTransport
             throw new ArgumentException("RevolutX:BaseAddress must be an absolute https URL.", nameof(options));
         if (options.MaxAttempts < 1)
             throw new ArgumentException("RevolutX:MaxAttempts must be at least 1.", nameof(options));
+        if (options.UrgentRequestShare is < 0m or > PriorityRateLimiter.MaxUrgentShare)
+            throw new ArgumentException($"RevolutX:UrgentRequestShare must be between 0 and {PriorityRateLimiter.MaxUrgentShare}.", nameof(options));
     }
 
 
@@ -64,7 +68,7 @@ internal sealed class RevolutXTransport
 
         for (var attempt = 1; ; attempt++)
         {
-            var wait = _limiter.Reserve(_time.GetUtcNow());
+            var wait = _limiter.Reserve(_time.GetUtcNow(), ExchangePriority.IsUrgent);
             if (wait > TimeSpan.Zero)
                 await _delay(wait, cancellationToken).ConfigureAwait(false);
 

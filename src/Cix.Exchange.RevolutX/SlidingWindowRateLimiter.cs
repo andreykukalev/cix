@@ -23,14 +23,21 @@ internal sealed class SlidingWindowRateLimiter
         _perMinute = perMinute;
     }
 
-    public TimeSpan Reserve(DateTimeOffset now)
+    public TimeSpan Reserve(DateTimeOffset now) => Reserve(now, now);
+
+    /// <summary>
+    /// Books a send slot no earlier than <paramref name="notBefore"/> and returns how long from <paramref name="now"/> to wait.
+    /// Only sends older than a minute before <paramref name="now"/> are forgotten, so booking ahead never drops sends still in
+    /// the current window.
+    /// </summary>
+    public TimeSpan Reserve(DateTimeOffset now, DateTimeOffset notBefore)
     {
         lock (_gate)
         {
             _sent.RemoveAll(t => t <= now - Minute);
 
             // Each push moves the slot strictly later, past one booked entry, so this terminates.
-            var slot = now;
+            var slot = notBefore > now ? notBefore : now;
             for (var i = 0; i <= _sent.Count + 1; i++)
             {
                 var next = Push(Push(slot, Second, _perSecond), Minute, _perMinute);

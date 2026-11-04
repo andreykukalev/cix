@@ -78,6 +78,19 @@ public sealed class RiskGateTests
     }
 
     [Fact]
+    public void Evaluate_KillSwitchEngaged_LetsTheOwnersOwnSellThrough_SizedToThePosition_ButNoBuy()
+    {
+        var sell = Sell(0.002m) with { Purpose = OrderPurpose.OwnerSell }; // 100 EUR asked, 50 EUR held
+
+        var verdict = Gate().Evaluate(sell, Portfolio(btcPosition: 50m, kill: true), Market());
+
+        Assert.Equal((RiskOutcome.Resized, "position-size", 0.001m, OrderPurpose.OwnerSell), (verdict.Outcome, verdict.Rule, verdict.Order!.BaseSize, verdict.Order.Purpose));
+        Assert.Equal("no-position", Gate().Evaluate(sell, Portfolio(btcPosition: 0m, kill: true), Market()).Rule);
+        Assert.Equal("price-band", Gate().Evaluate(sell with { LimitPrice = 49_000m }, Portfolio(btcPosition: 50m, kill: true), Market()).Rule); // the normal band
+        Assert.Equal("invalid-order", Gate().Evaluate(Buy(0.0001m) with { Purpose = OrderPurpose.OwnerSell }, Portfolio(kill: true), Market()).Rule);
+    }
+
+    [Fact]
     public void Evaluate_ProtectiveExit_MustBeAnImmediateOrCancelSell()
     {
         var restingSell = StopSell(0.0001m) with { TimeInForce = TimeInForce.GoodTillCancelled };
@@ -205,6 +218,7 @@ public sealed class RiskGateTests
         var verdict = Gate().Evaluate(Buy(0.0002m), Portfolio(equity: 170m, peak: 200m), Market()); // 15%
 
         Assert.Equal("drawdown-halt", verdict.Rule);
+        Assert.EndsWith("new buys are refused while it stays at or above the limit.", verdict.Reason, StringComparison.Ordinal); // not "until resumed" (F-10)
     }
 
     [Fact]

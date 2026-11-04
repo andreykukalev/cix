@@ -115,3 +115,53 @@ public sealed class SlidingWindowRateLimiterTests
             waits);
     }
 }
+
+public sealed class PriorityRateLimiterTests
+{
+    private static readonly DateTimeOffset T0 = new(2026, 10, 22, 12, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void OrdinaryRequests_LeaveTheUrgentShareFree_ForTheStops()
+    {
+        var limiter = new PriorityRateLimiter(perSecond: 10, perMinute: 100, urgentShare: 0.2m); // ordinary: 8 a second
+
+        var ordinary = Enumerable.Range(0, 9).Select(_ => limiter.Reserve(T0, urgent: false).TotalSeconds).ToList();
+        var urgent = Enumerable.Range(0, 3).Select(_ => limiter.Reserve(T0, urgent: true).TotalSeconds).ToList();
+
+        Assert.Equal(new double[] { 0, 0, 0, 0, 0, 0, 0, 0, 1 }, ordinary); // the ninth waits for its own share
+        Assert.Equal(new double[] { 0, 0, 1 }, urgent); // two go at once, then the whole budget of 10 is full
+    }
+
+    [Fact]
+    public void AnOrdinaryRequestBookedAMinuteAhead_NeverLetsUrgentOnesOverTheWholeBudget()
+    {
+        var limiter = new PriorityRateLimiter(perSecond: 10, perMinute: 100, urgentShare: 0.2m); // ordinary: 8 a second, 80 a minute
+
+        // 80 ordinary requests fill their minute; the 81st is booked a minute ahead, which once made the whole budget forget
+        // the sends still in its window.
+        var slots = Enumerable.Range(0, 81).Select(_ => T0 + limiter.Reserve(T0, urgent: false)).ToList();
+        Assert.Equal(T0.AddMinutes(1), slots[^1]);
+        slots.AddRange(Enumerable.Range(0, 30).Select(_ => T0 + limiter.Reserve(T0, urgent: true)));
+
+        foreach (var slot in slots)
+        {
+            Assert.True(slots.Count(t => t > slot.AddSeconds(-1) && t <= slot) <= 10, $"Over 10 sends in the second up to {slot:O}.");
+            Assert.True(slots.Count(t => t > slot.AddMinutes(-1) && t <= slot) <= 100, $"Over 100 sends in the minute up to {slot:O}.");
+        }
+    }
+
+    [Fact]
+    public void WithoutAnUrgentShare_EveryRequestUsesTheWholeBudget()
+    {
+        var limiter = new PriorityRateLimiter(perSecond: 10, perMinute: 100);
+
+        Assert.All(Enumerable.Range(0, 10), _ => Assert.Equal(TimeSpan.Zero, limiter.Reserve(T0, urgent: false)));
+        Assert.Equal(TimeSpan.FromSeconds(1), limiter.Reserve(T0, urgent: true));
+    }
+
+    [Theory]
+    [InlineData("-0.1")]
+    [InlineData("0.6")]
+    public void AnUrgentShare_OutsideZeroToAHalf_IsRefused(string share) =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PriorityRateLimiter(10, 100, decimal.Parse(share, System.Globalization.CultureInfo.InvariantCulture)));
+}

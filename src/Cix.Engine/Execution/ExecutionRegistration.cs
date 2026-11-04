@@ -66,7 +66,8 @@ public static class ExecutionRegistration
             lease: sp.GetService<Persistence.IEngineLease>(),
             refreshQuote: (symbol, ct) => sp.GetRequiredService<MarketDataPoller>().RefreshQuoteAsync(symbol, ct), // a fresh book before pricing
             freshBookWithin: sp.GetRequiredService<MarketDataOptions>().QuoteInterval,
-            strategyFilter: symbol => StrategyFilter(sp, symbol)));
+            strategyFilter: symbol => StrategyFilter(sp, symbol),
+            waitForFirstReconcile: true)); // SafetyMonitor reconciles as it starts
         services.AddSingleton<IActiveSymbolSource>(sp => sp.GetRequiredService<ExecutionService>()); // whose order books the poller keeps
         services.AddSingleton<SafetyMonitor>();
         services.AddHostedService(sp => sp.GetRequiredService<SafetyMonitor>());
@@ -107,6 +108,7 @@ public static class ExecutionRegistration
         {
             var poller = sp.GetRequiredService<MarketDataPoller>();
             var trigger = sp.GetRequiredService<ProtectionTrigger>();
+            var features = sp.GetRequiredService<FeatureService>();
             return new ProtectionService(
                 sp.GetRequiredService<ExecutionService>(),
                 trigger,
@@ -117,7 +119,10 @@ public static class ExecutionRegistration
                 options,
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<ILogger<ProtectionService>>(),
-                strategy: () => sp.GetService<Strategy.IStrategySpecStore>()?.Active?.Label);
+                strategy: () => sp.GetService<Strategy.IStrategySpecStore>()?.Active?.Label,
+                // A position bought without a stop gets the active strategy's: stopAtr hourly ATRs below the bid (F-02).
+                atr: symbol => features.GetFeatures(symbol) is { IsStale: false, Atr14: > 0 } f ? f.Atr14 : null,
+                stopAtr: () => sp.GetService<Scanning.MarketScanService>()?.Parameters.StopAtr ?? new Cix.Domain.Scanning.ScannerParameters().StopAtr);
         });
         services.AddHostedService(sp => sp.GetRequiredService<ProtectionService>());
         return services;

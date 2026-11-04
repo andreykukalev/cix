@@ -17,6 +17,7 @@ const HALT_RU = {
   'A safety limit was reached (drawdown, daily loss or stale market data).': 'достигнут предел безопасности (просадка, дневной убыток или устаревшие рыночные данные).',
   'Too many orders in a row were rejected by the risk gate.': 'риск-контроль отклонил слишком много ордеров подряд.',
   'Critical: drawdown reached the hard ceiling. Nothing new until you resume; stop-losses keep selling.': 'критическое состояние: просадка достигла жёсткого потолка. Ничего нового до возобновления; стоп-лоссы продолжают продавать.',
+  'Drawdown reached the limit. Nothing new until you resume; stop-losses and your own sells go on.': 'просадка достигла лимита. Ничего нового до возобновления; стоп-лоссы и ваши продажи работают.',
   'Waiting for the owner to confirm before trading starts.': 'ждёт подтверждения владельца перед началом торговли.',
   "The saved trading pairs couldn't all be restored; check holdings before resuming.": 'не все сохранённые торговые пары удалось восстановить; проверьте позиции перед возобновлением.',
   'Halted.': 'остановлена.',

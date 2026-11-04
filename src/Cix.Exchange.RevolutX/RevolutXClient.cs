@@ -46,7 +46,7 @@ public sealed class RevolutXClient : IExchangeClient, IQuoteSource, IBulkQuoteSo
         time ??= TimeProvider.System;
         _time = time;
         var auth = new RevolutXAuth(options.ApiKey, signer ?? BouncyCastleEd25519Signer.FromPem(options.PrivateKeyPem), time);
-        _transport = new RevolutXTransport(http, options, auth, options.RequestsPerSecond, options.RequestsPerMinute, time, delay);
+        _transport = new RevolutXTransport(http, options, auth, options.RequestsPerSecond, options.RequestsPerMinute, time, delay, options.UrgentRequestShare);
     }
 
     /// <summary>

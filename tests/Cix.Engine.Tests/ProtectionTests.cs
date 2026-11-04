@@ -56,14 +56,16 @@ internal sealed class ProtectionRig
 
     private int _books;
 
-    public ProtectionRig(Rig rig, ProtectionOptions? options = null)
+    /// <param name="atr">The hourly ATR by symbol, for stops on positions bought without one; null sets none.</param>
+    public ProtectionRig(Rig rig, ProtectionOptions? options = null, Func<string, decimal?>? atr = null, decimal stopAtr = 1.5m)
     {
         Rig = rig;
         Options = options ?? new ProtectionOptions();
         Trigger = new ProtectionTrigger(rig.Time);
         Service = new ProtectionService(
             rig.Execution, Trigger, rig.State, FreshQuoteAsync, rig.Journal, rig.Tradable?.Limits ?? Rig.Limits, Options, rig.Time,
-            NullLogger<ProtectionService>.Instance, delay: (d, _) => { rig.Time.Advance(d); return Task.CompletedTask; }, strategy: () => "safe.v2");
+            NullLogger<ProtectionService>.Instance, delay: (d, _) => { rig.Time.Advance(d); return Task.CompletedTask; }, strategy: () => "safe.v2",
+            atr: atr, stopAtr: atr is null ? null : () => stopAtr);
     }
 
     public Rig Rig { get; }
@@ -648,6 +650,7 @@ public sealed class ProtectionTests
 
         Assert.Equal((1, (DateTimeOffset?)p.Rig.Time.GetUtcNow(), 0, 0), (status.Protection!.Armed, status.Protection.ArmedAt, status.Protection.Exiting.Count, status.Protection.Blocked.Count));
         Assert.Equal("Critical: drawdown reached the hard ceiling. Nothing new until you resume; stop-losses keep selling.", EngineStatusService.HaltCategoryFor(SafetyMonitor.CriticalBy));
+        Assert.Equal("Drawdown reached the limit. Nothing new until you resume; stop-losses and your own sells go on.", EngineStatusService.HaltCategoryFor(SafetyMonitor.DrawdownBy));
     }
 
     [Fact]
@@ -693,5 +696,113 @@ public sealed class ProtectionTests
         foreach (var symbol in symbols)
             p.Feed(p.Normal(symbol));
         return (rig, p);
+    }
+
+    [Theory]
+    [InlineData("60000", "400", "1.5", "59400")] // 1.5 ATR below the bid
+    [InlineData("60000", "10", "1.5", "59700")] // never closer than 0.5% below it
+    [InlineData("100", "100", "1.5", null)] // at or below zero: no stop
+    public void APlanlessStop_IsStopAtrAtrsBelowTheBid_AndAtLeastTheLeastExitDistance(string bid, string atr, string stopAtr, string? expected) =>
+        Assert.Equal(expected is null ? null : (decimal?)ProtectionRig.D(expected), ProtectionService.PlanlessStop(ProtectionRig.D(bid), ProtectionRig.D(atr), ProtectionRig.D(stopAtr)));
+
+    [Fact]
+    public async Task AnEngineWithoutTheLease_SetsNoStop_UntilItHoldsIt()
+    {
+        var lease = new FakeLease();
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m, lease: lease), atr: _ => 400m);
+        lease.IsHeld = false; // a new revision during a deploy, before the old one lets the lease go
+
+        await p.Service.RefreshAsync(CancellationToken.None);
+        Assert.Null(p.Trigger.StopFor(Btc));
+        Assert.Empty(p.Rig.Store.Current.Plans);
+        Assert.DoesNotContain(p.Rig.Journal.Entries, e => e.Kind == "stop-adopted");
+
+        lease.IsHeld = true;
+        await p.Service.RefreshAsync(CancellationToken.None);
+        Assert.Equal(59_400m, p.Trigger.StopFor(Btc));
+        Assert.Equal(59_400m, p.Rig.Store.Current.Plans[Btc].StopLoss);
+    }
+
+    [Fact]
+    public async Task APositionBoughtWithoutAStop_GetsTheStrategysAtrStop_Once_AndIsSoldBelowIt()
+    {
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m), atr: _ => 400m); // held, with no plan: an adopted coin
+
+        Assert.Equal(0, await p.Service.RefreshAsync(CancellationToken.None));
+        var plan = p.Rig.Store.Current.Plans[Btc];
+        Assert.Equal((59_400m, PositionPlanState.Open, PositionPlanState.AdoptedEntry), (plan.StopLoss, plan.Status, plan.EntryClientOrderId));
+        Assert.Equal(59_400m, p.Trigger.StopFor(Btc)); // 1.5 × 400 below the bid of 60,000
+        var adopted = Assert.Single(p.Rig.Journal.Entries, e => e.Kind == "stop-adopted");
+        Assert.Equal((59_400m, 60_000m, "true"), (ProtectionRig.D(adopted.Data!["stopLoss"]), ProtectionRig.D(adopted.Data["bid"]), adopted.Data["saved"]));
+
+        p.Rig.Time.Advance(TimeSpan.FromMinutes(1));
+        p.Rig.Quote(62_000m, 62_010m); // the price rose: the stop stays where it was set
+        Assert.Equal(0, await p.Service.RefreshAsync(CancellationToken.None));
+        Assert.Equal(59_400m, p.Trigger.StopFor(Btc));
+        Assert.Single(p.Rig.Journal.Entries, e => e.Kind == "stop-adopted");
+
+        p.Rig.Time.Advance(TimeSpan.FromMinutes(1));
+        p.Rig.Quote(59_300m, 59_310m);
+        Assert.Equal(1, await p.Service.RefreshAsync(CancellationToken.None));
+        await p.Service.WhenIdleAsync();
+        Assert.Equal(0m, await p.Held());
+    }
+
+    [Fact]
+    public async Task AnAdoptedStop_ThatCannotBeSaved_IsArmedAnyway_AndSavedLater_AtTheSamePrice()
+    {
+        var store = new FailingStateStore();
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m, store: store), atr: _ => 400m);
+        store.FailWrites = true;
+
+        await p.Service.RefreshAsync(CancellationToken.None);
+        Assert.Equal(59_400m, p.Trigger.StopFor(Btc));
+        Assert.Empty(store.Current.Plans);
+        Assert.Equal("false", Assert.Single(p.Rig.Journal.Entries, e => e.Kind == "stop-adopted").Data!["saved"]);
+
+        store.FailWrites = false;
+        p.Rig.Time.Advance(TimeSpan.FromMinutes(1));
+        p.Rig.Quote(62_000m, 62_010m); // a later price never moves the stop set first
+        await p.Service.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal(59_400m, store.Current.Plans[Btc].StopLoss);
+        Assert.Equal(59_400m, p.Trigger.StopFor(Btc));
+        Assert.Single(p.Rig.Journal.Entries, e => e.Kind == "stop-adopted");
+    }
+
+    [Fact]
+    public async Task APositionWithoutEnoughCandlesForTheAtr_WaitsForThem_AndATargetOnlyPlan_KeepsItsTarget()
+    {
+        decimal? atr = null;
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m), atr: _ => atr);
+        p.Rig.Store.Update(s => s with
+        {
+            Positions = new Dictionary<string, PositionPlanState>(StringComparer.Ordinal)
+            {
+                [Btc] = new(Btc, PositionPlanState.Open, "c-old", null, 70_000m, Rig.T0.AddHours(-2), 62_000m, Rig.T0.AddHours(-2)),
+            },
+        }); // an older buy with a target and no stop
+
+        await p.Service.RefreshAsync(CancellationToken.None);
+        Assert.Null(p.Trigger.StopFor(Btc));
+        Assert.Null(p.Rig.Store.Current.Plans[Btc].StopLoss);
+
+        atr = 400m; // the hourly candles arrived
+        await p.Service.RefreshAsync(CancellationToken.None);
+        var plan = p.Rig.Store.Current.Plans[Btc];
+        Assert.Equal((59_400m, 70_000m, "c-old"), (plan.StopLoss, plan.TakeProfit, plan.EntryClientOrderId));
+        Assert.Equal(59_400m, p.Trigger.StopFor(Btc));
+    }
+
+    [Fact]
+    public async Task APositionWithAStop_KeepsIt_WhateverTheAtr()
+    {
+        var p = new ProtectionRig(new Rig(eur: 200m, btc: 0.001m), atr: _ => 400m);
+        p.Plan(Btc, stop: 58_000m);
+
+        await p.Service.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal(58_000m, p.Trigger.StopFor(Btc));
+        Assert.DoesNotContain(p.Rig.Journal.Entries, e => e.Kind == "stop-adopted");
     }
 }

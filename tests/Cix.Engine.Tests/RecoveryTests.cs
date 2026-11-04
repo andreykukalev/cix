@@ -239,6 +239,22 @@ public sealed class RecoveryTests
     }
 
     [Fact]
+    public void AnAdoptedStop_IsSetOnce_AndAnAgentsLaterBuy_ReplacesItOnlyOnceFilled()
+    {
+        var held = new PositionPlan(Rig.Btc, 60m, 0.001m, EntryPrice: null, FilledAt: null, StopLoss: null, TakeProfit: null);
+        var adopted = EngineState.Initial.WithAdoptedStop(held, 59_400m, Rig.T0, "safe.v2");
+        var plan = adopted.Plans[Rig.Btc];
+        Assert.Equal((PositionPlanState.Open, PositionPlanState.AdoptedEntry, 59_400m, "safe.v2"), (plan.Status, plan.EntryClientOrderId, plan.StopLoss, plan.Strategy));
+        Assert.Same(adopted, adopted.WithAdoptedStop(held, 58_000m, Rig.T0.AddMinutes(1))); // set once: a later price never moves it
+
+        var buy = new SentOrder("c-2", Rig.Btc, "buy", 0.001m, 61_000m, Rig.T0.AddHours(1), "place_order", StopLoss: 60_000m, TakeProfit: 63_000m);
+        var sent = adopted.WithSent(buy);
+        Assert.Equal(59_400m, sent.Plans[Rig.Btc].StopLoss); // until it fills
+        var filled = sent.WithEntryFilled(Rig.Btc, "c-2", 61_000m, Rig.T0.AddHours(1));
+        Assert.Equal((60_000m, 63_000m, "c-2"), (filled.Plans[Rig.Btc].StopLoss, filled.Plans[Rig.Btc].TakeProfit, filled.Plans[Rig.Btc].EntryClientOrderId));
+    }
+
+    [Fact]
     public void JournalIds_ReadInOrder_AndSayWhatTheyAre()
     {
         var id = JournalIds.New(new DateTimeOffset(2026, 10, 25, 12, 46, 50, TimeSpan.Zero), "order");

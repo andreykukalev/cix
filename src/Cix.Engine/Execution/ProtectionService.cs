@@ -183,6 +183,10 @@ public sealed partial class ProtectionService : BackgroundService
     private readonly ILogger<ProtectionService> _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Func<string?> _strategy;
+    private readonly Func<string, decimal?>? _atr;
+    private readonly Func<decimal?>? _stopAtr;
+    private readonly Dictionary<string, decimal> _adopted = new(StringComparer.Ordinal); // set, not yet saved; RefreshAsync only
+    private readonly HashSet<string> _waitingForAtr = new(StringComparer.Ordinal); // logged once each
     private readonly ConcurrentDictionary<string, Task<ExitOutcome>> _running = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, BlockedExit> _blocked = new(StringComparer.Ordinal);
     private readonly Lock _startGate = new();
@@ -201,7 +205,9 @@ public sealed partial class ProtectionService : BackgroundService
         TimeProvider time,
         ILogger<ProtectionService> logger,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        Func<string?>? strategy = null)
+        Func<string?>? strategy = null,
+        Func<string, decimal?>? atr = null,
+        Func<decimal?>? stopAtr = null)
     {
         options.Validate();
         _execution = execution;
@@ -215,6 +221,8 @@ public sealed partial class ProtectionService : BackgroundService
         _logger = logger;
         _delay = delay ?? ((d, ct) => Task.Delay(d, time, ct));
         _strategy = strategy ?? (() => null);
+        _atr = atr;
+        _stopAtr = stopAtr;
     }
 
     /// <summary>Exits the engine keeps trying but couldn't complete, by coin.</summary>
@@ -249,6 +257,15 @@ public sealed partial class ProtectionService : BackgroundService
 
         if (plans is not null)
         {
+            try
+            {
+                plans = await AdoptStopsAsync(plans).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                LogAdoptionFailed(_logger, ex.GetType().Name, ex.Message); // the stops the plans have are armed all the same
+            }
+
             _trigger.Arm(plans.Where(p => p.StopLoss is > 0).ToDictionary(p => p.Symbol, p => p.StopLoss!.Value, StringComparer.Ordinal));
             ArmedAt = _time.GetUtcNow();
         }
@@ -263,6 +280,123 @@ public sealed partial class ProtectionService : BackgroundService
         }
 
         return started;
+    }
+
+    /// <summary>
+    /// The stop for a position bought without one: <paramref name="stopAtr"/> hourly ATRs below the bid (the active strategy's
+    /// rule for its own buys), and at least <see cref="Cix.Domain.Scanning.MarketScanner.MinExitDistanceFraction"/> below it,
+    /// so the spread alone can't sell it. Null when that would be at or below zero.
+    /// </summary>
+    public static decimal? PlanlessStop(decimal bid, decimal atr, decimal stopAtr)
+    {
+        var stop = Math.Min(bid - (stopAtr * atr), bid * (1 - Cix.Domain.Scanning.MarketScanner.MinExitDistanceFraction));
+        stop = Math.Round(stop, 8, MidpointRounding.ToZero);
+        return stop > 0 ? stop : null;
+    }
+
+    /// <summary>
+    /// Gives every position without a stop one (pre-live assessment F-02): a coin held before the engine traded it, the owner's
+    /// own buy, an older buy without a stop. Set once, from the bid when the engine first sees the position priced and the
+    /// hourly ATR (<see cref="PlanlessStop"/>), and saved in the position's plan, so a restart or a later price never moves it.
+    /// A stop that couldn't be saved is armed from memory and saved at the next refresh. Without a fresh price or enough
+    /// candles for the ATR, the position waits for the next refresh.
+    /// </summary>
+    private async Task<IReadOnlyList<PositionPlan>> AdoptStopsAsync(IReadOnlyList<PositionPlan> plans)
+    {
+        // Only the engine holding the lease writes shared state (ADR-0013): during a deploy the other one would race its saves.
+        if (_atr is null || _stopAtr is null || !_execution.HoldsLease)
+            return plans;
+        foreach (var gone in _adopted.Keys.Concat(_waitingForAtr).Where(k => !plans.Any(p => p.Symbol == k)).ToList())
+        {
+            _adopted.Remove(gone);
+            _waitingForAtr.Remove(gone);
+        }
+
+        var now = _time.GetUtcNow();
+        var result = new List<PositionPlan>(plans.Count);
+        foreach (var plan in plans)
+        {
+            if (plan.StopLoss is > 0)
+            {
+                _adopted.Remove(plan.Symbol);
+                result.Add(plan);
+                continue;
+            }
+
+            decimal stop;
+            (decimal Stop, decimal Bid, decimal Atr, decimal StopAtr)? set = null;
+            if (_adopted.TryGetValue(plan.Symbol, out var unsaved))
+            {
+                stop = unsaved;
+            }
+            else if (NewStop(plan.Symbol, now) is { } computed)
+            {
+                (stop, set) = (computed.Stop, computed);
+            }
+            else
+            {
+                result.Add(plan);
+                continue;
+            }
+
+            var saved = _execution.AdoptStop(plan, stop, now, _strategy());
+            if (saved is > 0)
+            {
+                _adopted.Remove(plan.Symbol);
+                stop = saved.Value; // a stop the plan got meanwhile stays
+            }
+            else
+            {
+                _adopted[plan.Symbol] = stop;
+            }
+
+            if (set is { } first)
+            {
+                LogStopAdopted(_logger, plan.Symbol, stop, first.StopAtr, first.Atr, first.Bid);
+                await RecordAsync("stop-adopted", Inv($"stop set for {plan.Symbol} at {stop:0.########}: {first.StopAtr:0.##} ATR below the bid, the position had none"),
+                    new Dictionary<string, string>
+                    {
+                        ["symbol"] = plan.Symbol,
+                        ["stopLoss"] = stop.ToString(CultureInfo.InvariantCulture),
+                        ["bid"] = first.Bid.ToString(CultureInfo.InvariantCulture),
+                        ["atr"] = first.Atr.ToString(CultureInfo.InvariantCulture),
+                        ["stopAtr"] = first.StopAtr.ToString(CultureInfo.InvariantCulture),
+                        ["saved"] = saved is > 0 ? "true" : "false",
+                    }).ConfigureAwait(false);
+            }
+
+            result.Add(plan with { StopLoss = stop });
+        }
+
+        return result;
+    }
+
+    private (decimal Stop, decimal Bid, decimal Atr, decimal StopAtr)? NewStop(string symbol, DateTimeOffset now)
+    {
+        if (_market.Quote(symbol) is not { IsValid: true } quote || now - quote.AsOf > _options.MaxQuoteAge)
+            return null; // priced again soon: positions without a fresh price aren't loaded at all
+        decimal? atr, stopAtr;
+        try
+        {
+            atr = _atr!(symbol);
+            stopAtr = _stopAtr!();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_waitingForAtr.Add(symbol))
+                LogNoAdoptedStop(_logger, symbol, ex.GetType().Name + ": " + ex.Message);
+            return null;
+        }
+
+        if (atr is not > 0 || stopAtr is not > 0 || PlanlessStop(quote.Bid, atr.Value, stopAtr.Value) is not { } stop)
+        {
+            if (_waitingForAtr.Add(symbol))
+                LogNoAdoptedStop(_logger, symbol, "no hourly ATR yet (too few fresh candles) or no stop distance in the strategy");
+            return null;
+        }
+
+        _waitingForAtr.Remove(symbol);
+        return (stop, quote.Bid, atr.Value, stopAtr.Value);
     }
 
     /// <summary>Starts an exit for the hit's coin unless one is running already (so a repeated hit can't sell twice). Returns whether it started.</summary>
@@ -311,6 +445,7 @@ public sealed partial class ProtectionService : BackgroundService
     public async Task<ExitOutcome> RunExitAsync(StopHit hit, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(hit);
+        using var urgent = ExchangePriority.BeginUrgent(); // its requests use the budget kept for the stops (F-07)
         var symbol = hit.Symbol;
         var started = _time.GetUtcNow();
         var tries = 0;
@@ -681,6 +816,15 @@ public sealed partial class ProtectionService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Stops not reloaded ({Error}): {Detail}; the previous stops stay armed")]
     private static partial void LogPlansFailed(ILogger logger, string error, string detail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Stop set for {Symbol}, which had none: {Stop}, {StopAtr} ATR ({Atr}) below the bid {Bid}")]
+    private static partial void LogStopAdopted(ILogger logger, string symbol, decimal stop, decimal stopAtr, decimal atr, decimal bid);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "No stop yet for {Symbol}, which has none: {Detail}; tried again at the next refresh")]
+    private static partial void LogNoAdoptedStop(ILogger logger, string symbol, string detail);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Stops for positions without one not set ({Error}): {Detail}; the plans' own stops are armed")]
+    private static partial void LogAdoptionFailed(ILogger logger, string error, string detail);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Journal entry {Kind} not written: {Detail}")]
     private static partial void LogJournalFailed(ILogger logger, string kind, string detail);

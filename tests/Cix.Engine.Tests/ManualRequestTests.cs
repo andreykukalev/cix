@@ -406,6 +406,22 @@ public sealed class ManualRequestTests
     }
 
     [Fact]
+    public async Task WhilePaused_TheOwnersDirectSell_StillGoesThrough_ButATradersDecisionDoesNot()
+    {
+        var rig = new ManualRig(btc: 0.001m);
+        await rig.Tools.Rig.Execution.EngageKillSwitchAsync("Paused from the dashboard.", "owner", CancellationToken.None);
+        rig.Request("req-paused-1", "sell", "direct", portion: 1m);
+        rig.Request("req-paused-2", "buy", "agent", quoteAmount: 20m);
+        await rig.Poll();
+
+        Assert.Equal(ManualRequestStatus.Placed, rig.Status("req-paused-1")); // the owner can take risk off while halted (F-08)
+        await rig.Manual.AnswerManualRequest("req-paused-2", "execute", Why, stopLoss: 59_000m);
+        var refused = Assert.Single(rig.Tools.Journal.Entries, e => e.Kind == "order" && e.Data!["requestId"] == "req-paused-2");
+        Assert.Equal(("rejected", "kill-switch"), (refused.Data!["status"], refused.Data["rule"]));
+        Assert.True(rig.Tools.Rig.KillSwitch.IsEngaged); // and the halt stays
+    }
+
+    [Fact]
     public async Task ManualOrders_StillMeetTheRiskGate()
     {
         var rig = new ManualRig(btc: 0m);
