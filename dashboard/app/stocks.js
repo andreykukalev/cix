@@ -791,9 +791,8 @@ function showTradeHint() {
   node.textContent = hint?.label ?? '';
   const fill = (name, value) => {
     const input = form.elements[name];
-    const auto = input.dataset.auto;
-    if (auto !== undefined && input.value !== auto) { delete input.dataset.auto; return; } // the owner typed over it
-    if (input.value !== '' && auto === undefined) return;
+    if (input.dataset.touched) return; // the owner typed in it, or cleared it: his, whatever the ticker
+    if (input.value !== '' && input.dataset.auto === undefined) return;
     input.value = value === null || value === undefined ? '' : String(value);
     if (input.value) input.dataset.auto = input.value;
     else delete input.dataset.auto;
@@ -818,7 +817,7 @@ function openTrade(kind) {
   document.getElementById('stocks-trade-held').replaceChildren(...[...stocks.tradeHints].map(([symbol, h]) => el('option', { value: symbol, label: h.label })));
   const form = document.getElementById('stocks-trade-form');
   form.reset();
-  for (const input of form.querySelectorAll('input')) delete input.dataset.auto;
+  for (const input of form.querySelectorAll('input')) { delete input.dataset.auto; delete input.dataset.touched; }
   form.elements.price.placeholder = '';
   showTradeHint();
   form.elements.day.value = localToday();
@@ -912,7 +911,10 @@ document.addEventListener('DOMContentLoaded', () => {
   for (const button of document.querySelectorAll('.stocks-trade-buy')) button.addEventListener('click', () => openTrade('buy'));
   for (const button of document.querySelectorAll('.stocks-trade-sell')) button.addEventListener('click', () => openTrade('sell'));
   document.getElementById('stocks-trade-form').addEventListener('submit', sendTrade);
-  document.getElementById('stocks-trade-form').elements.symbol.addEventListener('input', showTradeHint);
+  const tradeForm = document.getElementById('stocks-trade-form');
+  tradeForm.elements.symbol.addEventListener('input', showTradeHint);
+  // A figure the owner typed or cleared is never filled in by a hint again until the dialog opens anew.
+  for (const name of ['quantity', 'stop']) tradeForm.elements[name].addEventListener('input', (event) => { event.target.dataset.touched = '1'; });
   document.getElementById('stocks-trade-cancel').addEventListener('click', () => document.getElementById('stocks-trade-dialog').close());
   document.getElementById('stocks-portfolio-open').addEventListener('click', openPortfolio);
   document.getElementById('stocks-portfolio-add').addEventListener('click', () => portfolioRow());

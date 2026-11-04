@@ -21,7 +21,7 @@ public sealed record MarketRow(
 /// <param name="State"><see cref="EntryState.Breakout"/> (an entry signal) or <see cref="EntryState.Uptrend"/> near its high.</param>
 /// <param name="Shares">What the advisor's sizing gives on the capital (risk to the stop, the position cap), before cash.</param>
 /// <param name="Momentum">The change over <see cref="AdvisorSettings.MomentumDays"/> sessions, the advisor's ranking.</param>
-/// <param name="Moves">The day's, the week's and the month's change, for the page only.</param>
+/// <param name="Moves">The day's, the week's, the month's and the half year's change, for the page only.</param>
 public sealed record Candidate(
     string Symbol, string? Name, string? Venue, DateOnly Day, EntryState State, decimal Close, decimal PriorHigh, decimal SlowAverage,
     decimal Atr, decimal Stop, decimal Shares, decimal Momentum, decimal? MarketCap, PriceMoves? Moves = null);

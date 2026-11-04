@@ -279,9 +279,12 @@ function workingTable(advice, found, analysis) {
       shares: a.quantity, breakoutHigh: w?.breakoutHigh ?? null, atr: w?.atr ?? null, moves: w?.moves ?? empty,
     });
   });
-  // Candidates of another close than the advice's aren't tonight's.
+  // Candidates of another close than the advice's aren't tonight's. The search sizes them on the capital before cash (the
+  // advisor's own buys are within it): no more shares than the free cash buys at the close.
+  const cash = advice.owner ? advice.owner.cash : advice.cash;
+  const affordable = (shares, close) => (shares === null || cash === null ? shares : Math.max(0, Math.min(shares, Math.floor(cash / close))));
   const candidates = (found?.status === 'done' && found.asOf === advice.asOf ? found.candidates : []).map((c) => workingRow({
-    symbol: c.symbol, name: c.name, origin: 'candidate', status: c.status, close: c.close, stop: c.stop, shares: c.shares,
+    symbol: c.symbol, name: c.name, origin: 'candidate', status: c.status, close: c.close, stop: c.stop, shares: affordable(c.shares, c.close),
     breakoutHigh: c.breakoutHigh, atr: c.atr, moves: { ...c.moves, halfYear: c.moves.halfYear ?? c.momentum }, // the momentum is the same half year
   }));
   if (analysis?.current && analysis.status === 'done') {

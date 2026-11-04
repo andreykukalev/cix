@@ -409,6 +409,9 @@ test('without Claude\'s view of this close the rules\' buys and the search\'s en
   // The half year falls back on the momentum on a page from before the moves.
   assert.equal(workingTable(advice, candidatesView({ ...WORKING_CANDIDATES, candidates: [{ ...WORKING_CANDIDATES.candidates[0], moves: undefined }] }), null).rows[1].moves.halfYear, 0.31);
   assert.deepEqual(workingTable(null, found, null), { source: null, rows: [] });
+  // A candidate's shares are capped by the free cash: 300 buys 6 at 50, not the 20 sized on the capital.
+  const poor = stocksView({ ...WORKING_ADVICE, owner: { ...OWNER_SECTION, cash: '300' } }, NOW);
+  assert.deepEqual(workingTable(poor, found, null).rows.map((r) => [r.symbol, r.shares, r.amount]), [['XYZ.US', 7, 7 * 142.2], ['NEW.US', 6, 300]]);
 });
 
 test('moves and the ATR are checked like every other figure', () => {
