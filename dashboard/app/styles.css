@@ -166,7 +166,7 @@ td.why { min-width: 260px; max-width: 560px; color: var(--muted); }
   #panel-stocks table:not(.form-table) tr.empty td { text-align: left; }
   #panel-stocks td { overflow-wrap: anywhere; }
   #panel-stocks th.stock { width: 220px; }
-  #stocks-analysis-body th.stock { width: 130px; } /* Claude's view names the ticker only */
+  #stocks-analysis-holdings th.stock, #stocks-analysis-skips th.stock { width: 130px; } /* Claude's view names the ticker only */
   #panel-stocks th.action, #panel-stocks th.tag { width: 190px; }
   #panel-stocks th.rank { width: 64px; }
   #panel-stocks th.date { width: 130px; }
@@ -174,6 +174,12 @@ td.why { min-width: 260px; max-width: 560px; color: var(--muted); }
   #stocks-watchlist th.tag { width: 240px; } /* its longest status, in Russian, is the widest badge on the tab */
   #panel-stocks td .badge { white-space: nowrap; } /* a badge stays one line: its column is sized for the longest */
   #panel-stocks td.why { min-width: 0; max-width: none; }
+  /* Today's working table: nine figures beside the stock and Claude's reason, so they keep narrow and the table fits a laptop */
+  #stocks-today { min-width: 1120px; }
+  #panel-stocks #stocks-today th.stock { width: 190px; }
+  #panel-stocks #stocks-today th.num { width: 76px; }
+  #panel-stocks #stocks-today th.date { width: 108px; }
+  #panel-stocks #stocks-today th.limit { width: 100px; }
 }
 .why-kind {
   display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap;
@@ -406,3 +412,12 @@ ul.changes .open { color: var(--warn); }
 a.badge { text-decoration: none; }
 .badge.strategy { text-transform: none; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 a.badge.strategy:hover, a.badge.strategy:focus-visible { outline: 1px solid var(--accent); }
+
+/* The Stocks panel's parts, one per tab of #stocks-tabs */
+.stocks-part { display: grid; gap: 16px; min-width: 0; }
+@media (max-width: 640px) { .stocks-part { gap: 12px; } }
+#panel-stocks td .line { display: block; font-weight: 400; }
+#stocks-analysis-market { margin: 10px 0; max-width: 90ch; }
+#stocks-today .wait { display: inline-block; font-size: 12px; line-height: 1.3; overflow-wrap: normal; color: var(--muted); }
+.entry-guide ol { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13px; max-width: 100ch; }
+dialog .hint { margin: -4px 0 10px; padding: 6px 10px; border-radius: 6px; background: var(--chip); }

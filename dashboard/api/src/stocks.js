@@ -77,6 +77,13 @@ const text = (v, max) => {
   return s ? Array.from(s).slice(0, max).join('').trimEnd() : null;
 };
 const list = (v) => (Array.isArray(v) ? v.slice(0, MAX_ROWS) : []);
+// A move the host wrote as a fraction (0.012: up 1.2%); none past ±1000%, which only a bad document gives.
+const move = (v) => {
+  const n = num(v);
+  return n !== null && Math.abs(n) <= 10 ? n : null;
+};
+/** A stock's moves to its last close: the session's, the week's, the month's and the half year's, each or a gap. */
+const moves = (m) => ({ day: move(m?.day), week: move(m?.week), month: move(m?.month), halfYear: move(m?.halfYear) });
 const ratio = (a, b) => (a !== null && b !== null && b !== 0 ? a / b - 1 : null);
 
 function action(a) {
@@ -124,6 +131,7 @@ function watch(w) {
     toBreakout: ratio(breakoutHigh, lastClose),
     vsTrend: ratio(lastClose, trendAverage),
     status,
+    atr: positive(w.atr), moves: moves(w.moves),
   };
 }
 
@@ -153,6 +161,7 @@ function candidate(c) {
     momentum: num(c.momentum), marketCap: positive(c.marketCap),
     toStop: stop !== null ? (close - stop) / close : null,
     toBreakout: ratio(breakoutHigh, close),
+    atr: positive(c.atr), moves: moves(c.moves),
   };
 }
 
@@ -214,6 +223,80 @@ function analysisView(value) {
     skips: firstOnly(skips),
     dropped: count(value.dropped),
   };
+}
+
+// --- The working table: what to buy today, with how to enter it during the session ----------------------------------------
+
+/**
+ * How far over the advised close a buy may still go, in ATRs (the advisor's 20-day average daily range): a limit at the
+ * close plus half a day's range. Its stop stays 3 ATRs under the close and its sizing counts a gap of 1 more, so filled at
+ * that limit the loss to the stop is 4.5 ATRs instead of 4: an eighth more than the 1% of capital it was sized for. Higher
+ * than that is chasing a gap: the plan says wait or skip.
+ */
+const CHASE_ATR = 0.5;
+const MAX_WORKING = 12;
+
+/** Whole cents, down: a limit price never above its level. */
+const cents = (v) => Math.floor(v * 100 + 1e-6) / 100;
+
+/**
+ * The plan for one stock of the working table. An entry signal: buy at most up to `buyUpTo` (the close plus CHASE_ATR of
+ * its ATR), and not at all under `failsUnder`, the prior 50-day high it broke (back under it the breakout failed), or the
+ * stop if that is higher. Near its high only: `waitAbove`, the high a close must beat first; nothing to buy today.
+ */
+function entryPlan({ status, close, breakoutHigh, atr, stop }) {
+  if (close === null) return { buyUpTo: null, failsUnder: null, waitAbove: null };
+  if (status !== 'breakout') return { buyUpTo: null, failsUnder: null, waitAbove: breakoutHigh };
+  const floor = Math.max(breakoutHigh ?? 0, stop ?? 0);
+  return { buyUpTo: atr !== null ? cents(close + CHASE_ATR * atr) : null, failsUnder: floor > 0 && floor < close ? floor : null, waitAbove: null };
+}
+
+/** One row of the working table, from a buy the advisor wrote (a watched stock) or a candidate of the market search. */
+function workingRow(base) {
+  const { close, stop, shares } = base;
+  return {
+    ...base,
+    amount: shares !== null && close !== null ? shares * close : null,
+    toStop: close !== null && stop !== null ? (close - stop) / close : null,
+    ...entryPlan(base),
+  };
+}
+
+const empty = { day: null, week: null, month: null, halfYear: null };
+
+/**
+ * The working table (the Stocks page's Today): Claude's picks in its order when its view of this close is done, each with
+ * the figures of the buy or candidate it picked; else the rules' buys and, while the market is risk-on, the search's entry
+ * signals. Buys come from the owner's portfolio once there is one (sized on his capital), the paper portfolio's before.
+ */
+function workingTable(advice, found, analysis) {
+  if (!advice) return { source: null, rows: [] };
+  const watched = new Map(advice.watchlist.map((w) => [w.symbol, w]));
+  const buys = (advice.owner ? advice.owner.actions : advice.actions).filter((a) => a.kind === 'buy').map((a) => {
+    const w = watched.get(a.symbol);
+    return workingRow({
+      symbol: a.symbol, name: a.name ?? w?.name ?? null, origin: 'buy', status: 'breakout', close: a.referencePrice, stop: a.stop,
+      shares: a.quantity, breakoutHigh: w?.breakoutHigh ?? null, atr: w?.atr ?? null, moves: w?.moves ?? empty,
+    });
+  });
+  // Candidates of another close than the advice's aren't tonight's.
+  const candidates = (found?.status === 'done' && found.asOf === advice.asOf ? found.candidates : []).map((c) => workingRow({
+    symbol: c.symbol, name: c.name, origin: 'candidate', status: c.status, close: c.close, stop: c.stop, shares: c.shares,
+    breakoutHigh: c.breakoutHigh, atr: c.atr, moves: { ...c.moves, halfYear: c.moves.halfYear ?? c.momentum }, // the momentum is the same half year
+  }));
+  if (analysis?.current && analysis.status === 'done') {
+    const known = new Map([...candidates, ...buys].map((r) => [r.symbol, r])); // a buy wins over a candidate of the same stock
+    return {
+      source: 'claude',
+      rows: analysis.picks.map((p) => ({
+        ...(known.get(p.symbol) ?? workingRow({ symbol: p.symbol, name: null, origin: null, status: null, close: null, stop: null, shares: null, breakoutHigh: null, atr: null, moves: empty })),
+        rank: p.rank, reason: p.reason, reasonRu: p.reasonRu, earnings: p.earnings,
+      })),
+    };
+  }
+  const signals = advice.regime === 'risk-on' ? candidates.filter((c) => c.status === 'breakout') : [];
+  const rows = [...buys, ...signals.filter((c) => !buys.some((b) => b.symbol === c.symbol))].slice(0, MAX_WORKING);
+  return { source: 'rules', rows: rows.map((r) => ({ ...r, rank: null, reason: null, reasonRu: null, earnings: null })) };
 }
 
 /** Weekdays strictly between two UTC days: the closes there have been since asOf, not counting today's. */
@@ -304,19 +387,22 @@ function stocksView(value, now) {
 /** The Stocks tab's answer: whether the stocks database is set up, and the latest advice when there is one. */
 async function loadStocks(reader, now) {
   const generatedAt = new Date(now).toISOString();
-  if (!reader) return { configured: false, advice: null, candidates: null, analysis: null, pending: null, pendingTrades: [], generatedAt };
+  if (!reader) return { configured: false, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], generatedAt };
   const [doc, found, analysed] = await Promise.all([
     reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES), reader.readDocument(ANALYSIS_CONTAINER, ANALYSIS),
   ]);
   const advice = doc ? stocksView(doc.value ?? null, now) : null;
   const { portfolio, trades } = await pendingPortfolio(reader, firstUnseen(advice));
-  const analysis = analysed ? analysisView(analysed.value ?? null) : null;
+  const view = analysed ? analysisView(analysed.value ?? null) : null;
+  // Claude's view of an earlier close than the advice's says nothing about tonight's: the page shows it as behind.
+  const analysis = view ? { ...view, current: !!advice?.asOf && view.asOf === advice.asOf } : null;
+  const candidates = found ? candidatesView(found.value ?? null) : null;
   return {
     configured: true,
     advice,
-    candidates: found ? candidatesView(found.value ?? null) : null,
-    // Claude's view of an earlier close than the advice's says nothing about tonight's: the page shows it as behind.
-    analysis: analysis ? { ...analysis, current: !!advice?.asOf && analysis.asOf === advice.asOf } : null,
+    candidates,
+    analysis,
+    working: workingTable(advice, candidates, analysis),
     // Sent and not yet applied: the newest whole portfolio, and the trades, which the next run applies in order.
     pending: portfolio,
     pendingTrades: trades,
@@ -324,4 +410,4 @@ async function loadStocks(reader, now) {
   };
 }
 
-module.exports = { stocksReader, stocksView, candidatesView, analysisView, loadStocks, CONTAINER, LATEST, CANDIDATES, ANALYSIS, STALE_MISSED_CLOSES };
+module.exports = { stocksReader, stocksView, candidatesView, analysisView, workingTable, entryPlan, CHASE_ATR, loadStocks, CONTAINER, LATEST, CANDIDATES, ANALYSIS, STALE_MISSED_CLOSES };

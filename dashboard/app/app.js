@@ -12,7 +12,7 @@ const POLL_MS = 3_000;
 const V = window.CixView;
 const I = window.CixI18n;
 const t = I.t;
-const state = { mode: 'live', cryptoTab: 'overview', lang: 'ru', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, signedOut: false, timer: null, tab: 'overview', strategies: null, pairs: null };
+const state = { mode: 'live', cryptoTab: 'overview', stocksTab: 'stocks', lang: 'ru', journal: null, period: 'day', viewer: { signedIn: false, name: null }, view: null, signedOut: false, timer: null, tab: 'overview', strategies: null, pairs: null };
 const SIGN_IN = '/.auth/login/aad?post_login_redirect_uri=/';
 
 function el(tag, props = {}, ...children) {
@@ -435,7 +435,7 @@ function signedOut() {
   document.getElementById('strategy-dialog').close();
   document.getElementById('pair-dialog').close();
   for (const node of document.querySelectorAll('main > :not(#banner), .tabs')) node.hidden = true;
-  // Back to the same tab after signing in: the hash is one of TABS, set by setTab.
+  // Back to the same tab after signing in: the hash is one of TABS or STOCKS_TABS, set by setTab.
   banner(t('Your sign-in has ended.'), true, { href: `${SIGN_IN}${encodeURIComponent(location.hash)}`, text: t('Sign in again') });
   document.getElementById('updated').textContent = t('Signed out');
 }
@@ -1163,16 +1163,20 @@ function renderJournal() {
 
 // --- Tabs ---------------------------------------------------------------------------------------------------------------------
 
-// 'stocks' has no tab: it is the mode switch's second button (Crypto | Stocks), and hides the crypto tabs while it shows.
-// Crypto is the live engine, the only one since paper trading was dropped (ADR-0028).
-const TABS = ['overview', 'coins', 'strategy', 'activity', 'journal', 'stocks'];
+// 'stocks' is the mode switch's second button (Crypto | Stocks): its panel has tabs of its own (#stocks-tabs: stocks,
+// stocks-portfolio, …, STOCKS_TABS in stocks.js), and the crypto tabs hide while it shows. state.tab is 'stocks' on any of
+// them, state.stocksTab says which. Crypto is the live engine, the only one since paper trading was dropped (ADR-0028).
+const TABS = ['overview', 'coins', 'strategy', 'activity', 'journal'];
 
-/** The mode switch: Stocks pressed while its panel shows, else Crypto. The crypto badges hide with Stocks. */
+/** The mode switch: Stocks pressed while its panel shows, else Crypto. The crypto badges and tabs hide with Stocks. */
 function renderModeSwitch() {
   const stocksShown = state.tab === 'stocks';
   const pressed = stocksShown ? 'stocks' : 'crypto';
   for (const button of document.querySelectorAll('[data-mode]')) button.setAttribute('aria-pressed', String(button.dataset.mode === pressed));
-  if (!state.signedOut) document.querySelector('.tabs').hidden = stocksShown;
+  if (!state.signedOut) {
+    document.getElementById('crypto-tabs').hidden = stocksShown;
+    document.getElementById('stocks-tabs').hidden = !stocksShown;
+  }
   document.getElementById('mode-badge').hidden = stocksShown;
   document.getElementById('strategy-badge').hidden = stocksShown;
 }
@@ -1181,24 +1185,28 @@ function renderModeSwitch() {
 function pressMode(mode) {
   if (state.signedOut) return; // the sign-in banner stays: nothing loads until the owner signs in again
   if (mode === 'stocks') {
-    if (state.tab !== 'stocks') { setTab('stocks'); window.scrollTo({ top: 0 }); }
+    if (state.tab !== 'stocks') { setTab(state.stocksTab); window.scrollTo({ top: 0 }); } // the Stocks tab last open
     return;
   }
   if (state.tab === 'stocks') setTab(state.cryptoTab); // loads the crypto view, which wasn't refreshed while Stocks showed
 }
 
-/** Shows one tab's panel. The tab is kept in the address (#coins), so a reload or a bookmark opens the same one. */
+/** Shows one tab's panel. The tab is kept in the address (#coins, #stocks-trades), so a reload or a bookmark opens the same one. */
 function setTab(tab, { focus = false } = {}) {
-  const name = TABS.includes(tab) ? tab : 'overview';
-  if (name !== 'stocks') state.cryptoTab = name;
+  // A Stocks tab (stocks.js) opens the Stocks panel; an unknown one, or Stocks' while stocks.js failed, the Overview.
+  const stocksTab = typeof STOCKS_TABS !== 'undefined' && STOCKS_TABS.includes(tab) ? tab : null;
+  const name = stocksTab ? 'stocks' : TABS.includes(tab) ? tab : 'overview';
+  const shown = stocksTab ?? name; // the tab button and the address
+  if (stocksTab) state.stocksTab = stocksTab;
+  else state.cryptoTab = name;
   for (const button of document.querySelectorAll('[role="tab"]')) {
-    const selected = button.dataset.tab === name;
+    const selected = button.dataset.tab === shown;
     button.setAttribute('aria-selected', String(selected));
     button.tabIndex = selected ? 0 : -1;
     if (selected && focus) button.focus();
   }
   if (!state.signedOut) for (const panel of document.querySelectorAll('.tab-panel')) panel.hidden = panel.id !== `panel-${name}`;
-  if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
+  if (location.hash !== `#${shown}`) history.replaceState(null, '', `#${shown}`);
   const changed = state.tab !== name;
   const leftStocks = changed && state.tab === 'stocks';
   state.tab = name;
@@ -1207,12 +1215,19 @@ function setTab(tab, { focus = false } = {}) {
   if (leftStocks) refresh(); // the crypto view wasn't refreshed while Stocks showed; this reads the open tab's data too
   else if (changed && name === 'strategy') refreshStrategies(); // read only while the tab is open
   else if (changed && name === 'coins') refreshPairs();
+  if (stocksTab) showStocksTab(stocksTab); // stocks.js: its own tabs' parts
   if (changed && name === 'stocks') refreshStocks(); // stocks.js: the stocks advisor's advice, read only (ADR-0023)
   if (changed && name === 'activity' && state.activity) renderVolume(state.activity); // drawn hidden, it had no width
 }
 
 function setupTabs() {
-  const buttons = [...document.querySelectorAll('[role="tab"]')];
+  for (const list of document.querySelectorAll('[role="tablist"]')) setupTabList([...list.querySelectorAll('[role="tab"]')]);
+  window.addEventListener('hashchange', () => setTab(location.hash.slice(1)));
+  setTab(location.hash.slice(1));
+}
+
+/** One tab list: a click opens a tab, and the arrow keys move along the list's own tabs. */
+function setupTabList(buttons) {
   for (const button of buttons) {
     button.addEventListener('click', () => { setTab(button.dataset.tab); window.scrollTo({ top: 0 }); });
     button.addEventListener('keydown', (event) => { // arrow keys move between tabs, as for any tab list
@@ -1224,8 +1239,6 @@ function setupTabs() {
       setTab(buttons[next].dataset.tab, { focus: true });
     });
   }
-  window.addEventListener('hashchange', () => setTab(location.hash.slice(1)));
-  setTab(location.hash.slice(1));
 }
 
 // --- Language ------------------------------------------------------------------------------------------------------------

@@ -7,10 +7,20 @@
 // reads nothing of crypto's then), and renderStocks when the language changes. Uses app.js's helpers (el, rows, td,
 // tile, amount, price, getJson, t) and its state, so it loads after app.js. Every value is written as text, never as HTML.
 
+/** The Stocks panel's tabs (index.html's #stocks-tabs), each the address of its part: 'stocks' is Today. */
+const STOCKS_TABS = ['stocks', 'stocks-portfolio', 'stocks-trades', 'stocks-market', 'stocks-paper'];
+
+/** Shows one Stocks tab's part (app.js's setTab calls it). */
+function showStocksTab(tab) {
+  const part = tab === 'stocks' ? 'stocks-part-today' : `stocks-part-${tab.slice('stocks-'.length)}`;
+  for (const node of document.querySelectorAll('.stocks-part')) node.hidden = node.id !== part;
+}
+
 const stocks = {
   answer: null, error: null, sent: null, clientId: null, failed: null,
   // The trades this page sent (the read may not show them yet), and the trade dialog's kind, retry id and failed figures.
   sentTrades: [], tradeKind: 'buy', tradeClientId: null, tradeFailed: null,
+  tradeHints: null, // the trade dialog's offered tickers (tradeHints)
 };
 
 async function refreshStocks() {
@@ -198,7 +208,7 @@ function renderAnalysis(advice) {
       done?.dropped ? t('lines left out as outside the advice: {count}', { count: done.dropped }) : null].filter(Boolean).join(' · ')
     : '';
 
-  // Red cards on top: what Claude would sell; orange: a held stock reporting earnings soon.
+  // Red cards on top of Today: what Claude would sell; orange: a held stock reporting earnings soon.
   const cards = [];
   for (const h of done?.holdings ?? []) {
     const soon = daysTo(h.earnings);
@@ -218,16 +228,63 @@ function renderAnalysis(advice) {
   list.hidden = cards.length === 0;
   list.replaceChildren(...cards);
 
-  document.getElementById('stocks-analysis-body').hidden = !done;
   const market = document.getElementById('stocks-analysis-market');
-  market.replaceChildren(done?.market ? says(done.market, done.marketRu) : '');
+  market.hidden = !done?.market;
+  market.replaceChildren(...(done?.market ? [el('span', { class: 'muted', text: t('Claude on the market:') }), ' ', says(done.market, done.marketRu)] : []));
   rows('stocks-analysis-holdings', done?.holdings ?? [], (h) => {
     const [label, cls] = analystAction(h.action);
     return [stockName(h), el('span', { class: `badge ${cls}`, text: label }), earningsCell(h.earnings), td(says(h.reason, h.reasonRu), 'why')];
-  }, t('No holdings to look at.'));
-  rows('stocks-analysis-picks', done?.picks ?? [], (p) => [td(String(p.rank), 'num'), stockName(p), earningsCell(p.earnings), td(says(p.reason, p.reasonRu), 'why')],
-    t('No pick tonight: Claude would buy none of them.'));
-  rows('stocks-analysis-skips', done?.skips ?? [], (k) => [stockName(k), earningsCell(k.earnings), td(says(k.reason, k.reasonRu), 'why')], t('Nothing left out.'));
+  }, done ? t('No holdings to look at.') : t("No view of Claude's for this close."));
+  rows('stocks-analysis-skips', done?.skips ?? [], (k) => [stockName(k), earningsCell(k.earnings), td(says(k.reason, k.reasonRu), 'why')],
+    done ? t('Nothing left out.') : t("No view of Claude's for this close."));
+}
+
+// --- Today's working table: what to buy, with the levels for entering during the session ------------------------------
+
+/** A move as a coloured percentage, or a dash. */
+function moveCell(value) {
+  return td(value === null || value === undefined ? '–' : el('span', { class: `move ${value > 0 ? 'up' : value < 0 ? 'down' : 'flat'}`, text: percent(value) }), 'num');
+}
+
+/** Where a row of the table comes from when Claude didn't pick it: a buy of the advice, or the market search. */
+function originBadge(r) {
+  if (r.rank) return el('span', { class: 'badge ok', title: t("Claude's pick and its rank"), text: String(r.rank) });
+  return el('span', { class: 'badge', text: r.origin === 'candidate' ? t('Market search') : t('Watchlist') });
+}
+
+function workingCells(r) {
+  const wait = r.waitAbove !== null && r.waitAbove !== undefined;
+  return [
+    [originBadge(r), ' ', stockName(r)],
+    td(stockPrice(r.close), 'num'),
+    // What to act on first (the cards on a phone list them in this order), then how the price moved.
+    td(wait ? el('span', { class: 'wait', text: t('wait for a close above {price}', { price: amount(r.waitAbove) }) }) : stockPrice(r.buyUpTo), 'num'),
+    td(stockPrice(r.failsUnder), 'num'),
+    td(r.stop === null ? '–' : [stockPrice(r.stop), r.toStop === null ? null : el('span', { class: 'muted small line', text: `−${percent(r.toStop).replace(/^[+−]/, '')}` })], 'num'),
+    td(r.shares === null ? '–' : [amount(r.shares, 0), el('span', { class: 'muted small line', text: amount(r.amount, 0) })], 'num'),
+    moveCell(r.moves?.day), moveCell(r.moves?.week), moveCell(r.moves?.month), moveCell(r.moves?.halfYear),
+    earningsCell(r.earnings),
+    td(r.reason ? says(r.reason, r.reasonRu) : r.origin ? stockReason('breakout') : '–', 'why'),
+  ];
+}
+
+/** The New York open (9:30 there) in the owner's own time today. */
+function openTime(now = new Date()) {
+  const at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 9, 30) - newYorkOffset(now) * 3_600_000);
+  return at.toLocaleTimeString(I.locale(), { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderToday(a) {
+  const w = stocks.answer?.working ?? { source: null, rows: [] };
+  const claude = w.source === 'claude';
+  document.getElementById('stocks-today-meta').textContent = a?.asOf && !stocks.error
+    ? [claude ? t("Claude's picks, best first") : t("The rules' buys and the market search's entry signals"), t('close of {day}, prices in USD', { day: a.asOf })].join(' · ')
+    : '';
+  const empty = !a ? t('No advice yet.')
+    : a.regime !== 'risk-on' && !w.rows.length ? t('Market risk-off: the advisor buys nothing new until it recovers.')
+      : claude ? t('No pick tonight: Claude would buy none of them.') : t('No entry signal tonight: nothing to buy.');
+  rows('stocks-today', w.rows, workingCells, empty);
+  document.getElementById('stocks-open-time').textContent = t('The US market opens at 9:30 New York time: {time} your time.', { time: openTime() });
 }
 
 function stockName(item) {
@@ -411,8 +468,7 @@ function renderOwner(a) {
   document.getElementById('stocks-portfolio-open').hidden = !configured;
   // A trade changes a portfolio, so it needs one first: applied, or waiting before it.
   const tradable = configured && Boolean(o || (waiting && !waiting.unreadable));
-  document.getElementById('stocks-trade-buy').hidden = !tradable;
-  document.getElementById('stocks-trade-sell').hidden = !tradable;
+  for (const button of document.querySelectorAll('.stocks-trade-buy, .stocks-trade-sell')) button.hidden = !tradable;
   const notice = document.getElementById('stocks-owner-banner');
   const say = (text, tone) => {
     notice.hidden = !text;
@@ -445,17 +501,15 @@ function renderOwner(a) {
       capital: money(o.capital, 'USD'), cash: money(o.cash, 'USD'), invested: money(o.invested, 'USD'), value: money(o.value, 'USD'),
     }) : '';
   document.getElementById('stocks-owner-body').hidden = !o;
-  rows('stocks-owner-actions', o?.actions ?? [], actionCells, t('Nothing to do: hold what you have, with its stops.'));
+  // Today's list is for the owner's real account once there is one, the paper portfolio's before.
+  rows('stocks-owner-actions', o ? o.actions : a?.actions ?? [], actionCells, a ? t('Nothing to do: hold what you have, with its stops.') : t('No advice yet.'));
   rows('stocks-owner-holdings', o?.holdings ?? [], holdingCells, t('No holdings: all in cash.'));
   rows('stocks-owner-notes', o?.notes ?? [], (n) => [stockName(n), td(stockReason(n.reason), 'why')], t('No notes.'));
   // The journal: the trades waiting for the next run, newest first, above those the host recorded (newest first too).
-  document.getElementById('stocks-owner-trades-part').hidden = !configured || !(o || trades.length);
   const journal = [...[...trades].reverse().map((x) => ({ waiting: x })), ...(o?.trades ?? []).map((x) => ({ recorded: x }))];
   rows('stocks-owner-trades', journal, (j) => (j.waiting ? waitingTradeCells(j.waiting) : tradeCells(j.recorded)),
-    t('No trades recorded yet: after a buy or a sell at Revolut, press I bought or I sold.'));
-  // With a real portfolio the paper one stays beside it, as the benchmark.
-  document.getElementById('h-stocks-actions').textContent = o ? t('Paper portfolio: what it does') : t('What to do in Revolut');
-  document.getElementById('h-stocks-holdings').textContent = o ? t('Paper portfolio: holdings and stops') : t('Holdings and stops');
+    !configured ? '–' : o || trades.length ? t('No trades recorded yet: after a buy or a sell at Revolut, press I bought or I sold.')
+      : t('No portfolio yet: save it on the Portfolio tab, then record each buy and sell here.'));
 }
 
 function renderStocks() {
@@ -482,6 +536,7 @@ function renderStocks() {
   }
 
   meta.textContent = a?.asOf && !a.stale && !stocks.error ? t('advice after the close of {day}: carry it out in Revolut at the next open', { day: a.asOf }) : '';
+  document.getElementById('stocks-paper-meta').textContent = meta.textContent;
 
   const regime = a?.regime ?? null;
   tile('tile-stocks-market', { 'risk-on': 'ok', 'risk-off': 'bad', unknown: 'warn' }[regime] ?? '',
@@ -510,6 +565,7 @@ function renderStocks() {
 
   renderNextRuns();
   renderAnalysis(a);
+  renderToday(a);
   renderOwner(a);
 
   rows('stocks-actions', a?.actions ?? [], actionCells, a ? t('Nothing to do: hold what you have, with its stops.') : t('No advice yet.'));
@@ -524,6 +580,7 @@ function renderStocks() {
       stockName(w),
       w.theme ?? '–',
       td(stockPrice(w.lastClose, w.currency), 'num'),
+      moveCell(w.moves?.day),
       td(stockPrice(w.breakoutHigh, w.currency), 'num'),
       td(w.toBreakout === null ? '–' : w.toBreakout < 0 ? t('above') : percent(w.toBreakout), 'num'),
       td(el('span', { class: w.vsTrend === null ? '' : `move ${w.vsTrend >= 0 ? 'up' : 'down'}`, text: percent(w.vsTrend) }), 'num'),
@@ -676,6 +733,76 @@ async function sendPortfolio(event) {
 
 // --- The trade dialog: one buy or sell made at Revolut, sent as one submission -------------------------------------------
 
+/**
+ * The tickers the trade dialog offers, each with a hint and the figures it fills in: for a buy, today's picks and buys first
+ * (their shares, stop and highest price), then the other candidates and what is held; for a sale, what is held, with the
+ * advice to sell it, if any (all of it, or half for Claude's sell half). Keys are tickers without .US, as typed.
+ */
+function tradeHints(kind) {
+  const a = stocks.answer?.advice ?? null;
+  const waiting = waitingPortfolio(a);
+  const held = waiting && !waiting.unreadable ? waiting.holdings : a?.owner?.holdings ?? [];
+  const short = (symbol) => symbol.replace(/\.US$/, '');
+  const hints = new Map();
+  const heldLine = (h) => t('you hold {shares}, bought at {price}', { shares: amount(h.quantity, 0), price: amount(h.averageCost) });
+  if (kind === 'buy') {
+    for (const r of stocks.answer?.working?.rows ?? []) {
+      if (!r.symbol.endsWith('.US') || hints.has(short(r.symbol))) continue;
+      const parts = [r.rank ? t('Pick {rank}', { rank: r.rank }) : r.origin === 'candidate' ? t('Market search') : t('Watchlist')];
+      if (r.waitAbove) parts.push(t('wait for a close above {price}', { price: amount(r.waitAbove) }));
+      else {
+        if (r.shares !== null) parts.push(t('{shares} shares', { shares: amount(r.shares, 0) }));
+        if (r.buyUpTo !== null) parts.push(t('limit up to {price}', { price: amount(r.buyUpTo) }));
+        if (r.failsUnder !== null) parts.push(t('not under {price}', { price: amount(r.failsUnder) }));
+      }
+      if (r.stop !== null) parts.push(t('stop {price}', { price: amount(r.stop) }));
+      hints.set(short(r.symbol), { label: parts.join(' · '), shares: r.waitAbove ? null : r.shares, stop: r.stop, price: r.buyUpTo });
+    }
+    for (const c of stocks.answer?.candidates?.status === 'done' ? stocks.answer.candidates.candidates : []) {
+      if (hints.has(short(c.symbol))) continue;
+      hints.set(short(c.symbol), { label: [t('Market search'), c.status === 'breakout' ? t('Entry signal') : t('Near its high'), t('stop {price}', { price: amount(c.stop) })].join(' · '), shares: null, stop: c.stop, price: null });
+    }
+    for (const h of held) if (!hints.has(short(h.symbol))) hints.set(short(h.symbol), { label: heldLine(h), shares: null, stop: null, price: null });
+    return hints;
+  }
+  const sells = new Map((a?.owner?.actions ?? []).filter((x) => x.kind === 'sell').map((x) => [x.symbol, x]));
+  const claude = new Map((currentAnalysis()?.holdings ?? []).map((h) => [h.symbol, h.action]));
+  for (const h of held) {
+    const half = claude.get(h.symbol) === 'sell-half';
+    const advice = sells.has(h.symbol) ? t('Advice: sell, {reason}', { reason: stockReason(sells.get(h.symbol).reason) })
+      : claude.get(h.symbol) === 'sell-all' ? t('Claude: sell all') : half ? t('Claude: sell half') : null;
+    const last = (a?.owner?.holdings ?? []).find((x) => x.symbol === h.symbol)?.lastClose ?? null;
+    hints.set(short(h.symbol), {
+      label: [heldLine(h), advice].filter(Boolean).join(' · '),
+      shares: advice ? (half && !sells.has(h.symbol) ? Math.floor(Number(h.quantity) / 2) || null : Number(h.quantity)) : null,
+      stop: null, price: last,
+    });
+  }
+  return hints;
+}
+
+/** The hint for the ticker typed: under the field, and the figures it brings into the fields still empty (or filled by it). */
+function showTradeHint() {
+  const form = document.getElementById('stocks-trade-form');
+  const typed = form.elements.symbol.value.trim().toUpperCase().replace(/\.US$/, '');
+  const hint = stocks.tradeHints?.get(typed) ?? null;
+  const node = document.getElementById('stocks-trade-hint');
+  node.hidden = !hint;
+  node.textContent = hint?.label ?? '';
+  const fill = (name, value) => {
+    const input = form.elements[name];
+    const auto = input.dataset.auto;
+    if (auto !== undefined && input.value !== auto) { delete input.dataset.auto; return; } // the owner typed over it
+    if (input.value !== '' && auto === undefined) return;
+    input.value = value === null || value === undefined ? '' : String(value);
+    if (input.value) input.dataset.auto = input.value;
+    else delete input.dataset.auto;
+  };
+  fill('quantity', hint?.shares ?? null);
+  if (stocks.tradeKind === 'buy') fill('stop', hint?.stop ?? null);
+  form.elements.price.placeholder = hint?.price ? (stocks.tradeKind === 'buy' ? t('up to {price}', { price: amount(hint.price) }) : t('last close {price}', { price: amount(hint.price) })) : '';
+}
+
 /** Opens the trade dialog for a buy or a sell; the tickers held are offered, and the day is today. */
 function openTrade(kind) {
   const a = stocks.answer?.advice ?? null;
@@ -687,10 +814,13 @@ function openTrade(kind) {
     ? t('The shares are added to the holding at this price, the fees in its cost. The capital stays the same, so the free cash falls by what you paid.')
     : t('The shares come off the holding; the profit or loss against the average price paid, fees off, is added to the capital. Selling all of them closes the holding.');
   document.getElementById('stocks-trade-stop').hidden = !buy;
-  const held = (waiting && !waiting.unreadable ? waiting.holdings : a?.owner?.holdings ?? []).map((h) => h.symbol);
-  document.getElementById('stocks-trade-held').replaceChildren(...held.map((symbol) => el('option', { value: symbol.replace(/\.US$/, '') })));
+  stocks.tradeHints = tradeHints(kind);
+  document.getElementById('stocks-trade-held').replaceChildren(...[...stocks.tradeHints].map(([symbol, h]) => el('option', { value: symbol, label: h.label })));
   const form = document.getElementById('stocks-trade-form');
   form.reset();
+  for (const input of form.querySelectorAll('input')) delete input.dataset.auto;
+  form.elements.price.placeholder = '';
+  showTradeHint();
   form.elements.day.value = localToday();
   const waits = waitingTrades(a).length;
   const note = document.getElementById('stocks-trade-waiting');
@@ -779,9 +909,10 @@ async function sendTrade(event) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('stocks-trade-buy').addEventListener('click', () => openTrade('buy'));
-  document.getElementById('stocks-trade-sell').addEventListener('click', () => openTrade('sell'));
+  for (const button of document.querySelectorAll('.stocks-trade-buy')) button.addEventListener('click', () => openTrade('buy'));
+  for (const button of document.querySelectorAll('.stocks-trade-sell')) button.addEventListener('click', () => openTrade('sell'));
   document.getElementById('stocks-trade-form').addEventListener('submit', sendTrade);
+  document.getElementById('stocks-trade-form').elements.symbol.addEventListener('input', showTradeHint);
   document.getElementById('stocks-trade-cancel').addEventListener('click', () => document.getElementById('stocks-trade-dialog').close());
   document.getElementById('stocks-portfolio-open').addEventListener('click', openPortfolio);
   document.getElementById('stocks-portfolio-add').addEventListener('click', () => portfolioRow());

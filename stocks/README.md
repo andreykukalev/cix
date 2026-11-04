@@ -92,7 +92,8 @@ The host writes one document after each close: id `advice-latest` in the `advice
                  "lastClose": 250, "stop": 225, "openedOn": "2026-08-01" }],
   "notes": [{ "symbol": "NVDA.US", "reason": "max-positions" }],
   "watchlist": [{ "symbol": "EPAM.US", "name": "EPAM Systems", "currency": "USD", "theme": "software", "lastClose": 168.2,
-                  "lastDay": "2026-10-30", "breakoutHigh": 190.5, "trendAverage": 181.3,
+                  "lastDay": "2026-10-30", "breakoutHigh": 190.5, "trendAverage": 181.3, "atr": 4.1,
+                  "moves": { "day": -0.012, "week": 0.01, "month": 0.03, "halfYear": 0.08 },
                   "status": "held | breakout | uptrend | overextended | too-volatile | below-trend | too-expensive | stale-data | not-enough-data | no-data" }],
   "owner": { "capital": 10000, "cash": 7120, "invested": 2880, "value": 3105.5, "appliedSequence": 1, "updatedAt": "2026-10-30T18:00:00Z",
              "actions": [ /* as above */ ], "holdings": [ /* as above */ ], "notes": [ /* as above */ ] },
@@ -109,7 +110,8 @@ The route also reads `candidates-latest` (null until the first search):
   "asOf": "2026-10-30", "generatedAt": "2026-10-31T02:12:00Z", "status": "done | off | call-budget | data-error | not-ready | advice-behind",
   "regime": "risk-on", "baseCurrency": "USD", "capital": 10000, "listed": 5214, "shortlisted": 40,
   "candidates": [{ "symbol": "ANET.US", "name": "Arista Networks", "venue": "NYSE", "status": "breakout | near-high", "close": 142.2,
-                   "breakoutHigh": 140.1, "trendAverage": 112.3, "stop": 133.5, "shares": 14, "momentum": 0.42, "marketCap": 180000000000 }]
+                   "breakoutHigh": 140.1, "trendAverage": 112.3, "stop": 133.5, "shares": 14, "momentum": 0.42, "marketCap": 180000000000,
+                   "atr": 2.9, "moves": { "day": 0.031, "week": 0.058, "month": 0.112, "halfYear": 0.42 } }]
 }
 ```
 
@@ -127,4 +129,4 @@ And `analysis-latest` in the `analysis` container (null until the analyst's firs
 
 `pass` is the run that wrote it: the night's, or the check before the US open (`pre-open`, between 08:35 New York time and the open on weekdays: the night's view plus news since then); none, from before that check, is the night's. The route adds `current`: whether the analysis is of the advice's close. The page shows Claude's view only then; otherwise it says why the rules' advice stands alone.
 
-Numbers are written as decimal strings (`"6200.5"`), so they reach the database exact; the tab reads both. The host also adds `trades` (the paper fills of that run) and `skipped`, which the tab doesn't show yet. `watchlist` has every watched stock: its last close, the closing high of the 50 sessions before it (`breakoutHigh`: a close above it in an uptrend is the entry signal) and the 200-day average (`trendAverage`); advice written before it existed has none, and the tab says the next run brings it. Reasons are the advisor's codes (`Cix.Stocks.Reasons`) and the host's (`call-budget`, `data-error`). The tab checks every field, drops what doesn't fit, and marks advice as stale once two weekday closes pass without new advice.
+Numbers are written as decimal strings (`"6200.5"`), so they reach the database exact; the tab reads both. The host also adds `trades` (the paper fills of that run) and `skipped`, which the tab doesn't show yet. `watchlist` has every watched stock: its last close, the closing high of the 50 sessions before it (`breakoutHigh`: a close above it in an uptrend is the entry signal) and the 200-day average (`trendAverage`); advice written before it existed has none, and the tab says the next run brings it. Watched stocks and candidates also carry the advisor's 20-day ATR (`atr`) and their moves to the last close (`moves`: over 1, 5, 21 and 126 sessions, as fractions), from the bars the run already has; documents from before them have neither, and the page shows gaps. The route adds `working`, the Today tab's table: Claude's picks with the figures of the buy or candidate each one is (or, without Claude's view of this close, the rules' buys and the search's entry signals while risk-on), and for each an entry plan: `buyUpTo` (the close plus half an ATR, the highest price worth paying), `failsUnder` (the 50-day high it broke, or the stop if higher: under it, no buy that day) and, for a stock only near its high, `waitAbove`. Reasons are the advisor's codes (`Cix.Stocks.Reasons`) and the host's (`call-budget`, `data-error`). The tab checks every field, drops what doesn't fit, and marks advice as stale once two weekday closes pass without new advice.
