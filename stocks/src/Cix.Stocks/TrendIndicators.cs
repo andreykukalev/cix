@@ -3,6 +3,13 @@ using Cix.Domain.Exchange;
 namespace Cix.Stocks;
 
 /// <summary>
+/// How a stock moved up to its last close, as fractions (0.012: up 1.2%): over the last session, 5 sessions (a week), 21
+/// sessions (a month) and 126 (half a year, the advisor's default momentum). Null where the history is too short. For the
+/// Stocks page's working table; no rule reads them.
+/// </summary>
+public sealed record PriceMoves(decimal? Day, decimal? Week, decimal? Month, decimal? HalfYear);
+
+/// <summary>
 /// Indicators the trend rules need beyond <see cref="Cix.Domain.MarketData.Indicators"/>. Each returns null when there
 /// isn't enough data. Bars are daily and in ascending order.
 /// </summary>
@@ -48,6 +55,21 @@ public static class TrendIndicators
             high = high is { } h ? Math.Max(h, bars[i].Close) : bars[i].Close;
         return high;
     }
+
+    /// <summary>The change from the close <paramref name="sessions"/> bars before the last one to the last close, rounded to 4 places.</summary>
+    public static decimal? ChangeOver(IReadOnlyList<Candle> bars, int sessions)
+    {
+        ArgumentNullException.ThrowIfNull(bars);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sessions);
+        if (bars.Count < sessions + 1)
+            return null;
+        return Cix.Domain.MarketData.Indicators.Change(bars[^(sessions + 1)].Close, bars[^1].Close) is { } change
+            ? Math.Round(change, 4, MidpointRounding.ToEven) : null;
+    }
+
+    /// <summary>The last session's, the week's, the month's and the half year's change (<see cref="PriceMoves"/>).</summary>
+    public static PriceMoves Moves(IReadOnlyList<Candle> bars) =>
+        new(ChangeOver(bars, 1), ChangeOver(bars, 5), ChangeOver(bars, 21), ChangeOver(bars, 126));
 
     /// <summary>The trading day a daily bar belongs to (its start date, in UTC).</summary>
     public static DateOnly TradingDay(Candle bar) => DateOnly.FromDateTime(bar.Start.UtcDateTime);

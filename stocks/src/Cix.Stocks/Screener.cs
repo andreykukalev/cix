@@ -21,9 +21,10 @@ public sealed record MarketRow(
 /// <param name="State"><see cref="EntryState.Breakout"/> (an entry signal) or <see cref="EntryState.Uptrend"/> near its high.</param>
 /// <param name="Shares">What the advisor's sizing gives on the capital (risk to the stop, the position cap), before cash.</param>
 /// <param name="Momentum">The change over <see cref="AdvisorSettings.MomentumDays"/> sessions, the advisor's ranking.</param>
+/// <param name="Moves">The day's, the week's and the month's change, for the page only.</param>
 public sealed record Candidate(
     string Symbol, string? Name, string? Venue, DateOnly Day, EntryState State, decimal Close, decimal PriorHigh, decimal SlowAverage,
-    decimal Atr, decimal Stop, decimal Shares, decimal Momentum, decimal? MarketCap);
+    decimal Atr, decimal Stop, decimal Shares, decimal Momentum, decimal? MarketCap, PriceMoves? Moves = null);
 
 /// <summary>The market-wide search's filters (ADR-0025). Money in the market's currency (USD for <c>US</c>).</summary>
 public sealed record ScreenerSettings
@@ -154,7 +155,8 @@ public static class Screener
             return null; // the capital's risk can't buy one share: the advisor would note it too small
         var from = bars[Math.Max(0, bars.Count - 1 - advisor.MomentumDays)].Close;
         return new(symbol, name, venue, TrendIndicators.TradingDay(bars[^1]), entry.State, close, high, Math.Round(slow, 4, MidpointRounding.ToEven),
-            Math.Round(atr, 4, MidpointRounding.ToEven), stop, shares, Math.Round(Indicators.Change(from, close) ?? 0m, 4, MidpointRounding.ToEven), marketCap);
+            Math.Round(atr, 4, MidpointRounding.ToEven), stop, shares, Math.Round(Indicators.Change(from, close) ?? 0m, 4, MidpointRounding.ToEven), marketCap,
+            TrendIndicators.Moves(bars));
     }
 
     /// <summary>The candidates in the order they are listed: entry signals first, then by momentum, at most <see cref="ScreenerSettings.MaxCandidates"/>.</summary>
