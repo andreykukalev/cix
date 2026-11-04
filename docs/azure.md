@@ -204,9 +204,9 @@ Optional tidying, none of it costs anything if left:
 `dev.json` names no database (`cosmos.databaseName` empty), so `provision.ps1` no longer deploys `cix`, takes the `cix-database` claim off `rg-cix-dev` and gives the dashboard no `COSMOS_DATABASE`. The dashboard reads only `cix-live`. Once that change is on `main`, delete the old paper database. This can't be undone: its journal and state go. It frees 400 of the free tier's 1000 RU/s.
 
 ```powershell
-.	oolszure\provision.ps1 -Environment dev -SkipEngineConfig        # dev as dev.json now says: no database, no claim
+.\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig        # dev as dev.json now says: no database, no claim
 az cosmosdb sql database delete --account-name <shared account> --resource-group rg-shared --name cix
-.	oolszure\setup-dashboard-requests.ps1 -Environment dev -LiveRequests   # deletes the writer's leftover paper role, keeps the live one
+.\tools\azure\setup-dashboard-requests.ps1 -Environment dev -LiveRequests   # deletes the writer's leftover paper role, keeps the live one
 ```
 
 The shared account's name is in `az cosmosdb list -g rg-shared --query "[].name" -o tsv`. The paper engine's Cosmos DB role assignments named `cix` and its containers point at nothing once the database is gone; they are harmless and can be left.

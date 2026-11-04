@@ -9,7 +9,7 @@
   "namePrefix": "cix",
   "sharedCosmos": "shared",
   "cosmos": {
-    "$comment": "No database of its own since ADR-0028: the paper engine is gone, and the dashboard reads the live engine's (prod's cix-live). An empty databaseName deploys none; the old paper database 'cix' is deleted by hand (docs/azure.md, 'Removing the paper engine'). An environment with an engine names its database and databaseThroughput (400 to 1000 RU/s).",
+    "$comment": "No database of its own since ADR-0028: the paper engine is gone, and the dashboard reads the live engine's (prod's cix-live). An empty databaseName deploys none; the old paper database 'cix' is deleted by hand (docs/azure.md, 'Deleting the paper database'). An environment with an engine names its database and databaseThroughput (400 to 1000 RU/s).",
     "databaseName": ""
   },
   "deployDashboard": true,

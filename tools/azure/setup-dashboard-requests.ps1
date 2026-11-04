@@ -193,6 +193,9 @@ foreach ($r in @($role, $liveRole) | Where-Object { $_ }) {
 }
 $writerAssigned = @($roleAssignments | Where-Object { & $isWriter $_ }).Count -gt 0
 $liveAssigned = @($roleAssignments | Where-Object { & $isLiveWriter $_ }).Count -gt 0
+if (-not $database -and -not $LiveRequests -and -not $liveAssigned) {
+  throw "$($settings.path) names no database of its own, so the identity would have nothing to write to: run this again with -LiveRequests."
+}
 Write-CixInfo 'All checks passed.'
 
 # --- Make the changes. -------------------------------------------------------------------------------------------------------
@@ -212,7 +215,8 @@ if (-not $database) {
   if ($oldRoles.Count -gt 0) {
     Write-CixStep "Leftover paper role '$roleName'"
     $oldAssignments = @($allAssignments | Where-Object { & $isOld $_ })
-    Confirm-Step "This environment has no paper database any more: delete '$roleName' and its $($oldAssignments.Count) assignment(s)? The live role stays."
+    $holders = @($oldAssignments | ForEach-Object { if ($sp -and $_.principalId -eq $sp.id) { $identityName } else { "$($_.principalId)" } } | Select-Object -Unique)
+    Confirm-Step "This environment has no paper database any more: delete '$roleName' and its $($oldAssignments.Count) assignment(s)$(if ($holders.Count) { " (held by $($holders -join ', '))" })? The live role stays."
     foreach ($a in $oldAssignments) {
       Invoke-CixAz @('cosmosdb', 'sql', 'role', 'assignment', 'delete', '--account-name', $cosmos.name, '--resource-group', $cosmosGroup,
         '--role-assignment-id', "$($a.name)", '--yes', '--only-show-errors', '-o', 'none') | Out-Null
