@@ -151,6 +151,21 @@ td.why { min-width: 260px; max-width: 560px; color: var(--muted); }
 #coins td.why { min-width: 200px; }
 #decisions td:nth-child(3), #decisions td:nth-child(4), #trades td:nth-child(2), #orders td:nth-child(2) { white-space: nowrap; } /* a coin or an action isn't split */
 #coins td.actions button { padding: 3px 8px; }
+/* Stocks tables (desktop), as on the Coins tab: each table keeps its columns where its header puts them (fixed layout), so
+   tables with the same columns line up, figures are centred, and long text wraps inside its own column. */
+@media (min-width: 641px) {
+  #panel-stocks table { table-layout: fixed; }
+  #panel-stocks th { white-space: normal; vertical-align: bottom; }
+  #panel-stocks th.num, #panel-stocks td.num { text-align: center; }
+  #panel-stocks td { overflow-wrap: anywhere; }
+  #panel-stocks th.stock { width: 24%; }
+  #panel-stocks th.action, #panel-stocks th.tag { width: 190px; }
+  #panel-stocks th.rank { width: 64px; }
+  #stocks-watchlist th.tag { width: 240px; } /* its longest status, in Russian, is the widest badge on the tab */
+  #panel-stocks td .badge { white-space: nowrap; } /* a badge stays one line: its column is sized for the longest */
+  #panel-stocks th.why { width: 38%; }
+  #panel-stocks td.why { min-width: 0; max-width: none; }
+}
 .why-kind {
   display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap;
   background: var(--chip); color: var(--text, inherit);

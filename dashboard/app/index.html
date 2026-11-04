@@ -128,7 +128,7 @@
           <span id="coins-meta" class="muted small"></span>
         </div>
         <div id="coins-change" class="banner coins-change" role="status" hidden></div>
-        <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num">Hourly range</th><th class="num">Volume</th><th>Signal</th><th>Why no buy</th></tr></thead><tbody></tbody></table>
+        <table id="coins"><thead><tr><th>Coin</th><th>Held</th><th class="num" title="Change over the last hour, up to the scan time">1h</th><th class="num" title="Change over the last 24 hours, up to the scan time">24h</th><th class="num">Rank</th><th>Trend</th><th class="num" title="A candle's average range (ATR) as a share of the price: hourly candles, or daily ones for a daily strategy">Range (ATR)</th><th class="num">Volume</th><th>Signal</th><th>Why no buy</th></tr></thead><tbody></tbody></table>
         <p class="muted small coins-legend"><span class="why-kind filtered">Filtered out</span> the market filters dropped it before ranking (trading volume, spread, volatility, costs, too few prices, or not a tradable pair), with the figure and the limit. <span class="why-kind rule">Strategy rule</span> ranked, but the strategy's entry rules turned it down (trend, pullback, last hour). <span class="why-kind blocked">Held back</span> not the rules: a limit or a block stopped it, such as the strategy's buy signals per scan already taken by higher-ranked coins, a pause between buys, a news flag from the market analyst, a holding or an open order.</p>
         <p class="muted small legend">▲ up · ▼ down · ■ flat (under 0.05%). Moves are the scanner's, from its last scan.</p>
       </section>
@@ -251,11 +251,11 @@
         <div id="stocks-analysis-body" hidden>
           <p id="stocks-analysis-market"></p>
           <h3>Holdings</h3>
-          <table id="stocks-analysis-holdings"><thead><tr><th>Stock</th><th>Claude says</th><th>Earnings</th><th>Why</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-analysis-holdings"><thead><tr><th class="stock">Stock</th><th class="tag">Claude says</th><th>Earnings</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
           <h3>Picks among tonight's buys and candidates</h3>
-          <table id="stocks-analysis-picks"><thead><tr><th class="num">Rank</th><th>Stock</th><th>Earnings</th><th>Why</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-analysis-picks"><thead><tr><th class="num rank">Rank</th><th class="stock">Stock</th><th>Earnings</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
           <h3>Left out</h3>
-          <table id="stocks-analysis-skips"><thead><tr><th>Stock</th><th>Earnings</th><th>Why</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-analysis-skips"><thead><tr><th class="stock">Stock</th><th>Earnings</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
         </div>
       </section>
 
@@ -264,46 +264,46 @@
         <p id="stocks-owner-banner" class="banner" role="status" hidden></p>
         <div id="stocks-owner-body" hidden>
           <h3>What to do in Revolut</h3>
-          <table id="stocks-owner-actions"><thead><tr><th>Action</th><th>Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th>Why</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-owner-actions"><thead><tr><th class="action">Action</th><th class="stock">Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
           <h3>My holdings</h3>
-          <table id="stocks-owner-holdings"><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Bought at</th><th class="num">Last close</th><th class="num">Change</th><th class="num">Stop</th><th class="num" title="How far the price can fall before the stop sells">To the stop</th><th>Opened</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-owner-holdings"><thead><tr><th class="stock">Stock</th><th class="num">Shares</th><th class="num">Bought at</th><th class="num">Last close</th><th class="num">Change</th><th class="num">Stop</th><th class="num" title="How far the price can fall before the stop sells">To the stop</th><th>Opened</th></tr></thead><tbody></tbody></table>
           <h3>Notes</h3>
-          <table id="stocks-owner-notes"><thead><tr><th>Stock</th><th>Why there is no action</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-owner-notes"><thead><tr><th class="stock">Stock</th><th class="why">Why there is no action</th></tr></thead><tbody></tbody></table>
         </div>
         <div id="stocks-owner-trades-part" hidden>
           <h3>My trades</h3>
-          <table id="stocks-owner-trades"><thead><tr><th>Day</th><th>Trade</th><th>Stock</th><th class="num">Shares</th><th class="num">Price</th><th class="num">Fees</th><th class="num" title="For a sale: what it earned or lost against the average price paid, fees off">Profit</th></tr></thead><tbody></tbody></table>
+          <table id="stocks-owner-trades"><thead><tr><th>Day</th><th class="tag">Trade</th><th class="stock">Stock</th><th class="num">Shares</th><th class="num">Price</th><th class="num">Fees</th><th class="num" title="For a sale: what it earned or lost against the average price paid, fees off">Profit</th></tr></thead><tbody></tbody></table>
         </div>
         <p class="muted small">Your real account at Revolut's broker, in dollars: the advice is sized on the capital you give it, less what your holdings cost. After a buy or a sell at Revolut, record it with I bought or I sold; the next nightly run recomputes the capital and the holdings from it. Edit the portfolio only to correct it as a whole. A stop the advice sets or raises is taken as placed.</p>
       </section>
 
       <section class="panel" aria-labelledby="h-stocks-actions">
         <div class="panel-head"><h2 id="h-stocks-actions">What to do in Revolut</h2><span id="stocks-meta" class="muted small"></span></div>
-        <table id="stocks-actions"><thead><tr><th>Action</th><th>Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th>Why</th></tr></thead><tbody></tbody></table>
+        <table id="stocks-actions"><thead><tr><th class="action">Action</th><th class="stock">Stock</th><th class="num">Shares</th><th class="num">Close price</th><th class="num">Stop</th><th class="why">Why</th></tr></thead><tbody></tbody></table>
         <p class="muted small">Advice, not orders: CIX can't trade on Revolut, so you place each order and stop yourself. Sells and stops come first, then buys. A stop is only ever raised, never lowered.</p>
       </section>
 
       <section class="panel" aria-labelledby="h-stocks-candidates">
         <div class="panel-head"><h2 id="h-stocks-candidates">Candidates from the whole market</h2><span id="stocks-candidates-meta" class="muted small"></span></div>
         <p id="stocks-candidates-banner" class="banner" role="status" hidden></p>
-        <table id="stocks-candidates"><thead><tr><th>Stock</th><th>Signal</th><th class="num">Close price</th><th class="num">50-day high</th><th class="num">Stop</th><th class="num" title="Shares by the advisor's rules: the loss to the stop, plus a gap, is 1% of the capital, and at most 20% of it goes into one stock">Shares</th><th class="num">Amount</th><th class="num" title="The change over about six months: the advisor's ranking">6 months</th><th title="Claude's view of it: a pick and its rank, or left out">Claude</th></tr></thead><tbody></tbody></table>
+        <table id="stocks-candidates"><thead><tr><th class="stock">Stock</th><th class="tag">Signal</th><th class="num">Close price</th><th class="num">50-day high</th><th class="num">Stop</th><th class="num" title="Shares by the advisor's rules: the loss to the stop, plus a gap, is 1% of the capital, and at most 20% of it goes into one stock">Shares</th><th class="num">Amount</th><th class="num" title="The change over about six months: the advisor's ranking">6 months</th><th title="Claude's view of it: a pick and its rank, or left out">Claude</th></tr></thead><tbody></tbody></table>
         <p class="muted small">Large, liquid US common stocks on the main exchanges, up to your price cap, that pass the same entry rule as the watchlist: entry signals first, then uptrends just under their high. Not in the watchlist or the holdings. You choose: nothing here is bought by itself.</p>
       </section>
 
       <section class="panel" aria-labelledby="h-stocks-holdings">
         <div class="panel-head"><h2 id="h-stocks-holdings">Holdings and stops</h2></div>
-        <table id="stocks-holdings"><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Bought at</th><th class="num">Last close</th><th class="num">Change</th><th class="num">Stop</th><th class="num" title="How far the price can fall before the stop sells">To the stop</th><th>Opened</th></tr></thead><tbody></tbody></table>
+        <table id="stocks-holdings"><thead><tr><th class="stock">Stock</th><th class="num">Shares</th><th class="num">Bought at</th><th class="num">Last close</th><th class="num">Change</th><th class="num">Stop</th><th class="num" title="How far the price can fall before the stop sells">To the stop</th><th>Opened</th></tr></thead><tbody></tbody></table>
       </section>
 
       <section class="panel" aria-labelledby="h-stocks-watchlist">
         <div class="panel-head"><h2 id="h-stocks-watchlist">Watchlist</h2><span class="muted small">every watched stock at the last close</span></div>
-        <table id="stocks-watchlist"><thead><tr><th>Stock</th><th>Theme</th><th class="num">Last close</th><th class="num" title="The highest close of the 50 trading days before the last one: closing above it in an uptrend is the entry signal">50-day high</th><th class="num" title="How far the price must rise to close above its 50-day high">To the high</th><th class="num" title="How far the last close is above or under the 200-day average">vs 200-day</th><th>Status</th></tr></thead><tbody></tbody></table>
+        <table id="stocks-watchlist"><thead><tr><th class="stock">Stock</th><th>Theme</th><th class="num">Last close</th><th class="num" title="The highest close of the 50 trading days before the last one: closing above it in an uptrend is the entry signal">50-day high</th><th class="num" title="How far the price must rise to close above its 50-day high">To the high</th><th class="num" title="How far the last close is above or under the 200-day average">vs 200-day</th><th class="tag">Status</th></tr></thead><tbody></tbody></table>
         <p class="muted small">An uptrend is a close above the 200-day average with the 50-day average above it. A close above the 50-day high in an uptrend is the entry signal, unless the stock is overheated (over 20% above its 50-day average, or up over 15% in five days) or too jumpy (a daily range over 5% of its price). The advisor buys it unless the market, the cash, the price cap or the theme limit stops it, and the notes say which.</p>
       </section>
 
       <section class="panel" aria-labelledby="h-stocks-notes">
         <div class="panel-head"><h2 id="h-stocks-notes">Notes</h2></div>
-        <table id="stocks-notes"><thead><tr><th>Stock</th><th>Why there is no action</th></tr></thead><tbody></tbody></table>
+        <table id="stocks-notes"><thead><tr><th class="stock">Stock</th><th class="why">Why there is no action</th></tr></thead><tbody></tbody></table>
       </section>
     </div>
   </main>
