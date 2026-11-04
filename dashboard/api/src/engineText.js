@@ -165,6 +165,28 @@ const FORMATS = [
   [/^Hourly ATR (\S+) is above the maximum (\S+)\.$/, (m) => `Часовой ATR ${m[1]} выше допустимого ${m[2]}: монета слишком волатильна.`],
   [/^Hourly ATR (\S+) is under (\S+)× the round-trip cost (\S+)\.$/,
     (m) => `Часовой ATR ${m[1]} меньше ${m[2]}× издержек на покупку и продажу (${m[3]}): обычное движение не окупит сделку.`],
+
+  // --- Daily strategies (MarketScanner.Daily.cs, ADR-0029) ----------------------------------------------------------------
+  [/^Only (\d+) daily candles; (\d+) needed\.$/, (m) => `Только ${m[1]} дневных свечей; нужно ${m[2]}.`],
+  [/^The newest daily candle is from (\S+); daily data is behind\.$/, (m) => `Последняя дневная свеча от ${m[1]}: дневные данные отстают.`],
+  [/^Average daily volume over (\d+) days (\S+) is below the minimum (\S+)\.$/, (m) => `Средний дневной объём за ${m[1]} дней ${m[2]} ниже минимума ${m[3]}.`],
+  [/^Daily ATR (\S+) is above the maximum (\S+)\.$/, (m) => `Дневной ATR ${m[1]} выше допустимого ${m[2]}: монета слишком волатильна.`],
+  [/^Daily ATR (\S+) is under (\S+)× the round-trip cost (\S+)\.$/,
+    (m) => `Дневной ATR ${m[1]} меньше ${m[2]}× издержек на покупку и продажу (${m[3]}): обычное движение не окупит сделку.`],
+  [/^Buys wait for (\S+)'s daily trend \(its close against its EMA(\d+)\), and its daily candles are missing or behind; (\S+) must be on the watched list\.$/,
+    (m) => `Покупки ждут дневного тренда ${m[1]} (закрытие против его EMA${m[2]}), а его дневных свечей нет или они отстают; ${m[3]} должна быть среди отслеживаемых монет.`],
+  [/^(\S+)'s last daily close is (\S+) below its EMA(\d+); the strategy buys only while BTC is above it\.$/,
+    (m) => `Последнее дневное закрытие ${m[1]} на ${m[2]} ниже его EMA${m[3]}; стратегия покупает, только пока BTC выше неё.`],
+  [/^The engine sold (\S+) at (\S+ \S+) UTC, after the last daily candle began; the strategy waits for the next daily close before buying it again, so a stop-out isn't bought back on the same signal\.$/,
+    (m) => `Движок продал ${m[1]} в ${m[2]} UTC, уже после начала последней дневной свечи; стратегия ждёт следующего дневного закрытия, чтобы не купить монету снова на том же сигнале после стопа.`],
+  [/^The strategy buys only in a daily uptrend: EMA(\d+) above EMA(\d+) and the last daily close above EMA\d+; the close is (\S+) from EMA\d+\.$/,
+    (m) => `Стратегия покупает только в дневном восходящем тренде: EMA${m[1]} выше EMA${m[2]} и последнее дневное закрытие выше EMA${m[2]}; сейчас закрытие ${m[3]} от EMA${m[2]}.`],
+  [/^The last daily close is (\S+) below the highest high of the (\d+) days before it; the strategy buys a close above it\.$/,
+    (m) => `Последнее дневное закрытие на ${m[1]} ниже максимума ${m[2]} дней до него; стратегия покупает, когда закрытие выше этого максимума.`],
+  [/^The ask has fallen back to or under the (\d+)-day high the last close broke; the strategy buys only while the breakout holds\.$/,
+    (m) => `Ask вернулся к ${m[1]}-дневному максимуму, который пробило последнее закрытие, или ниже; стратегия покупает, только пока пробой держится.`],
+  [/^The ask is (\S+) daily ATR above the breakout's close; the strategy buys at most (\S+) ATR above it, so it doesn't chase\.$/,
+    (m) => `Ask на ${m[1]} дневного ATR выше закрытия пробоя; стратегия покупает не выше ${m[2]} ATR над ним, чтобы не догонять цену.`],
 ];
 
 /** The engine's sentence in Russian, or null when it isn't in a known format. */
