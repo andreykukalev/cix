@@ -4,7 +4,8 @@
 // in Docker on the owner's PC and connect to the database over HTTPS with the account key. In Azure the engine uses its
 // managed identity instead, with roles on CIX's containers only (modules/cosmos-engine-access.bicep).
 // agents (ADR-0013): 'platform' adds what the engine and the agent jobs run on (modules/agents-platform.bicep); 'apps'
-// also deploys the engine and the three jobs (modules/agents-apps.bicep). 'none', the default, adds neither.
+// also deploys the engine and the three jobs (modules/agents-apps.bicep). 'registry' adds the container registry alone
+// (modules/agents-registry.bicep): dev since ADR-0028, where the stocks image is built. 'none', the default, adds nothing.
 // Deploy with tools/azure/provision.ps1, which reads infra/environments/<name>.json. See docs/azure.md and ADR-0009.
 targetScope = 'subscription'
 
@@ -55,8 +56,8 @@ param deployDashboard bool = true
 @description('Extra tags for CIX\'s resources.')
 param tags object = {}
 
-@description('The engine and agents in Azure: none, platform (what they run on) or apps (the paper engine and the three jobs too).')
-@allowed(['none', 'platform', 'apps'])
+@description('The engine and agents in Azure: none, registry (the container registry alone), platform (what they run on) or apps (the engine and the three jobs too).')
+@allowed(['none', 'registry', 'platform', 'apps'])
 param agents string = 'none'
 
 @description('Region for the engine, the jobs and what they run on: the Cosmos DB account\'s region (Poland Central).')
@@ -99,6 +100,8 @@ param ownerObjectId string = ''
 // A protected environment (real money) gets the same engine and agents, pinned to paper like every other, plus the exchange
 // keys from its own Key Vault: its engine stands by until the owner switches it from their own sign-in (ADR-0017).
 var agentsDeploy = agents
+// What the engine and the jobs run on: deployed with platform and apps, not with registry (the registry alone) or none.
+var hasPlatform = agentsDeploy == 'platform' || agentsDeploy == 'apps'
 var hasDatabase = !empty(databaseName)
 
 // cix-database and cix-cosmos-account claim the database for this environment: the scripts refuse to deploy over, or
@@ -142,7 +145,7 @@ module dashboard 'modules/dashboard.bicep' = if (deployDashboard) {
   }
 }
 
-module agentsPlatform 'modules/agents-platform.bicep' = if (agentsDeploy != 'none') {
+module agentsPlatform 'modules/agents-platform.bicep' = if (hasPlatform) {
   name: 'cix-${environmentName}-agents-platform'
   scope: group
   params: {
@@ -158,7 +161,7 @@ module agentsPlatform 'modules/agents-platform.bicep' = if (agentsDeploy != 'non
 }
 
 // The owner hears about a blocked exit, a halt, a lost lease or a silent engine without opening the dashboard (F-01).
-module engineAlerts 'modules/engine-alerts.bicep' = if (agentsDeploy != 'none' && !empty(budgetContactEmail)) {
+module engineAlerts 'modules/engine-alerts.bicep' = if (hasPlatform && !empty(budgetContactEmail)) {
   name: 'cix-${environmentName}-engine-alerts'
   scope: group
   dependsOn: [agentsPlatform]
@@ -173,7 +176,7 @@ module engineAlerts 'modules/engine-alerts.bicep' = if (agentsDeploy != 'none' &
 }
 
 // The engine's access to CIX's database, granted where the account is, once the database and the identity exist.
-module engineCosmosAccess 'modules/cosmos-engine-access.bicep' = if (agentsDeploy != 'none' && hasDatabase) {
+module engineCosmosAccess 'modules/cosmos-engine-access.bicep' = if (hasPlatform && hasDatabase) {
   name: 'cix-${environmentName}-engine-cosmos-access'
   scope: resourceGroup(sharedResourceGroupName)
   dependsOn: [database]
@@ -181,6 +184,21 @@ module engineCosmosAccess 'modules/cosmos-engine-access.bicep' = if (agentsDeplo
     accountName: sharedAccountName
     databaseName: databaseName
     enginePrincipalId: agentsPlatform!.outputs.enginePrincipalId
+  }
+}
+
+// The registry alone, by the platform's name for it: an environment that hosts an image but runs nothing (dev since ADR-0028).
+module agentsRegistry 'modules/agents-registry.bicep' = if (agentsDeploy == 'registry') {
+  name: 'cix-${environmentName}-agents-registry'
+  scope: group
+  params: {
+    namePrefix: namePrefix
+    environmentName: environmentName
+    location: agentsLocation
+    tags: allTags
+    monthlyBudget: monthlyBudget
+    budgetStartDate: budgetStartDate
+    budgetContactEmail: budgetContactEmail
   }
 }
 
@@ -217,9 +235,9 @@ output cosmosAccountName string = sharedAccountName
 output cosmosEndpoint string = sharedAccount.properties.documentEndpoint
 output staticWebAppName string = deployDashboard ? dashboard!.outputs.name : ''
 output dashboardUrl string = deployDashboard ? dashboard!.outputs.url : ''
-output registryName string = agentsDeploy != 'none' ? agentsPlatform!.outputs.registryName : ''
-output registryServer string = agentsDeploy != 'none' ? agentsPlatform!.outputs.registryServer : ''
-output keyVaultName string = agentsDeploy != 'none' ? agentsPlatform!.outputs.keyVaultName : ''
+output registryName string = hasPlatform ? agentsPlatform!.outputs.registryName : (agentsDeploy == 'registry' ? agentsRegistry!.outputs.registryName : '')
+output registryServer string = hasPlatform ? agentsPlatform!.outputs.registryServer : (agentsDeploy == 'registry' ? agentsRegistry!.outputs.registryServer : '')
+output keyVaultName string = hasPlatform ? agentsPlatform!.outputs.keyVaultName : ''
 output engineAppName string = agentsDeploy == 'apps' ? agentsApps!.outputs.engineAppName : ''
 output agentJobNames array = agentsDeploy == 'apps' ? agentsApps!.outputs.jobNames : []
 output agentJobPrincipalIds array = agentsDeploy == 'apps' ? agentsApps!.outputs.jobPrincipalIds : []

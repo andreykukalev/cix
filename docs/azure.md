@@ -108,10 +108,11 @@ The deployment is safe to run again. It brings the resources back to what the te
 
 ## Engine and agents in Azure
 
-> **No paper engine since 2026-11-03 (ADR-0028).** Only the protected environment, `prod`, runs an engine and its jobs ([live-trading.md](live-trading.md)). `dev` keeps `agents.deploy` `platform` with `startEngine` false: its registry is where the stocks image is built (infra/stocks), and its other platform pieces cost next to nothing with no app running. The paper engine and its jobs are deleted by hand: see [Removing the paper engine](#removing-the-paper-engine). What follows describes both levels as the templates still offer them; `apps` is what `prod` runs.
+> **No paper engine since 2026-11-03 (ADR-0028).** Only the protected environment, `prod`, runs an engine and its jobs ([live-trading.md](live-trading.md)). `dev` has `agents.deploy` `registry`: the container registry alone (and the budget), where the stocks image is built (infra/stocks). The paper engine, its jobs and the rest of the platform are deleted by hand: see [Removing the paper platform](#removing-the-paper-platform). What follows describes the levels as the templates offer them; `apps` is what `prod` runs.
 
 `agents.deploy` in the environment file chooses how much of it exists:
 
+- **`registry`** (`infra/modules/agents-registry.bicep`). The container registry alone, by the same name and settings as the platform's, plus the budget: for an environment that runs nothing but hosts an image (dev since ADR-0028). `provision.ps1` deploys nothing else, skips the Container Apps checks, and after the deployment names what the platform or the apps left in the group (by the environment's tag), for you to delete by hand ([Removing the paper platform](#removing-the-paper-platform)). Moving between `registry` and `platform` keeps the registry and its images.
 - **`platform`** (`infra/modules/agents-platform.bicep`). This adds the pieces the engine and the jobs run on, in `agents.location`:
   - a Log Analytics workspace, capped at 0.1 GB a day;
   - a Container Apps environment (workload profiles, Consumption) with public network access disabled, and no VNet of its own: a VNet would bring a billed load balancer and IP (about $22 a month). An environment deployed before 2026-10-28 is still on one: `provision.ps1` says so, and after you confirm (or with `-Yes`, which the protected environment refuses for this) it deletes the engine, the jobs, the environment and the VNet. It first refuses if the group holds another app or job, or a lock, that would stop it halfway, and it shows the image digests to pass again if the deployment then fails, then recreates them without it (10 to 20 minutes). Then run `setup-ci-deploy.ps1 -For agents` again: CI's roles on the engine and the jobs go with them;
@@ -181,17 +182,24 @@ If you suspect misuse:
 
 **To stop the engine in an emergency,** deactivate its revision (portal: the engine app, *Revisions*, *Deactivate*). CI then leaves it stopped. Reject waiting `prod` runs meanwhile. See also live-trading.md, "Stopping live trading".
 
-### Removing the paper engine
+### Removing the paper platform
 
-Once, after the change of ADR-0028 is on `main` (it can't be undone: the engine's state in Azure and its revisions go; its database and journal stay). From your own terminal, signed in with `az login`:
+Once, after the change of ADR-0028 is on `main`, and with `dev.json` at `agents.deploy` `registry` (so `provision.ps1` doesn't create them again). It can't be undone: the paper engine's state in Azure and its revisions go, and with Key Vault the copy of `claude-token` kept for the paper jobs (the live engine's and the stocks advisory's vaults keep theirs); the database and journal stay. Nothing here is used by the dashboard (it reads Cosmos DB) or by the stocks advisory (its own vault, identities and environment in `rg-cix-stocks`; only the registry is shared). From your own terminal, signed in with `az login`:
 
 ```powershell
 $g = 'rg-cix-dev'
-foreach ($job in 'caj-cix-dev-trader', 'caj-cix-dev-requests', 'caj-cix-dev-analyst') { az resource delete -g $g -n $job --resource-type Microsoft.App/jobs }
 az resource delete -g $g -n ca-cix-dev-engine --resource-type Microsoft.App/containerApps
-az resource list -g $g --query "[].{name:name, type:type}" -o table   # left: the dashboard, the registry and the platform
-.\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig     # the platform as dev.json now says (startEngine false)
+foreach ($job in 'trader', 'requests', 'analyst') { az resource delete -g $g -n "caj-cix-dev-$job" --resource-type Microsoft.App/jobs }
+az resource delete -g $g -n cae-cix-dev --resource-type Microsoft.App/managedEnvironments   # after the engine and the jobs
+az resource delete -g $g -n log-cix-dev --resource-type Microsoft.OperationalInsights/workspaces
+foreach ($i in 'engine', 'trader', 'requests', 'analyst') { az identity delete -g $g -n "id-cix-dev-$i" }
+$st = az storage account list -g $g --query "[?starts_with(name, 'stcixdev')].name" -o tsv; az storage account delete -g $g -n $st --yes
+$kv = az keyvault list -g $g --query "[?starts_with(name, 'kvcixdev')].name" -o tsv; az keyvault delete -g $g -n $kv; az keyvault purge -n $kv
+az resource list -g $g --query "[].{name:name, type:type}" -o table   # left: stapp-cix-dev and the registry (crcixdev...)
+.\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig     # dev as dev.json says: the registry alone, and no leftovers named
 ```
+
+`az keyvault purge` removes the deleted vault at once instead of keeping it, with `claude-token`, for 7 days. The registry keeps `AcrPull` assignments for the deleted identities, shown as *Unknown* in its *Access control*: harmless, and removable there. Its old `cix-engine` and `cix-trader` images stay too (the Basic tier's 10 GB is included); `az acr repository delete -n <registry> --repository cix-engine --yes` (and `cix-trader`) removes them.
 
 Recommended: delete CI's old paper deploy identity. It still trusts any workflow on `main` (no approval) and can push to dev's registry, where the stocks image is built (the stocks job pins its image by digest, so the reach is small, but nothing uses the identity any more): `az ad app list --display-name cix-agents-deploy-dev --query "[].appId" -o tsv`, then `az ad app delete --id <appId>`, which removes its trust; its role assignments are left naming an unknown identity, harmless, and can be removed from the registry's *Access control*.
 

@@ -7,6 +7,8 @@
     - CIX's own group, for example rg-cix-dev, with the dashboard (Static Web Apps, Free), plus CIX's database in
       the shared account (infra/main.bicep, settings in infra/environments/<Environment>.json).
   The engine and agents keep running in Docker on this PC, unless agents.deploy in the settings says otherwise (ADR-0013):
+    - registry: the container registry alone (and the budget), for an environment that runs nothing but hosts an image:
+      dev since ADR-0028, where the stocks image is built. It warns about the platform's pieces still in the group;
     - platform: what the engine and the agent jobs run on (registry, queues, Key Vault, environment, logs, budget);
     - apps: also the engine and the three jobs. Needs platform deployed first, claude-token in its Key Vault
       (uploaded from secrets/claude_token, which tools/setup-secrets.ps1 writes, without showing it), and images CI pushed.
@@ -23,7 +25,7 @@
   6. With -DeployDashboard, publishes dashboard/ to the Static Web App.
 
   Nothing is deleted, and no data is copied. Since ADR-0028 only the protected environment (prod) runs an engine in Azure;
-  dev holds the dashboard and, with agents.deploy platform, the registry the stocks image is built in. The one exception: a Container Apps environment still on its own VNet
+  dev holds the dashboard and, with agents.deploy registry, the registry the stocks image is built in. The one exception: a Container Apps environment still on its own VNet
   (deployed before 2026-10-28) is deleted with its apps and VNet, after you confirm it, and recreated without one.
 
 .EXAMPLE
@@ -97,7 +99,7 @@ Write-CixInfo "Shared account:  resource group $($shared.resourceGroup) ($($shar
 Write-CixInfo "CIX:             resource group $($settings.resourceGroup) ($($settings.location)), $(if ($settings.cosmos.databaseName) { "$databaseText at $($settings.cosmos.databaseThroughput) RU/s" } else { "$databaseText (the dashboard reads the live engine's)" })"
 Write-CixInfo "Dashboard:       $(if ($settings.deployDashboard) { "Static Web App (Free) in $($settings.dashboardLocation)" } else { 'not deployed' })"
 $agents = if ($settings.ContainsKey('agents')) { $settings.agents.deploy } else { 'none' }
-Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "$(if ($settings.protected) { 'the engine (on standby until you switch it)' } else { 'an engine in paper mode' }) and three jobs, in $($settings.agents.location)" } })"
+Write-CixInfo "Engine, agents:  $(switch ($agents) { 'none' { 'not in Azure (agents.deploy none)' } 'registry' { "the container registry alone, in $($settings.agents.location) (no engine)" } 'platform' { "what they run on, in $($settings.agents.location) (no apps yet)" } default { "$(if ($settings.protected) { 'the engine (on standby until you switch it)' } else { 'an engine in paper mode' }) and three jobs, in $($settings.agents.location)" } })"
 $exchangeKeyFiles = @{ ExchangeApiKeyFile = $ExchangeApiKeyFile; ExchangePrivateKeyFile = $ExchangePrivateKeyFile }
 if (-not $settings.protected -and ($ExchangeApiKeyFile -or $ExchangePrivateKeyFile)) {
   throw "-ExchangeApiKeyFile and -ExchangePrivateKeyFile are for a protected environment only; '$Environment' isn't one."
@@ -143,7 +145,7 @@ if ($settings.protected) {
 $rebuild = $null # the old VNet environment to replace, if any (below)
 if (-not $SkipInfrastructure) {
   # An environment still on its own VNet (before 2026-10-28) leaves it by being rebuilt: found now, deleted only once you say yes.
-  $rebuild = if ($agents -ne 'none') { Get-CixVnetRebuild -Settings $settings } else { $null }
+  $rebuild = if (@('platform', 'apps') -contains $agents) { Get-CixVnetRebuild -Settings $settings } else { $null }
   if ($rebuild) {
     if ($agents -ne 'apps' -and $rebuild.Apps.Count -gt 0) { throw "The Container Apps environment is on a VNet and has apps, but $($settings.path) says agents.deploy ${agents}: set it to apps, so the rebuild recreates them." }
     $what = @(@($rebuild.Apps) + @($rebuild.Environment, $rebuild.Vnet) | Where-Object { $_ } | ForEach-Object { $_.Split('/')[-1] }) -join ', '
@@ -182,7 +184,7 @@ if (-not $SkipInfrastructure) {
   if ($agents -ne 'none') {
     Write-CixStep "Engine and agents ($agents, in $($settings.agents.location))"
     Assert-CixAgentsTools
-    Assert-CixAppsRegion -Settings $settings
+    if ($agents -ne 'registry') { Assert-CixAppsRegion -Settings $settings }
     $me = Get-CixSignedInUser
     $agentValues['ownerObjectId'] = $me.Id
     $agentValues['budgetContactEmail'] = if ($BudgetEmail) { $BudgetEmail } else { $me.Email }
@@ -306,13 +308,20 @@ if (-not $SkipInfrastructure) {
   $dashboardUrl = $outputs.dashboardUrl.value
   if ($agents -ne 'none') {
     Write-CixInfo "Registry:  $($outputs.registryServer.value)"
-    Write-CixInfo "Key Vault: $($outputs.keyVaultName.value)"
+    if ($agents -ne 'registry') { Write-CixInfo "Key Vault: $($outputs.keyVaultName.value)" }
+    else {
+      # A deployment doesn't remove what a template no longer has: the paper platform's pieces stay until you delete them.
+      $leftovers = @(Get-CixPlatformLeftovers -Settings $settings)
+      if ($leftovers.Count -gt 0) {
+        Write-CixWarn "agents.deploy is registry, but $($settings.resourceGroup) still holds what the platform or the apps left, which nothing here uses: $($leftovers -join ', '). Delete them by hand: docs/azure.md, 'Removing the paper platform'."
+      }
+    }
     if ($agents -eq 'apps') {
       Write-CixInfo "Engine app: $($outputs.engineAppName.value); jobs: $(@($outputs.agentJobNames.value) -join ', ')"
     }
     # The template before the engine signed in with its identity copied the shared account's read-write key into Key Vault
     # as cosmos-key, readable by the engine. A deployment doesn't remove what a template no longer has: do it here.
-    $vaultName = "$($outputs.keyVaultName.value)"
+    $vaultName = if ($agents -ne 'registry') { "$($outputs.keyVaultName.value)" } else { '' }
     if ($vaultName -and (Test-CixVaultSecret -Vault $vaultName -Name 'cosmos-key')) {
       Write-CixWarn "Key Vault $vaultName still holds cosmos-key, the shared Cosmos DB account's read-write key, from an earlier template. Nothing uses it now."
       Confirm-Step "Delete cosmos-key from $vaultName, and the engine's access to it?"
