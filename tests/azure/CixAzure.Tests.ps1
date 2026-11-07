@@ -236,8 +236,8 @@ Check 'the engine''s Cosmos DB access: no account key, no deletes, the journal a
 
 Check 'agents settings: dev''s are valid, dates stay text, and they reach the template as its parameters' {
   $s = Read-CixEnvironment -Name dev
-  # The owner moves dev.json from none to platform to apps, and starts the engine at the cutover; no test pins which.
-  if (@('none', 'platform', 'apps') -notcontains $s.agents.deploy) { throw "agents.deploy in dev.json is '$($s.agents.deploy)'" }
+  # Since ADR-0028 dev runs no engine and keeps only the registry the stocks image is built in.
+  Expect $s.agents.deploy 'registry' 'agents.deploy in dev.json'
   Expect ($s.agents.budgetStartDate -is [string]) $true 'budgetStartDate is text'
   Expect $s.agents.budgetStartDate '2026-11-01' 'budgetStartDate'
   $s.agents.deploy = 'platform'
@@ -259,7 +259,7 @@ Check 'agents settings: dev''s are valid, dates stay text, and they reach the te
 }
 
 foreach ($case in @(
-    @{ Change = { param($a) $a.deploy = 'all' }; Says = 'agents.deploy must be none, platform or apps' },
+    @{ Change = { param($a) $a.deploy = 'all' }; Says = 'agents.deploy must be none, registry, platform or apps' },
     @{ Change = { param($a) $a.startEngine = 'yes' }; Says = 'agents.startEngine must be true or false' },
     @{ Change = { param($a) $a.traderModel = 'Sonnet; rm' }; Says = 'agents.traderModel must be a model alias' },
     @{ Change = { param($a) $a.budgetStartDate = '2026-11-15' }; Says = 'first of a month' },
@@ -677,10 +677,10 @@ function Get-CitestJson([string]$Deploy) {
   $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', '"citest"').Replace('rg-cix-dev', 'rg-cix-citest')
   $json = [regex]::Replace($json, '"databaseName":\s*""', '"databaseName": "cix-citest", "databaseThroughput": 400')
   if ($json -notmatch '"databaseName": "cix-citest"') { throw 'dev.json has no empty databaseName to replace' }
-  if ($json -notmatch '"deploy": "(none|platform|apps)"') { throw 'dev.json has no agents.deploy to replace' }
+  if ($json -notmatch '"deploy": "(none|registry|platform|apps)"') { throw 'dev.json has no agents.deploy to replace' }
   if ($json -notmatch '"startEngine": (true|false)') { throw 'dev.json has no agents.startEngine to replace' }
   $json = [regex]::Replace($json, '"startEngine": (true|false)', '"startEngine": false')
-  return [regex]::Replace($json, '"deploy": "(none|platform|apps)"', "`"deploy`": `"$Deploy`"")
+  return [regex]::Replace($json, '"deploy": "(none|registry|platform|apps)"', "`"deploy`": `"$Deploy`"")
 }
 function Invoke-CitestProvision([hashtable]$Fake, [hashtable]$Arguments) {
   <# provision.ps1 for CIX alone (agents.deploy none), whatever dev.json deploys. #>
@@ -928,7 +928,7 @@ Check 'setup-ci-deploy.ps1 -For agents adds what its earlier role lacks (stoppin
 }
 
 foreach ($case in @(
-    @{ Name = 'agents.deploy none'; Deploy = 'none'; Overrides = @{}; Says = 'run provision.ps1 with agents.deploy platform first' },
+    @{ Name = 'agents.deploy none'; Deploy = 'none'; Overrides = @{}; Says = 'run provision.ps1 with agents.deploy registry or platform first' },
     @{ Name = 'a protected environment without its apps'; Deploy = 'platform'; Protected = $true; Overrides = @{}; Says = 'deploy the live engine with provision.ps1 first' },
     @{ Name = 'a protected environment''s identity trusting main itself'; Deploy = 'apps'; Protected = $true; Overrides = @{ 'ad app list' = '[{"appId":"66666666-6666-6666-6666-666666666666","displayName":"cix-agents-deploy-citest"}]'; 'ad sp list' = '[{"id":"77777777-7777-7777-7777-777777777777"}]'; 'ad app federated-credential' = $mainCredential }; Says = 'also trusts repo:owner@11/repo@22:ref:refs/heads/main' },
     @{ Name = 'apps not deployed yet'; Deploy = 'apps'; Overrides = @{ 'resource list' = '[]' }; Says = "ca-cix-citest-engine isn't in rg-cix-citest" },
@@ -1177,7 +1177,7 @@ Check 'reset-database.ps1 refuses dev: it has no database' {
 Check 'the CIX template deploys a database, and the engine roles on it, only when it names one' {
   $main = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'main.bicep'))
   if ($main -notmatch "module database 'modules/cosmos-database\.bicep' = if \(hasDatabase\)") { throw 'the database is deployed unconditionally' }
-  if ($main -notmatch "module engineCosmosAccess 'modules/cosmos-engine-access\.bicep' = if \(agentsDeploy != 'none' && hasDatabase\)") { throw 'engine roles without a database' }
+  if ($main -notmatch "module engineCosmosAccess 'modules/cosmos-engine-access\.bicep' = if \(hasPlatform && hasDatabase\)") { throw 'engine roles without a database' }
   if ([IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'modules' 'dashboard.bicep')) -match 'COSMOS_DATABASE:') { throw 'the dashboard still gets COSMOS_DATABASE' }
 }
 
@@ -1261,7 +1261,7 @@ Check 'two environment files sharing one database are refused' {
 Check 'an environment may name no database unless it is protected or runs an engine' {
   foreach ($case in @(
       @{ Name = 'nodbprot'; Edit = { param($j) $j.Replace('"protected": false', '"protected": true') }; Says = 'a protected environment needs cosmos.databaseName' },
-      @{ Name = 'nodbapps'; Edit = { param($j) [regex]::Replace($j, '"deploy": "(none|platform|apps)"', '"deploy": "apps"') }; Says = 'agents.deploy apps runs an engine, which needs cosmos.databaseName' })) {
+      @{ Name = 'nodbapps'; Edit = { param($j) [regex]::Replace($j, '"deploy": "(none|registry|platform|apps)"', '"deploy": "apps"') }; Says = 'agents.deploy apps runs an engine, which needs cosmos.databaseName' })) {
     $file = Join-CixPath $repo 'infra' 'environments' "$($case.Name).json"
     $json = (Get-Content (Join-CixPath $repo 'infra' 'environments' 'dev.json') -Raw).Replace('"dev"', "`"$($case.Name)`"").Replace('rg-cix-dev', "rg-cix-$($case.Name)")
     [IO.File]::WriteAllText($file, (& $case.Edit $json))
@@ -1619,6 +1619,42 @@ Check 'provision.ps1 agents platform: no budget without an address that gets mai
   # Only the names in Key Vault are listed (for a cosmos-key an earlier template left): no secret is set, read or deleted.
   $vaultCalls = @(($r.Calls -split "`n") | Where-Object { $_ -match 'keyvault' -and $_ -notmatch '^\s*keyvault secret list ' })
   if ($vaultCalls.Count -gt 0) { throw "platform ran $($vaultCalls -join '; ')" }
+}
+
+Check 'provision.ps1 agents registry: no Key Vault, no apps, nothing deleted; it names the platform''s leftovers of this environment only' {
+  $left = '[{"name":"cae-cix-citest","type":"Microsoft.App/managedEnvironments","tags":{"cix-environment":"citest"}},' +
+    '{"name":"kvcixcitest1","type":"Microsoft.KeyVault/vaults","tags":{"cix-environment":"citest"}},' +
+    '{"name":"id-cix-citest-trader","type":"Microsoft.ManagedIdentity/userAssignedIdentities","tags":{"cix-environment":"citest"}},' +
+    '{"name":"crcixcitest1","type":"Microsoft.ContainerRegistry/registries","tags":{"cix-environment":"citest"}},' +
+    '{"name":"stapp-cix-citest","type":"Microsoft.Web/staticSites","tags":{"cix-environment":"citest"}},' +
+    '{"name":"alert-cix-citest-engine-events","type":"Microsoft.Insights/scheduledQueryRules","tags":{"cix-environment":"citest"}},' +
+    '{"name":"kvsomeoneelse","type":"Microsoft.KeyVault/vaults","tags":{}}]'
+  $r = Invoke-AgentsProvision @{ 'resource list' = $left } @{ Yes = $true; SkipEngineConfig = $true } 'registry'
+  if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
+  foreach ($expected in @('Engine and agents (registry, in polandcentral)', 'the container registry alone', 'Registry:  crcixcitest1.azurecr.io',
+      'cae-cix-citest (Microsoft.App/managedEnvironments)', 'kvcixcitest1 (Microsoft.KeyVault/vaults)', 'id-cix-citest-trader (Microsoft.ManagedIdentity/userAssignedIdentities)', 'alert-cix-citest-engine-events (Microsoft.Insights/scheduledQueryRules)', "'Removing the paper platform'")) {
+    # Whitespace aside: Windows PowerShell wraps a long warning at the console's width.
+    if (-not ($r.Output -replace '\s', '').Contains(($expected -replace '\s', ''))) { throw "missing '$expected' in: $($r.Output)" }
+  }
+  foreach ($never in @('crcixcitest1 (', 'stapp-cix-citest (', 'kvsomeoneelse', 'Key Vault: ')) { if ($r.Output.Contains($never)) { throw "said '$never': $($r.Output)" } }
+  foreach ($never in @('keyvault', 'provider show', 'ad app', 'acr ', ' delete')) { if ($r.Calls.Contains($never)) { throw "registry ran '$never': $($r.Calls)" } }
+  if (-not $r.Calls.Contains('deployment sub create')) { throw "nothing deployed: $($r.Calls)" }
+}
+
+Check 'agents registry deploys the platform''s registry alone, by the same name, and none of the rest' {
+  $modules = Join-CixPath $repo 'infra' 'modules'
+  $alone = [IO.File]::ReadAllText((Join-CixPath $modules 'agents-registry.bicep'))
+  $platform = [IO.File]::ReadAllText((Join-CixPath $modules 'agents-platform.bicep'))
+  $types = @([regex]::Matches($alone, "(?m)^resource \w+ '([^@']+)@") | ForEach-Object { $_.Groups[1].Value })
+  Expect ($types -join ',') 'Microsoft.ContainerRegistry/registries,Microsoft.Consumption/budgets' 'resources'
+  $block = { param($text) $i = $text.IndexOf("resource registry 'Microsoft.ContainerRegistry/registries@"); $text.Substring($i, $text.IndexOf("`n}", $i) - $i) }
+  Expect (& $block $alone) (& $block $platform) 'the registry, as agents-platform.bicep has it'
+  $main = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'main.bicep'))
+  if ($main -notmatch "(?m)^var hasPlatform = agentsDeploy == 'platform' \|\| agentsDeploy == 'apps'\r?$") { throw 'hasPlatform is not platform or apps' }
+  foreach ($module in 'agentsPlatform', 'engineAlerts', 'engineCosmosAccess') {
+    if ($main -notmatch "(?m)^module $module '[^']+' = if \(hasPlatform[\s&)]") { throw "$module isn't deployed with the platform alone" }
+  }
+  if ($main -notmatch "(?m)^module agentsRegistry 'modules/agents-registry\.bicep' = if \(agentsDeploy == 'registry'\)") { throw 'the registry alone is not deployed for registry' }
 }
 
 Check 'a budget starting in a past month is refused only while it does not exist' {

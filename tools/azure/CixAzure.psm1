@@ -113,8 +113,9 @@ function Read-CixEnvironment {
 
 function Assert-CixAgentSettings {
   <#
-    Checks the optional 'agents' block: the engine and the agent jobs in Azure (ADR-0013). deploy is none, platform (what they
-    run on) or apps (the paper engine and the three jobs too). Dates are kept as YYYY-MM-DD text whatever the JSON reader made
+    Checks the optional 'agents' block: the engine and the agent jobs in Azure (ADR-0013). deploy is none, registry (the
+    container registry alone: an environment that runs nothing but hosts an image, dev since ADR-0028), platform (what they
+    run on) or apps (the engine and the three jobs too). Dates are kept as YYYY-MM-DD text whatever the JSON reader made
     of them (PowerShell 7 may read them as dates).
   #>
   param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][string]$Path)
@@ -126,7 +127,7 @@ function Assert-CixAgentSettings {
   foreach ($key in 'budgetStartDate', 'claudeTokenExpires') {
     if ($a.ContainsKey($key) -and $a[$key] -is [datetime]) { $a[$key] = $a[$key].ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) }
   }
-  if (@('none', 'platform', 'apps') -notcontains $a.deploy) { throw "${Path}: agents.deploy must be none, platform or apps." }
+  if (@('none', 'registry', 'platform', 'apps') -notcontains $a.deploy) { throw "${Path}: agents.deploy must be none, registry, platform or apps." }
   if ($a.location -notmatch '^[a-z0-9]{3,40}$') { throw "${Path}: agents.location must be an Azure region name, like polandcentral." }
   if ($a.startEngine -isnot [bool]) { throw "${Path}: agents.startEngine must be true or false." }
   foreach ($key in 'traderModel', 'analystModel') {
@@ -479,7 +480,7 @@ function Write-CixSecretFile {
   return $path
 }
 
-# --- The engine and agents in Azure (agents.deploy platform or apps; ADR-0013) ---
+# --- The engine and agents in Azure (agents.deploy registry, platform or apps; ADR-0013) ---
 
 function Assert-CixAgentsTools {
   <# Bicep 0.32 or later: the version the agents' templates are written and linted against. #>
@@ -542,7 +543,7 @@ function Assert-CixBudgetStart {
 function Find-CixAgentsResource {
   <#
     The agents' Key Vault (-Kind keyvault) or container registry (-Kind acr) in CIX's resource group, tagged with this
-    environment; $null before agents.deploy platform has created it.
+    environment; $null before agents.deploy platform (or registry, for the registry) has created it.
   #>
   param([Parameter(Mandatory)][hashtable]$Settings, [Parameter(Mandatory)][ValidateSet('keyvault', 'acr')][string]$Kind)
   if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return $null }
@@ -594,6 +595,23 @@ function Get-CixAgentsDeployerActions {
   return @('Microsoft.App/containerApps/read', 'Microsoft.App/containerApps/revisions/read', 'Microsoft.App/containerApps/write',
     'Microsoft.App/containerApps/revisions/deactivate/action',
     'Microsoft.App/jobs/read', 'Microsoft.App/jobs/write', 'Microsoft.ContainerRegistry/registries/read') | Sort-Object
+}
+
+function Get-CixPlatformLeftovers {
+  <#
+    With agents.deploy registry: what the platform or the apps left in CIX's resource group that the template no longer
+    deploys (the engine, the jobs, the Container Apps environment, the logs, the run queues' storage account, Key Vault and the
+    identities, the engine's alerts and a VNet from before 2026-10-28), as 'name (type)'. Only resources tagged with this environment; nothing is deleted here (docs/azure.md,
+    'Removing the paper platform').
+  #>
+  param([Parameter(Mandatory)][hashtable]$Settings)
+  if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return @() }
+  $types = @('Microsoft.App/containerApps', 'Microsoft.App/jobs', 'Microsoft.App/managedEnvironments', 'Microsoft.OperationalInsights/workspaces',
+    'Microsoft.Storage/storageAccounts', 'Microsoft.KeyVault/vaults', 'Microsoft.ManagedIdentity/userAssignedIdentities',
+    'Microsoft.Insights/actionGroups', 'Microsoft.Insights/scheduledQueryRules', 'Microsoft.Network/virtualNetworks')
+  $all = @(Invoke-CixAz @('resource', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
+  return @($all | Where-Object { $types -contains "$($_.type)" -and (Test-CixEnvironmentTag -Resource $_ -Settings $Settings) } |
+      ForEach-Object { "$($_.name) ($($_.type))" })
 }
 
 function Get-CixAgentsDeployTargets {

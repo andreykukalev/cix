@@ -139,7 +139,7 @@ else {
   $engine = if ($live) { 'live engine' } else { 'paper engine' }
   $roleDescription = "Reads and updates the CIX $engine and agent jobs it is assigned on, to deploy new images from CI."
   $limit = "push images and update the $engine and the jobs"
-  if ($settings.agents.deploy -eq 'none') { throw "agents.deploy is none in $($settings.path): run provision.ps1 with agents.deploy platform first (it creates the registry)." }
+  if ($settings.agents.deploy -eq 'none') { throw "agents.deploy is none in $($settings.path): run provision.ps1 with agents.deploy registry or platform first (it creates the registry)." }
   if ($live -and $settings.agents.deploy -ne 'apps') { throw "agents.deploy is $($settings.agents.deploy) in $($settings.path): deploy the live engine with provision.ps1 first (docs/live-trading.md)." }
   Write-CixInfo "Resource group:  $($settings.resourceGroup) (the $engine and the agent jobs)"
 }
@@ -155,7 +155,7 @@ if ($For -eq 'dashboard') {
 }
 else {
   $registry = Find-CixAgentsResource -Settings $settings -Kind acr
-  if (-not $registry) { throw "No container registry for $Environment in $($settings.resourceGroup); run provision.ps1 with agents.deploy platform first." }
+  if (-not $registry) { throw "No container registry for $Environment in $($settings.resourceGroup); run provision.ps1 with agents.deploy registry or platform first." }
   $registryId = "$(Invoke-CixAz @('acr', 'show', '--name', $registry, '--query', 'id', '-o', 'tsv', '--only-show-errors'))".Trim()
   $assignments = @(@{ Role = 'AcrPush'; Scope = $registryId; Label = $registry }, @{ Role = $roleName; Scope = $registryId; Label = $registry })
   if ($settings.agents.deploy -eq 'apps') {
