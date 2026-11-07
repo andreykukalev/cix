@@ -1633,7 +1633,8 @@ Check 'provision.ps1 agents registry: no Key Vault, no apps, nothing deleted; it
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   foreach ($expected in @('Engine and agents (registry, in polandcentral)', 'the container registry alone', 'Registry:  crcixcitest1.azurecr.io',
       'cae-cix-citest (Microsoft.App/managedEnvironments)', 'kvcixcitest1 (Microsoft.KeyVault/vaults)', 'id-cix-citest-trader (Microsoft.ManagedIdentity/userAssignedIdentities)', 'alert-cix-citest-engine-events (Microsoft.Insights/scheduledQueryRules)', "'Removing the paper platform'")) {
-    if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
+    # Whitespace aside: Windows PowerShell wraps a long warning at the console's width.
+    if (-not ($r.Output -replace '\s', '').Contains(($expected -replace '\s', ''))) { throw "missing '$expected' in: $($r.Output)" }
   }
   foreach ($never in @('crcixcitest1 (', 'stapp-cix-citest (', 'kvsomeoneelse', 'Key Vault: ')) { if ($r.Output.Contains($never)) { throw "said '$never': $($r.Output)" } }
   foreach ($never in @('keyvault', 'provider show', 'ad app', 'acr ', ' delete')) { if ($r.Calls.Contains($never)) { throw "registry ran '$never': $($r.Calls)" } }
@@ -1649,7 +1650,7 @@ Check 'agents registry deploys the platform''s registry alone, by the same name,
   $block = { param($text) $i = $text.IndexOf("resource registry 'Microsoft.ContainerRegistry/registries@"); $text.Substring($i, $text.IndexOf("`n}", $i) - $i) }
   Expect (& $block $alone) (& $block $platform) 'the registry, as agents-platform.bicep has it'
   $main = [IO.File]::ReadAllText((Join-CixPath $repo 'infra' 'main.bicep'))
-  if ($main -notmatch "(?m)^var hasPlatform = agentsDeploy == 'platform' \|\| agentsDeploy == 'apps'$") { throw 'hasPlatform is not platform or apps' }
+  if ($main -notmatch "(?m)^var hasPlatform = agentsDeploy == 'platform' \|\| agentsDeploy == 'apps'\r?$") { throw 'hasPlatform is not platform or apps' }
   foreach ($module in 'agentsPlatform', 'engineAlerts', 'engineCosmosAccess') {
     if ($main -notmatch "(?m)^module $module '[^']+' = if \(hasPlatform[\s&)]") { throw "$module isn't deployed with the platform alone" }
   }
