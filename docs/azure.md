@@ -193,9 +193,10 @@ foreach ($job in 'trader', 'requests', 'analyst') { az resource delete -g $g -n 
 az resource delete -g $g -n cae-cix-dev --resource-type Microsoft.App/managedEnvironments   # after the engine and the jobs
 az resource delete -g $g -n log-cix-dev --resource-type Microsoft.OperationalInsights/workspaces
 foreach ($i in 'engine', 'trader', 'requests', 'analyst') { az identity delete -g $g -n "id-cix-dev-$i" }
-$st = az storage account list -g $g --query "[?starts_with(name, 'stcixdev')].name" -o tsv; az storage account delete -g $g -n $st --yes
-$kv = az keyvault list -g $g --query "[?starts_with(name, 'kvcixdev')].name" -o tsv; az keyvault delete -g $g -n $kv; az keyvault purge -n $kv
-az resource list -g $g --query "[].{name:name, type:type}" -o table   # left: stapp-cix-dev and the registry (crcixdev...)
+$st = az storage account list -g $g --query "[?starts_with(name, 'stcixdev')].name" -o tsv; if ($st) { az storage account delete -g $g -n $st --yes }
+$kv = az keyvault list -g $g --query "[?starts_with(name, 'kvcixdev')].name" -o tsv; if ($kv) { az keyvault delete -g $g -n $kv; az keyvault purge -n $kv }
+az resource list -g $g --query "[].{name:name, type:type}" -o table   # left: stapp-cix-dev and the registry (crcixdev...); delete anything else
+                                                                        # provision.ps1 names, such as ag-/alert-cix-dev-* (engine alerts) or vnet-cix-dev
 .\tools\azure\provision.ps1 -Environment dev -SkipEngineConfig     # dev as dev.json says: the registry alone, and no leftovers named
 ```
 

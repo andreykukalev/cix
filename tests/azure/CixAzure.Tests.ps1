@@ -1627,11 +1627,12 @@ Check 'provision.ps1 agents registry: no Key Vault, no apps, nothing deleted; it
     '{"name":"id-cix-citest-trader","type":"Microsoft.ManagedIdentity/userAssignedIdentities","tags":{"cix-environment":"citest"}},' +
     '{"name":"crcixcitest1","type":"Microsoft.ContainerRegistry/registries","tags":{"cix-environment":"citest"}},' +
     '{"name":"stapp-cix-citest","type":"Microsoft.Web/staticSites","tags":{"cix-environment":"citest"}},' +
+    '{"name":"alert-cix-citest-engine-events","type":"Microsoft.Insights/scheduledQueryRules","tags":{"cix-environment":"citest"}},' +
     '{"name":"kvsomeoneelse","type":"Microsoft.KeyVault/vaults","tags":{}}]'
   $r = Invoke-AgentsProvision @{ 'resource list' = $left } @{ Yes = $true; SkipEngineConfig = $true } 'registry'
   if ($r.Error) { throw "$($r.Error) -- $($r.Output)" }
   foreach ($expected in @('Engine and agents (registry, in polandcentral)', 'the container registry alone', 'Registry:  crcixcitest1.azurecr.io',
-      'cae-cix-citest (Microsoft.App/managedEnvironments)', 'kvcixcitest1 (Microsoft.KeyVault/vaults)', 'id-cix-citest-trader (Microsoft.ManagedIdentity/userAssignedIdentities)', "'Removing the paper platform'")) {
+      'cae-cix-citest (Microsoft.App/managedEnvironments)', 'kvcixcitest1 (Microsoft.KeyVault/vaults)', 'id-cix-citest-trader (Microsoft.ManagedIdentity/userAssignedIdentities)', 'alert-cix-citest-engine-events (Microsoft.Insights/scheduledQueryRules)', "'Removing the paper platform'")) {
     if (-not $r.Output.Contains($expected)) { throw "missing '$expected' in: $($r.Output)" }
   }
   foreach ($never in @('crcixcitest1 (', 'stapp-cix-citest (', 'kvsomeoneelse', 'Key Vault: ')) { if ($r.Output.Contains($never)) { throw "said '$never': $($r.Output)" } }

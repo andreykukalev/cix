@@ -601,13 +601,14 @@ function Get-CixPlatformLeftovers {
   <#
     With agents.deploy registry: what the platform or the apps left in CIX's resource group that the template no longer
     deploys (the engine, the jobs, the Container Apps environment, the logs, the run queues' storage account, Key Vault and the
-    identities), as 'name (type)'. Only resources tagged with this environment; nothing is deleted here (docs/azure.md,
+    identities, the engine's alerts and a VNet from before 2026-10-28), as 'name (type)'. Only resources tagged with this environment; nothing is deleted here (docs/azure.md,
     'Removing the paper platform').
   #>
   param([Parameter(Mandatory)][hashtable]$Settings)
   if ((Invoke-CixAz @('group', 'exists', '--name', $Settings.resourceGroup)) -ne 'true') { return @() }
   $types = @('Microsoft.App/containerApps', 'Microsoft.App/jobs', 'Microsoft.App/managedEnvironments', 'Microsoft.OperationalInsights/workspaces',
-    'Microsoft.Storage/storageAccounts', 'Microsoft.KeyVault/vaults', 'Microsoft.ManagedIdentity/userAssignedIdentities')
+    'Microsoft.Storage/storageAccounts', 'Microsoft.KeyVault/vaults', 'Microsoft.ManagedIdentity/userAssignedIdentities',
+    'Microsoft.Insights/actionGroups', 'Microsoft.Insights/scheduledQueryRules', 'Microsoft.Network/virtualNetworks')
   $all = @(Invoke-CixAz @('resource', 'list', '--resource-group', $Settings.resourceGroup, '--only-show-errors', '-o', 'json') | ConvertFrom-CixJson)
   return @($all | Where-Object { $types -contains "$($_.type)" -and (Test-CixEnvironmentTag -Resource $_ -Settings $Settings) } |
       ForEach-Object { "$($_.name) ($($_.type))" })
