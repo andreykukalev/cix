@@ -928,7 +928,7 @@ Check 'setup-ci-deploy.ps1 -For agents adds what its earlier role lacks (stoppin
 }
 
 foreach ($case in @(
-    @{ Name = 'agents.deploy none'; Deploy = 'none'; Overrides = @{}; Says = 'run provision.ps1 with agents.deploy platform first' },
+    @{ Name = 'agents.deploy none'; Deploy = 'none'; Overrides = @{}; Says = 'run provision.ps1 with agents.deploy registry or platform first' },
     @{ Name = 'a protected environment without its apps'; Deploy = 'platform'; Protected = $true; Overrides = @{}; Says = 'deploy the live engine with provision.ps1 first' },
     @{ Name = 'a protected environment''s identity trusting main itself'; Deploy = 'apps'; Protected = $true; Overrides = @{ 'ad app list' = '[{"appId":"66666666-6666-6666-6666-666666666666","displayName":"cix-agents-deploy-citest"}]'; 'ad sp list' = '[{"id":"77777777-7777-7777-7777-777777777777"}]'; 'ad app federated-credential' = $mainCredential }; Says = 'also trusts repo:owner@11/repo@22:ref:refs/heads/main' },
     @{ Name = 'apps not deployed yet'; Deploy = 'apps'; Overrides = @{ 'resource list' = '[]' }; Says = "ca-cix-citest-engine isn't in rg-cix-citest" },
