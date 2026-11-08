@@ -244,11 +244,11 @@ public sealed class HoldingsCheckTests
         var day = DateOnly.FromDateTime(Rig.T0.UtcDateTime);
         var state = new EngineState(new KillSwitchState(false, null, null, null), 300m, day, 200m);
 
-        var sameDay = ExecutionService.RebasedForTransfer(state, new HoldingsBaseline(new Dictionary<string, decimal>(), 0m, 200m, day, 200m), 100m);
+        var sameDay = ExecutionService.RebasedForTransfer(state, new HoldingsBaseline(new Dictionary<string, decimal>(), 0m, 200m, day), 100m);
         Assert.Equal((300m, 300m), (sameDay.PeakEquity, sameDay.DayStartEquity));
 
         // A withdrawal lowers the current peak, which may have risen since the baseline: a gain since stays counted.
-        var lastBaseline = new HoldingsBaseline(new Dictionary<string, decimal>(), 0m, 200m, day, 200m);
+        var lastBaseline = new HoldingsBaseline(new Dictionary<string, decimal>(), 0m, 200m, day);
         var newDay = ExecutionService.RebasedForTransfer(state with { Day = day.AddDays(1) }, lastBaseline, -100m);
         Assert.Equal((200m, 200m), (newDay.PeakEquity, newDay.DayStartEquity)); // a new day's start isn't lowered: the loss limit can't widen
         Assert.Equal(300m, ExecutionService.RebasedForTransfer(state with { Day = day.AddDays(1) }, lastBaseline, 100m).DayStartEquity); // a deposit raises it

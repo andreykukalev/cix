@@ -287,8 +287,9 @@ public sealed partial class MarketScanService(
                 result = result with { OrderQuote = Domain.Risk.HardCeilings.MaxAllocationQuote };
         }
 
-        if (result.RiskPerTradeFraction is not null
-            && !(spec.Parameters.TryGetValue("scanner", out var sizing) && sizing.EnumerateObject().Any(p => string.Equals(p.Name, "riskPerTradeQuote", StringComparison.OrdinalIgnoreCase))))
+        if (spec.Parameters.TryGetValue("scanner", out var sizing) && sizing.ValueKind == JsonValueKind.Object
+            && sizing.EnumerateObject().Any(p => string.Equals(p.Name, "riskPerTradeFraction", StringComparison.OrdinalIgnoreCase))
+            && !sizing.EnumerateObject().Any(p => string.Equals(p.Name, "riskPerTradeQuote", StringComparison.OrdinalIgnoreCase)))
             result = result with { RiskPerTradeQuote = Domain.Risk.HardCeilings.MaxAllocationQuote };
 
         result.Validate();

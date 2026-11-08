@@ -10,9 +10,9 @@ namespace Cix.Engine.Execution;
 /// </summary>
 /// <param name="PeakEquity">The drawdown baseline when these holdings were recorded: a deposit or withdrawal found at the next
 /// reconciliation moves it from here, since the minute's valuation may already have raised it with the deposit (ADR-0030).</param>
-/// <param name="Day">The day of <paramref name="DayStartEquity"/> then.</param>
+/// <param name="Day">The day the engine's day start belonged to then.</param>
 public sealed record HoldingsBaseline(
-    IReadOnlyDictionary<string, decimal> Holdings, decimal EngineOrdersNotional, decimal? PeakEquity = null, DateOnly? Day = null, decimal? DayStartEquity = null);
+    IReadOnlyDictionary<string, decimal> Holdings, decimal EngineOrdersNotional, decimal? PeakEquity = null, DateOnly? Day = null);
 
 /// <summary>
 /// Whether trading is halted, why, by whom and since when. <paramref name="AlsoBy"/>, <paramref name="AlsoReason"/> and

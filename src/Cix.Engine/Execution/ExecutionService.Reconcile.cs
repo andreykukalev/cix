@@ -243,7 +243,7 @@ public sealed partial class ExecutionService
                 var rebased = transfer == 0m || baseline is null ? s : RebasedForTransfer(s, baseline, transfer);
                 return rebased with
                 {
-                    Holdings = new HoldingsBaseline(holdings, engineOrdersNotional, rebased.PeakEquity, rebased.Day, rebased.DayStartEquity),
+                    Holdings = new HoldingsBaseline(holdings, engineOrdersNotional, rebased.PeakEquity, rebased.Day),
                 };
             });
             if (transfer != 0m && baseline is not null && before is not null)
