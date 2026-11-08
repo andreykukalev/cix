@@ -98,9 +98,15 @@ public static partial class StrategySchema
             new("orderQuote", "size", "Largest order",
                 "The most one buy may spend. The scanner sizes each buy as the smaller of this and the size whose loss at the stop equals the risk per trade, so most orders are smaller. The engine reduces a larger buy to this.",
                 "number", 1, limits.MaxOrderQuote, "EUR", New, "maxOrderQuote"),
+            new("orderFraction", "size", "Largest order, share of capital",
+                "The most one buy may spend, as a share of the capital: the account's value in cash and coins, at most the allocation. It moves with deposits, withdrawals, gains and losses. With an amount set too, the smaller applies.",
+                "number", 0.005m, limits.MaxOrderFraction ?? HardCeilings.MaxOrderFractionOfAllocation, "fraction", New, limits.MaxOrderFraction is null ? null : "maxOrderFraction"),
             new("scanner.riskPerTradeQuote", "size", "Risk per trade",
                 "What one trade should lose if it is stopped out, fees and slippage included. With a wider stop the position is smaller, so each trade risks about the same.",
                 "number", 0.1m, limits.MaxOrderQuote, "EUR", New),
+            new("scanner.riskPerTradeFraction", "size", "Risk per trade, share of capital",
+                "What one trade should lose at its stop, as a share of the capital. With an amount set too, the smaller applies.",
+                "number", 0.0005m, 0.05m, "fraction", New),
 
             // Stop-loss and take-profit
             new("scanner.stopAtr", "stops", "Stop-loss distance",
@@ -117,12 +123,18 @@ public static partial class StrategySchema
             new("maxPositionQuotePerSymbol", "exposure", "Most in one coin",
                 "The most the strategy holds in a single coin, counting buys still working. A buy that would go over is reduced or refused.",
                 "number", 1, limits.MaxPositionQuotePerSymbol, "EUR", New, "maxPositionQuotePerSymbol"),
-            new("maxExposureFraction", "exposure", "Most of the allocation in coins",
-                "The share of the allocation that may be held in coins at once; the rest stays in cash. 0.5 means at most half.",
+            new("maxPositionFractionPerSymbol", "exposure", "Most in one coin, share of capital",
+                "The most the strategy holds in a single coin, as a share of the capital. With an amount set too, the smaller applies.",
+                "number", 0.01m, limits.MaxPositionFractionPerSymbol ?? 1m, "fraction", New, limits.MaxPositionFractionPerSymbol is null ? null : "maxPositionFractionPerSymbol"),
+            new("maxExposureFraction", "exposure", "Most of the capital in coins",
+                "The share of the capital (the account's value, at most the allocation) that may be held in coins at once; the rest stays in cash. 0.5 means at most half.",
                 "number", 0.05m, 1, "fraction", New, "allocationQuote"),
             new("dailyLossStopQuote", "exposure", "Daily loss stop",
                 "Once today's loss reaches this, the strategy makes no new buys until tomorrow (UTC). Sells, stops and targets carry on.",
                 "number", 0.5m, limits.MaxDailyLossQuote, "EUR", New, "maxDailyLossQuote"),
+            new("dailyLossStopFraction", "exposure", "Daily loss stop, share of capital",
+                "The daily loss stop as a share of the capital at the start of the day (UTC). With an amount set too, the smaller applies.",
+                "number", 0.005m, limits.MaxDailyLossFraction ?? HardCeilings.MaxDailyLossFractionOfAllocation, "fraction", New, limits.MaxDailyLossFraction is null ? null : "maxDailyLossFraction"),
 
             // Trading frequency
             new("maxNewPositionsPerRun", "frequency", "New positions per run",
@@ -184,10 +196,11 @@ public static partial class StrategySchema
         static string Inv(decimal value) => value.ToString(CultureInfo.InvariantCulture);
         return
         [
-            new("allocationQuote", "Allocation", "The most the engine trades with in total, cash and coins together.", Inv(limits.AllocationQuote), "risk-limits"),
+            new("allocationQuote", "Allocation", "The most the engine trades with in total, cash and coins together. Limits given as shares are shares of the capital: the account's value in cash and coins, never more than this. Deposits and withdrawals change the capital and never count as gains or losses.", Inv(limits.AllocationQuote), "risk-limits"),
             new("maxOrderQuote", "Largest order", "No single order may be worth more, whatever the strategy says.", Inv(limits.MaxOrderQuote), "risk-limits"),
             new("maxPositionQuotePerSymbol", "Most in one coin", "No coin may be held above this value.", Inv(limits.MaxPositionQuotePerSymbol), "risk-limits"),
             new("maxDailyLossQuote", "Daily loss limit", "Once today's loss reaches this, all new buys stop until tomorrow (UTC).", Inv(limits.MaxDailyLossQuote), "risk-limits"),
+            .. Shares(limits),
             new("maxDrawdownFraction", "Drawdown limit", "A fall of this share from the highest equity stops new buys until the owner resumes trading.", Inv(limits.MaxDrawdownFraction), "risk-limits"),
             new("maxOrdersPerMinute", "Orders per minute", "The most orders of any kind in one minute.", Inv(limits.MaxOrdersPerMinute), "risk-limits"),
             new("maxPriceDeviationFraction", "Price band", "An order's limit price must be within this share of the current price.", Inv(limits.MaxPriceDeviationFraction), "risk-limits"),
@@ -195,6 +208,17 @@ public static partial class StrategySchema
             new("minExitDistanceFraction", "Least stop and target distance", "A buy's stop and target must be at least this share away from its price.", Inv(MarketScanner.MinExitDistanceFraction), "engine"),
             new("protectiveExits", "Stops and targets watched", "The engine sells by itself when a position reaches its stop or target, between agent runs too.", "on", "engine"),
         ];
+    }
+
+    private static IEnumerable<MandatoryLimit> Shares(RiskLimits limits)
+    {
+        static string Inv(decimal value) => value.ToString(CultureInfo.InvariantCulture);
+        if (limits.MaxOrderFraction is { } order)
+            yield return new("maxOrderFraction", "Largest order, share of capital", "No single order may be worth more than this share of the capital, nor more than the largest order.", Inv(order), "risk-limits");
+        if (limits.MaxPositionFractionPerSymbol is { } position)
+            yield return new("maxPositionFractionPerSymbol", "Most in one coin, share of capital", "No coin may be held above this share of the capital, nor above the amount.", Inv(position), "risk-limits");
+        if (limits.MaxDailyLossFraction is { } loss)
+            yield return new("maxDailyLossFraction", "Daily loss limit, share of capital", "New buys stop once today's loss reaches this share of the day's starting capital, or the amount, whichever is less.", Inv(loss), "risk-limits");
     }
 
     public static StrategySchemaDocument Document(RiskLimits limits, TradingMode mode, DateTimeOffset at) =>
@@ -292,10 +316,14 @@ public static partial class StrategySchema
             errors.Add(ex.Message);
         }
 
-        if (spec.Allows("place_order") && !spec.Parameters.ContainsKey("orderQuote"))
-            errors.Add("parameters.orderQuote is required when the spec allows place_order.");
-        if (scan is not null && spec.Parameters.ContainsKey("orderQuote") && scan.RiskPerTradeQuote > scan.OrderQuote)
+        var hasOrderQuote = spec.Parameters.ContainsKey("orderQuote");
+        var hasOrderFraction = spec.Parameters.ContainsKey("orderFraction");
+        if (spec.Allows("place_order") && !hasOrderQuote && !hasOrderFraction)
+            errors.Add("parameters.orderQuote or parameters.orderFraction is required when the spec allows place_order.");
+        if (scan is not null && hasOrderQuote && scan.RiskPerTradeFraction is null && scan.RiskPerTradeQuote > scan.OrderQuote)
             errors.Add("parameters.scanner.riskPerTradeQuote can't be more than orderQuote.");
+        if (scan?.RiskPerTradeFraction is { } riskShare && scan.OrderFraction is { } orderShare && riskShare > orderShare)
+            errors.Add("parameters.scanner.riskPerTradeFraction can't be more than orderFraction.");
         return errors;
     }
 
@@ -307,13 +335,20 @@ public static partial class StrategySchema
             return StrategyLimits.None;
         decimal? Number(string key) => p.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDecimal(out var d) && d >= 0 ? d : null;
         int? Integer(string key) => p.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) && i >= 0 ? i : null;
-        return new StrategyLimits(
+        decimal? Share(string key) => Number(key) is { } f ? Math.Min(f, 1m) : null;
+        // Shares are of the capital (the account's value, at most the allocation), turned into money for each check (ADR-0030).
+        var shares = new StrategyLimits(
             Number("orderQuote"),
             Number("maxPositionQuotePerSymbol"),
-            Number("maxExposureFraction") is { } fraction ? Math.Min(fraction, 1m) * limits.AllocationQuote : null,
+            null,
             Number("dailyLossStopQuote"),
             Integer("maxNewPositionsPerRun"),
-            Integer("entryCooldownMinutes") is { } minutes and > 0 ? TimeSpan.FromMinutes(minutes) : null);
+            Integer("entryCooldownMinutes") is { } minutes and > 0 ? TimeSpan.FromMinutes(minutes) : null,
+            Share("orderFraction"),
+            Share("maxPositionFractionPerSymbol"),
+            Share("maxExposureFraction"),
+            Share("dailyLossStopFraction"));
+        return shares.ScalesWithCapital ? shares with { CapitalCeiling = limits.AllocationQuote } : shares;
     }
 
     private static void CheckValue(StrategyParameter parameter, JsonElement value, List<string> errors)

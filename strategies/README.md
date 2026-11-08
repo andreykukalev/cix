@@ -7,6 +7,12 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 - `allowedTools`: the tool server refuses any agent tool not listed here, except `get_strategy_spec`, which every agent may read to learn its own rules.
 - Pick the starting spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration. The default is `balanced` v3. In paper trading, a selection in the database overrides it at run time (below).
 
+## Swing v2: swing v1 sized from the capital
+
+`swing.v2` (ADR-0030) is `swing.v1` with every amount a share of the capital, the account's value in cash and coins, at most the 1000 EUR allocation: `orderFraction` 0.10, `maxPositionFractionPerSymbol` 0.10, `maxExposureFraction` 0.4, `dailyLossStopFraction` 0.08 and `scanner.riskPerTradeFraction` 0.004. The amounts beside them (100 per order, 100 per coin and 4 at risk) are the shares at 1000 EUR; the daily loss stop is a share alone, capped by the risk limits, so below that the shares decide; where a spec sets both, the smaller applies. With 250 EUR it risks about 1 EUR a trade, at most 25 EUR per coin and 100 EUR in coins. Deposits and withdrawals change the sizes from the next check. It starts as `draft`; the owner marks it `live`.
+
+Any spec may use the shares. `maxExposureFraction` is a share of the capital in every spec since ADR-0030, not of the allocation.
+
 ## Swing v1: the strategy the dashboard offers
 
 Since 2026-11-03 the Strategy tab offers only `swing`, the newest version the owner marked `live`, plus the strategy running now (ADR-0029). The switch works as before; the hourly presets below stay in this folder and in the journal.

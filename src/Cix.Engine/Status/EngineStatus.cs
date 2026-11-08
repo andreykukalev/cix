@@ -74,7 +74,7 @@ public sealed record FiltersStatus(
     bool RequireUptrendPullback,
     bool TrendExits,
     int MaxEntrySignals,
-    decimal OrderQuote,
+    decimal? OrderQuote,
     Scanning.FilterChange? LastChange = null);
 
 /// <param name="State"><c>ok</c>, <c>off</c>, <c>unavailable</c> (no requests container yet) or <c>not-used</c> (no database).</param>
@@ -291,7 +291,7 @@ public sealed partial class EngineStatusService(
         return new FiltersStatus(
             specs?.Active?.Label, recorded is not null && recorded.Filters == p ? recorded.Since : null,
             p.MinQuoteVolume24h, p.MaxSpreadFraction, p.MaxAtrFraction, p.MinAtrToCostRatio, p.MinHourlyCandles24h,
-            p.RequireUptrendPullback, p.TrendExits, p.MaxEntrySignals, p.OrderQuote, recorded?.LastChange);
+            p.RequireUptrendPullback, p.TrendExits, p.MaxEntrySignals, scanner.OrderQuoteNow, recorded?.LastChange);
     }
 
     private PortfolioStatus? Portfolio()

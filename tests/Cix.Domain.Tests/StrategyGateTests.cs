@@ -118,4 +118,43 @@ public sealed class StrategyGateTests
 
         Assert.Equal((null, "strategy-exposure-cap"), (verdict.Order, verdict.Rule));
     }
+
+    [Fact]
+    public void Shares_AreOfTheCapital_TheAccountsValueUpToTheCeiling()
+    {
+        var limits = new StrategyLimits(OrderFraction: 0.1m, MaxPositionFractionPerSymbol: 0.1m, MaxExposureFraction: 0.4m, DailyLossStopFraction: 0.08m, CapitalCeiling: 1000m);
+
+        var at250 = limits.At(250m, 250m);
+        Assert.Equal((25m, 25m, 100m, 20m), (at250.OrderQuote, at250.MaxPositionQuotePerSymbol, at250.MaxExposureQuote, at250.DailyLossStopQuote));
+        Assert.False(at250.ScalesWithCapital); // in money now: resolving again changes nothing
+        var at5000 = limits.At(5000m, 5000m);
+        Assert.Equal((100m, 100m, 400m, 80m), (at5000.OrderQuote, at5000.MaxPositionQuotePerSymbol, at5000.MaxExposureQuote, at5000.DailyLossStopQuote));
+        // An amount beside a share caps it.
+        Assert.Equal(30m, (limits with { OrderQuote = 30m }).At(1000m, 1000m).OrderQuote);
+        Assert.Equal(StrategyLimits.None, StrategyLimits.None.At(250m, 250m));
+    }
+
+    [Fact]
+    public void Shares_SizeTheBuyFromThePortfolio()
+    {
+        // The portfolio is worth 200: an order is at most 10% (20, with 10% room for rounding), the coins together 40%.
+        var limits = new StrategyLimits(OrderFraction: 0.1m, MaxExposureFraction: 0.4m, CapitalCeiling: 1000m);
+
+        Assert.Equal("ok", Check(Buy(21m), limits).Rule);
+        var verdict = Check(Buy(30m), limits);
+        Assert.Equal((true, "strategy-order-size"), (verdict.Resized, verdict.Rule));
+        Assert.Equal(0.0004m, verdict.Order!.BaseSize);
+        var exposure = Check(Buy(20m), limits, Portfolio(position: 70m, exposure: 70m));
+        Assert.Equal((true, "strategy-exposure-cap"), (exposure.Resized, exposure.Rule)); // 80 cap, 10 left
+        Assert.Equal(0.0002m, exposure.Order!.BaseSize);
+    }
+
+    [Fact]
+    public void DailyLossStopShare_IsOfTheDaysStartingCapital()
+    {
+        var limits = new StrategyLimits(DailyLossStopFraction: 0.05m, CapitalCeiling: 1000m);
+
+        Assert.Equal("ok", Check(Buy(5m), limits, Portfolio(pnlToday: -10m)).Rule); // the day started at 210: stop 10.50
+        Assert.Equal("strategy-daily-loss-stop", Check(Buy(5m), limits, Portfolio(pnlToday: -11m)).Rule); // 211: stop 10.55
+    }
 }

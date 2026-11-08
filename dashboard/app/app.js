@@ -635,8 +635,13 @@ function renderStrategies(view) {
   // One card per strategy that trades, Safe, Balanced and Risky first.
   const tradable = view.strategies.filter((s) => s.canTrade);
   const byKey = Object.fromEntries(view.groups.flatMap((g) => g.parameters).map((p) => [p.key, p]));
-  const facts = [['orderQuote', 'Largest order'], ['maxPositionQuotePerSymbol', 'Most in one coin'], ['maxExposureFraction', 'Most in coins'],
-    ['dailyLossStopQuote', 'Daily loss stop'], ['entryCooldownMinutes', 'Cooldown']]; // labels through t() when shown
+  // A spec sets each size as an amount, a share of the capital, or both: the card shows what it sets.
+  const facts = [[['orderQuote', 'orderFraction'], 'Largest order'], [['maxPositionQuotePerSymbol', 'maxPositionFractionPerSymbol'], 'Most in one coin'],
+    [['maxExposureFraction'], 'Most in coins'], [['dailyLossStopQuote', 'dailyLossStopFraction'], 'Daily loss stop'], [['entryCooldownMinutes'], 'Cooldown']]; // labels through t() when shown
+  const factValue = (s, keys) => {
+    const set = keys.filter((key) => s.values[key] !== undefined && s.values[key] !== null);
+    return set.length ? set.map((key) => V.paramValue(s.values[key], byKey[key])).join(' · ') : V.paramValue(undefined, byKey[keys[0]]);
+  };
   document.getElementById('strategy-cards').replaceChildren(...(tradable.length ? tradable.map((s) => {
     const button = el('button', { type: 'button', class: s.active ? 'ghost' : 'primary', text: s.active ? t('Running') : t('Switch to {name}', { name: V.strategyName(s) }) });
     button.disabled = s.active || !view.editable || state.strategyPending;
@@ -647,7 +652,7 @@ function renderStrategies(view) {
         s.featured ? null : el('span', { class: 'badge', text: t('other') })),
       s.purpose ? el('p', { class: 'detail', text: t(s.purpose) }) : null,
       s.riskProfile ? el('p', { class: 'meta muted small', text: t(s.riskProfile) }) : null,
-      el('dl', {}, facts.flatMap(([key, label]) => [el('dt', { text: t(label) }), el('dd', { text: V.paramValue(s.values[key], byKey[key]) })])),
+      el('dl', {}, facts.flatMap(([keys, label]) => [el('dt', { text: t(label) }), el('dd', { text: factValue(s, keys) })])),
       el('div', { class: 'actions' }, button));
   }) : [el('li', { class: 'muted', text: t('No strategies in the database yet: the engine adds them when it starts.') })]));
 

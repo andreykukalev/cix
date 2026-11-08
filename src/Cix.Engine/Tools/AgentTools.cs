@@ -81,7 +81,18 @@ public sealed class AgentTools(
                 limits.MaxDrawdownFraction,
                 limits.MaxOrdersPerMinute,
                 limits.MaxPriceDeviationFraction,
+                limits.MaxOrderFraction,
+                limits.MaxPositionFractionPerSymbol,
+                limits.MaxDailyLossFraction,
                 allowedSymbols = Tradable.Order(StringComparer.Ordinal),
+            },
+            // The limits in money now: shares of the capital (the account's value, at most the allocation), ADR-0030.
+            now = snapshot is null ? null : new
+            {
+                capital = limits.CapitalOf(snapshot.Equity),
+                maxOrderQuote = limits.MaxOrderAt(limits.CapitalOf(snapshot.Equity)),
+                maxPositionQuotePerSymbol = limits.MaxPositionAt(limits.CapitalOf(snapshot.Equity)),
+                maxDailyLossQuote = limits.MaxDailyLossAt(limits.CapitalOf(snapshot.Equity - snapshot.PnlToday)),
             },
         };
         await context.JournalAsync("get_portfolio", snapshot is null ? "unavailable" : $"equity {snapshot.Equity:0.##}", null, cancellationToken).ConfigureAwait(false);

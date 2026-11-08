@@ -24,6 +24,15 @@ public sealed class RiskLimitsOptions
     /// <summary>The price band for the engine's stop-loss sells; unset means <see cref="MaxPriceDeviationFraction"/>.</summary>
     public decimal? MaxEmergencySlippageFraction { get; set; }
 
+    /// <summary>The largest order as a share of the capital (ADR-0030); the smaller of it and <see cref="MaxOrderQuote"/> applies.</summary>
+    public decimal? MaxOrderFraction { get; set; }
+
+    /// <summary>The most in one coin as a share of the capital; the smaller of it and <see cref="MaxPositionQuotePerSymbol"/> applies.</summary>
+    public decimal? MaxPositionFractionPerSymbol { get; set; }
+
+    /// <summary>The daily loss limit as a share of the day's starting capital; the smaller of it and <see cref="MaxDailyLossQuote"/> applies.</summary>
+    public decimal? MaxDailyLossFraction { get; set; }
+
     /// <summary>
     /// The owner's limits file for a trading mode, next to the engine's binary: <c>risk-limits.json</c> (from
     /// <c>config/risk-limits.json</c>) for paper, and <c>risk-limits.live.json</c> (from <c>config/risk-limits.live.json</c>) for
@@ -79,5 +88,8 @@ public sealed class RiskLimitsOptions
         MaxPriceDeviationFraction,
         AllowedQuoteCurrency ?? string.Empty, // Validate refuses an empty one
         MaxTradableSymbols,
-        MaxEmergencySlippageFraction);
+        MaxEmergencySlippageFraction,
+        MaxOrderFraction,
+        MaxPositionFractionPerSymbol,
+        MaxDailyLossFraction);
 }

@@ -718,6 +718,10 @@
       'Дневная свинг-стратегия (ADR-0029): покупает монету, когда её дневное закрытие пробивает максимум за 20 дней в дневном восходящем тренде и пока BTC выше своей 100-дневной EMA, и держит её неделями за подтягивающимся стопом. Торгует несколько раз в месяц, а не гонится за часовыми движениями, которые не окупают издержки.',
     'Moderate. About 4 EUR at risk per trade (3 daily ATRs to the stop), at most 50 EUR per coin and 40% of the allocation in coins, a 20 EUR daily loss stop. Backtest 2024 to 11.2026 on 1000 EUR: +5.6% a year, worst drawdown 8%, about 3 trades a month, 45% winners. Losses are limited by stops, not prevented; months without trades are normal when BTC is weak.':
       'Умеренный. Около 4 EUR риска на сделку (3 дневных ATR до стопа), не больше 50 EUR в одной монете и 40% средств в монетах, дневной стоп по убытку 20 EUR. Бэктест 2024 – 11.2026 на 1000 EUR: +5,6% в год, худшая просадка 8%, около 3 сделок в месяц, 45% прибыльных. Стопы ограничивают убытки, но не исключают их; месяцы без сделок нормальны, когда BTC слаб.',
+    'The daily swing strategy of v1 (ADR-0029), sized from the capital (ADR-0030): every amount is a share of the account\'s value in cash and coins, at most the 1000 EUR allocation, so it grows and shrinks with deposits, withdrawals, gains and losses. Buys a coin whose daily close breaks above its 20-day high in a daily uptrend while BTC is above its 100-day EMA, and holds it for weeks behind a trailing stop.':
+      'Дневная свинг-стратегия v1 (ADR-0029), с размерами от капитала (ADR-0030): каждая сумма — доля стоимости счёта в деньгах и монетах, но не больше выделенных 1000 EUR, так что она растёт и уменьшается с пополнениями, выводами, прибылью и убытками. Покупает монету, когда её дневное закрытие пробивает максимум за 20 дней в дневном восходящем тренде и пока BTC выше своей 100-дневной EMA, и держит её неделями за подтягивающимся стопом.',
+    'Moderate. About 0.4% of the capital at risk per trade (3 daily ATRs to the stop), at most 10% of the capital per coin and 40% in coins, a daily loss stop of 8% of the day\'s starting capital. With 250 EUR: about 1 EUR at risk, at most 25 EUR per coin. Backtest 2024 to 11.2026: +5.6% a year, worst drawdown 8%, about 3 trades a month, 45% winners. Losses are limited by stops, not prevented; months without trades are normal when BTC is weak.':
+      'Умеренный. Около 0,4% капитала риска на сделку (3 дневных ATR до стопа), не больше 10% капитала в одной монете и 40% в монетах, дневной стоп по убытку 8% капитала на начало дня. При 250 EUR: около 1 EUR риска, не больше 25 EUR в одной монете. Бэктест 2024 – 11.2026: +5,6% в год, худшая просадка 8%, около 3 сделок в месяц, 45% прибыльных. Стопы ограничивают убытки, но не исключают их; месяцы без сделок нормальны, когда BTC слаб.',
     'Trend indicators': 'Индикаторы тренда',
     'Entry conditions': 'Условия входа',
     'Position size': 'Размер позиции',
@@ -818,6 +822,30 @@
     'How much trading costs count against a coin in the ranking.': 'Насколько торговые издержки снижают монету в рейтинге.',
     Allocation: 'Выделенные средства',
     'The most the engine trades with in total, cash and coins together.': 'Сколько всего максимум использует движок, деньги и монеты вместе.',
+    'The most the engine trades with in total, cash and coins together. Limits given as shares are shares of the capital: the account\'s value in cash and coins, never more than this. Deposits and withdrawals change the capital and never count as gains or losses.':
+      'Сколько всего максимум использует движок, деньги и монеты вместе. Лимиты в долях считаются от капитала: стоимости счёта в деньгах и монетах, но не больше этой суммы. Пополнения и выводы меняют капитал и никогда не считаются прибылью или убытком.',
+    'Largest order, share of capital': 'Крупнейший ордер, доля капитала',
+    'No single order may be worth more than this share of the capital, nor more than the largest order.':
+      'Ни один ордер не может стоить больше этой доли капитала и больше крупнейшего ордера.',
+    'Most in one coin, share of capital': 'Максимум в одной монете, доля капитала',
+    'No coin may be held above this share of the capital, nor above the amount.':
+      'Ни одной монеты нельзя держать больше этой доли капитала и больше суммы.',
+    'Daily loss limit, share of capital': 'Дневной лимит убытка, доля капитала',
+    'New buys stop once today\'s loss reaches this share of the day\'s starting capital, or the amount, whichever is less.':
+      'Новые покупки останавливаются, когда сегодняшний убыток достигает этой доли капитала на начало дня или суммы, смотря что меньше.',
+    'The most one buy may spend, as a share of the capital: the account\'s value in cash and coins, at most the allocation. It moves with deposits, withdrawals, gains and losses. With an amount set too, the smaller applies.':
+      'Сколько максимум может потратить одна покупка, как доля капитала: стоимости счёта в деньгах и монетах, но не больше выделенных средств. Меняется с пополнениями, выводами, прибылью и убытками. Если задана и сумма, действует меньшее.',
+    'Risk per trade, share of capital': 'Риск на сделку, доля капитала',
+    'What one trade should lose at its stop, as a share of the capital. With an amount set too, the smaller applies.':
+      'Сколько должна потерять одна сделка на стопе, как доля капитала. Если задана и сумма, действует меньшее.',
+    'The most the strategy holds in a single coin, as a share of the capital. With an amount set too, the smaller applies.':
+      'Сколько максимум стратегия держит в одной монете, как доля капитала. Если задана и сумма, действует меньшее.',
+    'Most of the capital in coins': 'Максимальная доля капитала в монетах',
+    'The share of the capital (the account\'s value, at most the allocation) that may be held in coins at once; the rest stays in cash. 0.5 means at most half.':
+      'Доля капитала (стоимости счёта, но не больше выделенных средств), которая может одновременно быть в монетах; остальное остаётся в деньгах. 0.5 означает не больше половины.',
+    'Daily loss stop, share of capital': 'Дневной стоп по убытку, доля капитала',
+    'The daily loss stop as a share of the capital at the start of the day (UTC). With an amount set too, the smaller applies.':
+      'Дневной стоп по убытку как доля капитала на начало дня (UTC). Если задана и сумма, действует меньшее.',
     'No single order may be worth more, whatever the strategy says.': 'Ни один ордер не может стоить больше, что бы ни говорила стратегия.',
     'No coin may be held above this value.': 'Ни одной монеты нельзя держать на сумму больше этой.',
     'Daily loss limit': 'Дневной лимит убытка',

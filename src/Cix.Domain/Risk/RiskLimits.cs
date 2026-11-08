@@ -11,6 +11,15 @@ namespace Cix.Domain.Risk;
 /// Null means <paramref name="MaxPriceDeviationFraction"/>, the band every other order gets. Never above
 /// <see cref="HardCeilings.MaxPriceDeviationFraction"/>.
 /// </param>
+/// <param name="MaxOrderFraction">
+/// The largest order as a share of the capital (<see cref="CapitalOf"/>: the account's value, at most
+/// <paramref name="AllocationQuote"/>), so the limit follows deposits and withdrawals (ADR-0030). Null keeps only
+/// <paramref name="MaxOrderQuote"/>; with both, the smaller applies.
+/// </param>
+/// <param name="MaxPositionFractionPerSymbol">The most one coin may hold, as a share of the capital; with <paramref name="MaxPositionQuotePerSymbol"/>, the smaller applies.</param>
+/// <param name="MaxDailyLossFraction">
+/// The daily loss limit as a share of the capital at the start of the day (UTC); with <paramref name="MaxDailyLossQuote"/>, the smaller applies.
+/// </param>
 public sealed partial record RiskLimits(
     decimal AllocationQuote,
     decimal MaxOrderQuote,
@@ -21,8 +30,32 @@ public sealed partial record RiskLimits(
     decimal MaxPriceDeviationFraction,
     string AllowedQuoteCurrency,
     int MaxTradableSymbols,
-    decimal? MaxEmergencySlippageFraction = null)
+    decimal? MaxEmergencySlippageFraction = null,
+    decimal? MaxOrderFraction = null,
+    decimal? MaxPositionFractionPerSymbol = null,
+    decimal? MaxDailyLossFraction = null)
 {
+    /// <summary>
+    /// What the limits are measured against (ADR-0030): the account's value, cash and coins, never more than
+    /// <see cref="AllocationQuote"/> and never below zero. A deposit raises it, a withdrawal or a loss lowers it.
+    /// </summary>
+    public decimal CapitalOf(decimal equity) => Math.Clamp(equity, 0m, AllocationQuote);
+
+    /// <summary>True when any limit is a share of the capital.</summary>
+    public bool ScalesWithCapital => MaxOrderFraction is not null || MaxPositionFractionPerSymbol is not null || MaxDailyLossFraction is not null;
+
+    /// <summary>The largest order at <paramref name="capital"/>: <see cref="MaxOrderQuote"/>, or less under <see cref="MaxOrderFraction"/>.</summary>
+    public decimal MaxOrderAt(decimal capital) => Scaled(MaxOrderQuote, MaxOrderFraction, capital);
+
+    /// <summary>The most one coin may hold at <paramref name="capital"/>.</summary>
+    public decimal MaxPositionAt(decimal capital) => Scaled(MaxPositionQuotePerSymbol, MaxPositionFractionPerSymbol, capital);
+
+    /// <summary>The daily loss limit for a day that started with <paramref name="capital"/>.</summary>
+    public decimal MaxDailyLossAt(decimal capital) => Scaled(MaxDailyLossQuote, MaxDailyLossFraction, capital);
+
+    private static decimal Scaled(decimal quote, decimal? fraction, decimal capital) =>
+        fraction is { } f ? Math.Min(quote, Math.Round(f * Math.Max(0m, capital), 2, MidpointRounding.ToZero)) : quote;
+
     /// <summary>The price band for the engine's stop-loss sells: <see cref="MaxEmergencySlippageFraction"/>, or the normal band.</summary>
     public decimal EmergencySlippageFraction => MaxEmergencySlippageFraction ?? MaxPriceDeviationFraction;
 
@@ -74,6 +107,12 @@ public sealed partial record RiskLimits(
             errors.Add("AllowedQuoteCurrency must be 3 to 5 upper-case letters, for example EUR.");
         if (MaxTradableSymbols < 1 || MaxTradableSymbols > MaxTradableSymbolsLimit)
             errors.Add($"MaxTradableSymbols must be in [1, {MaxTradableSymbolsLimit}].");
+        if (MaxOrderFraction is { } order && (order <= 0 || order > HardCeilings.MaxOrderFractionOfAllocation))
+            errors.Add($"MaxOrderFraction must be in (0, {HardCeilings.MaxOrderFractionOfAllocation}].");
+        if (MaxPositionFractionPerSymbol is { } position && (position <= 0 || position > 1))
+            errors.Add("MaxPositionFractionPerSymbol must be in (0, 1].");
+        if (MaxDailyLossFraction is { } loss && (loss <= 0 || loss > HardCeilings.MaxDailyLossFractionOfAllocation))
+            errors.Add($"MaxDailyLossFraction must be in (0, {HardCeilings.MaxDailyLossFractionOfAllocation}].");
 
         return errors;
     }

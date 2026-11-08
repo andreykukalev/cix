@@ -178,6 +178,9 @@ public sealed partial class MarketScanService(
     /// </summary>
     public ScannerParameters Parameters => ParametersFor(specs.Active);
 
+    /// <summary>The largest order the scanner sizes now: a share of the capital in money (ADR-0030); null while the capital is unknown.</summary>
+    public decimal? OrderQuoteNow => SizedForCapital(Parameters) is (var sized, null) ? sized.OrderQuote : null;
+
     private ScannerParameters ParametersFor(StrategySpec? spec)
     {
         var cached = Volatile.Read(ref _parameters);
@@ -242,6 +245,8 @@ public sealed partial class MarketScanService(
                 throw new InvalidOperationException($"{spec.Label}: parameters.scanner must be an object.");
             if (scanner.EnumerateObject().Any(p => string.Equals(p.Name, "orderQuote", StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException($"{spec.Label}: set orderQuote once, at the top of parameters, not inside scanner.");
+            if (scanner.EnumerateObject().Any(p => string.Equals(p.Name, "orderFraction", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"{spec.Label}: set orderFraction once, at the top of parameters, not inside scanner.");
             if (scanner.EnumerateObject().Any(p => string.Equals(p.Name, "timeframe", StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException($"{spec.Label}: set timeframe once, at the top of parameters, not inside scanner.");
             try
@@ -270,6 +275,22 @@ public sealed partial class MarketScanService(
                 throw new InvalidOperationException($"{spec.Label}: parameters.orderQuote must be a number.");
             result = result with { OrderQuote = quote };
         }
+
+        // A share of the capital instead of, or as well as, an amount (ADR-0030): the engine sizes it before each scan. With
+        // no amount beside it, the share alone applies (the amount is set to the hard allocation ceiling, which never binds).
+        if (spec.Parameters.TryGetValue("orderFraction", out var orderFraction))
+        {
+            if (orderFraction.ValueKind != JsonValueKind.Number || !orderFraction.TryGetDecimal(out var share))
+                throw new InvalidOperationException($"{spec.Label}: parameters.orderFraction must be a number.");
+            result = result with { OrderFraction = share };
+            if (!spec.Parameters.ContainsKey("orderQuote"))
+                result = result with { OrderQuote = Domain.Risk.HardCeilings.MaxAllocationQuote };
+        }
+
+        if (spec.Parameters.TryGetValue("scanner", out var sizing) && sizing.ValueKind == JsonValueKind.Object
+            && sizing.EnumerateObject().Any(p => string.Equals(p.Name, "riskPerTradeFraction", StringComparison.OrdinalIgnoreCase))
+            && !sizing.EnumerateObject().Any(p => string.Equals(p.Name, "riskPerTradeQuote", StringComparison.OrdinalIgnoreCase)))
+            result = result with { RiskPerTradeQuote = Domain.Risk.HardCeilings.MaxAllocationQuote };
 
         result.Validate();
         return result;
@@ -350,7 +371,9 @@ public sealed partial class MarketScanService(
         // A fill time only for plans the engine state holds: a raise can't be written to a plan from the journal fallback.
         var states = execution.PositionPlanStates;
         var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit, states.ContainsKey(p.Symbol) ? p.FilledAt : null)).ToList();
-        var result = MarketScanner.Scan(inputs, held, parameters, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: EntriesPausedReason(spec, now) ?? soldUnknown);
+        // Sizes that are shares of the capital, in money for the account as the safety monitor last valued it (ADR-0030).
+        var (sized, unsized) = SizedForCapital(parameters);
+        var result = MarketScanner.Scan(inputs, held, sized, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: unsized ?? EntriesPausedReason(spec, now) ?? soldUnknown);
         return (result, Preview(spec, inputs, held, now), held.Select(h => h.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
     }
 
@@ -428,6 +451,20 @@ public sealed partial class MarketScanService(
     private static partial void LogPreviewSkipped(ILogger logger, string spec, string problem);
 
     /// <summary>
+    /// <paramref name="parameters"/> with sizes that are shares of the capital turned into money, and why no buy may be sized
+    /// when the capital isn't known yet or is too small (then the parameters stay as they are, and no entry is suggested).
+    /// </summary>
+    private (ScannerParameters Parameters, string? Paused) SizedForCapital(ScannerParameters parameters)
+    {
+        if (!parameters.ScalesWithCapital)
+            return (parameters, null);
+        if (execution.LatestSample?.Snapshot is not { } snapshot)
+            return (parameters, "capital not valued yet");
+        var capital = riskLimits?.CapitalOf(snapshot.Equity) ?? Math.Max(0m, snapshot.Equity);
+        return parameters.AtCapital(capital) is { } sized ? (sized, null) : (parameters, "capital too small to size a buy");
+    }
+
+    /// <summary>
     /// Why the strategy's own limits allow no buy now, so the scanner suggests none the engine would refuse: its cooldown
     /// since the last buy, or its total exposure cap (from the safety monitor's latest valuation). Null when buys are open.
     /// </summary>
@@ -438,7 +475,7 @@ public sealed partial class MarketScanService(
         var limits = Strategy.StrategySchema.LimitsOf(spec, riskLimits);
         if (limits.EntryCooldown is { } cooldown && execution.LastBuyAt is { } last && now - last < cooldown)
             return Inv($"cooldown until {(last + cooldown).UtcDateTime:HH:mm} UTC");
-        if (limits.MaxExposureQuote is { } cap && execution.LatestSample?.Snapshot.TotalExposureQuote >= cap)
+        if (execution.LatestSample?.Snapshot is { } snapshot && limits.At(snapshot).MaxExposureQuote is { } cap && snapshot.TotalExposureQuote >= cap)
             return "strategy exposure cap reached";
         return null;
     }
@@ -543,13 +580,15 @@ public sealed partial class MarketScanService(
         if (riskLimits is null || specs.Active is not { } spec)
             return 0;
         var limits = Strategy.StrategySchema.LimitsOf(spec, riskLimits);
-        if (limits.MaxPositionQuotePerSymbol is null && limits.MaxExposureQuote is null)
+        if (limits is { MaxPositionQuotePerSymbol: null, MaxExposureQuote: null, MaxPositionFractionPerSymbol: null, MaxExposureFraction: null })
             return 0;
         if (await execution.GetPortfolioAsync(cancellationToken).ConfigureAwait(false) is not { } portfolio)
         {
             LogTrimSkipped(logger, spec.Label, "the portfolio can't be valued now");
             return null;
         }
+
+        limits = limits.At(portfolio.Snapshot); // the caps in money for the account now, once, at the switch
 
         if (portfolio.Snapshot.SellableBaseBySymbol is not { } sellable)
         {
