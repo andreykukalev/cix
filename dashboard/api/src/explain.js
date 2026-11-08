@@ -25,12 +25,14 @@ const EXIT_REASON = {
   stop: 'The price fell to the position\'s stop-loss',
   target: 'The price rose to the position\'s take-profit',
   'trend-down': 'The trend turned down (the detail says how)',
+  time: "The play's holding time ended (ADR-0031)",
 };
 
 const EXIT_REASON_RU = {
   stop: 'Цена опустилась до стоп-лосса позиции',
   target: 'Цена поднялась до тейк-профита позиции',
   'trend-down': 'Тренд развернулся вниз (как именно, сказано в подробностях)',
+  time: 'Истекло время удержания игры (ADR-0031)',
 };
 
 // The rule codes the risk gate (src/Cix.Domain/Risk/RiskGate.cs) and the execution service write, in words.
@@ -189,6 +191,16 @@ function reasonRu(reason) {
   return null;
 }
 
+/** "день", "дня" or "дней" after a number of days. */
+function daysRu(n) {
+  const k = Number(n) % 100;
+  if (k % 10 === 1 && k !== 11) return 'день';
+  return k % 10 >= 2 && k % 10 <= 4 && (k < 12 || k > 14) ? 'дня' : 'дней';
+}
+
+/** The plays' names (ADR-0031) in Russian. */
+const PLAYS_RU = { burst: 'всплеск', rally: 'ралли', crash: 'обвал' };
+
 /** The scanner's entry setup ("uptrend pullback") in Russian. */
 const SETUPS_RU = { 'uptrend pullback': 'откат в восходящем тренде' };
 
@@ -201,6 +213,8 @@ function exitDetailRu(detail) {
   if (detail === 'the fast EMA crossed below the slow EMA') return 'быстрая EMA пересекла медленную сверху вниз';
   m = /^the daily close fell (\S+) below EMA(\d+)$/.exec(detail);
   if (m) return `дневное закрытие опустилось на ${m[1]} ниже EMA${m[2]}`;
+  m = /^the (burst|rally|crash)'s holding time ended at (.+ UTC)$/.exec(detail);
+  if (m) return `время удержания игры «${PLAYS_RU[m[1]]}» истекло ${m[2]}`;
   return null;
 }
 
@@ -217,6 +231,10 @@ const WORDS = {
     moves: (hour, day) => `Moves: last hour ${hour}, last 24 hours ${day}`,
     breakout: (days, over) => `Breakout: the last daily close is ${over} above the highest price of the ${days} days before it`,
     breakoutMoves: (days, change, atr) => `Moves: ${change} over ${days} days; the ask is ${atr}× the daily range (ATR) above that close`,
+    burst: (time, hours, multiple) => `Volume burst on Binance: the hour to ${time} closed above the ${hours}-hour high on ${multiple}× the average volume`,
+    burstExit: (hold, atr) => `Play: sold after ${hold} hours or at a stop ${atr} hourly ATR below, whichever comes first`,
+    btcEvent: (play, move, days, from) => `BTC ${play === 'rally' ? 'rally' : 'crash'}: ${move} over ${days} days (the play starts at ${from})`,
+    eventExit: (hold, stop) => `Play: sold after ${hold} days or at a stop ${stop} below, whichever comes first`,
     stop: 'stop',
     target: 'target',
     riskLoss: (amount) => `about ${amount} lost if the stop is hit`,
@@ -254,6 +272,10 @@ const WORDS = {
     moves: (hour, day) => `Движение: за последний час ${hour}, за 24 часа ${day}`,
     breakout: (days, over) => `Пробой: последнее дневное закрытие на ${over} выше максимума ${days} дней до него`,
     breakoutMoves: (days, change, atr) => `Движение: ${change} за ${days} дней; ask выше этого закрытия на ${atr}× дневного диапазона (ATR)`,
+    burst: (time, hours, multiple) => `Всплеск объёма на Binance: час до ${time} закрылся выше максимума ${hours} часов при объёме в ${multiple}× от среднего`,
+    burstExit: (hold, atr) => `Игра: продажа через ${hold} часов или по стопу на ${atr} часовых ATR ниже, что наступит раньше`,
+    btcEvent: (play, move, days, from) => `${play === 'rally' ? 'Ралли' : 'Обвал'} BTC: ${move} за ${days} ${daysRu(days)} (игра начинается от ${from})`,
+    eventExit: (hold, stop) => `Игра: продажа через ${hold} ${daysRu(hold)} или по стопу на ${stop} ниже, что наступит раньше`,
     stop: 'стоп-лосс',
     target: 'тейк-профит',
     riskLoss: (amount) => `около ${amount} убытка, если сработает стоп-лосс`,
@@ -292,6 +314,11 @@ function entryEvidence(reason, lang = 'en') {
   const w = WORDS[lang] ?? WORDS.en;
   const daily = /^(\d+)-day breakout: close (\S+) over the \d+-day high, \d+-day (\S+), ask (-?[\d.]+) ATR above the close$/.exec(reason.trim());
   if (daily) return [w.breakout(daily[1], daily[2]), w.breakoutMoves(daily[1], daily[3], daily[4])];
+  // The plays (ADR-0031), as src/Cix.Domain/Scanning/MarketPlays.cs writes them.
+  const burst = /^volume burst: the hour to (\d{2}:\d{2} UTC) closed above the (\d+)-hour high on ([\d.]+)x the average volume \(Binance\); hold (\d+) h, stop ([\d.]+) hourly ATR below$/.exec(reason.trim());
+  if (burst) return [w.burst(burst[1], burst[2], burst[3]), w.burstExit(burst[4], burst[5])];
+  const event = /^BTC (rally|crash): BTC (\S+) over (\d+) days to the last daily close \(the \w+ play starts at (\S+)\); hold (\d+) days, stop (\S+) below$/.exec(reason.trim());
+  if (event) return [w.btcEvent(event[1], event[2], event[3], event[4]), w.eventExit(event[5], event[6])];
   const m = /^(.*?),?\s+(-?[\d.]+) ATR above EMA20,\s*1h (\S+),\s*24h (\S+)$/.exec(reason.trim());
   if (!m) return null;
   const setup = m[1].trim();

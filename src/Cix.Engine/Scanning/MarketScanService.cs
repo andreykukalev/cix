@@ -114,7 +114,8 @@ public sealed partial class MarketScanService(
     ScannerFilterRecorder? filters = null,
     Cix.Domain.Risk.RiskLimits? riskLimits = null,
     ProtectionOptions? protection = null,
-    SwitchableSpecs? switchable = null)
+    SwitchableSpecs? switchable = null,
+    BinanceFeed? binance = null)
 {
     public const string SignalKind = "scan-signal";
     public const string Actor = "scanner";
@@ -147,6 +148,13 @@ public sealed partial class MarketScanService(
             return $"{symbol} hasn't been scanned yet; the strategy's filters decide once it has.";
         if (time.GetUtcNow() - scan.AsOf > StaleScanAfter)
             return $"The latest scan is from {scan.AsOf.ToString("u", CultureInfo.InvariantCulture)}, too old for the strategy's filters; buys wait for a fresh one.";
+        // A play's signal (ADR-0031) is judged by the play's own rules, not the strategy's coin filters; place_order holds
+        // the buy to the signal's size and stop.
+        if (scan.Entries.Any(e => e.Play is not null && string.Equals(e.Symbol, symbol, StringComparison.Ordinal)))
+            return null;
+        // The strategy's own buys keep to their share, so the plays keep their room.
+        if (MainExposurePaused(HasPlays(specs.Active) ? PlaysOf(specs.Active) : null) is { } full)
+            return $"{symbol}: {full}.";
         if (scan.Excluded.FirstOrDefault(e => string.Equals(e.Symbol, symbol, StringComparison.Ordinal)) is { } excluded)
             return $"{symbol} is filtered out by the strategy ({excluded.Reason}): {excluded.Detail}";
         return scan.Ranked.Any(r => string.Equals(r.Symbol, symbol, StringComparison.Ordinal))
@@ -187,6 +195,7 @@ public sealed partial class MarketScanService(
         if (cached is not null && cached.Label == spec?.Label)
             return cached.Parameters;
         var resolved = FromSpec(spec, options.Parameters);
+        _ = PlaysOf(spec); // a malformed plays block stops startup and a switch, like a bad scanner block
         Volatile.Write(ref _parameters, new CachedParameters(spec?.Label, resolved));
         return resolved;
     }
@@ -355,7 +364,8 @@ public sealed partial class MarketScanService(
             .Select(o => MarketDataPoller.NormaliseSymbol(o.Symbol)).ToHashSet(StringComparer.Ordinal);
 
         var daily = parameters.Timeframe == ScannerParameters.Daily;
-        var (sold, soldUnknown) = daily ? await RecentSellsAsync(now, cancellationToken).ConfigureAwait(false) : (null, null);
+        var plays = PlaysOf(spec);
+        var (sold, soldUnknown) = daily || plays is not null ? await RecentSellsAsync(now, cancellationToken).ConfigureAwait(false) : (null, null);
         var inputs = new List<ScanInput>();
         foreach (var symbol in universe.Candidates)
         {
@@ -370,10 +380,13 @@ public sealed partial class MarketScanService(
 
         // A fill time only for plans the engine state holds: a raise can't be written to a plan from the journal fallback.
         var states = execution.PositionPlanStates;
-        var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit, states.ContainsKey(p.Symbol) ? p.FilledAt : null)).ToList();
+        var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit, states.ContainsKey(p.Symbol) ? p.FilledAt : null, p.Play, p.ExitBy)).ToList();
         // Sizes that are shares of the capital, in money for the account as the safety monitor last valued it (ADR-0030).
         var (sized, unsized) = SizedForCapital(parameters);
-        var result = MarketScanner.Scan(inputs, held, sized, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: unsized ?? EntriesPausedReason(spec, now) ?? soldUnknown);
+        var paused = unsized ?? EntriesPausedReason(spec, now) ?? soldUnknown;
+        var result = MarketScanner.Scan(inputs, held, sized, now, allowEntries: !Halted, view: views?.Current, entriesPausedReason: paused ?? MainExposurePaused(plays));
+        if (plays is not null)
+            result = await WithPlaysAsync(result, plays, inputs, held, sized, now, paused, cancellationToken).ConfigureAwait(false);
         return (result, Preview(spec, inputs, held, now), held.Select(h => h.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList());
     }
 
@@ -481,7 +494,7 @@ public sealed partial class MarketScanService(
     }
 
     /// <summary>Exit reasons the engine acts on by itself: price levels set when the position was bought, no judgement needed.</summary>
-    public static readonly IReadOnlySet<string> ProtectiveReasons = new HashSet<string>(StringComparer.Ordinal) { "stop", "target" };
+    public static readonly IReadOnlySet<string> ProtectiveReasons = new HashSet<string>(StringComparer.Ordinal) { "stop", "target", "time" };
 
     /// <summary>An unfilled protective sell older than this is cancelled, so the next scan re-prices it at the current bid.</summary>
     public static readonly TimeSpan ProtectiveRepriceAfter = TimeSpan.FromMinutes(4);
@@ -518,7 +531,7 @@ public sealed partial class MarketScanService(
             var result = await execution.PlaceAsync(
                 new OrderIntent(exit.Symbol, OrderSide.Sell, exit.BaseSize, exit.LimitPrice, clientOrderId), postOnly: false, cancellationToken,
                 countsTowardRejectStreak: false,
-                context: new OrderContext("protective-exit", Strategy: specs.Active?.Label, ExitReason: exit.Reason == "stop" ? ExitReasons.Stop : ExitReasons.Target)).ConfigureAwait(false);
+                context: new OrderContext("protective-exit", Strategy: specs.Active?.Label, ExitReason: exit.Reason switch { "stop" => ExitReasons.Stop, "time" => ExitReasons.Time, _ => ExitReasons.Target })).ConfigureAwait(false);
             if (result.Status == ExecutionStatus.Rejected)
             {
                 lock (_protectiveBackoff)
@@ -1021,6 +1034,15 @@ public static class ScannerRegistration
         services.AddSingleton<IScannerFilterStore, InMemoryScannerFilterStore>();
         services.AddSingleton<ScannerFilterRecorder>();
         services.AddSingleton<SwitchableSpecs>(); // filled by the strategy selection's seed, read for the switch preview
+        // Binance's public candles for the plays' signals (ADR-0031), read only while the running strategy has plays.
+        services.AddSingleton<IBinanceKlines>(_ => new BinanceKlinesClient(new HttpClient { Timeout = TimeSpan.FromSeconds(20) }));
+        services.AddSingleton(sp => new BinanceFeed(
+            sp.GetRequiredService<IBinanceKlines>(),
+            () => universe.Tradable,
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<ILogger<BinanceFeed>>(),
+            () => MarketScanService.HasPlays(sp.GetRequiredService<IStrategySpecStore>().Active)));
+        services.AddHostedService<BinanceFeedService>();
         services.AddSingleton<MarketScanService>();
         services.AddHostedService<MarketScanBackgroundService>();
         return services;

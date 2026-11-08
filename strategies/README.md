@@ -7,6 +7,16 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 - `allowedTools`: the tool server refuses any agent tool not listed here, except `get_strategy_spec`, which every agent may read to learn its own rules.
 - Pick the starting spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration. The default is `balanced` v3. In paper trading, a selection in the database overrides it at run time (below).
 
+## Swing v3: swing v2 with plays
+
+`swing.v3` (ADR-0031) is `swing.v2` plus three plays under `parameters.plays`, judged on Binance's public candles and bought on Revolut X at its ask:
+
+- `burst`: a coin whose hourly close breaks the highest high of the 96 hours before it on four times its average hourly volume (168 hours), while BTC's daily close is above its EMA100. 6% of the capital per buy, at most four at a time, a stop 4 hourly ATR below, sold after 72 hours.
+- `rally`: on the first daily close where BTC is up 13% over three days, 6% of the capital in each of BTC, ETH, SOL, XRP, DOGE and ADA, a stop 12% below, sold after 30 days.
+- `crash`: on the first daily close where BTC is down 15% over three days, the same basket, a stop 25% below, sold after 14 days.
+
+Play positions have no take-profit, trend exit or trailing stop: the engine sells them at their stop or at their `exitBy`. Only one BTC event is held at a time. No play buys once the plays together have lost 18% of the capital (`lossStopFraction`), counted from the journal's play fills of 60 days and the play positions held. The swing's own coins stay within 40% of the capital (`mainExposureFraction`), all coins within 100% (`maxExposureFraction`), and up to five new positions per run. `scan_market` shows how each play stands. It starts as `draft`; the owner marks it `live`.
+
 ## Swing v2: swing v1 sized from the capital
 
 `swing.v2` (ADR-0030) is `swing.v1` with every amount a share of the capital, the account's value in cash and coins, at most the 1000 EUR allocation: `orderFraction` 0.10, `maxPositionFractionPerSymbol` 0.10, `maxExposureFraction` 0.4, `dailyLossStopFraction` 0.08 and `scanner.riskPerTradeFraction` 0.004. The amounts beside them (100 per order, 100 per coin and 4 at risk) are the shares at 1000 EUR; the daily loss stop is a share alone, capped by the risk limits, so below that the shares decide; where a spec sets both, the smaller applies. With 250 EUR it risks about 1 EUR a trade, at most 25 EUR per coin and 100 EUR in coins. Deposits and withdrawals change the sizes from the next check. It starts as `draft`; the owner marks it `live`.

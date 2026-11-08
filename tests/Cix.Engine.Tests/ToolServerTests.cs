@@ -44,7 +44,7 @@ internal sealed class ToolRig
 
     public ToolRig(
         StrategySpec? spec = null, bool noSpec = false, decimal eur = 200m, decimal btc = 0m, StrategySpec? analyst = null, bool noAnalyst = false,
-        bool protectiveExits = true, Func<string, string?>? strategyFilter = null)
+        bool protectiveExits = true, Func<string, string?>? strategyFilter = null, Func<TimeProvider, BinanceFeed>? binance = null)
     {
         Rig = new Rig(eur: eur, btc: btc, strategyFilter: strategyFilter);
         Http = new HttpContextAccessor { HttpContext = new DefaultHttpContext() };
@@ -54,13 +54,13 @@ internal sealed class ToolRig
             Http, Specs, Journal, new ToolServerOptions { OperatorKey = OperatorKey }, Rig.Time, NullLogger<ToolCallContext>.Instance, AnalystSpecs);
         Views = new MarketViewStore(Journal, Rig.Time, NullLogger<MarketViewStore>.Instance);
         Universe = new MarketUniverse(Rig.Tradable);
-        Orders = new OrderTools(Context, Rig.Execution, Rig.Limits, Views, Rig.Time, Rig.Tradable);
         Features = new FeatureService(Candles, Rig.State, new MarketDataOptions(), Rig.Time);
         Agent = new AgentTools(Context, Features, Rig.Execution, Rig.KillSwitch, Rig.Limits, Rig.Journal, Rig.Tradable);
         Scanner = new MarketScanService(
             Universe, Features, Candles, Rig.Pairs, Rig.Execution,
             Rig.KillSwitch, Journal, Specs, new ScannerOptions { ProtectiveExits = protectiveExits }, Rig.Time, NullLogger<MarketScanService>.Instance, Views,
-            switchable: Switchable);
+            switchable: Switchable, binance: Binance = binance?.Invoke(Rig.Time));
+        Orders = new OrderTools(Context, Rig.Execution, Rig.Limits, Views, Rig.Time, Rig.Tradable, Scanner);
         Scan = new ScanTools(Context, Scanner);
         Analyst = new AnalystTools(Context, AnalystSpecs, Universe, Features, Scanner, Views, Rig.Time);
         Operator = new OperatorTools(Context, Journal, Rig.Execution);
@@ -77,6 +77,7 @@ internal sealed class ToolRig
     public FeatureService Features { get; }
     public AgentTools Agent { get; }
     public MarketScanService Scanner { get; }
+    public BinanceFeed? Binance { get; }
     public ScanTools Scan { get; }
     public IAnalystSpecStore AnalystSpecs { get; }
     public MarketViewStore Views { get; }

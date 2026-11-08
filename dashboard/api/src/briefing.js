@@ -146,7 +146,7 @@ function marketRows(lastScan) {
 
 const pct = (x) => `${x > 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
 const sellWhy = (signal) => signal.replace(/^sell\s*/, '').replace(/[()]/g, '');
-const SELL_WHY_RU = { stop: 'стоп-лосс', target: 'тейк-профит', 'trend-down': 'тренд развернулся вниз', exit: 'выход' };
+const SELL_WHY_RU = { stop: 'стоп-лосс', target: 'тейк-профит', 'trend-down': 'тренд развернулся вниз', time: 'истекло время удержания', exit: 'выход' };
 
 /**
  * Coins that need a look, most pressing first: one item per coin with every reason (in English, and in Russian in

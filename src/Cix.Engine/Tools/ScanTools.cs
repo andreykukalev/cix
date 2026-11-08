@@ -17,7 +17,8 @@ public sealed class ScanTools(ToolCallContext context, MarketScanService scanner
         + "sized for the risk per trade; takeProfit is null when the strategy sets no target), exits (held positions at their stop, target or in a downtrend, with the size to sell), "
         + "ranked (symbols passing the liquidity, spread, volatility and cost filters, best first, with noEntryReason and noEntryDetail: the figure and threshold behind it) and "
         + "excluded (symbols filtered out, with the reason). Only ranked coins can be bought: a buy in an excluded one is refused (strategy-filter). "
-        + "Signals are suggestions: the risk gate still decides.")]
+        + "An entry with a play (burst, rally, crash) comes from the strategy's plays, judged on Binance's candles: buy it like any entry; the engine sells it at its stop or at exitBy. "
+        + "plays says where each play stands. Signals are suggestions: the risk gate still decides.")]
     public async Task<string> ScanMarket(CancellationToken cancellationToken)
     {
         await context.RequireAllowedAsync("scan_market", cancellationToken).ConfigureAwait(false);
@@ -43,6 +44,7 @@ public sealed class ScanTools(ToolCallContext context, MarketScanService scanner
             halted = scanner.Halted,
             result.Exits,
             result.Entries,
+            plays = result.Plays,
             result.Ranked,
             excluded = result.Excluded.Select(e => new { e.Symbol, e.Reason, e.Detail }),
         });

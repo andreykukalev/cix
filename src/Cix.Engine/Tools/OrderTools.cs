@@ -2,9 +2,12 @@ using System.ComponentModel;
 using System.Globalization;
 using Cix.Domain;
 using Cix.Domain.Risk;
+using Cix.Domain.Scanning;
 using Cix.Engine.Execution;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
+
+using Cix.Domain.Scanning;
 
 namespace Cix.Engine.Tools;
 
@@ -19,13 +22,17 @@ public sealed class OrderTools(
     RiskLimits limits,
     Analysis.MarketViewStore? views = null,
     TimeProvider? time = null,
-    TradableSymbols? tradable = null)
+    TradableSymbols? tradable = null,
+    Scanning.MarketScanService? scanner = null)
 {
     public const decimal MinValue = 0.00000001m;
     public const decimal MaxBaseSize = 1_000_000m;
     public const decimal MaxPrice = 1_000_000_000m;
     public const int MinRationale = 10;
     public const int MaxRationale = 1_000;
+
+    /// <summary>A play's signal tags a buy only from a scan this recent.</summary>
+    public static readonly TimeSpan PlaySignalAge = TimeSpan.FromHours(1);
 
     /// <summary>Least distance between a buy's limit price and its stop or target.</summary>
     public const decimal MinExitDistance = Cix.Domain.Scanning.MarketScanner.MinExitDistanceFraction;
@@ -79,10 +86,22 @@ public sealed class OrderTools(
         var clientOrderId = Guid.NewGuid().ToString();
         // Read once: the spec can switch between runs (#105), and this order's label and limits must come from the same one.
         var spec = context.Spec;
+        // A buy of a play's signal (ADR-0031) takes the play's tag and its time to sell by, so the engine sells it then, and
+        // keeps it out of the strategy's trend exits and trailing stop. Only from a scan of the last hour: a burst is the hour's.
+        EntrySignal? play;
+        try
+        {
+            play = orderSide == OrderSide.Buy ? scanner?.PlaySignalFor(normalised, baseSize, stopLoss, PlaySignalAge) : null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new McpException(ex.Message);
+        }
+
         var result = await execution.PlaceAsync(
             new OrderIntent(normalised, orderSide, baseSize, limitPrice, clientOrderId), postOnly, cancellationToken,
             context: new OrderContext("place_order", stopLoss, takeProfit, context.RunId, spec?.Label,
-                ExitReason: orderSide == OrderSide.Sell ? ExitReasons.Agent : null),
+                ExitReason: orderSide == OrderSide.Sell ? ExitReasons.Agent : null, Play: play?.Play, ExitBy: play?.ExitBy),
             strategy: Strategy.StrategySchema.LimitsOf(spec, limits)).ConfigureAwait(false);
 
         var inv = CultureInfo.InvariantCulture;
@@ -106,6 +125,12 @@ public sealed class OrderTools(
             data["stopLoss"] = stop.ToString(inv);
         if (takeProfit is { } target)
             data["takeProfit"] = target.ToString(inv);
+        if (play is not null)
+        {
+            data["play"] = play.Play!;
+            data["exitBy"] = play.ExitBy!.Value.ToString("O", inv);
+        }
+
         if (result.Order is { } approved)
         {
             data["approvedSize"] = approved.BaseSize.ToString(inv);

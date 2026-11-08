@@ -194,7 +194,7 @@ public static partial class MarketScanner
         var raises = new List<StopRaise>();
         foreach (var h in held.OrderBy(h => h.Symbol, StringComparer.Ordinal))
         {
-            if (h.StopLoss is not { } stop || h.FilledAt is not { } filled || exits.Any(x => string.Equals(x.Symbol, h.Symbol, StringComparison.Ordinal)))
+            if (h.Play is not null || h.StopLoss is not { } stop || h.FilledAt is not { } filled || exits.Any(x => string.Equals(x.Symbol, h.Symbol, StringComparison.Ordinal)))
                 continue;
             if (inputs.GetValueOrDefault(h.Symbol) is not { Pair: { } pair, Daily: { Count: > 0 } daily } input || input.Features.IsStale
                 || input.Features.Bid is not > 0)

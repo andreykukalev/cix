@@ -225,7 +225,7 @@ public static partial class StrategySchema
         new(mode.ToString().ToLowerInvariant(), at, Parameters(limits), Mandatory(limits), TradingTools);
 
     /// <summary>Top-level keys that aren't numbers or booleans: checked on their own.</summary>
-    private static readonly IReadOnlySet<string> OtherTopLevel = new HashSet<string>(StringComparer.Ordinal) { "timeframe", "symbols", Scanner };
+    private static readonly IReadOnlySet<string> OtherTopLevel = new HashSet<string>(StringComparer.Ordinal) { "timeframe", "symbols", Scanner, MarketScanService.PlaysKey };
 
     /// <summary>
     /// The problems that stop <paramref name="spec"/> from being activated from the database; empty when it may run in
@@ -310,6 +310,33 @@ public static partial class StrategySchema
         try
         {
             scan = MarketScanService.FromSpec(spec, new ScannerParameters());
+        }
+        catch (InvalidOperationException ex)
+        {
+            errors.Add(ex.Message);
+        }
+
+        // The plays (ADR-0031): their own ranges, and a basket of coins the mandatory limits permit.
+        try
+        {
+            if (MarketScanService.PlaysOf(spec) is { } plays)
+            {
+                foreach (var coin in new[] { plays.Rally, plays.Crash }.SelectMany(e => e?.Basket ?? []))
+                {
+                    if (!limits.Permits(coin))
+                        errors.Add($"parameters.plays: {Clip(coin)} in a basket isn't a pair the mandatory limits permit.");
+                }
+
+                if (new[] { plays.Burst?.OrderFraction, plays.Rally?.OrderFraction, plays.Crash?.OrderFraction }.Any(f => f > (limits.MaxOrderFraction ?? HardCeilings.MaxOrderFractionOfAllocation)))
+                    errors.Add("parameters.plays: a play's orderFraction can't be above the mandatory maxOrderFraction.");
+                // The strategy gate holds a play's buy to the spec's own order and per-coin shares too: say so here, not by a resized order.
+                foreach (var key in new[] { "orderFraction", "maxPositionFractionPerSymbol" })
+                {
+                    if (spec.Parameters.TryGetValue(key, out var own) && own.ValueKind == JsonValueKind.Number
+                        && new[] { plays.Burst?.OrderFraction, plays.Rally?.OrderFraction, plays.Crash?.OrderFraction }.Any(f => f > own.GetDecimal()))
+                        errors.Add($"parameters.plays: a play's orderFraction can't be above the spec's {key}.");
+                }
+            }
         }
         catch (InvalidOperationException ex)
         {
