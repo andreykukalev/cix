@@ -12,18 +12,69 @@ namespace Cix.Domain.Risk;
 /// <param name="DailyLossStopQuote">No new buys once today's loss reaches this.</param>
 /// <param name="MaxNewPositionsPerRun">Buys one agent run may place.</param>
 /// <param name="EntryCooldown">Least time between two buys.</param>
+/// <param name="OrderFraction">The order size as a share of the capital (ADR-0030); with <paramref name="OrderQuote"/> the smaller applies.</param>
+/// <param name="MaxPositionFractionPerSymbol">Most in one coin as a share of the capital.</param>
+/// <param name="MaxExposureFraction">Most in all coins together as a share of the capital.</param>
+/// <param name="DailyLossStopFraction">The daily stop as a share of the day's starting capital.</param>
+/// <param name="CapitalCeiling">The most that counts as capital (the risk limits' allocation); null means no ceiling.</param>
 public sealed record StrategyLimits(
     decimal? OrderQuote = null,
     decimal? MaxPositionQuotePerSymbol = null,
     decimal? MaxExposureQuote = null,
     decimal? DailyLossStopQuote = null,
     int? MaxNewPositionsPerRun = null,
-    TimeSpan? EntryCooldown = null)
+    TimeSpan? EntryCooldown = null,
+    decimal? OrderFraction = null,
+    decimal? MaxPositionFractionPerSymbol = null,
+    decimal? MaxExposureFraction = null,
+    decimal? DailyLossStopFraction = null,
+    decimal? CapitalCeiling = null)
 {
     /// <summary>Room for rounding to the exchange's steps: the scanner sizes orders to the order size, not under it.</summary>
     public const decimal OrderQuoteTolerance = 1.10m;
 
     public static readonly StrategyLimits None = new();
+
+    /// <summary>True when any limit is a share of the capital, so it moves with the account's value.</summary>
+    public bool ScalesWithCapital => OrderFraction is not null || MaxPositionFractionPerSymbol is not null
+        || MaxExposureFraction is not null || DailyLossStopFraction is not null;
+
+    /// <summary>The capital an equity counts as: the equity, never below 0 and never above <see cref="CapitalCeiling"/>.</summary>
+    public decimal CapitalOf(decimal equity) => Math.Max(0m, CapitalCeiling is { } ceiling ? Math.Min(equity, ceiling) : equity);
+
+    /// <summary>
+    /// These limits in money for an account worth <paramref name="equity"/>, whose day started at <paramref name="dayStartEquity"/>:
+    /// each share of the capital becomes an amount (rounded down to the cent), and where the spec also names an amount the
+    /// smaller applies. The result has no shares left, so it doesn't move again.
+    /// </summary>
+    public StrategyLimits At(decimal equity, decimal dayStartEquity)
+    {
+        if (!ScalesWithCapital)
+            return this;
+        var capital = CapitalOf(equity);
+        return new StrategyLimits(
+            Smaller(OrderQuote, OrderFraction, capital),
+            Smaller(MaxPositionQuotePerSymbol, MaxPositionFractionPerSymbol, capital),
+            Smaller(MaxExposureQuote, MaxExposureFraction, capital),
+            Smaller(DailyLossStopQuote, DailyLossStopFraction, CapitalOf(dayStartEquity)),
+            MaxNewPositionsPerRun,
+            EntryCooldown);
+    }
+
+    /// <summary>These limits in money for <paramref name="portfolio"/>: its equity, and its equity at the start of the day.</summary>
+    public StrategyLimits At(PortfolioSnapshot portfolio)
+    {
+        ArgumentNullException.ThrowIfNull(portfolio);
+        return At(portfolio.Equity, portfolio.Equity - portfolio.PnlToday);
+    }
+
+    private static decimal? Smaller(decimal? quote, decimal? fraction, decimal capital)
+    {
+        if (fraction is not { } f)
+            return quote;
+        var scaled = Math.Round(f * capital, 2, MidpointRounding.ToZero);
+        return quote is { } q ? Math.Min(q, scaled) : scaled;
+    }
 }
 
 /// <summary>What the strategy limits depend on besides the portfolio: the engine's last buy, and the buys in this agent run.</summary>
@@ -47,6 +98,7 @@ public static class StrategyGate
         ArgumentNullException.ThrowIfNull(activity);
         if (intent.Side != OrderSide.Buy)
             return new StrategyVerdict(intent, false, "ok", "Sells aren't limited by the strategy.");
+        limits = limits.At(portfolio); // shares of the capital, in money for this account now (ADR-0030)
 
         if (limits.DailyLossStopQuote is { } stop && -portfolio.PnlToday >= stop)
             return No("strategy-daily-loss-stop", $"Today's loss has reached the strategy's daily stop of {stop:0.##}; no new buys until tomorrow (UTC).");

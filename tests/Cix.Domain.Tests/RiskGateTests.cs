@@ -479,6 +479,109 @@ public sealed class RiskGateTests
         Assert.Throws<ArgumentException>(() => new TradableSymbols(Limits(), ["ETH-USD"])); // nor can a list start outside the limits
     }
 
+    /// <summary>The live limits of ADR-0030: shares of the capital, with the amounts they reach at the 1000 ceiling.</summary>
+    private static RiskLimits Scaled() => Limits() with
+    {
+        AllocationQuote = 1000m,
+        MaxOrderQuote = 200m,
+        MaxPositionQuotePerSymbol = 200m,
+        MaxDailyLossQuote = 80m,
+        MaxDrawdownFraction = 0.20m,
+        MaxOrderFraction = 0.20m,
+        MaxPositionFractionPerSymbol = 0.20m,
+        MaxDailyLossFraction = 0.08m,
+    };
+
+    [Fact]
+    public void Evaluate_WithShares_TheLargestOrderIsAShareOfTheAccountsValue()
+    {
+        var verdict = Gate(Scaled()).Evaluate(Buy(0.0012m), Portfolio(equity: 250m, peak: 250m), Market()); // 60 asked, 20% of 250 = 50
+
+        Assert.Equal((RiskOutcome.Resized, "max-order"), (verdict.Outcome, verdict.Rule));
+        Assert.Equal(0.001m, verdict.Order!.BaseSize);
+    }
+
+    [Fact]
+    public void Evaluate_WithShares_ALargerAccountRaisesTheLimits_UpToTheAllocationCeiling()
+    {
+        // 500 EUR: 20% is 100, so a 90 buy passes.
+        Assert.Equal(RiskOutcome.Accepted, Gate(Scaled()).Evaluate(Buy(0.0018m), Portfolio(equity: 500m, peak: 500m), Market()).Outcome);
+
+        // 3000 EUR counts as 1000, the allocation: 20% is 200, the amount in the file too.
+        var verdict = Gate(Scaled()).Evaluate(Buy(0.005m), Portfolio(equity: 3000m, peak: 3000m), Market()); // 250 asked
+        Assert.Equal((RiskOutcome.Resized, "max-order"), (verdict.Outcome, verdict.Rule));
+        Assert.Equal(0.004m, verdict.Order!.BaseSize);
+    }
+
+    [Fact]
+    public void Evaluate_WithShares_TheAmountStillCapsTheShare()
+    {
+        var limits = Scaled() with { MaxOrderQuote = 30m };
+
+        var verdict = Gate(limits).Evaluate(Buy(0.0012m), Portfolio(equity: 1000m, peak: 1000m), Market()); // 60 asked, 20% is 200, the amount 30
+
+        Assert.Equal((RiskOutcome.Resized, "max-order"), (verdict.Outcome, verdict.Rule));
+        Assert.Equal(0.0006m, verdict.Order!.BaseSize);
+    }
+
+    [Fact]
+    public void Evaluate_WithShares_ASmallerAccountShrinksThePerCoinCap()
+    {
+        // 250 EUR: at most 50 in one coin; 40 held leaves 10.
+        var verdict = Gate(Scaled()).Evaluate(Buy(0.0004m), Portfolio(equity: 250m, peak: 250m, exposure: 40m, btcPosition: 40m), Market());
+
+        Assert.Equal((RiskOutcome.Resized, "position-cap"), (verdict.Outcome, verdict.Rule));
+        Assert.Equal(0.0002m, verdict.Order!.BaseSize);
+    }
+
+    [Fact]
+    public void Evaluate_WithShares_TheDailyLossLimitIsAShareOfTheDaysStartingValue()
+    {
+        // The day started at 250: 8% is 20, however far today's losses take the equity.
+        Assert.Equal(RiskOutcome.Accepted, Gate(Scaled()).Evaluate(Buy(0.0002m), Portfolio(equity: 231m, peak: 250m, pnlToday: -19m), Market()).Outcome);
+
+        var verdict = Gate(Scaled()).Evaluate(Buy(0.0002m), Portfolio(equity: 230m, peak: 250m, pnlToday: -20m), Market());
+        Assert.Equal((RiskOutcome.Rejected, "daily-loss"), (verdict.Outcome, verdict.Rule));
+    }
+
+    [Fact]
+    public void Evaluate_WithShares_AnEmptyAccountBuysNothing()
+    {
+        var verdict = Gate(Scaled()).Evaluate(Buy(0.0001m), Portfolio(equity: 0m, peak: 0m), Market());
+
+        Assert.Equal((RiskOutcome.Rejected, "no-capital"), (verdict.Outcome, verdict.Rule));
+    }
+
+    [Fact]
+    public void Evaluate_WithShares_SellsAreNotLimitedByTheCapital()
+    {
+        var verdict = Gate(Scaled()).Evaluate(Sell(0.002m), Portfolio(equity: 120m, peak: 120m, exposure: 100m, btcPosition: 100m), Market()); // 100, above 20% of 120
+
+        Assert.Equal(RiskOutcome.Accepted, verdict.Outcome);
+    }
+
+    [Fact]
+    public void CapitalAndScaledLimits_FollowTheEquity_WithinTheAllocation()
+    {
+        var limits = Scaled();
+
+        Assert.Equal((0m, 250m, 1000m), (limits.CapitalOf(-5m), limits.CapitalOf(250m), limits.CapitalOf(1500m)));
+        Assert.Equal((50m, 50m, 20m), (limits.MaxOrderAt(250m), limits.MaxPositionAt(250m), limits.MaxDailyLossAt(250m)));
+        Assert.Equal(16.66m, limits.MaxDailyLossAt(208.33m)); // rounded down to the cent
+        // Without shares the amounts apply as before, whatever the capital.
+        Assert.Equal((40m, 100m, 15m), (Limits().MaxOrderAt(10m), Limits().MaxPositionAt(10m), Limits().MaxDailyLossAt(10m)));
+    }
+
+    [Fact]
+    public void Validate_Shares_StayWithinTheHardCeilings()
+    {
+        Assert.Empty(Scaled().Validate());
+        Assert.Contains((Scaled() with { MaxOrderFraction = HardCeilings.MaxOrderFractionOfAllocation + 0.01m }).Validate(), e => e.Contains("MaxOrderFraction", StringComparison.Ordinal));
+        Assert.Contains((Scaled() with { MaxOrderFraction = 0m }).Validate(), e => e.Contains("MaxOrderFraction", StringComparison.Ordinal));
+        Assert.Contains((Scaled() with { MaxPositionFractionPerSymbol = 1.01m }).Validate(), e => e.Contains("MaxPositionFractionPerSymbol", StringComparison.Ordinal));
+        Assert.Contains((Scaled() with { MaxDailyLossFraction = HardCeilings.MaxDailyLossFractionOfAllocation + 0.01m }).Validate(), e => e.Contains("MaxDailyLossFraction", StringComparison.Ordinal));
+    }
+
     private sealed class FixedTime(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;

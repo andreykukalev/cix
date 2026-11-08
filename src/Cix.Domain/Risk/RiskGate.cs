@@ -179,16 +179,22 @@ public sealed class RiskGate
                 return Sizing.No("drawdown-halt", $"Drawdown is {drawdown:P2}; new buys are halted until the owner resumes trading.");
         }
 
-        if (-portfolio.PnlToday >= _limits.MaxDailyLossQuote)
-            return Sizing.No("daily-loss", "The daily loss limit is reached; new buys are halted until tomorrow (UTC).");
+        // The limits follow the capital (ADR-0030): the account's value, at most the allocation. The daily loss limit is
+        // measured against the day's starting value, so today's losses don't shrink it as they grow.
+        var capital = _limits.CapitalOf(portfolio.Equity);
+        if (_limits.ScalesWithCapital && capital <= 0)
+            return Sizing.No("no-capital", "The account holds nothing to trade with, so the limits that are shares of it allow no buy.");
+        var dailyLoss = _limits.MaxDailyLossAt(_limits.CapitalOf(portfolio.Equity - portfolio.PnlToday));
+        if (-portfolio.PnlToday >= dailyLoss)
+            return Sizing.No("daily-loss", $"The daily loss limit of {dailyLoss:0.##} is reached; new buys are halted until tomorrow (UTC).");
 
         // Buys already working count toward the position they will become.
         var positionQuote = portfolio.PositionQuoteBySymbol.GetValueOrDefault(intent.Symbol)
             + (portfolio.OpenBuyQuoteBySymbol?.GetValueOrDefault(intent.Symbol) ?? 0m);
         var room = new[]
         {
-            ("max-order", _limits.MaxOrderQuote),
-            ("position-cap", _limits.MaxPositionQuotePerSymbol - positionQuote),
+            ("max-order", _limits.MaxOrderAt(capital)),
+            ("position-cap", _limits.MaxPositionAt(capital) - positionQuote),
             ("allocation-cap", _limits.AllocationQuote - portfolio.TotalExposureQuote),
         }.MinBy(r => r.Item2);
 

@@ -117,7 +117,7 @@ public sealed class StrategySchemaTests
         // 7 times the round-trip cost), with size, risk, exposure, frequency and coin coverage stepping up.
         var specs = new[] { LoadDraft("safe", 3), LoadDraft("balanced", 3), LoadDraft("risky", 4) };
         Assert.All(specs, s => Assert.Empty(StrategySchema.Validate(s, Limits, TradingMode.Paper)));
-        var limits = specs.Select(s => StrategySchema.LimitsOf(s, Limits)).ToList();
+        var limits = specs.Select(s => StrategySchema.LimitsOf(s, Limits).At(Limits.AllocationQuote, Limits.AllocationQuote)).ToList();
         var scan = specs.Select(s => MarketScanService.FromSpec(s, new())).ToList();
 
         for (var i = 0; i < 2; i++)
@@ -137,7 +137,8 @@ public sealed class StrategySchemaTests
     [Fact]
     public void SafeBalancedAndRisky_StepUpInSizeExposureAndFrequency_WithinTheMandatoryLimits()
     {
-        var limits = new[] { Load("safe", 1), Load("balanced", 1), Load("risky", 2) }.Select(s => StrategySchema.LimitsOf(s, Limits)).ToList();
+        // At a capital as large as the allocation: the exposure shares in money.
+        var limits = new[] { Load("safe", 1), Load("balanced", 1), Load("risky", 2) }.Select(s => StrategySchema.LimitsOf(s, Limits).At(Limits.AllocationQuote, Limits.AllocationQuote)).ToList();
 
         Assert.True(limits[0].OrderQuote < limits[1].OrderQuote && limits[1].OrderQuote < limits[2].OrderQuote);
         Assert.True(limits[0].MaxExposureQuote < limits[1].MaxExposureQuote && limits[1].MaxExposureQuote < limits[2].MaxExposureQuote);
@@ -151,11 +152,14 @@ public sealed class StrategySchemaTests
     }
 
     [Fact]
-    public void LimitsOf_ReadsTheSpecsOwnLimits_AndExposureAsAShareOfTheAllocation()
+    public void LimitsOf_ReadsTheSpecsOwnLimits_AndExposureAsAShareOfTheCapital()
     {
         var limits = StrategySchema.LimitsOf(Load("balanced", 1), Limits);
 
-        Assert.Equal(new StrategyLimits(10m, 25m, 100m, 6m, 1, TimeSpan.FromMinutes(60)), limits);
+        Assert.Equal(new StrategyLimits(10m, 25m, null, 6m, 1, TimeSpan.FromMinutes(60), MaxExposureFraction: 0.5m, CapitalCeiling: Limits.AllocationQuote), limits);
+        Assert.Equal(new StrategyLimits(10m, 25m, 100m, 6m, 1, TimeSpan.FromMinutes(60)), limits.At(200m, 200m)); // half of 200
+        Assert.Equal(40m, limits.At(80m, 80m).MaxExposureQuote); // half of what the account holds
+        Assert.Equal(100m, limits.At(5000m, 5000m).MaxExposureQuote); // never of more than the allocation
         Assert.Equal(StrategyLimits.None, StrategySchema.LimitsOf(null, Limits));
         Assert.Equal(new StrategyLimits(OrderQuote: 5m, DailyLossStopQuote: 5m, MaxNewPositionsPerRun: 1), StrategySchema.LimitsOf(Load("good", 1), Limits));
     }
@@ -189,7 +193,8 @@ public sealed class StrategySchemaTests
     {
         var spec = With(Load("balanced", 1), "orderQuote", null);
 
-        Assert.Contains("parameters.orderQuote is required when the spec allows place_order.", StrategySchema.Validate(spec, Limits, TradingMode.Paper));
+        Assert.Contains("parameters.orderQuote or parameters.orderFraction is required when the spec allows place_order.", StrategySchema.Validate(spec, Limits, TradingMode.Paper));
+        Assert.DoesNotContain(StrategySchema.Validate(With(spec, "orderFraction", 0.05m), Limits, TradingMode.Paper), p => p.Contains("orderFraction is required", StringComparison.Ordinal));
     }
 
     [Fact]

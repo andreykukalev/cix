@@ -20,9 +20,9 @@ public sealed class SwingStrategyTests
     private const string Btc = Cix.Engine.Tests.Rig.Btc;
 
     /// <summary>A spec with swing.v1's parameters, from the file, as the scanner reads them.</summary>
-    private static StrategySpec Swing()
+    private static StrategySpec Swing(int version = 1)
     {
-        var node = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", "swing.v1.json")))!.AsObject();
+        var node = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", $"swing.v{version}.json")))!.AsObject();
         var parameters = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(node["parameters"]!.ToJsonString())!;
         return ToolRig.Observer with { Name = "swing", Parameters = parameters, AllowedTools = ["scan_market"] };
     }
@@ -59,8 +59,48 @@ public sealed class SwingStrategyTests
         Assert.Equal(ScannerParameters.Hourly, MarketScanService.FromSpec(ToolRig.Observer, new ScannerParameters()).Timeframe);
     }
 
+    [Fact]
+    public void SwingV2_IsV1SizedFromTheCapital()
+    {
+        var v1 = MarketScanService.FromSpec(Swing(), new ScannerParameters());
+        var v2 = MarketScanService.FromSpec(Swing(2), new ScannerParameters());
+
+        Assert.Equal((0.1m, 0.004m, 100m, 4m), (v2.OrderFraction, v2.RiskPerTradeFraction, v2.OrderQuote, v2.RiskPerTradeQuote));
+        // Every rule but the sizing is v1's.
+        Assert.Equal(v1 with { OrderQuote = 100m }, v2 with { OrderFraction = null, RiskPerTradeFraction = null });
+        var at250 = v2.AtCapital(250m)!;
+        Assert.Equal((25m, 1m), (at250.OrderQuote, at250.RiskPerTradeQuote));
+
+        // The live limits file, as the owner asked on 2026-11-08: shares of the capital up to 1000.
+        var live = RiskLimitsOptions.LoadFor(TradingMode.Live, AppContext.BaseDirectory);
+        Assert.Equal((1000m, 200m, 200m, 80m, 0.2m, 0.2m, 0.08m, 0.2m),
+            (live.AllocationQuote, live.MaxOrderQuote, live.MaxPositionQuotePerSymbol, live.MaxDailyLossQuote, live.MaxOrderFraction, live.MaxPositionFractionPerSymbol, live.MaxDailyLossFraction, live.MaxDrawdownFraction));
+        var limits = StrategySchema.LimitsOf(Swing(2), live).At(250m, 250m);
+        Assert.Equal((25m, 25m, 100m, 20m, 2), (limits.OrderQuote, limits.MaxPositionQuotePerSymbol, limits.MaxExposureQuote, limits.DailyLossStopQuote, limits.MaxNewPositionsPerRun));
+        var atCeiling = StrategySchema.LimitsOf(Swing(2), live).At(4000m, 4000m);
+        Assert.Equal((100m, 100m, 400m, 80m), (atCeiling.OrderQuote, atCeiling.MaxPositionQuotePerSymbol, atCeiling.MaxExposureQuote, atCeiling.DailyLossStopQuote));
+    }
+
+    [Fact]
+    public async Task SwingV2_SizesItsBuyFromTheValuedAccount()
+    {
+        var tools = new ToolRig(Swing(2)); // 200 EUR
+        ScannerServiceTests.SeedHourly(tools, 20m);
+        tools.Candles.Upsert(Btc, MarketDataPoller.DayInterval, DailyBreakout());
+
+        Assert.Null(tools.Scanner.OrderQuoteNow); // not valued yet: no size (the scan values the account first)
+
+        var scan = await tools.Scanner.ScanAsync(CancellationToken.None);
+
+        var entry = Assert.Single(scan.Entries);
+        Assert.True(entry.QuoteSize <= 20m, $"{entry.QuoteSize}"); // 10% of 200
+        Assert.True(entry.RiskQuote <= 0.8m, $"{entry.RiskQuote}"); // 0.4% of 200
+        Assert.Equal(20m, tools.Scanner.OrderQuoteNow);
+    }
+
     [Theory]
     [InlineData("""{ "timeframe": "1d", "scanner": { "timeframe": "1d" } }""", "set timeframe once")]
+    [InlineData("""{ "scanner": { "orderFraction": 0.1 } }""", "set orderFraction once")]
     [InlineData("""{ "timeframe": 1 }""", "timeframe must be text")]
     [InlineData("""{ "timeframe": "4h" }""", "timeframe must be")]
     [InlineData("""{ "scanner": { "trailAtr": 3 } }""", "daily candles only")]

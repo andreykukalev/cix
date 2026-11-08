@@ -208,9 +208,21 @@ public sealed partial class ExecutionService
                 return (null, allowance); // keep the old baseline until a comparison succeeds
         }
 
+        // More than the fills explain is money in or out (or outside trading, which halts below either way): the drawdown and
+        // daily-loss baselines move with it, so a withdrawal is never taken for a loss nor a deposit for a gain (ADR-0030).
+        var transfer = unexplained is { } moved && Math.Abs(moved) > allowance ? moved : 0m;
         try
         {
-            _store.Update(s => s with { Holdings = new HoldingsBaseline(holdings, engineOrdersNotional) });
+            var state = _store.Update(s =>
+            {
+                var rebased = transfer == 0m || baseline is null ? s : RebasedForTransfer(s, baseline, transfer);
+                return rebased with
+                {
+                    Holdings = new HoldingsBaseline(holdings, engineOrdersNotional, rebased.PeakEquity, rebased.Day, rebased.DayStartEquity),
+                };
+            });
+            if (transfer != 0m)
+                LogCapitalRebased(_logger, transfer, state.PeakEquity, state.DayStartEquity);
             _sentNotionalSinceReconcile = 0m;
             _extraAllowanceSinceReconcile = 0m;
         }
@@ -220,6 +232,26 @@ public sealed partial class ExecutionService
         }
 
         return (unexplained, allowance);
+    }
+
+    /// <summary>
+    /// <paramref name="state"/> with its drawdown peak and the day's starting equity moved by <paramref name="transfer"/>, the
+    /// value of a holdings change the fills don't explain. The peak moves from where it was at <paramref name="baseline"/>, as
+    /// the valuations since may already include the transfer; the next valuation raises it again for any real gain since.
+    /// Neither goes below 0. An older baseline without a peak leaves the peak alone on a deposit (it already counts the money)
+    /// and lowers it on a withdrawal.
+    /// </summary>
+    internal static EngineState RebasedForTransfer(EngineState state, HoldingsBaseline baseline, decimal transfer)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(baseline);
+        var peak = baseline.PeakEquity is { } before
+            ? Math.Max(0m, before + transfer)
+            : transfer > 0m ? state.PeakEquity : Math.Max(0m, state.PeakEquity + transfer);
+        // The day's start moves only within the day it was taken on: a new day starts from the equity after the transfer.
+        var sameDay = baseline.Day is null || baseline.Day == state.Day;
+        var dayStart = sameDay ? Math.Max(0m, state.DayStartEquity + transfer) : state.DayStartEquity;
+        return state with { PeakEquity = peak, DayStartEquity = dayStart };
     }
 
     /// <summary>
@@ -387,6 +419,9 @@ public sealed partial class ExecutionService
             }
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Holdings moved by {Transfer} beyond the fills: drawdown peak now {Peak}, day start {DayStart}")]
+    private static partial void LogCapitalRebased(ILogger logger, decimal transfer, decimal peak, decimal dayStart);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconciliation skipped: {Detail}")]
     private static partial void LogReconcileFailed(ILogger logger, string detail);

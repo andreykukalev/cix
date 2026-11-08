@@ -55,6 +55,38 @@ public sealed record ScannerParameters
     /// <summary>Largest order the scanner suggests (the risk gate still has the final say).</summary>
     public decimal OrderQuote { get; init; } = 5m;
 
+    /// <summary>
+    /// <see cref="RiskPerTradeQuote"/> as a share of the capital (ADR-0030): the engine turns it into money with
+    /// <see cref="AtCapital"/> before each scan, and the smaller of the two applies.
+    /// </summary>
+    public decimal? RiskPerTradeFraction { get; init; }
+
+    /// <summary><see cref="OrderQuote"/> as a share of the capital, from the spec's top-level <c>orderFraction</c>; the smaller applies.</summary>
+    public decimal? OrderFraction { get; init; }
+
+    /// <summary>True when the sizing is a share of the capital and must go through <see cref="AtCapital"/> before a scan suggests buys.</summary>
+    public bool ScalesWithCapital => RiskPerTradeFraction is not null || OrderFraction is not null;
+
+    /// <summary>
+    /// These parameters with the sizing in money for <paramref name="capital"/> (rounded down to the cent). Null when the
+    /// capital is too small to size anything: no buys then.
+    /// </summary>
+    public ScannerParameters? AtCapital(decimal capital)
+    {
+        if (!ScalesWithCapital)
+            return this;
+        static decimal Smaller(decimal quote, decimal? fraction, decimal capital) =>
+            fraction is { } f ? Math.Min(quote, Math.Round(f * Math.Max(0m, capital), 2, MidpointRounding.ToZero)) : quote;
+        var sized = this with
+        {
+            OrderQuote = Smaller(OrderQuote, OrderFraction, capital),
+            RiskPerTradeQuote = Smaller(RiskPerTradeQuote, RiskPerTradeFraction, capital),
+            OrderFraction = null,
+            RiskPerTradeFraction = null,
+        };
+        return sized.OrderQuote > 0 && sized.RiskPerTradeQuote > 0 ? sized : null;
+    }
+
     public int MaxEntrySignals { get; init; } = 2;
 
     /// <summary>
@@ -114,6 +146,8 @@ public sealed record ScannerParameters
             throw new InvalidOperationException("Scanner weights can't be negative.");
         if (EntryMaxAboveEma20Atr < 0 || StopAtr <= 0 || RewardRisk < 0 || RiskPerTradeQuote <= 0 || OrderQuote <= 0)
             throw new InvalidOperationException("Scanner entry, stop and sizing values must be positive, and rewardRisk at least 0 (0 means no target).");
+        if (RiskPerTradeFraction is <= 0 or > 0.05m || OrderFraction is <= 0 or > 1m)
+            throw new InvalidOperationException("Scanner riskPerTradeFraction must be above 0 and at most 0.05, and orderFraction above 0 and at most 1.");
         if (MaxEntrySignals is < 0 or > 10 || MinHourlyCandles24h is < 1 or > 24)
             throw new InvalidOperationException("Scanner MaxEntrySignals must be 0-10 and MinHourlyCandles24h 1-24.");
         if (Timeframe is not (Hourly or Daily))

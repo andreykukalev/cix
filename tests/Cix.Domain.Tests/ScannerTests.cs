@@ -489,4 +489,20 @@ public sealed class ScannerTests
         Assert.Equal("cooldown until 13:00 UTC", Assert.Single(result.Ranked, r => r.Symbol == "SOL-EUR").NoEntryReason);
         Assert.Equal("stop", Assert.Single(result.Exits).Reason);
     }
+
+    [Fact]
+    public void AtCapital_TurnsSharesIntoMoney_TheSmallerOfShareAndAmount()
+    {
+        var shares = Defaults with { OrderQuote = 100m, OrderFraction = 0.1m, RiskPerTradeQuote = 4m, RiskPerTradeFraction = 0.004m };
+
+        var small = shares.AtCapital(250m)!;
+        Assert.Equal((25m, 1m, false), (small.OrderQuote, small.RiskPerTradeQuote, small.ScalesWithCapital));
+        var large = shares.AtCapital(5000m)!;
+        Assert.Equal((100m, 4m), (large.OrderQuote, large.RiskPerTradeQuote));
+        Assert.Null(shares.AtCapital(0m)); // nothing to size: no buys
+        Assert.Same(Defaults, Defaults.AtCapital(250m)); // amounts only: as they are
+        Assert.Throws<InvalidOperationException>((Defaults with { RiskPerTradeFraction = 0.06m }).Validate);
+        Assert.Throws<InvalidOperationException>((Defaults with { OrderFraction = 0m }).Validate);
+    }
 }
+

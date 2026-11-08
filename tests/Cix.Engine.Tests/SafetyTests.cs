@@ -213,6 +213,46 @@ public sealed class HoldingsCheckTests
         Assert.True(rig.KillSwitch.IsEngaged);
     }
 
+    [Theory]
+    [InlineData(-50, 150)] // a withdrawal: the peak comes down with it, so it isn't a 25% drawdown
+    [InlineData(50, 250)] // a deposit: the peak goes up by it once, though the minute's valuation already saw the money
+    public async Task MoneyInOrOut_MovesTheDrawdownPeakAndTheDaysStart_NotTakenForALossOrAGain(int transfer, int expected)
+    {
+        var rig = new Rig();
+        for (var minute = 0; minute <= 4; minute++)
+        {
+            await rig.Monitor.CheckOnceAsync(CancellationToken.None); // values every minute, reconciles at minutes 0, 2 and 4
+            if (minute == 2)
+                rig.Exchange.ExtraBalances["EUR"] = transfer;
+            rig.Time.Advance(TimeSpan.FromMinutes(1));
+            rig.Quote(60_000.00m, 60_010.00m);
+        }
+
+        Assert.Equal((expected, expected), (rig.Store.Current.PeakEquity, rig.Store.Current.DayStartEquity));
+        Assert.StartsWith("Holdings changed", rig.KillSwitch.State.Reason, StringComparison.Ordinal); // the owner still looks at it
+        var snapshot = await rig.Execution.SampleAsync(CancellationToken.None);
+        Assert.Equal((expected, 0m), (snapshot!.PeakEquity, snapshot.PnlToday));
+    }
+
+    [Fact]
+    public void Rebase_StartsFromTheBaselinesPeak_AndKeepsANewDaysStart()
+    {
+        var day = DateOnly.FromDateTime(Rig.T0.UtcDateTime);
+        var state = new EngineState(new KillSwitchState(false, null, null, null), 300m, day, 200m);
+
+        var sameDay = ExecutionService.RebasedForTransfer(state, new HoldingsBaseline(new Dictionary<string, decimal>(), 0m, 200m, day, 200m), 100m);
+        Assert.Equal((300m, 300m), (sameDay.PeakEquity, sameDay.DayStartEquity));
+
+        var newDay = ExecutionService.RebasedForTransfer(state with { Day = day.AddDays(1) }, new HoldingsBaseline(new Dictionary<string, decimal>(), 0m, 200m, day, 200m), -100m);
+        Assert.Equal((100m, 200m), (newDay.PeakEquity, newDay.DayStartEquity)); // the new day started after the money left
+
+        // A baseline from before ADR-0030 has no peak: a deposit leaves the peak (it counts the money already), a withdrawal lowers it.
+        var older = new HoldingsBaseline(new Dictionary<string, decimal>(), 0m);
+        Assert.Equal(300m, ExecutionService.RebasedForTransfer(state, older, 100m).PeakEquity);
+        Assert.Equal(200m, ExecutionService.RebasedForTransfer(state, older, -100m).PeakEquity);
+        Assert.Equal((0m, 0m), ExecutionService.RebasedForTransfer(state, older, -1000m) is var empty ? (empty.PeakEquity, empty.DayStartEquity) : default);
+    }
+
     [Fact]
     public async Task LargerFills_GetAProportionalAllowance()
     {

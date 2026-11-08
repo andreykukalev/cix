@@ -291,7 +291,7 @@ public sealed partial class EngineStatusService(
         return new FiltersStatus(
             specs?.Active?.Label, recorded is not null && recorded.Filters == p ? recorded.Since : null,
             p.MinQuoteVolume24h, p.MaxSpreadFraction, p.MaxAtrFraction, p.MinAtrToCostRatio, p.MinHourlyCandles24h,
-            p.RequireUptrendPullback, p.TrendExits, p.MaxEntrySignals, p.OrderQuote, recorded?.LastChange);
+            p.RequireUptrendPullback, p.TrendExits, p.MaxEntrySignals, scanner.OrderQuoteNow ?? 0m, recorded?.LastChange);
     }
 
     private PortfolioStatus? Portfolio()

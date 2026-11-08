@@ -1,10 +1,13 @@
 {
   "Risk": {
     "AllocationQuote": 1000,
-    "MaxOrderQuote": 50,
-    "MaxPositionQuotePerSymbol": 50,
-    "MaxDailyLossQuote": 20,
-    "MaxDrawdownFraction": 0.10,
+    "MaxOrderQuote": 200,
+    "MaxPositionQuotePerSymbol": 200,
+    "MaxDailyLossQuote": 80,
+    "MaxOrderFraction": 0.20,
+    "MaxPositionFractionPerSymbol": 0.20,
+    "MaxDailyLossFraction": 0.08,
+    "MaxDrawdownFraction": 0.20,
     "MaxOrdersPerMinute": 5,
     "MaxPriceDeviationFraction": 0.01,
     "MaxEmergencySlippageFraction": 0.03,
