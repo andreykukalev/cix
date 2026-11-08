@@ -21,7 +21,7 @@ The live file becomes, on the owner's request: shares 20% per order, 20% per coi
 
 A falling capital never forces a sale. Caps that shrink with it only limit new buys; positions leave by their stops, targets and trend exits as before. The trim still runs once per switch.
 
-**Deposits and withdrawals.** The reconciliation already halts trading when the holdings change by more than the engine's fills explain ("deposit, withdrawal or outside trading?"), for the owner to look at. It now also moves the drawdown peak and the day's starting equity by that change, from the values recorded with the previous holdings baseline (the minute's valuation may already have raised the peak with a deposit). So after the owner resumes, a withdrawal is not a drawdown nor a daily loss, a deposit not a gain, and the limits follow the new capital. A withdrawal larger than 30% of the account may still trip the critical drawdown halt in the minute before the reconciliation sees it; the owner resumes it the same way.
+**Deposits and withdrawals.** The reconciliation already halts trading when the holdings change by more than the engine's fills explain ("deposit, withdrawal or outside trading?"), for the owner to look at. It now also moves the drawdown peak and the day's starting equity by that change, erring toward the tighter limit where the timing is unclear: a withdrawal lowers the current peak; a deposit raises the peak recorded with the previous holdings baseline (the minute's valuation may already have counted it), or keeps the current one if higher; on a new UTC day a deposit raises the day's start and a withdrawal leaves it; neither goes to 0. The move is journaled (kind `capital`, with the values before and after) and the halt reason says so, so the owner resumes knowing it. If the change was outside trading or a loss, the owner keeps trading paused. So after the owner resumes, a withdrawal is not a drawdown nor a daily loss, a deposit not a gain, and the limits follow the new capital. A withdrawal larger than 30% of the account may still trip the critical drawdown halt in the minute before the reconciliation sees it; the owner resumes it the same way.
 
 **swing.v2** (draft, for the owner to mark live) is swing.v1 with every amount a share: 0.4% of the capital at risk per trade, at most 10% per order and per coin, 40% in coins, an 8% daily loss stop, and the amounts beside them at their 1,000 EUR value (100, 4, 100 and 80), which never bind below 1,000 and keep the trader's order-size hook (the largest `orderQuote` of any spec) meaningful.
 
@@ -35,6 +35,7 @@ A falling capital never forces a sale. Caps that shrink with it only limit new b
 | Shares only, no amounts | The amounts are the owner's explicit ceiling at 1,000 EUR, and the trader's order-size hook reads `orderQuote`. |
 | Capital from the allocation only | It is the ceiling, not the money there is; 40% of 1,000 is more than 250. |
 | Measure the drawdown on equity net of transfers | Takes a running total of deposits and withdrawals; moving the peak by each transfer does the same with the state the engine already keeps. |
+| Move the baselines only when the owner confirms a transfer on resume | Safer against a loss read as a withdrawal, but a resume control and state for it; the halt, the journal entry and the reason text cover it for now. |
 | Recognise deposits without halting | The engine can't tell a deposit from outside trading or a mistake; the halt and the owner's look stay. |
 
 ## Consequences
@@ -42,4 +43,6 @@ A falling capital never forces a sale. Caps that shrink with it only limit new b
 - Limits move with the market as well as with deposits: after a loss the next order is a little smaller, after a gain a little larger. Rounded down to the cent.
 - swing.v1, still live, gets the capital-based exposure cap; its fixed amounts (50 per order and coin, 20 daily) stay and now sit under the 20% shares at 250 EUR.
 - A later scaling law (progressive, stepped) replaces `Scaled` in `RiskLimits` and `StrategyLimits.At`; the specs and files stay as they are.
+- An unexplained loss (outside trading, a stolen key) is also moved out of the drawdown and daily loss once the owner resumes; the halt, its reason and the `capital` journal entry are what tell it apart.
+- The trader's order-size hook bounds buys by the largest `orderQuote` of any spec: swing.v2's 100 raises it from 55 to 110 EUR. The engine's limits (20% of the capital) stay the real bound.
 - The rally, crash and burst plays (the next pull request) size from the same capital.

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Cix.Domain;
 using Cix.Domain.Exchange;
 
@@ -47,6 +48,9 @@ public sealed partial class ExecutionService
     public async Task<ReconcileReport> ReconcileAsync(CancellationToken cancellationToken)
     {
         ReconcileReport report;
+        decimal? unexplained;
+        decimal allowance;
+        CapitalRebase? rebase = null;
         HashSet<string>? openForFills = null;
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -142,14 +146,15 @@ public sealed partial class ExecutionService
                 .Where(o => o.IsOpen && (known.Contains(o.ClientOrderId) || pendingIds.Contains(o.ClientOrderId)))
                 .Sum(o => o.Quantity * (o.Price ?? 0m));
             var hadBaseline = _store.Current.Holdings is not null;
-            var (unexplained, allowance) = await CheckHoldingsAsync(holdings, engineOrdersNotional, cancellationToken).ConfigureAwait(false);
+            (unexplained, allowance, rebase) = await CheckHoldingsAsync(holdings, engineOrdersNotional, cancellationToken).ConfigureAwait(false);
             await PrunePositionPlansAsync(holdings, openIds, pendingIds, now, cancellationToken).ConfigureAwait(false);
 
             string? reason = null;
             if (unknown.Count > 0)
                 reason = $"Open orders the engine didn't send: {string.Join(", ", unknown.Take(5))}{(unknown.Count > 5 ? ", ..." : "")}.";
             else if (unexplained is { } change && Math.Abs(change) > allowance)
-                reason = $"Holdings changed by {change:0.##} in quote currency, more than the engine's fills can explain ({allowance:0.##}): deposit, withdrawal or outside trading?";
+                reason = $"Holdings changed by {change:0.##} in quote currency, more than the engine's fills can explain ({allowance:0.##}): deposit, withdrawal or outside trading?"
+                    + (rebase is null ? "" : " The drawdown peak and today's start moved with it, so after a resume it counts as money in or out, not as a gain or a loss; if it wasn't a deposit or withdrawal, keep trading paused.");
 
             report = new ReconcileReport(unknown, resolved, dropped, unexplained, reason);
             var holdingsCompared = !hadBaseline || unexplained is not null;
@@ -174,6 +179,20 @@ public sealed partial class ExecutionService
         }
 
         // Bookkeeping last, outside the lock, so it never delays the checks or the kill switch.
+        if (rebase is { } moved)
+        {
+            await RecordAsync("capital", ReconcilerBy,
+                string.Create(CultureInfo.InvariantCulture, $"Holdings moved by {moved.Transfer:0.##} beyond the fills: drawdown peak {moved.Before.PeakEquity:0.##} -> {moved.After.PeakEquity:0.##}, day start {moved.Before.DayStartEquity:0.##} -> {moved.After.DayStartEquity:0.##} (ADR-0030)"),
+                new Dictionary<string, string>
+                {
+                    ["transfer"] = moved.Transfer.ToString(CultureInfo.InvariantCulture),
+                    ["peakBefore"] = moved.Before.PeakEquity.ToString(CultureInfo.InvariantCulture),
+                    ["peakAfter"] = moved.After.PeakEquity.ToString(CultureInfo.InvariantCulture),
+                    ["dayStartBefore"] = moved.Before.DayStartEquity.ToString(CultureInfo.InvariantCulture),
+                    ["dayStartAfter"] = moved.After.DayStartEquity.ToString(CultureInfo.InvariantCulture),
+                }).ConfigureAwait(false);
+        }
+
         if (openForFills is not null)
             await JournalFinishedOrdersAsync(openForFills, cancellationToken).ConfigureAwait(false);
         return report;
@@ -183,7 +202,10 @@ public sealed partial class ExecutionService
     /// Values the change since the persisted baseline. The baseline moves forward only after a successful comparison,
     /// so a change during a stale-price gap or a restart is still compared later rather than absorbed.
     /// </summary>
-    private async Task<(decimal? Unexplained, decimal Allowance)> CheckHoldingsAsync(
+    /// <summary>The drawdown peak and the day's start before and after a deposit or withdrawal moved them.</summary>
+    private sealed record CapitalRebase(decimal Transfer, EngineState Before, EngineState After);
+
+    private async Task<(decimal? Unexplained, decimal Allowance, CapitalRebase? Rebase)> CheckHoldingsAsync(
         Dictionary<string, decimal> holdings,
         decimal engineOrdersNotional,
         CancellationToken cancellationToken)
@@ -205,24 +227,30 @@ public sealed partial class ExecutionService
             }
 
             if (unexplained is null)
-                return (null, allowance); // keep the old baseline until a comparison succeeds
+                return (null, allowance, null); // keep the old baseline until a comparison succeeds
         }
 
         // More than the fills explain is money in or out (or outside trading, which halts below either way): the drawdown and
         // daily-loss baselines move with it, so a withdrawal is never taken for a loss nor a deposit for a gain (ADR-0030).
         var transfer = unexplained is { } moved && Math.Abs(moved) > allowance ? moved : 0m;
+        CapitalRebase? rebase = null;
         try
         {
+            EngineState? before = null;
             var state = _store.Update(s =>
             {
+                before = s;
                 var rebased = transfer == 0m || baseline is null ? s : RebasedForTransfer(s, baseline, transfer);
                 return rebased with
                 {
                     Holdings = new HoldingsBaseline(holdings, engineOrdersNotional, rebased.PeakEquity, rebased.Day, rebased.DayStartEquity),
                 };
             });
-            if (transfer != 0m)
+            if (transfer != 0m && baseline is not null && before is not null)
+            {
+                rebase = new CapitalRebase(transfer, before, state);
                 LogCapitalRebased(_logger, transfer, state.PeakEquity, state.DayStartEquity);
+            }
             _sentNotionalSinceReconcile = 0m;
             _extraAllowanceSinceReconcile = 0m;
         }
@@ -231,27 +259,35 @@ public sealed partial class ExecutionService
             LogStateWriteFailed(_logger, ex.Message);
         }
 
-        return (unexplained, allowance);
+        return (unexplained, allowance, rebase);
     }
 
     /// <summary>
     /// <paramref name="state"/> with its drawdown peak and the day's starting equity moved by <paramref name="transfer"/>, the
-    /// value of a holdings change the fills don't explain. The peak moves from where it was at <paramref name="baseline"/>, as
-    /// the valuations since may already include the transfer; the next valuation raises it again for any real gain since.
-    /// Neither goes below 0. An older baseline without a peak leaves the peak alone on a deposit (it already counts the money)
-    /// and lowers it on a withdrawal.
+    /// value of a holdings change the fills don't explain. Where the timing is unclear it errs toward the tighter limit.
+    /// <list type="bullet">
+    /// <item>A withdrawal never raised the peak, so the current peak comes down by it. A deposit may already be in the peak
+    /// (the minute's valuation saw the money), so the peak becomes the baseline's peak plus the deposit, or the current peak if
+    /// higher. A baseline from before ADR-0030 has no peak: a deposit then leaves the peak as it is.</item>
+    /// <item>Within the baseline's day the day's start moves by the transfer. On a new day a deposit still raises it (it may
+    /// have come after the day's first valuation) and a withdrawal leaves it, so neither can widen today's loss limit.</item>
+    /// <item>Neither goes to 0 or below: the old value stays, as 0 would turn the drawdown or the daily loss check off.</item>
+    /// </list>
     /// </summary>
     internal static EngineState RebasedForTransfer(EngineState state, HoldingsBaseline baseline, decimal transfer)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(baseline);
-        var peak = baseline.PeakEquity is { } before
-            ? Math.Max(0m, before + transfer)
-            : transfer > 0m ? state.PeakEquity : Math.Max(0m, state.PeakEquity + transfer);
-        // The day's start moves only within the day it was taken on: a new day starts from the equity after the transfer.
+        var peak = transfer < 0m ? state.PeakEquity + transfer
+            : baseline.PeakEquity is { } before ? Math.Max(before + transfer, state.PeakEquity)
+            : state.PeakEquity;
         var sameDay = baseline.Day is null || baseline.Day == state.Day;
-        var dayStart = sameDay ? Math.Max(0m, state.DayStartEquity + transfer) : state.DayStartEquity;
-        return state with { PeakEquity = peak, DayStartEquity = dayStart };
+        var dayStart = sameDay || transfer > 0m ? state.DayStartEquity + transfer : state.DayStartEquity;
+        return state with
+        {
+            PeakEquity = peak > 0m ? peak : state.PeakEquity,
+            DayStartEquity = dayStart > 0m ? dayStart : state.DayStartEquity,
+        };
     }
 
     /// <summary>
