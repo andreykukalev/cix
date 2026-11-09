@@ -46,6 +46,30 @@ public sealed class StrategySchemaTests
         Assert.Empty(StrategySchema.Validate(Load(name, version), Limits, TradingMode.Paper));
 
     [Fact]
+    public void EverySpecFilesNumbers_ReadBackFromTheDatabaseAsWritten()
+    {
+        // The database keeps numbers as doubles and returns them in their shortest form, so "1.0" comes back as "1": the
+        // copy's hash then differs from the file's and the engine refuses the switch (swing v3, 2026-11-09).
+        static IEnumerable<string> Numbers(JsonElement e) => e.ValueKind switch
+        {
+            JsonValueKind.Object => e.EnumerateObject().SelectMany(p => Numbers(p.Value)),
+            JsonValueKind.Array => e.EnumerateArray().SelectMany(Numbers),
+            JsonValueKind.Number => [e.GetRawText()],
+            _ => [],
+        };
+
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(AppContext.BaseDirectory, "strategies"), "*.json"))
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(file));
+            foreach (var raw in Numbers(doc.RootElement))
+            {
+                var shortest = double.Parse(raw, System.Globalization.CultureInfo.InvariantCulture).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                Assert.True(raw == shortest, $"{Path.GetFileName(file)}: write {raw} as {shortest}, as the database returns it.");
+            }
+        }
+    }
+
+    [Fact]
     public void EverySpecFileMarkedLiveOrDrafted_FitsTheLiveLimitsFile()
     {
         // The live engine skips a live spec its limits refuse with only a log line; drafts are the owner's next candidates.

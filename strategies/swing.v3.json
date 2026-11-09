@@ -14,7 +14,7 @@
     "entryCooldownMinutes": 0,
     "maxPositionFractionPerSymbol": 0.1,
     "maxPositionQuotePerSymbol": 100,
-    "maxExposureFraction": 1.0,
+    "maxExposureFraction": 1,
     "scanner": {
       "fastEmaPeriod": 10,
       "slowEmaPeriod": 50,
