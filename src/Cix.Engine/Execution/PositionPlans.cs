@@ -11,7 +11,9 @@ public sealed record PositionPlan(
     decimal? EntryPrice,
     DateTimeOffset? FilledAt,
     decimal? StopLoss,
-    decimal? TakeProfit);
+    decimal? TakeProfit,
+    string? Play = null,
+    DateTimeOffset? ExitBy = null);
 
 /// <summary>
 /// Joins sellable positions with their plans: from the engine state (written before the buy was sent, so it survives any
@@ -60,7 +62,7 @@ public static class PositionPlans
             {
                 return new PositionPlan(
                     symbol, portfolio.Snapshot.PositionQuoteBySymbol[symbol], sellable[symbol],
-                    state.EntryPrice, state.FilledAt, state.StopLoss, state.TakeProfit);
+                    state.EntryPrice, state.FilledAt, state.StopLoss, state.TakeProfit, state.Play, state.ExitBy);
             }
 
             // Newest first: the latest buy fill for this symbol is the position's entry.
@@ -74,7 +76,10 @@ public static class PositionPlans
                 Number(fill?.Data?.GetValueOrDefault("averagePrice")),
                 fill?.At,
                 Number(order?.Data?.GetValueOrDefault("stopLoss") ?? fill?.Data?.GetValueOrDefault("stopLoss")),
-                Number(order?.Data?.GetValueOrDefault("takeProfit") ?? fill?.Data?.GetValueOrDefault("takeProfit")));
+                Number(order?.Data?.GetValueOrDefault("takeProfit") ?? fill?.Data?.GetValueOrDefault("takeProfit")),
+                // A play's buy (ADR-0031) keeps its play and its time to sell by, so it isn't taken for the strategy's own.
+                order?.Data?.GetValueOrDefault("play") is { Length: > 0 } play ? play : null,
+                DateTimeOffset.TryParse(order?.Data?.GetValueOrDefault("exitBy"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var exitBy) ? exitBy : null);
         }).ToList();
     }
 

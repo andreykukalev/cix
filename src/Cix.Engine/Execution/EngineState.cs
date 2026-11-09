@@ -46,7 +46,9 @@ public sealed record SentOrder(
     decimal? TakeProfit = null,
     string? RunId = null,
     string? Strategy = null,
-    string? ExitReason = null);
+    string? ExitReason = null,
+    string? Play = null,
+    DateTimeOffset? ExitBy = null);
 
 /// <summary>
 /// The plan for a position: the stop and target given with the buy that opened it. Written before that buy is sent, so a
@@ -54,6 +56,8 @@ public sealed record SentOrder(
 /// </summary>
 /// <param name="Status"><see cref="EntryPending"/> until the buy fills, then <see cref="Open"/>.</param>
 /// <param name="EntryClientOrderId">The buy behind the plan (see <see cref="SentOrder"/> and the journal's <c>order</c> and <c>fill</c> entries).</param>
+/// <param name="Play">The play that opened the position (ADR-0031), or null for the strategy's own entries.</param>
+/// <param name="ExitBy">When the engine sells a play's position whatever its price.</param>
 /// <param name="PendingClientOrderId">
 /// A further buy for an open position, not filled yet. Its stop and target (<paramref name="PendingStopLoss"/>,
 /// <paramref name="PendingTakeProfit"/>) replace the plan's only once it fills, so a buy that never fills can't move the stop.
@@ -71,7 +75,9 @@ public sealed record PositionPlanState(
     string? RunId = null,
     string? PendingClientOrderId = null,
     decimal? PendingStopLoss = null,
-    decimal? PendingTakeProfit = null)
+    decimal? PendingTakeProfit = null,
+    string? Play = null,
+    DateTimeOffset? ExitBy = null)
 {
     public const string EntryPending = "entry-pending";
     public const string Open = "open";
@@ -134,7 +140,7 @@ public sealed record EngineState(
         if (!hasPlan)
             return open is null ? next : next.WithoutPlans([order.Symbol]); // the old position's levels don't belong to this one
         var plan = new PositionPlanState(order.Symbol, PositionPlanState.EntryPending, order.ClientOrderId, order.StopLoss, order.TakeProfit, order.SentAt,
-            Strategy: order.Strategy, RunId: order.RunId);
+            Strategy: order.Strategy, RunId: order.RunId, Play: order.Play, ExitBy: order.ExitBy);
         return next with { Positions = next.WithPlan(order.Symbol, plan) };
     }
 

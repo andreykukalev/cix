@@ -433,6 +433,8 @@ public sealed partial class ExecutionService
                     data["takeProfit"] = target.ToString(inv);
                 if (sent.ExitReason is { } why)
                     data["exitReason"] = why;
+                if (sent.Play is { } play)
+                    data["play"] = play;
             }
 
             recorded = recorded || await RecordAsync(

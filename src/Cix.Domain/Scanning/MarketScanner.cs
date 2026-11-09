@@ -165,7 +165,10 @@ public sealed record ScannerParameters
 
 /// <summary>A position the account holds, with the plan recorded when it was bought (null when unknown).</summary>
 /// <param name="FilledAt">When the buy behind it filled, for a trailing stop; null when unknown.</param>
-public sealed record HeldPosition(string Symbol, decimal SellableBaseSize, decimal? StopLoss, decimal? TakeProfit, DateTimeOffset? FilledAt = null);
+/// <param name="Play">The play that opened it (ADR-0031): no trend exit and no trailing stop, only its stop and its time.</param>
+/// <param name="ExitBy">When a play's position is sold whatever its price.</param>
+public sealed record HeldPosition(
+    string Symbol, decimal SellableBaseSize, decimal? StopLoss, decimal? TakeProfit, DateTimeOffset? FilledAt = null, string? Play = null, DateTimeOffset? ExitBy = null);
 
 /// <summary>
 /// Everything the scanner needs about one universe symbol. <paramref name="Hourly"/> and <paramref name="Daily"/> are closed
@@ -212,7 +215,9 @@ public sealed record EntrySignal(
     decimal StopLoss,
     decimal? TakeProfit,
     decimal RiskQuote,
-    string Reason);
+    string Reason,
+    string? Play = null,
+    DateTimeOffset? ExitBy = null);
 
 /// <summary>A suggested exit: sell the whole sellable size with a limit at the bid. None while the symbol has an open order.</summary>
 public sealed record ExitSignal(string Symbol, decimal BaseSize, decimal LimitPrice, string Reason, string Detail);
@@ -221,13 +226,15 @@ public sealed record ExitSignal(string Symbol, decimal BaseSize, decimal LimitPr
 public sealed record StopRaise(string Symbol, decimal From, decimal To, string Detail);
 
 /// <param name="StopRaises">Trailing-stop raises for held positions; null or empty when the strategy trails none.</param>
+/// <param name="Plays">How each of the strategy's plays stands (ADR-0031); null when it runs none. Their buys are among <paramref name="Entries"/>.</param>
 public sealed record ScanResult(
     DateTimeOffset AsOf,
     IReadOnlyList<ScanRow> Ranked,
     IReadOnlyList<ScanExclusion> Excluded,
     IReadOnlyList<EntrySignal> Entries,
     IReadOnlyList<ExitSignal> Exits,
-    IReadOnlyList<StopRaise>? StopRaises = null);
+    IReadOnlyList<StopRaise>? StopRaises = null,
+    IReadOnlyList<PlayStatus>? Plays = null);
 
 /// <summary>
 /// Deterministic market scan (ADR-0006): filters a curated universe for liquidity, spread, volatility and cost, ranks what
@@ -322,7 +329,7 @@ public static partial class MarketScanner
         var inputsBySymbol = inputs.ToDictionary(i => i.Symbol, StringComparer.Ordinal);
         var exits = held.OrderBy(h => h.Symbol, StringComparer.Ordinal)
             .Select(h => inputsBySymbol.GetValueOrDefault(h.Symbol) is { HasOpenOrder: false } input
-                ? Exit(h, input.Features, parameters.TrendExits, daily, daily ? DailyTrendDown(input, parameters, now) : null)
+                ? Exit(h, input.Features, parameters.TrendExits, daily, daily ? DailyTrendDown(input, parameters, now) : null, now)
                 : null)
             .OfType<ExitSignal>()
             .ToList();
@@ -492,7 +499,7 @@ public static partial class MarketScanner
 
     /// <param name="daily">A daily strategy: its trend exit is <paramref name="dailyTrendDown"/>, not the fast EMA below the slow one.</param>
     /// <param name="dailyTrendDown">The detail when the last daily close is below the slow EMA, or null when it isn't (or can't be told).</param>
-    private static ExitSignal? Exit(HeldPosition h, FeatureSet? f, bool trendExits, bool daily = false, string? dailyTrendDown = null)
+    private static ExitSignal? Exit(HeldPosition h, FeatureSet? f, bool trendExits, bool daily = false, string? dailyTrendDown = null, DateTimeOffset? now = null)
     {
         if (f is null || f.IsStale || f.Bid is not > 0 || h.SellableBaseSize <= 0)
             return null; // no fresh price: nothing to judge (the stale exclusion shows why)
@@ -502,6 +509,11 @@ public static partial class MarketScanner
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "stop", Inv($"bid {bid} at or below stop {stop}"));
         if (h.TakeProfit is { } target && bid >= target)
             return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "target", Inv($"bid {bid} at or above target {target}"));
+        // A play's position leaves at its stop or when its time is up (ADR-0031), never on the strategy's trend rules.
+        if (h.ExitBy is { } by && now >= by)
+            return new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "time", Inv($"the {h.Play ?? "position"}'s holding time ended at {by.UtcDateTime:yyyy-MM-dd HH:mm} UTC"));
+        if (h.Play is not null)
+            return null;
         // Without trend exits a position relies on its stop; one without a recorded stop still leaves on a downtrend.
         if (daily)
             return dailyTrendDown is not null && (trendExits || h.StopLoss is null) ? new ExitSignal(h.Symbol, h.SellableBaseSize, bid, "trend-down", dailyTrendDown) : null;

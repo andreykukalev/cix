@@ -55,8 +55,11 @@ public enum CancelOutcome
 /// request the trader agreed to) or <c>engine</c>.
 /// </param>
 /// <param name="ExitReason">For a sell, why it exits (<see cref="ExitReasons"/>); journaled with its fill as <c>exitReason</c>.</param>
+/// <param name="Play">For a buy, the play that opened it (<c>burst</c>, <c>rally</c>, <c>crash</c>; ADR-0031), or null for the strategy's own entries.</param>
+/// <param name="ExitBy">For a play's buy, when the engine sells the position whatever its price (the play's holding time).</param>
 public sealed record OrderContext(
-    string Source, decimal? StopLoss = null, decimal? TakeProfit = null, string? RunId = null, string? Strategy = null, string? ExitReason = null);
+    string Source, decimal? StopLoss = null, decimal? TakeProfit = null, string? RunId = null, string? Strategy = null, string? ExitReason = null,
+    string? Play = null, DateTimeOffset? ExitBy = null);
 
 /// <summary>
 /// Why a sell was placed, as one field of its fill in the journal (<c>exitReason</c>), so a report tells a stop from a target,
@@ -72,6 +75,9 @@ public static class ExitReasons
 
     /// <summary>The strategy trimming positions over its exposure cap.</summary>
     public const string Trim = "trim";
+
+    /// <summary>A play's position held for its time (ADR-0031): the engine sells it whatever the price.</summary>
+    public const string Time = "time";
 
     /// <summary>The trader agent's own sell (<c>place_order</c>): a trend exit or its judgement.</summary>
     public const string Agent = "agent";
@@ -888,7 +894,10 @@ public sealed partial class ExecutionService : IActiveSymbolSource
         var sent = new SentOrder(
             order.ClientOrderId, order.Symbol, SideName(order.Side), order.BaseSize, order.LimitPrice, _time.GetUtcNow(),
             context?.Source ?? "engine", StopLoss: context?.StopLoss, TakeProfit: context?.TakeProfit, RunId: context?.RunId, Strategy: context?.Strategy,
-            ExitReason: order.Side == OrderSide.Sell ? context?.ExitReason : null);
+            ExitReason: order.Side == OrderSide.Sell ? context?.ExitReason : null,
+            // A sell carries the play of the position it sells, so the play's results add up from the journal's fills.
+            Play: order.Side == OrderSide.Buy ? context?.Play : _store.Current.Plans.GetValueOrDefault(order.Symbol)?.Play,
+            ExitBy: order.Side == OrderSide.Buy ? context?.ExitBy : null);
         try
         {
             _store.Update(s => s.WithSent(sent, holdsPosition));

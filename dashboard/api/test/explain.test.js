@@ -49,6 +49,25 @@ test('swing entries read the daily breakout and have no target', () => {
   assert.ok(explain(exit, 'ru').points.includes('Подробности: дневное закрытие опустилось на 1.2% ниже EMA50'));
 });
 
+test('play entries say which play and when it sells, and a time exit says the time ended', () => {
+  const burst = { ...ENTRY, data: { ...ENTRY.data, symbol: 'SOL-EUR', stopLoss: '93.5', takeProfit: undefined, approvedPrice: '102', requestedPrice: '102', play: 'burst',
+    rationale: 'signal entry SOL-EUR rank 1: volume burst: the hour to 12:00 UTC closed above the 96-hour high on 5.2x the average volume (Binance); hold 72 h, stop 4 hourly ATR below; stop 93.5, risk 1.3' } };
+  assert.deepEqual(own(burst).points.slice(0, 2), [
+    'Volume burst on Binance: the hour to 12:00 UTC closed above the 96-hour high on 5.2× the average volume',
+    'Play: sold after 72 hours or at a stop 4 hourly ATR below, whichever comes first',
+  ]);
+  assert.equal(explain(burst, 'ru').points[1], 'Игра: продажа через 72 часов или по стопу на 4 часовых ATR ниже, что наступит раньше');
+
+  const rally = { ...ENTRY, data: { ...ENTRY.data, symbol: 'ETH-EUR', stopLoss: '2640', takeProfit: undefined, approvedPrice: '3000', requestedPrice: '3000', play: 'rally',
+    rationale: 'signal entry ETH-EUR rank 2: BTC rally: BTC +14% over 3 days to the last daily close (the rally play starts at +13%); hold 30 days, stop 12% below; stop 2640, risk 6.1' } };
+  assert.deepEqual(own(rally).points.slice(0, 2), ['BTC rally: +14% over 3 days (the play starts at +13%)', 'Play: sold after 30 days or at a stop 12% below, whichever comes first']);
+  assert.deepEqual(explain(rally, 'ru').points.slice(0, 2), ['Ралли BTC: +14% за 3 дня (игра начинается от +13%)', 'Игра: продажа через 30 дней или по стопу на 12% ниже, что наступит раньше']);
+
+  const time = { actor: 'engine', data: { tool: 'protective-exit', symbol: 'SOL-EUR', side: 'sell', status: 'placed', rule: 'ok', rationale: "protective exit SOL-EUR time: the burst's holding time ended at 2026-11-12 13:00 UTC" } };
+  assert.equal(own(time).headline, "Sell SOL-EUR: the play's holding time ended (ADR-0031)");
+  assert.ok(explain(time, 'ru').points.includes('Подробности: время удержания игры «всплеск» истекло 2026-11-12 13:00 UTC'));
+});
+
 test('exits name their reason, with the detail', () => {
   const stop = { actor: 'engine', data: { tool: 'protective-exit', symbol: 'UNI-EUR', side: 'sell', status: 'placed', rule: 'ok', rationale: 'protective exit UNI-EUR stop: bid 6.10 at or below stop 6.12' } };
   assert.equal(own(stop).headline, "Sell UNI-EUR: the price fell to the position's stop-loss");

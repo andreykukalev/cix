@@ -552,6 +552,7 @@
     'at the stop-loss': 'достигнут stop-loss',
     'at the take-profit': 'достигнут take-profit',
     'the trend turned down': 'тренд развернулся вниз',
+    'the play\'s holding time ended': 'истекло время удержания игры',
     'the market filters dropped it before ranking (trading volume, spread, volatility, costs, too few prices, or not a tradable pair), with the figure and the limit.':
       'рыночные фильтры убрали её до ранжирования (объём торгов, спред, волатильность, издержки, слишком мало цен или пара не торгуется); указаны значение и предел.',
     "ranked, but the strategy's entry rules turned it down (trend, pullback, last hour).":
@@ -722,6 +723,10 @@
       'Дневная свинг-стратегия v1 (ADR-0029), с размерами от капитала (ADR-0030): каждая сумма — доля стоимости счёта в деньгах и монетах, но не больше выделенных 1000 EUR, так что она растёт и уменьшается с пополнениями, выводами, прибылью и убытками. Покупает монету, когда её дневное закрытие пробивает максимум за 20 дней в дневном восходящем тренде и пока BTC выше своей 100-дневной EMA, и держит её неделями за подтягивающимся стопом.',
     'Moderate. About 0.4% of the capital at risk per trade (3 daily ATRs to the stop), at most 10% of the capital per coin and 40% in coins, a daily loss stop of 8% of the day\'s starting capital. With 250 EUR: about 1 EUR at risk, at most 25 EUR per coin. Backtest 2024 to 11.2026: +5.6% a year, worst drawdown 8%, about 3 trades a month, 45% winners. Losses are limited by stops, not prevented; months without trades are normal when BTC is weak.':
       'Умеренный. Около 0,4% капитала риска на сделку (3 дневных ATR до стопа), не больше 10% капитала в одной монете и 40% в монетах, дневной стоп по убытку 8% капитала на начало дня. При 250 EUR: около 1 EUR риска, не больше 25 EUR в одной монете. Бэктест 2024 – 11.2026: +5,6% в год, худшая просадка 8%, около 3 сделок в месяц, 45% прибыльных. Стопы ограничивают убытки, но не исключают их; месяцы без сделок нормальны, когда BTC слаб.',
+    'The consolidated strategy (ADR-0031): the daily swing of v2 sized from the capital, plus three plays judged on Binance\'s candles and bought on Revolut X. Burst: a coin whose hourly close breaks its 96-hour high on four times its usual volume while BTC is above its 100-day EMA, held 72 hours. Rally: after BTC rises 13% in three days, a basket of six large coins held 30 days. Crash: after BTC falls 15% in three days, the same basket held 14 days.':
+      'Консолидированная стратегия (ADR-0031): дневной свинг v2 с размерами от капитала плюс три игры, которые оцениваются по свечам Binance, а покупаются на Revolut X. Всплеск: монета, чьё часовое закрытие пробивает максимум за 96 часов при объёме в четыре раза выше обычного, пока BTC выше своей 100-дневной EMA; держится 72 часа. Ралли: после роста BTC на 13% за три дня корзина из шести крупных монет держится 30 дней. Обвал: после падения BTC на 15% за три дня та же корзина держится 14 дней.',
+    'Higher than swing alone, not a casino. Swing: 0.4% of the capital at risk per trade, at most 40% in its coins. Plays: 6% of the capital per buy, up to four bursts and one BTC event (six coins) at a time, stops 4 hourly ATR (burst), 12% (rally), 25% (crash); no new play once the plays have lost 18% of the capital. Backtest: bursts +2.5 to 3.3% a trade over 12 months at Revolut prices, 2-3 a week while BTC is above its EMA100; BTC events a few times a year.':
+      'Выше, чем у одного свинга, но не казино. Свинг: 0,4% капитала риска на сделку, не больше 40% в его монетах. Игры: 6% капитала на покупку, одновременно до четырёх всплесков и одно событие BTC (шесть монет), стопы 4 часовых ATR (всплеск), 12% (ралли), 25% (обвал); новых игр нет, когда игры вместе потеряли 18% капитала. Бэктест: всплески +2,5 – 3,3% за сделку за 12 месяцев по ценам Revolut, 2 – 3 в неделю, пока BTC выше EMA100; события BTC несколько раз в год.',
     'Trend indicators': 'Индикаторы тренда',
     'Entry conditions': 'Условия входа',
     'Position size': 'Размер позиции',
@@ -1194,7 +1199,7 @@
   const PATTERNS = [
     [/^The [\w ]+ could not be completed right now\.$/, () => 'Сейчас не получилось: попробуйте позже.'],
     [/^trend (up|down|flat|unknown)$/, (m) => `тренд: ${{ up: 'вверх', down: 'вниз', flat: 'боковой', unknown: 'неизвестен' }[m[1]]}`],
-    [/^sell \((stop|target|trend-down)\)$/, (m) => `продажа (${{ stop: 'стоп', target: 'цель', 'trend-down': 'тренд вниз' }[m[1]]})`],
+    [/^sell \((stop|target|trend-down|time)\)$/, (m) => `продажа (${{ stop: 'стоп', target: 'цель', 'trend-down': 'тренд вниз', time: 'время вышло' }[m[1]]})`],
     [/^extended: ([\d.]+) ATR above EMA20$/, (m) => `перегрета: на ${m[1]} ATR выше EMA20`],
     [/^extended: ([\d.]+) ATR above the breakout close$/, (m) => `перегрета: на ${m[1]} ATR выше закрытия пробоя`],
     [/^regime: BTC below EMA(\d+)$/, (m) => `режим: BTC ниже EMA${m[1]}`],

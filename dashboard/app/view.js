@@ -481,7 +481,7 @@
   }
 
   // The scanner's signal key (buy:SOL-EUR|sell:BTC-EUR:stop|stale-order:ETH-EUR), the items the next trader run acts on.
-  const SELL_REASONS = { stop: 'at the stop-loss', target: 'at the take-profit', 'trend-down': 'the trend turned down' };
+  const SELL_REASONS = { stop: 'at the stop-loss', target: 'at the take-profit', 'trend-down': 'the trend turned down', time: "the play's holding time ended" };
 
   /** The signal key as one item per coin, buys first: its kind (buy, sell or stale), the coin and a sentence for its title. */
   function signalItems(key) {

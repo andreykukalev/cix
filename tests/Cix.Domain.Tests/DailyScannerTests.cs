@@ -251,6 +251,26 @@ public sealed class DailyScannerTests
     }
 
     [Fact]
+    public void PlayPosition_LeavesAtItsStopOrItsTime_NeverOnTheTrend_AndItsStopDoesNotTrail()
+    {
+        var weak = Daily(120, i => i < 100 ? (50m + (0.4m * i), 51m + (0.4m * i), 49m + (0.4m * i)) : (89.6m - (i - 99), 90.6m - (i - 99), 88.6m - (i - 99)));
+        var filled = Now.AddDays(-15);
+        HeldPosition Play(DateTimeOffset exitBy) => new("SOL-EUR", 0.3m, 60m, null, filled, MarketPlays.Rally, exitBy);
+
+        // The daily trend is down, which sells a swing position; a play's position stays.
+        Assert.Empty(Scan([Sol(weak, bid: 68.95m, ask: 69.05m), Btc()], [Play(Now.AddDays(1))]).Exits);
+        // Its stop is not trailed, though a swing position's is (above).
+        Assert.Empty(Scan([Sol(), Btc()], [Play(Now.AddDays(1))]).StopRaises!);
+        // Its stop still sells it.
+        Assert.Equal("stop", Assert.Single(Scan([Sol(bid: 59.95m, ask: 60.05m), Btc()], [Play(Now.AddDays(1))]).Exits).Reason);
+
+        // Once its time is up it is sold at the bid, whatever the price.
+        var exit = Assert.Single(Scan([Sol(), Btc()], [Play(Now.AddMinutes(-1))]).Exits);
+        Assert.Equal(("time", 0.3m, 96.95m), (exit.Reason, exit.BaseSize, exit.LimitPrice));
+        Assert.Equal("the rally's holding time ended at 2026-10-23 11:59 UTC", exit.Detail);
+    }
+
+    [Fact]
     public void HourlyStrategy_WithoutATarget_BuysWithAStopOnly()
     {
         var features = new FeatureSet("SOL-EUR", Now, false, 100m, 99.95m, 100.05m, 0.001m, Trend.Up, 99.8m, 98m, 1.5m, 0.015m, 0.002m, 0.03m,
