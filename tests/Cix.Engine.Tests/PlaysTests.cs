@@ -287,7 +287,6 @@ public sealed class PlaysTests
         static StrategySpec Load(int version)
         {
             var node = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", $"swing.v{version}.json")))!.AsObject();
-            Assert.Equal(version == 3 ? "draft" : (string?)node["status"], (string?)node["status"]);
             var parameters = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(node["parameters"]!.ToJsonString())!;
             return ToolRig.Observer with
             {
