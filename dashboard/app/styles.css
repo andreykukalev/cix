@@ -98,6 +98,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   margin: 0; padding: 10px 14px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); border: 1px solid var(--line);
 }
 .banner.bad { background: var(--bad-bg); color: var(--bad); }
+.switch-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.switch-banner[hidden] { display: none; }
 .coins-change { margin-bottom: 10px; }
 .coins-change ul { margin: 6px 0; padding-left: 18px; }
 .badge.level { text-transform: none; letter-spacing: 0; white-space: nowrap; }

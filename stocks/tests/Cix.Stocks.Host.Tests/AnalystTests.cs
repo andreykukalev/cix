@@ -170,6 +170,28 @@ public class AnalystTests
         Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task NothingIsAnalysedWhileStocksAreStoppedAndAfterStartOnlyTheNextNightsBrief()
+    {
+        var (store, news) = await StoreWith(Advice(Friday));
+        var brief = (await Build(store, news))!; // written at Night
+        await store.SaveBriefAsync(brief, CancellationToken.None);
+
+        // Stopped after the nightly run wrote the brief: neither the night's pass nor the check before the open runs.
+        store.Press(StocksSwitch.Pause, Night.AddMinutes(5));
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night.AddMinutes(10), CancellationToken.None));
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, BeforeTheOpen, CancellationToken.None));
+
+        // Started again: the brief from before the stop is never analysed, not even by a check before the open.
+        store.Press(StocksSwitch.Resume, Night.AddHours(1));
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night.AddHours(2), CancellationToken.None));
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, BeforeTheOpen, CancellationToken.None));
+
+        // The first nightly run after the Start writes the next brief: that one is analysed.
+        await store.SaveBriefAsync(brief with { GeneratedAt = Night.AddHours(3) }, CancellationToken.None);
+        Assert.Equal(AnalystPass.Night, (await AnalystBriefing.ToAnalyseAsync(store, Night.AddHours(3), CancellationToken.None))?.Pass);
+    }
+
     /// <summary>News that takes a minute a request, on the test's clock.</summary>
     private sealed class SlowNews(INewsSource inner, MutableTime time) : INewsSource
     {

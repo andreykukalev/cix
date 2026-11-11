@@ -10,7 +10,8 @@
        Key Vault, the job's identity (allowed to pull from the CIX registry of registryEnvironment, and nothing else there),
        logs, a Container Apps environment and a monthly budget; and lets the dashboard's writer identity (the one
        setup-dashboard-requests.ps1 made, found from the dashboard's own settings) create the owner's portfolio
-       submissions in the stocks database's requests container, and nothing else there (ADR-0026);
+       submissions in the stocks database's requests container (ADR-0026) and the Stop and Start presses in its control
+       container (ADR-0032), and nothing else there;
     2. stores the EODHD key in that vault, from -EodhdKeyFile or a hidden prompt (never echoed, never on a command line);
        a key already there is kept unless you pass -ReplaceKey;
     3. stores your Claude token in that vault as claude-token, for the Claude analyst: from -ClaudeTokenFile, else

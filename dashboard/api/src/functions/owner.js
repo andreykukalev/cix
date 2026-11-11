@@ -20,6 +20,10 @@
 // submission, portfolio-N, in the stocks database's own requests container, where the same writer identity holds a separate
 // create-only role (provision-stocks.ps1). The stocks host applies the newest on its next nightly run.
 //
+// Stop and Start for the whole stocks advisory (ADR-0032), POST /api/owner/stocks-switch, create the next press, switch-N,
+// in the stocks database's control container, with the same writer identity's create-only role there. The host's jobs read
+// the newest before doing anything.
+//
 // The writes use the writer identity, whose Cosmos DB role can only create items in the requests container. A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
 // cross-origin only after a preflight this API never answers.
 
@@ -36,6 +40,8 @@ const {
 } = require('../controls');
 
 const { stocksReader, stocksView } = require('../stocks');
+const { latestSwitch, advisorState, switchValue, switchDocument, CONTAINER: SWITCH_CONTAINER } = require('../stocksSwitch');
+const { forget } = require('../answerCache');
 const { portfolioValue, tradeValue, portfolioDocument, firstUnseen, pendingPortfolio, samePortfolio, MAX_PENDING } = require('../portfolio');
 
 const MAX_BODY = 4096;
@@ -44,6 +50,7 @@ const SENT_DIFFERENT = 'This portfolio was already saved with other figures; it 
 const TRADE_SENT_DIFFERENT = 'This trade was already saved with other figures; it stands as first saved. Close the dialog and open it again to save the new ones.';
 const MAX_TRADE_BODY = 2_048;
 const STOCKS_NOT_SET_UP = "The Stocks page can't send your portfolio yet: run tools/azure/provision-stocks.ps1 again, after setup-dashboard-requests.ps1.";
+const SWITCH_NOT_SET_UP = "The Stocks page can't stop or start the advisor yet: run tools/azure/provision-stocks.ps1 again.";
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 const getReader = readerCache(); // the live engine's own database (ADR-0017)
 const writers = new Map();
@@ -240,6 +247,56 @@ async function createSubmission(context, value, now, { different, logged }) {
   throw new RequestError('Another change was sent at the same time: reload the page and send again.');
 }
 
+let switchWriter;
+
+/** The writer for the stocks database's control container, where the same identity may only create (provision-stocks.ps1). */
+function getSwitchWriter() {
+  if (!process.env.STOCKS_COSMOS_ENDPOINT) throw new WriterNotConfigured(SWITCH_NOT_SET_UP);
+  switchWriter ??= new RequestWriter({
+    endpoint: process.env.STOCKS_COSMOS_ENDPOINT,
+    database: process.env.STOCKS_COSMOS_DATABASE || 'cix-stocks',
+    container: SWITCH_CONTAINER,
+    tenantId: process.env.COSMOS_WRITER_TENANT_ID,
+    clientId: process.env.COSMOS_WRITER_CLIENT_ID,
+    clientSecret: process.env.COSMOS_WRITER_SECRET,
+    partitionKeyOf: (doc) => doc.id,
+  });
+  return switchWriter;
+}
+
+/**
+ * Stop or Start for the whole stocks advisory (ADR-0032): the next press after the newest, unless the advisory is in that
+ * state already (a second click, another tab), which is answered with the state as it is. A press that loses its number to
+ * another sent at the same moment looks again.
+ */
+async function createStocksSwitch(request, context) {
+  return ownerOnly(request, context, 'stocks stop or start', async () => {
+    const value = switchValue(await readBody(request), Date.now());
+    stocksRead ??= stocksReader();
+    if (!stocksRead) throw new WriterNotConfigured(SWITCH_NOT_SET_UP);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const latest = await latestSwitch(stocksRead);
+      const current = advisorState(latest);
+      if (!current.unreadable && current.paused === (value.action === 'pause')) return respond(200, { result: 'exists', control: current });
+      const n = (latest?.sequence ?? 0) + 1;
+      let result;
+      try {
+        result = await getSwitchWriter().create(switchDocument(value, n));
+      } catch (error) {
+        // The role is granted by provision-stocks.ps1: without it (or before the container is made), say so.
+        if (error instanceof WriterError && (error.status === 403 || error.status === 404)) throw new WriterNotConfigured(SWITCH_NOT_SET_UP);
+        throw error;
+      }
+      if (result === 'created') {
+        forget('stocks'); // this instance's next read of the page shows it
+        context.log(`Owner stocks ${value.action} created: switch-${n}`);
+        return respond(201, { result, control: advisorState({ sequence: n, ...value }) });
+      }
+    }
+    throw new RequestError('Another Stop or Start was sent at the same time: reload the page.');
+  });
+}
+
 async function createStocksPortfolio(request, context) {
   return ownerOnly(request, context, 'portfolio', async () => {
     const now = Date.now();
@@ -378,6 +435,13 @@ app.http('owner-stocks-portfolio', {
   handler: createStocksPortfolio,
 });
 
+app.http('owner-stocks-switch', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'owner/stocks-switch',
+  handler: createStocksSwitch,
+});
+
 app.http('owner-stocks-trade', {
   methods: ['POST'],
   authLevel: 'anonymous',
@@ -386,5 +450,5 @@ app.http('owner-stocks-trade', {
 });
 
 module.exports = {
-  createStrategyRequest, createPairRequest, createControlRequest, createAnalystRequest, createStocksPortfolio, createStocksTrade, readBody, ownerOnly,
+  createStrategyRequest, createPairRequest, createControlRequest, createAnalystRequest, createStocksPortfolio, createStocksTrade, createStocksSwitch, readBody, ownerOnly,
 };

@@ -23,6 +23,9 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
 
     /// <summary>The owner's portfolio submissions from the dashboard (ADR-0026): the dashboard's writer creates, the job reads.</summary>
     public const string RequestsContainer = "requests";
+
+    /// <summary>The owner's Stop and Start presses from the dashboard (ADR-0032): the dashboard's writer creates, the jobs read.</summary>
+    public const string ControlContainer = "control";
     private const string OwnerStateId = "owner";
     private const string StateId = "paper";
     private const string SearchStateId = "search";
@@ -135,6 +138,16 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
             return null;
         response.EnsureSuccessStatusCode();
         return await SubmissionRead.ParseAsync(response.Content, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<SwitchRead?> GetSwitchAsync(int sequence, CancellationToken cancellationToken)
+    {
+        var id = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"switch-{sequence}");
+        using var response = await Get(ControlContainer).ReadItemStreamAsync(id, new PartitionKey(id), cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return null; // also before provisioning made the container: never pressed
+        response.EnsureSuccessStatusCode();
+        return await SwitchRead.ParseAsync(response.Content, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<string> SaveVersionedAsync<T>(string id, T value, string? etag, string conflict, CancellationToken cancellationToken)

@@ -2,7 +2,8 @@
 // The Stocks mode (ADR-0023), the second button of the Crypto | Stocks switch: the stocks advisor's latest advice from
 // /api/stocks. The owner carries it out by hand in Revolut; the one thing sent from here is the owner's real portfolio
 // (ADR-0026): the whole of it (POST /api/owner/stocks-portfolio) or one trade made at Revolut (POST /api/owner/stocks-trade),
-// which the next nightly run applies in order, doing the trade's arithmetic itself. Kept apart from the
+// which the next nightly run applies in order, doing the trade's arithmetic itself; and the owner's Stop and Start for the
+// whole advisory (POST /api/owner/stocks-switch, ADR-0032), which freezes the page as it is until Start. Kept apart from the
 // crypto tabs, which hide while it shows: app.js calls refreshStocks when it opens and on each refresh while it shows (and
 // reads nothing of crypto's then), and renderStocks when the language changes. Uses app.js's helpers (el, rows, td,
 // tile, amount, price, getJson, t) and its state, so it loads after app.js. Every value is written as text, never as HTML.
@@ -21,7 +22,22 @@ const stocks = {
   // The trades this page sent (the read may not show them yet), and the trade dialog's kind, retry id and failed figures.
   sentTrades: [], tradeKind: 'buy', tradeClientId: null, tradeFailed: null,
   tradeHints: null, // the trade dialog's offered tickers (tradeHints)
+  switched: null, switchAction: null, // the Stop or Start this page sent (the read may not show it yet), and the dialog's
 };
+
+/** Stopped or not: the newest the page knows of, its own last press included (the read is kept up to a minute). */
+function stocksControl() {
+  const read = stocks.answer?.control ?? null;
+  const sent = stocks.switched;
+  return sent && sent.sequence > (read?.sequence ?? 0) ? sent : read;
+}
+
+const stocksPaused = () => stocksControl()?.paused === true;
+
+/** When the next run applies what was sent: the next nightly run, or, while stopped, the first after Start. */
+function nextRunWhen() {
+  return stocksPaused() ? t('the first run after Start') : runTime(nextStocksRun());
+}
 
 async function refreshStocks() {
   if (state.signedOut) return;
@@ -162,6 +178,7 @@ function analystAction(action) {
 /** Why Claude's view is missing, or is not of this close: what the banner says, and its tone. */
 function analysisNotice(v, advice) {
   if (!stocks.answer?.configured || stocks.error || !advice) return [null];
+  if (!v && stocksPaused()) return [t("Claude hasn't looked at this advice, and won't while stocks are stopped. The rules' advice stands.")];
   if (!v) return [t("Claude hasn't looked at this advice yet: it runs after the nightly advice. Until then the rules' advice stands.")];
   if (!v.current) {
     return [t("Claude's view is of the close of {day}, older than the advice: tonight's run hasn't finished or didn't run. The rules' advice stands.", { day: v.asOf ?? '–' }), 'warn'];
@@ -397,7 +414,18 @@ function until(d, now = new Date()) {
  * trades sent, then Claude's view of it about 40 minutes later, and Claude's check before the open.
  */
 function renderNextRuns() {
+  const button = document.getElementById('stocks-switch-open');
+  button.hidden = !stocks.answer?.configured || !!stocks.error;
   if (!stocks.answer?.configured || stocks.error) { tile('tile-stocks-next', '', '–', '–'); return; }
+  const control = stocksControl();
+  button.textContent = control?.paused ? t('Start') : t('Stop');
+  if (control?.paused) {
+    tile('tile-stocks-next', 'warn', t('Stopped'), [
+      el('span', { class: 'line', text: t('since {when}', { when: runTime(new Date(control.since)) }) }),
+      el('span', { class: 'line', text: t('No runs, no Claude, no EODHD requests') }),
+    ]);
+    return;
+  }
   const now = new Date();
   const night = nextStocksRun(now);
   const preOpen = nextPreOpen(now);
@@ -480,10 +508,10 @@ function renderOwner(a) {
   else if (waiting) {
     waits.push(t('Sent {when}: capital {capital}, {count} holdings. The next run after a US close applies it: {next}.', {
       when: new Date(waiting.submittedAt).toLocaleString(I.locale()), capital: money(waiting.capital, 'USD'), count: waiting.holdings.length,
-      next: runTime(nextStocksRun()),
+      next: nextRunWhen(),
     }));
   }
-  if (trades.length) waits.push(t('Trades waiting for the next run: {count}. It recomputes the capital and the holdings from them: {next}.', { count: trades.length, next: runTime(nextStocksRun()) }));
+  if (trades.length) waits.push(t('Trades waiting for the next run: {count}. It recomputes the capital and the holdings from them: {next}.', { count: trades.length, next: nextRunWhen() }));
   if (!configured) say(null);
   else if (waits.length) say(waits.join(' '), 'warn');
   else if (a?.refusal) {
@@ -526,7 +554,7 @@ function renderStocks() {
   else if (stocks.answer && !stocks.answer.configured) {
     showBanner(t("The stocks advisor isn't connected yet. After each market close it will list here what to buy, where to put the stop, and when to raise it or sell."));
   } else if (stocks.answer && !a) showBanner(t("The stocks advisor hasn't written any advice yet."));
-  else if (a?.stale) showBanner(a.asOf ? t('The advice is old: the latest is for {day}. The stocks advisor may not have run.', { day: a.asOf }) : t("The advice has no date: don't act on it."), 'bad');
+  else if (a?.stale && !stocksPaused()) showBanner(a.asOf ? t('The advice is old: the latest is for {day}. The stocks advisor may not have run.', { day: a.asOf }) : t("The advice has no date: don't act on it."), 'bad');
   else showBanner(null);
 
   // In the Stocks mode the header's update time is the stocks read's (refresh reads nothing else there).
@@ -544,7 +572,8 @@ function renderStocks() {
     regime === 'risk-on' ? t('{benchmark} above its 200-day average: entries allowed', { benchmark: a.benchmark ?? '–' })
       : regime === 'risk-off' ? t('{benchmark} under its 200-day average: no new entries, tighter stops', { benchmark: a.benchmark ?? '–' })
         : regime ? t('no fresh benchmark data: no new entries') : '–');
-  tile('tile-stocks-advice', !a ? '' : a.stale ? 'bad' : 'ok', a?.asOf ?? '–',
+  renderSwitch(a);
+  tile('tile-stocks-advice', !a ? '' : a.stale ? (stocksPaused() ? 'warn' : 'bad') : 'ok', a?.asOf ?? '–',
     a?.generatedAt ? t('written {ago}', { ago: ago(a.generatedAt) }) : t('no advice yet'));
   // The owner's real portfolio once there is one (free cash plus the holdings at the close), the paper one before; a
   // change sent and not yet applied marks the tile, so its figures aren't taken for the new ones.
@@ -552,7 +581,7 @@ function renderStocks() {
   const waiting = waitingPortfolio(a);
   const pendingTrades = waitingTrades(a).length;
   const requested = waiting && !waiting.unreadable
-    ? el('span', { class: 'line', text: t('Change requested: capital {capital}, from {next}', { capital: money(waiting.capital, 'USD'), next: runTime(nextStocksRun()) }) })
+    ? el('span', { class: 'line', text: t('Change requested: capital {capital}, from {next}', { capital: money(waiting.capital, 'USD'), next: nextRunWhen() }) })
     : waiting || pendingTrades ? el('span', { class: 'line', text: t('A change is waiting for the next run') }) : null;
   const tone = waiting || pendingTrades ? 'warn' : '';
   if (o) {
@@ -589,6 +618,60 @@ function renderStocks() {
   }, a ? t('The advice has no watchlist yet: it comes with the next run.') : t('No advice yet.'));
 
   rows('stocks-notes', a?.notes ?? [], (n) => [stockName(n), td(stockReason(n.reason), 'why')], t('No notes.'));
+}
+
+// --- Stop and Start for the whole stocks advisory (ADR-0032) ----------------------------------------------------------
+
+/** While stopped, a banner over every Stocks tab says so, with Start; the Next update tile has the Stop. */
+function renderSwitch(a) {
+  const control = stocksControl();
+  const banner = document.getElementById('stocks-switch-banner');
+  banner.hidden = !control?.paused || !stocks.answer?.configured || !!stocks.error;
+  if (banner.hidden) return;
+  document.getElementById('stocks-switch-text').textContent = t(
+    'Stocks are stopped since {when}: no nightly run, no Claude analysis, no EODHD requests. The page shows what was saved, as of the close of {day}. The stops you placed at Revolut keep working, but no advice raises them or says when to sell until you press Start.',
+    { when: runTime(new Date(control.since)), day: a?.asOf ?? '–' });
+}
+
+function openSwitch() {
+  const paused = stocksPaused();
+  stocks.switchAction = paused ? 'resume' : 'pause';
+  document.getElementById('stocks-switch-title').textContent = paused ? t('Start the stocks advisor') : t('Stop the stocks advisor');
+  document.getElementById('stocks-switch-summary').textContent = paused
+    ? t('From the next nightly run after a US close ({when}) everything runs again: new advice, the portfolio and the trades you recorded applied, the market search, and then Claude\'s view and its check before the open. A brief from before the stop is not analysed.', { when: runTime(nextStocksRun()) })
+    : t('Until you press Start nothing runs: no nightly advice, no market search, no Claude analysis and no check before the open, so no Claude usage and no EODHD requests. Nothing is deleted: the page keeps showing the last advice, frozen. Trades you record wait for the first run after Start. Crypto is not affected.');
+  document.getElementById('stocks-switch-send').textContent = paused ? t('Start') : t('Stop');
+  document.getElementById('stocks-switch-send').disabled = false;
+  document.getElementById('stocks-switch-error').hidden = true;
+  document.getElementById('stocks-switch-dialog').showModal();
+}
+
+async function sendSwitch(event) {
+  event.preventDefault();
+  const error = document.getElementById('stocks-switch-error');
+  const send = document.getElementById('stocks-switch-send');
+  const label = send.textContent;
+  send.disabled = true;
+  send.textContent = t('Sending…');
+  try {
+    const response = await api('/api/owner/stocks-switch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cix-request': '1' },
+      body: JSON.stringify({ action: stocks.switchAction }),
+    });
+    const answer = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(answer.error ? t(answer.error) : t('The dashboard answered {status}.', { status: response.status }));
+    stocks.switched = answer.control ?? null;
+    document.getElementById('stocks-switch-dialog').close();
+    renderStocks();
+  } catch (e) {
+    if (e instanceof SignedOut) { signedOut(); return; }
+    error.textContent = t('Not saved: {error}', { error: e.message });
+    error.hidden = false;
+    send.disabled = false;
+  } finally {
+    send.textContent = label;
+  }
 }
 
 // --- The portfolio dialog: the whole portfolio, sent as one submission ------------------------------------------------
@@ -920,5 +1003,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('stocks-portfolio-add').addEventListener('click', () => portfolioRow());
   document.getElementById('stocks-portfolio-form').addEventListener('submit', sendPortfolio);
   document.getElementById('stocks-portfolio-cancel').addEventListener('click', () => document.getElementById('stocks-portfolio-dialog').close());
+  document.getElementById('stocks-switch-open').addEventListener('click', openSwitch);
+  document.getElementById('stocks-switch-start').addEventListener('click', openSwitch);
+  document.getElementById('stocks-switch-form').addEventListener('submit', sendSwitch);
+  document.getElementById('stocks-switch-cancel').addEventListener('click', () => document.getElementById('stocks-switch-dialog').close());
 });
 

@@ -14,11 +14,13 @@ Module._load = function load(request, ...rest) {
 const writes = [];
 const { RequestWriter } = require('../src/writer');
 const writeDatabases = [];
+const writeContainers = [];
 let writerAnswer = null; // a status the fake Cosmos DB answers instead of creating, e.g. 403 without the role
 RequestWriter.prototype.create = async function create(doc) {
   if (writerAnswer) { const { WriterError } = require('../src/writer'); throw new WriterError(writerAnswer, 'Cosmos DB'); }
   writes.push(doc);
   writeDatabases.push(this.database);
+  writeContainers.push(this.container);
   if (stored.has(doc.id) && stored.get(doc.id).day === doc.day) return 'exists'; // ids are unique within a day's partition
   stored.set(doc.id, doc);
   return 'created';
@@ -33,7 +35,7 @@ const stored = new Map(); // what the fake writer created, by id, for reads afte
 CosmosReader.prototype.readDocument = async function readDocument(container, id, pk) {
   reads.push({ database: this.database, container, id, pk });
   // CIX's requests are partitioned by day; the stocks database's (the owner's portfolio) by id.
-  if (container === 'requests' && stored.has(id)) return (stored.get(id).day ?? id) === (pk ?? id) ? stored.get(id) : null;
+  if ((container === 'requests' || (container === 'control' && id.startsWith('switch-'))) && stored.has(id)) return (stored.get(id).day ?? id) === (pk ?? id) ? stored.get(id) : null;
   // The looked-up request has its own id, so the request created in these tests never finds it as yesterday's.
   return id === 'a1b2c3d4-0000-4000-8000-000000000001' && pk === '2026-10-26' ? { id, type: 'manual-request', status: 'placed' } : null;
 };
@@ -65,7 +67,7 @@ const BODY = STRATEGY_BODY;
 test('the owner endpoints are registered under /api/owner, and the paper buy and sell requests are gone', () => {
   assert.deepEqual(Object.values(routes).map((r) => r.route).sort(),
     ['owner/analyst-requests', 'owner/analyst-requests/{day}/{id}', 'owner/control-requests', 'owner/control-requests/{day}/{id}', 'owner/pair-requests', 'owner/pair-requests/{day}/{id}', 'owner/pairs',
-      'owner/stocks-portfolio', 'owner/stocks-trade', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
+      'owner/stocks-portfolio', 'owner/stocks-switch', 'owner/stocks-trade', 'owner/strategies', 'owner/strategy-requests', 'owner/strategy-requests/{day}/{id}']);
 });
 
 test('nobody else can write or read, whatever the route rules say', async () => {
@@ -573,4 +575,95 @@ test('a trade the host would refuse is refused before anything is written', asyn
   }
   assert.equal((await postTrade({ clientId: TRADE.clientId })).status, 400);
   assert.equal(writes.length, 0);
+});
+
+// --- Stop and Start for the stocks advisory (ADR-0032) ------------------------------------------------------------------
+
+const postSwitch = (body, extra = {}) => routes['owner-stocks-switch'].handler(
+  request({ method: 'POST', body: typeof body === 'string' ? body : JSON.stringify(body), ...extra }), context);
+
+test('Stop and Start each create the next press in the stocks database\'s control container; a second click writes nothing', async () => {
+  writes.length = 0;
+  writeDatabases.length = 0;
+  writeContainers.length = 0;
+  stored.clear();
+
+  // Never pressed: it runs, so Start has nothing to do.
+  const started = await postSwitch({ action: 'resume' });
+  assert.equal(started.status, 200);
+  assert.deepEqual(started.jsonBody, { result: 'exists', control: { paused: false, since: null, sequence: 0, unreadable: false } });
+  assert.equal(writes.length, 0);
+
+  const stop = await postSwitch({ action: 'pause' });
+  assert.equal(stop.status, 201);
+  assert.deepEqual(writeDatabases, ['cix-stocks']);
+  assert.deepEqual(writeContainers, ['control']);
+  assert.equal(writes[0].id, 'switch-1');
+  assert.deepEqual(Object.keys(writes[0].value).sort(), ['action', 'sequence', 'submittedAt']);
+  assert.equal(writes[0].value.action, 'pause');
+  assert.equal(stop.jsonBody.control.paused, true);
+  assert.equal(stop.jsonBody.control.sequence, 1);
+  assert.equal(stop.jsonBody.control.since, writes[0].value.submittedAt);
+
+  const again = await postSwitch({ action: 'pause' }); // another tab, or a double click
+  assert.equal(again.status, 200);
+  assert.equal(again.jsonBody.result, 'exists');
+  assert.equal(again.jsonBody.control.sequence, 1);
+  assert.equal(writes.length, 1);
+
+  const start = await postSwitch({ action: 'resume' });
+  assert.equal(start.status, 201);
+  assert.equal(writes[1].id, 'switch-2');
+  assert.deepEqual(start.jsonBody.control, { paused: false, since: writes[1].value.submittedAt, sequence: 2, unreadable: false });
+  assert.equal((await postSwitch({ action: 'pause' })).jsonBody.control.sequence, 3);
+});
+
+test('a press that loses its number to another sent at the same moment looks again', async () => {
+  writes.length = 0;
+  stored.clear();
+  stored.set('switch-1', { id: 'switch-1', value: { sequence: 1, action: 'pause', submittedAt: '2026-11-11T10:00:00Z' } });
+  // The other tab's Start lands between this one's read and its write: its number is taken, and the state is then started.
+  const original = RequestWriter.prototype.create;
+  let first = true;
+  RequestWriter.prototype.create = async function racing(doc) {
+    if (first) {
+      first = false;
+      stored.set('switch-2', { id: 'switch-2', value: { sequence: 2, action: 'resume', submittedAt: '2026-11-11T10:00:01Z' } });
+      return 'exists';
+    }
+    return original.call(this, doc);
+  };
+  try {
+    const answer = await postSwitch({ action: 'resume' });
+    assert.equal(answer.status, 200);
+    assert.equal(answer.jsonBody.result, 'exists');
+    assert.deepEqual(answer.jsonBody.control, { paused: false, since: '2026-11-11T10:00:01.000Z', sequence: 2, unreadable: false });
+    assert.equal(writes.length, 0);
+  } finally {
+    RequestWriter.prototype.create = original;
+  }
+});
+
+test('a press other than pause or resume, from elsewhere or by anyone else, is refused before anything is written', async () => {
+  writes.length = 0;
+  stored.clear();
+  for (const body of [{ action: 'halt' }, {}, [], 'null']) assert.equal((await postSwitch(body)).status, 400, JSON.stringify(body));
+  assert.equal((await postSwitch({ action: 'pause' }, { headers: { 'x-cix-request': null } })).status, 400);
+  assert.equal((await postSwitch({ action: 'pause' }, { principal: VISITOR })).status, 403);
+  assert.equal((await postSwitch({ action: 'pause' }, { principal: OTHER_OWNER })).status, 403);
+  assert.equal(writes.length, 0);
+});
+
+test('without the writer\'s role on the control container the page is told to run the setup', async () => {
+  stored.clear();
+  for (const status of [403, 404]) {
+    writerAnswer = status;
+    try {
+      const answer = await postSwitch({ action: 'pause' });
+      assert.equal(answer.status, 503);
+      assert.match(answer.jsonBody.error, /provision-stocks\.ps1/);
+    } finally {
+      writerAnswer = null;
+    }
+  }
 });

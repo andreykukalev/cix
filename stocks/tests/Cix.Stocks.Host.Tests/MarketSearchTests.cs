@@ -300,6 +300,8 @@ public class MarketSearchTests
         public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);
 
         public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken) => inner.GetPortfolioSubmissionAsync(sequence, cancellationToken);
+
+        public Task<SwitchRead?> GetSwitchAsync(int sequence, CancellationToken cancellationToken) => inner.GetSwitchAsync(sequence, cancellationToken);
     }
 
     [Fact]

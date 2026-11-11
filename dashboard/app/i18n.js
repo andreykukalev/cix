@@ -1020,6 +1020,27 @@
     'New advice and portfolio: {when}': 'Новые советы и портфель: {when}',
     "Claude's view: about 40 min later": 'Мнение Claude: примерно на 40 мин позже',
     "Claude's check before the open: {when}": 'Проверка Claude перед открытием: {when}',
+    // Stop and Start for the whole stocks advisory (ADR-0032)
+    Start: 'Запустить',
+    Stopped: 'Остановлено',
+    'since {when}': 'с {when}',
+    'No runs, no Claude, no EODHD requests': 'Ни запусков, ни Claude, ни запросов к EODHD',
+    'the first run after Start': 'первый запуск после «Запустить»',
+    'Stop the stocks advisor': 'Остановить советника по акциям',
+    'Start the stocks advisor': 'Запустить советника по акциям',
+    'Stocks are stopped since {when}: no nightly run, no Claude analysis, no EODHD requests. The page shows what was saved, as of the close of {day}. The stops you placed at Revolut keep working, but no advice raises them or says when to sell until you press Start.':
+      'Акции остановлены с {when}: ни ночного запуска, ни анализа Claude, ни запросов к EODHD. Страница показывает сохранённое на закрытие {day}. Стопы, выставленные в Revolut, продолжают работать, но советы не поднимают их и не скажут, когда продавать, пока вы не нажмёте «Запустить».',
+    "From the next nightly run after a US close ({when}) everything runs again: new advice, the portfolio and the trades you recorded applied, the market search, and then Claude's view and its check before the open. A brief from before the stop is not analysed.":
+      'Со следующего ночного запуска после закрытия американского рынка ({when}) всё снова работает: новые советы, применение портфеля и отмеченных сделок, поиск по рынку, а затем мнение Claude и его проверка перед открытием. Сводка, написанная до остановки, не анализируется.',
+    'Until you press Start nothing runs: no nightly advice, no market search, no Claude analysis and no check before the open, so no Claude usage and no EODHD requests. Nothing is deleted: the page keeps showing the last advice, frozen. Trades you record wait for the first run after Start. Crypto is not affected.':
+      'Пока вы не нажмёте «Запустить», ничего не работает: ни ночных советов, ни поиска по рынку, ни анализа Claude, ни проверки перед открытием, а значит, ни расхода лимитов Claude, ни запросов к EODHD. Ничего не удаляется: страница показывает последние советы, замороженными. Отмеченные сделки ждут первого запуска после «Запустить». Крипта не затрагивается.',
+    'Not saved: {error}': 'Не сохранено: {error}',
+    "Claude hasn't looked at this advice, and won't while stocks are stopped. The rules' advice stands.":
+      'Claude не смотрел эти советы и не посмотрит, пока акции остановлены. Действуют советы по правилам.',
+    "The Stocks page can't stop or start the advisor yet: run tools/azure/provision-stocks.ps1 again.":
+      'Страница пока не может остановить или запустить советника: запустите tools/azure/provision-stocks.ps1 ещё раз.',
+    'Another Stop or Start was sent at the same time: reload the page.': 'В то же время отправлена другая остановка или запуск: перезагрузите страницу.',
+    'Send pause or resume.': 'Отправьте остановку или запуск.',
     'I bought': 'Купил',
     'I sold': 'Продал',
     'My trades': 'Мои сделки',

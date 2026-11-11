@@ -460,6 +460,8 @@ public class DailyRunTests
         public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);
 
         public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken) => inner.GetPortfolioSubmissionAsync(sequence, cancellationToken);
+
+        public Task<SwitchRead?> GetSwitchAsync(int sequence, CancellationToken cancellationToken) => inner.GetSwitchAsync(sequence, cancellationToken);
     }
 
     /// <summary>Another run saves the portfolio between this run's read and its write.</summary>
@@ -515,5 +517,7 @@ public class DailyRunTests
         public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);
 
         public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken) => inner.GetPortfolioSubmissionAsync(sequence, cancellationToken);
+
+        public Task<SwitchRead?> GetSwitchAsync(int sequence, CancellationToken cancellationToken) => inner.GetSwitchAsync(sequence, cancellationToken);
     }
 }

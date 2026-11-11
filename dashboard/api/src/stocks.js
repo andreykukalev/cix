@@ -6,6 +6,7 @@
 
 const { CosmosReader } = require('./cosmos');
 const { pendingPortfolio, firstUnseen } = require('./portfolio');
+const { latestSwitch, advisorState } = require('./stocksSwitch');
 
 const CONTAINER = 'advice';
 const LATEST = 'advice-latest';
@@ -390,9 +391,9 @@ function stocksView(value, now) {
 /** The Stocks tab's answer: whether the stocks database is set up, and the latest advice when there is one. */
 async function loadStocks(reader, now) {
   const generatedAt = new Date(now).toISOString();
-  if (!reader) return { configured: false, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], generatedAt };
-  const [doc, found, analysed] = await Promise.all([
-    reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES), reader.readDocument(ANALYSIS_CONTAINER, ANALYSIS),
+  if (!reader) return { configured: false, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], control: advisorState(null), generatedAt };
+  const [doc, found, analysed, pressed] = await Promise.all([
+    reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES), reader.readDocument(ANALYSIS_CONTAINER, ANALYSIS), latestSwitch(reader),
   ]);
   const advice = doc ? stocksView(doc.value ?? null, now) : null;
   const { portfolio, trades } = await pendingPortfolio(reader, firstUnseen(advice));
@@ -409,6 +410,8 @@ async function loadStocks(reader, now) {
     // Sent and not yet applied: the newest whole portfolio, and the trades, which the next run applies in order.
     pending: portfolio,
     pendingTrades: trades,
+    // The owner's Stop and Start (ADR-0032): while stopped nothing runs, and the page shows what is saved as it was.
+    control: advisorState(pressed),
     generatedAt,
   };
 }

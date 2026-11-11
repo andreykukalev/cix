@@ -41,7 +41,7 @@ A symbol's currency comes from its exchange (`US` is USD, `XETRA`, `PA`, `AS` an
 4. The previous close's advice is carried out in the paper portfolio at the next session's open (sells, then stops, then buys), and the stops are checked on every session since, including a held symbol's sessions whose bars came a night late.
 5. The advisor runs on the latest close, sized on the portfolio's equity, within the owner's caps. A breakout is bought only when it isn't overheated (`maxAboveFastAverage`: the close at most 20% above the 50-day average; `maxRecentGain`: at most 15% up in `recentGainDays`, 5) or too jumpy (`maxAtrFraction`: the 20-day ATR at most 5% of the close); `null` turns one off. The watchlist shows such stocks as `overextended` or `too-volatile`, and the market search leaves them out. Other caps: `maxSharePrice` (dearer shares are noted `too-expensive`) and `maxThemeFraction` per watchlist theme (`theme-limit`; a holding the same advice sells still counts that night). A close already advised is never carried out twice.
 
-The run writes to its own database (`cix-stocks`, containers `advice`, `state`, `trades`, `bars`, and `analysis` for the Claude analyst, all with partition key `/id`; it only reads `requests`): the trades and the dated advice (`advice-YYYY-MM-DD`) once each, never changed; the paper portfolio with an ETag, so of two overlapping runs only one saves; then `advice-latest`, which a later run republishes from the dated advice if a failure left it behind. The page shows money to the cent; the portfolio keeps every digit. The EODHD key is read from `/run/secrets/eodhd-api-token` (Key Vault) and is never logged.
+The run writes to its own database (`cix-stocks`, containers `advice`, `state`, `trades`, `bars`, and `analysis` for the Claude analyst, all with partition key `/id`; it only reads `requests` and `control`): the trades and the dated advice (`advice-YYYY-MM-DD`) once each, never changed; the paper portfolio with an ETag, so of two overlapping runs only one saves; then `advice-latest`, which a later run republishes from the dated advice if a failure left it behind. The page shows money to the cent; the portfolio keeps every digit. The EODHD key is read from `/run/secrets/eodhd-api-token` (Key Vault) and is never logged.
 
 ### The owner's real portfolio
 
@@ -51,6 +51,14 @@ The owner sends his real portfolio from the Stocks page (ADR-0026): the capital 
 2. The held symbols (the owner's and the paper portfolio's) are fetched right after the benchmark, the longest unfetched first, so with more of them than calls they take turns; one outside the watchlist costs a call a night.
 3. The advisor runs again for the owner: capital from the submission, free cash the capital less what the holdings cost, the owner's holdings checked first. A stop it sets or raises is saved as placed; a sell is advised again each night until the owner records the sale or sends the portfolio without it. A split moves the holding (note `adjusted`); a dividend changes nothing.
 4. The owner state is saved with an ETag (`state/owner`) after the paper portfolio. The watchlist's `held` and the market-wide search (sized on the owner's capital, his holdings left out) follow the owner's portfolio once there is one.
+
+### Stop and Start
+
+The owner can stop the whole stocks advisory from the Stocks page and start it again (ADR-0032), to save Claude usage and EODHD requests or to take a break. Each press is `switch-N` in the `control` container (`{ sequence, action: "pause" | "resume", submittedAt }`), numbered from 1 with no gaps and created by the dashboard's writer identity, which can do nothing else there; the newest decides, found in a few reads (`StocksSwitch.CurrentAsync`: doubling, then halving). A newest press that can't be read counts as started.
+
+- Stopped, the nightly run exits 0 before any EODHD request or write, so there is no advice, market search or brief; `--brief` exits 3, so neither of the analyst's passes runs Claude. Everything saved stays, and the page shows it frozen, with a banner instead of the stale-advice warning. Trades and portfolios the owner sends wait for the first run after Start.
+- After Start, the next nightly run carries on from the last advice (the paper portfolio carries out that advice at the next session's open and checks its stops on every session since, as after a holiday), and the analyst waits for that run's brief: a brief written before the Start is never analysed, even by the check before the open.
+- `--dry-run` ignores the switch.
 
 ### Market-wide search
 
