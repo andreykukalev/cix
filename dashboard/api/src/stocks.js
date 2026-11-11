@@ -393,7 +393,9 @@ async function loadStocks(reader, now) {
   const generatedAt = new Date(now).toISOString();
   if (!reader) return { configured: false, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], control: advisorState(null), generatedAt };
   const [doc, found, analysed, pressed] = await Promise.all([
-    reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES), reader.readDocument(ANALYSIS_CONTAINER, ANALYSIS), latestSwitch(reader),
+    reader.readDocument(CONTAINER, LATEST), reader.readDocument(CONTAINER, CANDIDATES), reader.readDocument(ANALYSIS_CONTAINER, ANALYSIS),
+    // A failed read of the switch shows the advisory as started (the jobs, failing it, don't run): the page still loads.
+    latestSwitch(reader).catch(() => ({ sequence: 0, unreadable: true })),
   ]);
   const advice = doc ? stocksView(doc.value ?? null, now) : null;
   const { portfolio, trades } = await pendingPortfolio(reader, firstUnseen(advice));

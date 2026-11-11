@@ -167,7 +167,7 @@ public sealed class AnalystBriefing(IStocksStore store, INewsSource news, TimePr
     /// otherwise: an older brief says nothing about tonight's advice. The night's pass is done once that close has any done
     /// analysis; the check before the open, once it has run that New York day (a holiday's check doesn't use up the next
     /// open's), and it gets the close's latest done analysis to check. Nothing while the owner has stopped the stocks
-    /// advisory, and after Start nothing until the first nightly run's brief (ADR-0032): an older one was written before.
+    /// advisory, and after a stop of a day or more nothing until the first nightly run's brief (ADR-0032).
     /// </summary>
     public static async Task<AnalystBrief?> ToAnalyseAsync(IStocksStore store, DateTimeOffset now, CancellationToken cancellationToken)
     {
@@ -177,7 +177,7 @@ public sealed class AnalystBriefing(IStocksStore store, INewsSource news, TimePr
             return null;
         if (await store.GetBriefAsync(cancellationToken).ConfigureAwait(false) is not { } brief
             || await store.GetAdviceAsync("advice-latest", cancellationToken).ConfigureAwait(false) is not { } advice || brief.AsOf != advice.AsOf
-            || (switched.Since is { } started && brief.GeneratedAt < started))
+            || switched.Outdates(brief.GeneratedAt))
             return null;
         var latest = await store.GetAnalysisAsync("analysis-latest", cancellationToken).ConfigureAwait(false);
         var done = latest is { Status: AnalysisDocument.Done } ? latest : null;

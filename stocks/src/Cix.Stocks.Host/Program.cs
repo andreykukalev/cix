@@ -119,17 +119,18 @@ internal static class StocksHost
             }
 
             using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
-            // The owner's Stop (ADR-0032): no EODHD request, nothing written, until Start.
             var switched = await StocksSwitch.CurrentAsync(store, cancel.Token);
-            if (switched.Paused)
+            if (switched.Unreadable)
+                Console.Error.WriteLine($"The owner's newest Stop or Start (switch-{switched.Sequence}) can't be read: running as started.");
+            // The owner's Stop (ADR-0032): the run checks it itself before anything else; no search and no brief either.
+            var advised = await new DailyRun(config, source, store, TimeProvider.System).RunAsync(cancel.Token);
+            if (advised.Outcome == RunOutcome.Stopped)
             {
                 Console.WriteLine($"Stopped by the owner since {switched.Since:yyyy-MM-dd HH:mm} UTC (switch-{switched.Sequence}): no run, no EODHD calls.");
                 return 0;
             }
 
-            if (switched.Unreadable)
-                Console.Error.WriteLine($"The owner's newest Stop or Start (switch-{switched.Sequence}) can't be read: running as started.");
-            Print(await new DailyRun(config, source, store, TimeProvider.System).RunAsync(cancel.Token));
+            Print(advised);
             // A failed search still leaves the advice, so the analyst still gets its brief (without candidates); then the run fails.
             ExceptionDispatchInfo? searchFailed = null;
             try

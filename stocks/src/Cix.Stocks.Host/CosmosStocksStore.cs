@@ -145,7 +145,7 @@ public sealed class CosmosStocksStore : IStocksStore, IDisposable
         var id = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"switch-{sequence}");
         using var response = await Get(ControlContainer).ReadItemStreamAsync(id, new PartitionKey(id), cancellationToken: cancellationToken).ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
-            return null; // also before provisioning made the container: never pressed
+            return null; // never pressed (provisioning makes the container and the role before the image that reads it)
         response.EnsureSuccessStatusCode();
         return await SwitchRead.ParseAsync(response.Content, cancellationToken).ConfigureAwait(false);
     }

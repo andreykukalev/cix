@@ -22,7 +22,8 @@ const stocks = {
   // The trades this page sent (the read may not show them yet), and the trade dialog's kind, retry id and failed figures.
   sentTrades: [], tradeKind: 'buy', tradeClientId: null, tradeFailed: null,
   tradeHints: null, // the trade dialog's offered tickers (tradeHints)
-  switched: null, switchAction: null, // the Stop or Start this page sent (the read may not show it yet), and the dialog's
+  // The newest Stop or Start this page knows from its own presses (the read may not show it yet), and the dialog's action.
+  switched: null, switchAction: null,
 };
 
 /** Stopped or not: the newest the page knows of, its own last press included (the read is kept up to a minute). */
@@ -661,7 +662,8 @@ async function sendSwitch(event) {
     });
     const answer = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(answer.error ? t(answer.error) : t('The dashboard answered {status}.', { status: response.status }));
-    stocks.switched = answer.control ?? null;
+    // An answer can be older than one this page already had (a lagging read): the newer press stands.
+    if (answer.control && answer.control.sequence >= (stocks.switched?.sequence ?? 0)) stocks.switched = answer.control;
     document.getElementById('stocks-switch-dialog').close();
     renderStocks();
   } catch (e) {

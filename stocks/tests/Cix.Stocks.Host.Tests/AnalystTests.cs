@@ -182,14 +182,19 @@ public class AnalystTests
         Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night.AddMinutes(10), CancellationToken.None));
         Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, BeforeTheOpen, CancellationToken.None));
 
-        // Started again: the brief from before the stop is never analysed, not even by a check before the open.
-        store.Press(StocksSwitch.Resume, Night.AddHours(1));
-        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night.AddHours(2), CancellationToken.None));
+        // Started again within minutes (a mistaken press): tonight's brief is still analysed.
+        store.Press(StocksSwitch.Resume, Night.AddMinutes(10));
+        Assert.Equal(AnalystPass.Night, (await AnalystBriefing.ToAnalyseAsync(store, Night.AddMinutes(15), CancellationToken.None))?.Pass);
+
+        // Stopped for days, then started: the brief from before the stop is never analysed, not even by a check before the open.
+        store.Press(StocksSwitch.Pause, Night.AddMinutes(20));
+        store.Press(StocksSwitch.Resume, Night.AddDays(2));
+        Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, Night.AddDays(2).AddHours(1), CancellationToken.None));
         Assert.Null(await AnalystBriefing.ToAnalyseAsync(store, BeforeTheOpen, CancellationToken.None));
 
         // The first nightly run after the Start writes the next brief: that one is analysed.
-        await store.SaveBriefAsync(brief with { GeneratedAt = Night.AddHours(3) }, CancellationToken.None);
-        Assert.Equal(AnalystPass.Night, (await AnalystBriefing.ToAnalyseAsync(store, Night.AddHours(3), CancellationToken.None))?.Pass);
+        await store.SaveBriefAsync(brief with { GeneratedAt = Night.AddDays(3) }, CancellationToken.None);
+        Assert.Equal(AnalystPass.Night, (await AnalystBriefing.ToAnalyseAsync(store, Night.AddDays(3), CancellationToken.None))?.Pass);
     }
 
     /// <summary>News that takes a minute a request, on the test's clock.</summary>

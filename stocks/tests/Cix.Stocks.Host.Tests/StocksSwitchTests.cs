@@ -31,7 +31,8 @@ public class StocksSwitchTests
 
         var current = await StocksSwitch.CurrentAsync(store, CancellationToken.None);
 
-        Assert.Equal(new AdvisorSwitch(presses % 2 == 1, presses, At.AddMinutes(presses)), current);
+        var stoppedAt = presses % 2 == 0 ? At.AddMinutes(presses - 1) : (DateTimeOffset?)null; // a Start knows its Stop
+        Assert.Equal(new AdvisorSwitch(presses % 2 == 1, presses, At.AddMinutes(presses), StoppedAt: stoppedAt), current);
     }
 
     [Theory]
@@ -40,6 +41,8 @@ public class StocksSwitchTests
     [InlineData("""{"id":"switch-3","value":"pause"}""")]
     [InlineData("""{"id":"switch-3"}""")]
     [InlineData("not json")]
+    [InlineData("""{"id":"switch-3","value":{"sequence":3,"action":"pause"}}""")] // no time
+
     public async Task ANewestPressThatCantBeReadCountsAsStarted(string document)
     {
         var store = new InMemoryStocksStore();
@@ -69,6 +72,19 @@ public class StocksSwitchTests
 
         Assert.Equal(100, (await StocksSwitch.CurrentAsync(store, CancellationToken.None)).Sequence);
         Assert.InRange(store.Reads, 1, 16);
+    }
+
+    [Fact]
+    public void ABriefFromBeforeAStopOfADayOrMoreIsOutdatedByTheStart()
+    {
+        var brief = At.AddHours(-1);
+        Assert.False(AdvisorSwitch.NeverPressed.Outdates(brief));
+        Assert.False(new AdvisorSwitch(true, 1, At).Outdates(brief)); // stopped: the run doesn't get that far
+        Assert.True(new AdvisorSwitch(false, 2, At.AddDays(2), StoppedAt: At).Outdates(brief));
+        Assert.True(new AdvisorSwitch(false, 2, At.AddDays(1), StoppedAt: At).Outdates(brief));
+        Assert.False(new AdvisorSwitch(false, 2, At.AddMinutes(5), StoppedAt: At).Outdates(brief)); // a mistaken press
+        Assert.True(new AdvisorSwitch(false, 2, At.AddMinutes(5)).Outdates(brief)); // its Stop can't be read: wait
+        Assert.False(new AdvisorSwitch(false, 2, At.AddDays(2), StoppedAt: At).Outdates(At.AddDays(3))); // the night's after the Start
     }
 
     /// <summary>Counts the switch reads; nothing else is used.</summary>

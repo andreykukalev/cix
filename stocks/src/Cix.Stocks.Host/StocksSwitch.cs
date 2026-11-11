@@ -54,10 +54,21 @@ public sealed record SwitchRead(SwitchSubmission? Switch)
 /// <summary>
 /// Whether the owner has stopped the stocks advisory: <paramref name="Sequence"/> is the newest switch (0: none ever),
 /// <paramref name="Since"/> when it was pressed. A newest switch that can't be read counts as started, the state before
-/// the first press, and is <paramref name="Unreadable"/>: the next press replaces it.
+/// the first press, and is <paramref name="Unreadable"/>: the next press replaces it. For a Start, <paramref name="StoppedAt"/>
+/// is when the Stop before it was pressed (null when that one can't be read).
 /// </summary>
-public sealed record AdvisorSwitch(bool Paused, int Sequence, DateTimeOffset? Since, bool Unreadable = false)
+public sealed record AdvisorSwitch(bool Paused, int Sequence, DateTimeOffset? Since, bool Unreadable = false, DateTimeOffset? StoppedAt = null)
 {
+    /// <summary>A stop shorter than this missed no nightly run's brief worth skipping: the brief before it is still analysed.</summary>
+    public static readonly TimeSpan QuickStop = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Whether a brief written at <paramref name="generatedAt"/> predates a stop that lasted: the first nightly run after the
+    /// Start writes the next one. A quick Stop and Start (a mistaken press) leaves the brief to be analysed.
+    /// </summary>
+    public bool Outdates(DateTimeOffset generatedAt) =>
+        !Paused && Since is { } started && generatedAt < started && (StoppedAt is not { } stopped || started - stopped >= QuickStop);
+
     public static readonly AdvisorSwitch NeverPressed = new(false, 0, null);
 }
 
@@ -65,7 +76,8 @@ public sealed record AdvisorSwitch(bool Paused, int Sequence, DateTimeOffset? Si
 /// The owner's Stop and Start for the whole stocks advisory (ADR-0032). While stopped the nightly run, the market search,
 /// the analyst's brief and both of the analyst's passes do nothing: no EODHD request, no Claude run, nothing written. What
 /// was saved stays, and the page shows it as of the last run. After Start the next nightly run carries on from there, and
-/// the analyst waits for that run's brief: one written before the Start is never analysed.
+/// after a stop of a day or more the analyst waits for that run's brief: one written before the Start is never analysed.
+/// A read that fails (not a missing or unreadable press) fails the run: the jobs don't guess.
 /// </summary>
 public static class StocksSwitch
 {
@@ -101,8 +113,18 @@ public static class StocksSwitch
                 missing = middle;
         }
 
-        return newest.Switch is { } s && s.Sequence == found && s.Action is Pause or Resume
-            ? new AdvisorSwitch(s.Action == Pause, found, s.SubmittedAt)
-            : new AdvisorSwitch(false, found, null, Unreadable: true);
+        if (!Readable(newest, found, out var s))
+            return new AdvisorSwitch(false, found, null, Unreadable: true);
+        if (s.Action == Pause)
+            return new AdvisorSwitch(true, found, s.SubmittedAt);
+        var before = found > 1 ? await store.GetSwitchAsync(found - 1, cancellationToken).ConfigureAwait(false) : null;
+        var stoppedAt = before is not null && Readable(before, found - 1, out var stop) && stop.Action == Pause ? stop.SubmittedAt : (DateTimeOffset?)null;
+        return new AdvisorSwitch(false, found, s.SubmittedAt, StoppedAt: stoppedAt);
+    }
+
+    private static bool Readable(SwitchRead read, int sequence, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out SwitchSubmission? press)
+    {
+        press = read.Switch is { } s && s.Sequence == sequence && s.Action is Pause or Resume && s.SubmittedAt != default ? s : null;
+        return press is not null;
     }
 }

@@ -14,6 +14,9 @@ public enum RunOutcome
 
     /// <summary>No bars at all: nothing to advise on.</summary>
     NoData,
+
+    /// <summary>The owner stopped the stocks advisory (ADR-0032): nothing fetched, nothing written.</summary>
+    Stopped,
 }
 
 public sealed record RunReport(RunOutcome Outcome, DateOnly? AsOf, int Calls, int Trades, int Actions, int Notes);
@@ -51,6 +54,10 @@ public sealed class DailyRun(StocksConfig config, IDailyBarSource source, IStock
 
     public async Task<RunReport> RunAsync(CancellationToken cancellationToken)
     {
+        // The owner's Stop (ADR-0032): no EODHD request, nothing written, until Start.
+        if ((await StocksSwitch.CurrentAsync(store, cancellationToken).ConfigureAwait(false)).Paused)
+            return new(RunOutcome.Stopped, null, 0, 0, 0, 0);
+
         var now = time.GetUtcNow();
         var today = DateOnly.FromDateTime(now.UtcDateTime);
         var saved = await store.GetStateAsync(cancellationToken).ConfigureAwait(false);

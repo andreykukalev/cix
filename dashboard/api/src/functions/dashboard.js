@@ -8,7 +8,7 @@ const { app } = require('@azure/functions');
 const { readerCache, DatabaseNotConfigured } = require('../cosmos');
 const { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadBalanceHistory } = require('../data');
 const { isOwner, forbidden } = require('../auth');
-const { cached, forget } = require('../answerCache');
+const { cached } = require('../answerCache');
 
 const ACTIVITY_CACHE_MS = 60_000; // a query across up to a year of day partitions: at most once a minute
 const getReader = readerCache(); // the live engine's own database (ADR-0017)
@@ -86,4 +86,4 @@ app.http('balance-history', {
   }),
 });
 
-module.exports = { handle, cached, forget };
+module.exports = { handle, cached };

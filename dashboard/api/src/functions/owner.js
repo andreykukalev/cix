@@ -24,7 +24,7 @@
 // in the stocks database's control container, with the same writer identity's create-only role there. The host's jobs read
 // the newest before doing anything.
 //
-// The writes use the writer identity, whose Cosmos DB role can only create items in the requests container. A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
+// The writes use the writer identity, whose Cosmos DB role can only create items in the requests containers (and the stocks control container). A cross-site page can't send it: it needs a JSON body and a custom header, which a browser sends
 // cross-origin only after a preflight this API never answers.
 
 const { app } = require('@azure/functions');

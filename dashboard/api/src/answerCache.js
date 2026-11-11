@@ -1,5 +1,5 @@
 'use strict';
-// The reads' answers, kept a few seconds per instance (functions/dashboard.js): refreshes and several open tabs share one
+// The reads' answers, kept from seconds to a minute per instance (functions/dashboard.js, functions/stocks.js): refreshes and several open tabs share one
 // database read. A write that changes what a read shows forgets its answer (functions/owner.js).
 
 const CACHE_MS = 20_000;
