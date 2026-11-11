@@ -3,7 +3,7 @@
 // the dashboard's writer identity (a service principal, client credentials) and uses Cosmos DB role-based access, where
 // that identity's role allows exactly one thing: creating items in CIX's requests container (ADR-0012,
 // tools/azure/setup-dashboard-requests.ps1), and in the stocks database's, the owner's portfolio submissions (ADR-0026,
-// provision-stocks.ps1). It can't read, change or delete anything, there or anywhere else. The secret stays in the app's
+// provision-stocks.ps1), and its control container, the owner's Stop and Start presses (ADR-0032). It can't read, change or delete anything, there or anywhere else. The secret stays in the app's
 // settings on the server; nothing here ever logs it or a token.
 
 const API_VERSION = '2018-12-31';
@@ -21,11 +21,12 @@ class WriterNotConfigured extends Error {}
 class RequestWriter {
   /**
    * @param {{endpoint: string, database: string, tenantId: string, clientId: string, clientSecret: string,
-   *   partitionKeyOf?: (doc: object) => string, fetchImpl?: typeof fetch, now?: () => Date, timeoutMs?: number}} options
-   *   partitionKeyOf: the document's partition key; CIX's requests are partitioned by day, the stocks database's by id.
+   *   container?: string, partitionKeyOf?: (doc: object) => string, fetchImpl?: typeof fetch, now?: () => Date, timeoutMs?: number}} options
+   *   container: where it creates (requests unless said); partitionKeyOf: the document's partition key; CIX's requests are
+   *   partitioned by day, the stocks database's containers by id.
    */
   constructor({
-    endpoint, database, tenantId, clientId, clientSecret, partitionKeyOf = (doc) => doc.day, fetchImpl = fetch, now = () => new Date(), timeoutMs = 8000,
+    endpoint, database, tenantId, clientId, clientSecret, container = 'requests', partitionKeyOf = (doc) => doc.day, fetchImpl = fetch, now = () => new Date(), timeoutMs = 8000,
   }) {
     if (!endpoint || !database || !tenantId || !clientId || !clientSecret) {
       throw new WriterNotConfigured('Requests are not set up on this dashboard yet: run tools/azure/setup-dashboard-requests.ps1.');
@@ -36,6 +37,7 @@ class RequestWriter {
     this.base = url.origin;
     this.scope = `${url.origin}/.default`;
     this.database = database;
+    this.container = container;
     this.partitionKeyOf = partitionKeyOf;
     this.tenantId = tenantId;
     this.clientId = clientId;
@@ -68,7 +70,7 @@ class RequestWriter {
    */
   async create(doc) {
     const token = await this.accessToken();
-    const url = `${this.base}/dbs/${encodeURIComponent(this.database)}/colls/requests/docs`;
+    const url = `${this.base}/dbs/${encodeURIComponent(this.database)}/colls/${encodeURIComponent(this.container)}/docs`;
     const response = await this.fetch(url, {
       method: 'POST',
       headers: {

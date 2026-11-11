@@ -241,6 +241,7 @@
 
     <div class="tab-panel" id="panel-stocks" aria-label="Stocks" hidden>
       <p id="stocks-banner" class="banner" role="status" hidden></p>
+      <p id="stocks-switch-banner" class="banner switch-banner" role="status" hidden><span id="stocks-switch-text"></span><button type="button" id="stocks-switch-start" class="ghost">Start</button></p>
       <p id="stocks-owner-banner" class="banner" role="status" hidden></p>
 
       <div class="stocks-part" role="tabpanel" id="stocks-part-today" aria-labelledby="tab-stocks">
@@ -249,7 +250,7 @@
             <article class="tile" id="tile-stocks-market"><h2>Stock market</h2><p class="value">–</p><p class="sub">–</p></article>
             <article class="tile" id="tile-stocks-advice"><h2>Advice for</h2><p class="value">–</p><p class="sub">–</p></article>
             <article class="tile" id="tile-stocks-account"><h2>Stocks portfolio</h2><p class="value">–</p><p class="sub">–</p></article>
-            <article class="tile" id="tile-stocks-next"><h2>Next update</h2><p class="value">–</p><p class="sub">–</p></article>
+            <article class="tile" id="tile-stocks-next"><h2>Next update</h2><p class="value">–</p><p class="sub">–</p><button type="button" id="stocks-switch-open" class="ghost tile-action" hidden>Stop</button></article>
           </div>
         </section>
 
@@ -420,6 +421,18 @@
       <div class="actions">
         <button type="button" id="stocks-portfolio-cancel" class="ghost">Cancel</button>
         <button type="submit" id="stocks-portfolio-send" class="primary">Save portfolio</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="stocks-switch-dialog" aria-labelledby="stocks-switch-title">
+    <form id="stocks-switch-form" method="dialog">
+      <h2 id="stocks-switch-title">Stop the stocks advisor</h2>
+      <p id="stocks-switch-summary" class="summary"></p>
+      <p id="stocks-switch-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="stocks-switch-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="stocks-switch-send" class="primary">Stop</button>
       </div>
     </form>
   </dialog>

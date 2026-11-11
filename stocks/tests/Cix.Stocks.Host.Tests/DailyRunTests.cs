@@ -92,6 +92,24 @@ public class DailyRunTests
     }
 
     [Fact]
+    public async Task WhileStoppedTheRunFetchesAndWritesNothingAndAfterStartItCarriesOn()
+    {
+        var s = new Setup();
+        s.Store.Press(StocksSwitch.Pause, ThursdayRun.AddHours(-12));
+        var before = s.Store.Documents.Keys.ToHashSet();
+
+        var report = await s.RunAsync();
+
+        Assert.Equal(RunOutcome.Stopped, report.Outcome);
+        Assert.Equal(0, s.Source.Calls);
+        Assert.Equal(before, s.Store.Documents.Keys.ToHashSet());
+
+        s.Store.Press(StocksSwitch.Resume, ThursdayRun.AddHours(-1));
+        Assert.Equal(RunOutcome.Advised, (await s.RunAsync()).Outcome);
+        Assert.True(s.Source.Calls > 0);
+    }
+
+    [Fact]
     public async Task Run_TheFirstCloseIsAdvisedAndTheBuyWaitsForTheOpen()
     {
         var s = new Setup();
@@ -460,6 +478,8 @@ public class DailyRunTests
         public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);
 
         public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken) => inner.GetPortfolioSubmissionAsync(sequence, cancellationToken);
+
+        public Task<SwitchRead?> GetSwitchAsync(int sequence, CancellationToken cancellationToken) => inner.GetSwitchAsync(sequence, cancellationToken);
     }
 
     /// <summary>Another run saves the portfolio between this run's read and its write.</summary>
@@ -515,5 +535,7 @@ public class DailyRunTests
         public Task<string> SaveOwnerStateAsync(OwnerState state, string? etag, CancellationToken cancellationToken) => inner.SaveOwnerStateAsync(state, etag, cancellationToken);
 
         public Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken) => inner.GetPortfolioSubmissionAsync(sequence, cancellationToken);
+
+        public Task<SwitchRead?> GetSwitchAsync(int sequence, CancellationToken cancellationToken) => inner.GetSwitchAsync(sequence, cancellationToken);
     }
 }

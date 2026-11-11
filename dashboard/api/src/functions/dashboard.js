@@ -8,10 +8,9 @@ const { app } = require('@azure/functions');
 const { readerCache, DatabaseNotConfigured } = require('../cosmos');
 const { loadDashboard, loadJournalDay, journalRequest, loadActivity, loadBalanceHistory } = require('../data');
 const { isOwner, forbidden } = require('../auth');
+const { cached } = require('../answerCache');
 
-const CACHE_MS = 20_000;
 const ACTIVITY_CACHE_MS = 60_000; // a query across up to a year of day partitions: at most once a minute
-const cache = new Map();
 const getReader = readerCache(); // the live engine's own database (ADR-0017)
 
 /**
@@ -22,21 +21,6 @@ function cryptoMode(request) {
   const mode = request.query.get('mode') ?? 'live';
   if (mode !== 'live') throw new RangeError('Paper trading was removed (ADR-0028): reload the page.');
   return mode;
-}
-
-// Concurrent requests for the same thing share one database read (the promise is cached, not just the result).
-async function cached(key, load, ttl = CACHE_MS) {
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < ttl) return hit.body;
-  const body = load();
-  cache.set(key, { at: Date.now(), body });
-  if (cache.size > 200) cache.delete(cache.keys().next().value);
-  try {
-    return await body;
-  } catch (error) {
-    cache.delete(key); // don't keep a failure
-    throw error;
-  }
 }
 
 function respond(body, status = 200) {

@@ -12,6 +12,8 @@
 //     go through this template), and the dashboard reads with the read-only key;
 //   - the requests container, where the dashboard's writer identity (ADR-0012) creates the owner's portfolio submissions
 //     (ADR-0026) and may do nothing else, and which the job only reads;
+//   - the control container, where the same writer creates the owner's Stop and Start presses (ADR-0032), which both jobs
+//     only read;
 //   - a monthly budget on the group, when a contact address is given.
 
 import { stocksNames, stocksDatabase } from 'stocks-names.bicep'
@@ -139,6 +141,7 @@ var containers = [
   { name: 'bars', role: 'cache', actions: [metadata, '${item}/read', '${item}/upsert'] }
   { name: 'requests', role: 'reader', actions: [metadata, '${item}/read'] } // the owner's portfolio submissions, from the dashboard
   { name: 'analysis', role: 'briefer', actions: [metadata, '${item}/read', '${item}/upsert'] } // brief-latest upserted; reads analysis-latest
+  { name: 'control', role: 'reader', actions: [metadata, '${item}/read'] } // the owner's Stop and Start, from the dashboard
 ]
 
 resource stores 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = [
@@ -237,6 +240,32 @@ resource analystAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignm
   }
 }
 
+// The analyst reads the owner's Stop and Start too (ADR-0032): stopped, it doesn't run Claude.
+var controlScope = '${cosmos.id}/dbs/${stocksDatabase}/colls/control'
+
+resource analystControlRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-11-15' = {
+  parent: cosmos
+  name: guid(cosmos.id, stocksDatabase, 'cix-stocks-analyst', 'control')
+  dependsOn: [analystAssignment]
+  properties: {
+    roleName: 'CIX stocks analyst control reader'
+    type: 'CustomRole'
+    assignableScopes: [controlScope]
+    permissions: [{ dataActions: [metadata, '${item}/read'] }]
+  }
+}
+
+resource analystControlAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
+  parent: cosmos
+  dependsOn: [analystControlRole]
+  name: guid(cosmos.id, stocksDatabase, analystIdentity.id, 'control')
+  properties: {
+    roleDefinitionId: analystControlRole.id
+    principalId: analystIdentity.properties.principalId
+    scope: controlScope
+  }
+}
+
 // The dashboard's writer identity may create items in the requests container: the owner's portfolio submissions, which the
 // job checks before applying them. It can't read, change or delete anything in this account.
 var requestsScope = '${cosmos.id}/dbs/${stocksDatabase}/colls/requests'
@@ -244,7 +273,7 @@ var requestsScope = '${cosmos.id}/dbs/${stocksDatabase}/colls/requests'
 resource writerRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-11-15' = if (!empty(writerPrincipalId)) {
   parent: cosmos
   name: guid(cosmos.id, stocksDatabase, 'cix-dashboard-writer', 'requests')
-  dependsOn: [analystAssignment] // after the jobs': one role change on the account at a time
+  dependsOn: [analystControlAssignment] // after the jobs': one role change on the account at a time
   properties: {
     roleName: 'CIX dashboard stocks portfolio writer'
     type: 'CustomRole'
@@ -261,6 +290,30 @@ resource writerAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignme
     roleDefinitionId: writerRole.id
     principalId: writerPrincipalId
     scope: requestsScope
+  }
+}
+
+// And in the control container: the owner's Stop and Start presses (ADR-0032), each created once and never changed.
+resource writerControlRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-11-15' = if (!empty(writerPrincipalId)) {
+  parent: cosmos
+  name: guid(cosmos.id, stocksDatabase, 'cix-dashboard-writer', 'control')
+  dependsOn: [writerAssignment]
+  properties: {
+    roleName: 'CIX dashboard stocks stop and start writer'
+    type: 'CustomRole'
+    assignableScopes: [controlScope]
+    permissions: [{ dataActions: [metadata, '${item}/create'] }]
+  }
+}
+
+resource writerControlAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = if (!empty(writerPrincipalId)) {
+  parent: cosmos
+  dependsOn: [writerControlRole]
+  name: guid(cosmos.id, stocksDatabase, writerPrincipalId, 'control')
+  properties: {
+    roleDefinitionId: writerControlRole.id
+    principalId: writerPrincipalId
+    scope: controlScope
   }
 }
 

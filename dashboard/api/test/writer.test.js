@@ -52,6 +52,17 @@ test('the stocks database\'s requests are partitioned by id', async () => {
   assert.equal(f.calls[1].init.headers['x-ms-documentdb-partitionkey'], '["portfolio-3"]');
 });
 
+test('the stocks database\'s Stop and Start go to its control container', async () => {
+  const f = fakeFetch([{ status: 200, body: { access_token: 'tok', expires_in: 3600 } }, { status: 201 }]);
+  const control = new RequestWriter({
+    endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'control', tenantId: TENANT, clientId: 'app-id', clientSecret: SECRET, fetchImpl: f,
+    partitionKeyOf: (doc) => doc.id,
+  });
+  assert.equal(await control.create({ id: 'switch-1', value: {} }), 'created');
+  assert.equal(f.calls[1].url, 'https://stocks.documents.azure.com/dbs/cix-stocks/colls/control/docs');
+  assert.equal(f.calls[1].init.headers['x-ms-documentdb-partitionkey'], '["switch-1"]');
+});
+
 test('reuses the token until five minutes before it expires', async () => {
   let t = Date.parse('2026-10-26T13:00:00Z');
   const f = fakeFetch([

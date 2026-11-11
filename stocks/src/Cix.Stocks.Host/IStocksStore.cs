@@ -82,6 +82,12 @@ public interface IStocksStore
     /// reads; null when there is none under that number, a read with no submission when it can't be read as one.
     /// </summary>
     Task<SubmissionRead?> GetPortfolioSubmissionAsync(int sequence, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The owner's Stop or Start <c>switch-N</c> from the dashboard (ADR-0032), in the <c>control</c> container, which the
+    /// jobs only read; null when there is none under that number, a read with no switch when it can't be read as one.
+    /// </summary>
+    Task<SwitchRead?> GetSwitchAsync(int sequence, CancellationToken cancellationToken);
 }
 
 /// <summary>A submission document that exists: its value, or null when it isn't a submission (the run refuses it).</summary>
@@ -295,6 +301,25 @@ public sealed class InMemoryStocksStore : IStocksStore
     /// <summary>Adds a submission whose value is this raw JSON, for documents the page could send malformed.</summary>
     public void SubmitJson(int sequence, string valueJson) =>
         _docs[SubmissionKey(sequence)] = string.Create(System.Globalization.CultureInfo.InvariantCulture, $$"""{"id":"portfolio-{{sequence}}","value":{{valueJson}}}""");
+
+    public Task<SwitchRead?> GetSwitchAsync(int sequence, CancellationToken cancellationToken) =>
+        Task.FromResult(_docs.TryGetValue(SwitchKey(sequence), out var json) ? SwitchRead.Parse(System.Text.Encoding.UTF8.GetBytes(json)) : null);
+
+    /// <summary>Adds the next Stop (pause) or Start (resume) as the dashboard would: <c>{ id, value }</c>.</summary>
+    public void Press(string action, DateTimeOffset at)
+    {
+        var sequence = 1;
+        while (_docs.ContainsKey(SwitchKey(sequence)))
+            sequence++;
+        _docs[SwitchKey(sequence)] = JsonSerializer.Serialize(
+            new Envelope<SwitchSubmission>(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"switch-{sequence}"), new(sequence, action, at)), StocksJson.Options);
+    }
+
+    /// <summary>Adds switch number <paramref name="sequence"/> as this raw document, for ones the page could send malformed.</summary>
+    public void PressJson(int sequence, string documentJson) => _docs[SwitchKey(sequence)] = documentJson;
+
+    private static string SwitchKey(int sequence) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"control/switch-{sequence}");
 
     private static string SubmissionKey(int sequence) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"requests/portfolio-{sequence}");

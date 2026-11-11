@@ -21,7 +21,9 @@ using Cix.Stocks.MarketData;
 //   --accept <brief> <answer>      checks Claude's answer against the brief and saves the analysis
 //   --not-run <brief> <reason>     saves that Claude didn't run for the brief's close (usage-limit, credentials, timeout,
 //                                  failed); a done analysis for that close is never replaced
-// Exit codes: 0 advised or already advised, 1 failed, 2 bad configuration, 3 nothing to analyse.
+// While the owner has stopped the stocks advisory on the Stocks page (ADR-0032), the nightly run exits 0 at once and --brief
+// exits 3: no EODHD call, no Claude run, nothing written.
+// Exit codes: 0 advised, already advised or stopped, 1 failed, 2 bad configuration, 3 nothing to analyse.
 return await StocksHost.RunAsync(args);
 
 internal static class StocksHost
@@ -117,7 +119,18 @@ internal static class StocksHost
             }
 
             using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
-            Print(await new DailyRun(config, source, store, TimeProvider.System).RunAsync(cancel.Token));
+            var switched = await StocksSwitch.CurrentAsync(store, cancel.Token);
+            if (switched.Unreadable)
+                Console.Error.WriteLine($"The owner's newest Stop or Start (switch-{switched.Sequence}) can't be read: running as started.");
+            // The owner's Stop (ADR-0032): the run checks it itself before anything else; no search and no brief either.
+            var advised = await new DailyRun(config, source, store, TimeProvider.System).RunAsync(cancel.Token);
+            if (advised.Outcome == RunOutcome.Stopped)
+            {
+                Console.WriteLine($"Stopped by the owner since {switched.Since:yyyy-MM-dd HH:mm} UTC (switch-{switched.Sequence}): no run, no EODHD calls.");
+                return 0;
+            }
+
+            Print(advised);
             // A failed search still leaves the advice, so the analyst still gets its brief (without candidates); then the run fails.
             ExceptionDispatchInfo? searchFailed = null;
             try
@@ -252,7 +265,7 @@ internal static class StocksHost
             using var store = CosmosStocksStore.WithManagedIdentity(endpointUri, Env("STOCKS_COSMOS_DATABASE") ?? CosmosStocksStore.DefaultDatabase, clientId);
             if (await AnalystBriefing.ToAnalyseAsync(store, TimeProvider.System.GetUtcNow(), cancellationToken) is not { } brief)
             {
-                Console.WriteLine("Analyst: nothing to analyse (no brief for the latest advice, or this pass already analysed that close).");
+                Console.WriteLine("Analyst: nothing to analyse (no brief for the latest advice, this pass already analysed that close, or the owner stopped the stocks advisory).");
                 return 3;
             }
 

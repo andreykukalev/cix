@@ -2,8 +2,8 @@
 // execution at a time, never retried (a run that couldn't use Claude records why, and the schedule's next slot tries
 // again; a close already analysed is skipped; the run picks the night's pass or the check before the open by the clock).
 // The nightly run writes the brief with the news (brief-latest); this job reads it, runs headless Claude Code on it with
-// the owner's Claude token, and saves the checked answer. Its own identity reads that one secret and the advice,
-// and writes its own analysis container alone: it never reaches the EODHD key, the portfolios or the trades. It never trades: the owner reads
+// the owner's Claude token, and saves the checked answer. Its own identity reads that one secret, the advice and the
+// owner's Stop and Start (ADR-0032: stopped, it doesn't run Claude), and writes its own analysis container alone: it never reaches the EODHD key, the portfolios or the trades. It never trades: the owner reads
 // Claude's view on the Stocks page and places any order himself.
 
 import { stocksNames, stocksDatabase, claudeSecret } from 'stocks-names.bicep'

@@ -36,7 +36,7 @@ source "$app/analyst/agent-common.sh"
 mkdir -p "$work"
 "${host[@]}" --brief "$brief"
 code=$?
-if (( code == 3 )); then say "No brief to analyse now (none yet, or this pass already analysed it)."; exit 0; fi
+if (( code == 3 )); then say "No brief to analyse now (none yet, this pass already analysed it, or the owner stopped stocks)."; exit 0; fi
 (( code == 0 )) || { say "Couldn't read the brief (exit $code)."; exit "$code"; }
 [[ -s "$brief" ]] || { say "The host wrote an empty brief."; exit 1; }
 pass="$(jq -r '.pass // "night"' "$brief" 2>/dev/null)"

@@ -74,6 +74,8 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'advice-latest' },
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'advice', id: 'candidates-latest' },
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'analysis', id: 'analysis-latest' },
+    // The owner's Stop and Start: never pressed.
+    { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'control', id: 'switch-1' },
     // The owner's portfolio submissions waiting for the next run: none.
     { endpoint: 'https://stocks.documents.azure.com', database: 'cix-stocks', container: 'requests', id: 'portfolio-1' },
   ]);
@@ -84,12 +86,22 @@ test('the owner reads the stocks database alone, never the crypto one', async ()
 
 test('without the stocks settings the tab is not set up, and nothing is read', async () => {
   assert.equal(stocksReader({ COSMOS_ENDPOINT: 'https://crypto.documents.azure.com', COSMOS_READONLY_KEY: 'a2V5' }), null);
-  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(null, NOW), { configured: false, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], control: { paused: false, since: null, sequence: 0, unreadable: false }, generatedAt: '2026-10-30T22:00:00.000Z' });
 });
 
 test('no document yet is set up but without advice', async () => {
   const reader = { readDocument: async () => null };
-  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], generatedAt: '2026-10-30T22:00:00.000Z' });
+  assert.deepEqual(await loadStocks(reader, NOW), { configured: true, advice: null, candidates: null, analysis: null, working: { source: null, rows: [] }, pending: null, pendingTrades: [], control: { paused: false, since: null, sequence: 0, unreadable: false }, generatedAt: '2026-10-30T22:00:00.000Z' });
+});
+
+test('a Stop shows on the page; a switch that can\'t be read shows the advisory as started, and a failed read doesn\'t break the page', async () => {
+  const docs = { 'switch-1': { id: 'switch-1', value: { sequence: 1, action: 'pause', submittedAt: '2026-11-11T15:50:00Z' } } };
+  const reader = { readDocument: async (container, id) => (container === 'control' ? docs[id] ?? null : null) };
+  assert.deepEqual((await loadStocks(reader, NOW)).control, { paused: true, since: '2026-11-11T15:50:00.000Z', sequence: 1, unreadable: false });
+  docs['switch-2'] = { id: 'switch-2', value: { sequence: 2, action: 'pause' } };
+  assert.deepEqual((await loadStocks(reader, NOW)).control, { paused: false, since: null, sequence: 2, unreadable: true });
+  const failing = { readDocument: async (container) => { if (container === 'control') throw new Error('429'); return null; } };
+  assert.deepEqual((await loadStocks(failing, NOW)).control, { paused: false, since: null, sequence: 0, unreadable: true });
 });
 
 test('actions come protective first, in the advisor\'s order within a kind', () => {
