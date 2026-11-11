@@ -8,7 +8,7 @@
   "dashboardEnvironment": "dev",
   "schedule": "0 2 * * 2-6",
   "analystSchedule": "40 2,6,12,13 * * 1-6",
-  "analystModel": "opus",
+  "analystModel": "sonnet",
   "claudeCodeVersion": "2.1.316",
   "claudeTokenExpires": "",
   "monthlyBudget": 5,

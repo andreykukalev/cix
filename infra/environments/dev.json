@@ -18,8 +18,8 @@
     "deploy": "registry",
     "location": "polandcentral",
     "startEngine": false,
-    "traderModel": "sonnet",
-    "analystModel": "opus",
+    "traderModel": "haiku",
+    "analystModel": "sonnet",
     "claudeTokenExpires": "",
     "monthlyBudget": 40,
     "budgetStartDate": "2026-11-01"
