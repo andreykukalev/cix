@@ -18,8 +18,8 @@
     "deploy": "apps",
     "location": "polandcentral",
     "startEngine": true,
-    "traderModel": "sonnet",
-    "analystModel": "opus",
+    "traderModel": "haiku",
+    "analystModel": "sonnet",
     "claudeTokenExpires": "",
     "monthlyBudget": 20,
     "budgetStartDate": "2026-11-01"
