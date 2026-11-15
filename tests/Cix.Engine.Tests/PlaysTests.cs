@@ -284,18 +284,8 @@ public sealed class PlaysTests
     [Fact]
     public void SwingV3_IsV2WithThePlays_AndFitsTheLiveLimits()
     {
-        static StrategySpec Load(int version)
-        {
-            var node = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", $"swing.v{version}.json")))!.AsObject();
-            var parameters = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(node["parameters"]!.ToJsonString())!;
-            return ToolRig.Observer with
-            {
-                Name = "swing", Version = version, Parameters = parameters, Instructions = "Trade the signals.", AllowedTools = ["scan_market", "place_order"],
-            };
-        }
-
-        var v3 = Load(3);
-        Assert.Equal(MarketScanService.FromSpec(Load(2), new ScannerParameters()), MarketScanService.FromSpec(v3, new ScannerParameters()));
+        var v3 = LoadSwing(3);
+        Assert.Equal(MarketScanService.FromSpec(LoadSwing(2), new ScannerParameters()), MarketScanService.FromSpec(v3, new ScannerParameters()));
 
         var plays = MarketScanService.PlaysOf(v3)!;
         Assert.Equal((0.18m, 0.4m), (plays.LossStopFraction, plays.MainExposureFraction));
@@ -310,6 +300,35 @@ public sealed class PlaysTests
         Assert.Empty(StrategySchema.Validate(v3, live, TradingMode.Paper));
         Assert.Contains(StrategySchema.Validate(v3 with { Parameters = WithBurstOrder(v3, 0.21) }, live, TradingMode.Paper),
             e => e.Contains("plays", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void SwingV4_IsV3AsAResearchMode_AndFitsTheLiveLimits()
+    {
+        var (v3, v4) = (LoadSwing(3), LoadSwing(4));
+        Assert.Equal(MarketScanService.FromSpec(v3, new ScannerParameters()), MarketScanService.FromSpec(v4, new ScannerParameters()));
+
+        // Bursts without the BTC trend filter, a smaller rally held a week, a 12% crash, and a tighter loss stop for the plays.
+        var (was, plays) = (MarketScanService.PlaysOf(v3)!, MarketScanService.PlaysOf(v4)!);
+        Assert.Equal((0.1m, 0.4m), (plays.LossStopFraction, plays.MainExposureFraction));
+        Assert.Equal(was.Burst! with { RegimeEmaPeriod = 0 }, plays.Burst);
+        Assert.Equal((0.05m, 2, 0.12m, 7), (plays.Rally!.BtcMoveFraction, plays.Rally.MoveDays, plays.Rally.StopFraction, plays.Rally.HoldDays));
+        Assert.Equal((-0.12m, 3, 0.25m, 14), (plays.Crash!.BtcMoveFraction, plays.Crash.MoveDays, plays.Crash.StopFraction, plays.Crash.HoldDays));
+        Assert.Equal(was.Rally!.Basket, plays.Rally.Basket);
+        Assert.Equal(was.Crash!.Basket, plays.Crash.Basket);
+
+        var live = RiskLimitsOptions.LoadFor(TradingMode.Live, AppContext.BaseDirectory);
+        Assert.Empty(StrategySchema.Validate(v4, live, TradingMode.Paper));
+    }
+
+    private static StrategySpec LoadSwing(int version)
+    {
+        var node = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", $"swing.v{version}.json")))!.AsObject();
+        var parameters = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(node["parameters"]!.ToJsonString())!;
+        return ToolRig.Observer with
+        {
+            Name = "swing", Version = version, Parameters = parameters, Instructions = "Trade the signals.", AllowedTools = ["scan_market", "place_order"],
+        };
     }
 
     private static Dictionary<string, JsonElement> WithBurstOrder(StrategySpec spec, double fraction)

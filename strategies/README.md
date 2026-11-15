@@ -7,6 +7,17 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 - `allowedTools`: the tool server refuses any agent tool not listed here, except `get_strategy_spec`, which every agent may read to learn its own rules.
 - Pick the starting spec with `Strategy:Name` and `Strategy:Version` in the engine's configuration. The default is `balanced` v3. In paper trading, a selection in the database overrides it at run time (below).
 
+## Swing v4: swing v3 as a research mode
+
+`swing.v4` is `swing.v3` with looser plays, so the account trades while BTC is below its 100-day EMA and the owner gets real trades to study (2026-11-15). The daily swing is unchanged. It is chosen for activity, not for a proven edge:
+
+- `burst`: `regimeEmaPeriod` 0, so bursts are bought whatever BTC's trend.
+- `rally`: BTC up 5% over two days (was 13% over three), held 7 days (was 30).
+- `crash`: BTC down 12% over three days (was 15%).
+- `lossStopFraction` 0.1: no new play once the plays have lost 10% of the capital (was 18%).
+
+Backtest on Binance signals at Revolut X costs, with 15 EUR buys (6% of about 250 EUR): about 3-4 trades a week; bursts without the BTC filter about -10 EUR over 12 months (+8 over the last 3 months, -6 over the last 30 days); the 5% rally about 10 times a year, -0.4% to +3% an event; the 12% crash 2-3 times a year, about -1% an event. Expect roughly break even to a small loss. Long-only spot loses more when the market falls. It starts as `draft`; the owner marks it `live`.
+
 ## Swing v3: swing v2 with plays
 
 `swing.v3` (ADR-0031) is `swing.v2` plus three plays under `parameters.plays`, judged on Binance's public candles and bought on Revolut X at its ask:
