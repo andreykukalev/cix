@@ -233,6 +233,8 @@ const WORDS = {
     breakoutMoves: (days, change, atr) => `Moves: ${change} over ${days} days; the ask is ${atr}× the daily range (ATR) above that close`,
     burst: (time, hours, multiple) => `Volume burst on Binance: the hour to ${time} closed above the ${hours}-hour high on ${multiple}× the average volume`,
     burstExit: (hold, atr) => `Play: sold after ${hold} hours or at a stop ${atr} hourly ATR below, whichever comes first`,
+    burstBracket: (hold, stop, target) => `Play: sold at ${target} up, at ${stop} down or after ${hold} hours, whichever comes first`,
+    burstTrail: (hold, stop, trail, after) => `Play: stop ${stop} below; once ${after} up it follows ${trail} under the highest price; sold there or after ${hold} hours`,
     btcEvent: (play, move, days, from) => `BTC ${play === 'rally' ? 'rally' : 'crash'}: ${move} over ${days} days (the play starts at ${from})`,
     eventExit: (hold, stop) => `Play: sold after ${hold} days or at a stop ${stop} below, whichever comes first`,
     stop: 'stop',
@@ -274,6 +276,8 @@ const WORDS = {
     breakoutMoves: (days, change, atr) => `Движение: ${change} за ${days} дней; ask выше этого закрытия на ${atr}× дневного диапазона (ATR)`,
     burst: (time, hours, multiple) => `Всплеск объёма на Binance: час до ${time} закрылся выше максимума ${hours} часов при объёме в ${multiple}× от среднего`,
     burstExit: (hold, atr) => `Игра: продажа через ${hold} часов или по стопу на ${atr} часовых ATR ниже, что наступит раньше`,
+    burstBracket: (hold, stop, target) => `Игра: продажа при росте на ${target}, при падении на ${stop} или через ${hold} часов, что наступит раньше`,
+    burstTrail: (hold, stop, trail, after) => `Игра: стоп на ${stop} ниже; после роста на ${after} он идёт на ${trail} ниже максимума; продажа там или через ${hold} часов`,
     btcEvent: (play, move, days, from) => `${play === 'rally' ? 'Ралли' : 'Обвал'} BTC: ${move} за ${days} ${daysRu(days)} (игра начинается от ${from})`,
     eventExit: (hold, stop) => `Игра: продажа через ${hold} ${daysRu(hold)} или по стопу на ${stop} ниже, что наступит раньше`,
     stop: 'стоп-лосс',
@@ -317,6 +321,10 @@ function entryEvidence(reason, lang = 'en') {
   // The plays (ADR-0031), as src/Cix.Domain/Scanning/MarketPlays.cs writes them.
   const burst = /^volume burst: the hour to (\d{2}:\d{2} UTC) closed above the (\d+)-hour high on ([\d.]+)x the average volume \(Binance\); hold (\d+) h, stop ([\d.]+) hourly ATR below$/.exec(reason.trim());
   if (burst) return [w.burst(burst[1], burst[2], burst[3]), w.burstExit(burst[4], burst[5])];
+  const bracket = /^volume burst: the hour to (\d{2}:\d{2} UTC) closed above the (\d+)-hour high on ([\d.]+)x the average volume \(Binance\); hold (\d+) h, stop ([\d.]+%) below, target ([\d.]+%) above$/.exec(reason.trim());
+  if (bracket) return [w.burst(bracket[1], bracket[2], bracket[3]), w.burstBracket(bracket[4], bracket[5], bracket[6])];
+  const trail = /^volume burst: the hour to (\d{2}:\d{2} UTC) closed above the (\d+)-hour high on ([\d.]+)x the average volume \(Binance\); hold (\d+) h, stop ([\d.]+%) below, trail ([\d.]+%) under the high once ([\d.]+%) up$/.exec(reason.trim());
+  if (trail) return [w.burst(trail[1], trail[2], trail[3]), w.burstTrail(trail[4], trail[5], trail[6], trail[7])];
   const event = /^BTC (rally|crash): BTC (\S+) over (\d+) days to the last daily close \(the \w+ play starts at (\S+)\); hold (\d+) days, stop (\S+) below$/.exec(reason.trim());
   if (event) return [w.btcEvent(event[1], event[2], event[3], event[4]), w.eventExit(event[5], event[6])];
   const m = /^(.*?),?\s+(-?[\d.]+) ATR above EMA20,\s*1h (\S+),\s*24h (\S+)$/.exec(reason.trim());

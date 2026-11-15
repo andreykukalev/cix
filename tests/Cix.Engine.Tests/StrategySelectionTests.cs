@@ -97,6 +97,7 @@ public sealed class StrategySchemaTests
             Assert.Contains("balanced@v3", fitted);
             Assert.Contains("risky@v4", fitted);
             Assert.Contains("swing@v1", fitted);
+            Assert.Contains("swing@v4", fitted); // the research mode of the plays
             Assert.Contains("swing@v3", fitted); // with the plays (ADR-0031) // the daily swing strategy (ADR-0029), for the 1000 EUR live allocation
         }
         finally

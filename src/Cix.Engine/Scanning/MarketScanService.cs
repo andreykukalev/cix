@@ -380,7 +380,7 @@ public sealed partial class MarketScanService(
 
         // A fill time only for plans the engine state holds: a raise can't be written to a plan from the journal fallback.
         var states = execution.PositionPlanStates;
-        var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit, states.ContainsKey(p.Symbol) ? p.FilledAt : null, p.Play, p.ExitBy)).ToList();
+        var held = plans.Select(p => new HeldPosition(p.Symbol, p.SellableBaseSize, p.StopLoss, p.TakeProfit, states.ContainsKey(p.Symbol) ? p.FilledAt : null, p.Play, p.ExitBy, p.EntryPrice)).ToList();
         // Sizes that are shares of the capital, in money for the account as the safety monitor last valued it (ADR-0030).
         var (sized, unsized) = SizedForCapital(parameters);
         var paused = unsized ?? EntriesPausedReason(spec, now) ?? soldUnknown;

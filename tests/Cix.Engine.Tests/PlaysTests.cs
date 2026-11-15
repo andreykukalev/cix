@@ -105,6 +105,33 @@ public sealed class PlaysTests
     }
 
     [Fact]
+    public async Task ABurstHeld_FivePercentUp_HasItsStopRaisedByTheEngine_WithTheTrail()
+    {
+        var tools = await Bursting(spec: Burst() with
+        {
+            Parameters = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                """{ "plays": { "burst": { "orderFraction": 0.15, "regimeEmaPeriod": 0, "stopFraction": 0.05, "trailActivationFraction": 0.05, "trailFraction": 0.05, "holdHours": 336 } } }""")!,
+        }, btc: 0.001m, lastVolume: 10m); // no burst now
+        tools.Rig.Store.Update(s => s with
+        {
+            Positions = new Dictionary<string, PositionPlanState>(StringComparer.Ordinal)
+            {
+                // Bought at 55,000 ten hours ago; the bid is about 60,000 now, 9% up.
+                [Btc] = new(Btc, PositionPlanState.Open, "c-entry", 52_250m, null, T0.AddHours(-10), EntryPrice: 55_000m, FilledAt: T0.AddHours(-10),
+                    Play: MarketPlays.Burst, ExitBy: T0.AddHours(326)),
+            },
+        });
+
+        var scan = await tools.Scanner.ScanAsync(CancellationToken.None);
+        Assert.Empty(scan.Exits);
+        var raise = Assert.Single(scan.StopRaises!);
+        Assert.True(raise.To >= 57_000m && raise.To < 60_000m, $"raised to {raise.To}"); // 5% under a high of at least the bid
+        Assert.Equal(1, await tools.Scanner.RaiseStopsAsync(scan, CancellationToken.None));
+        Assert.Equal(raise.To, tools.Rig.Execution.PositionPlanStates[Btc].StopLoss);
+        Assert.Single(tools.Journal.Entries, e => e.Kind == MarketScanService.StopRaisedKind);
+    }
+
+    [Fact]
     public async Task APlayPosition_IsSoldByTheEngine_WhenItsTimeIsUp()
     {
         var tools = await Bursting(btc: 0.001m, lastVolume: 10m); // no burst now
@@ -210,12 +237,40 @@ public sealed class PlaysTests
             stopLoss: entry.StopLoss - 100m, cancellationToken: CancellationToken.None));
         await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Orders.PlaceOrder(Btc, "buy", entry.BaseSize * 2, entry.LimitPrice, "burst play, twice the size",
             stopLoss: entry.StopLoss, cancellationToken: CancellationToken.None));
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Orders.PlaceOrder(Btc, "buy", entry.BaseSize, entry.LimitPrice, "burst play with a target it hasn't",
+            stopLoss: entry.StopLoss, takeProfit: entry.LimitPrice * 1.05m, cancellationToken: CancellationToken.None));
         Assert.DoesNotContain(tools.Journal.Entries, e => e.Kind == "order");
 
         // A smaller size and a higher stop are within the signal.
         await tools.Orders.PlaceOrder(Btc, "buy", entry.BaseSize / 2, entry.LimitPrice, "burst play, half the size", stopLoss: entry.StopLoss + 10m,
             cancellationToken: CancellationToken.None);
         Assert.Equal(MarketPlays.Burst, tools.Rig.Execution.PositionPlanStates[Btc].Play);
+    }
+
+    [Fact]
+    public async Task ABracketBurst_IsBoughtOnlyWithItsTarget_AndThePlanKeepsIt()
+    {
+        var tools = await Bursting(spec: Burst() with
+        {
+            Parameters = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                """{ "plays": { "burst": { "orderFraction": 0.15, "regimeEmaPeriod": 0, "stopFraction": 0.05, "takeProfitFraction": 0.05, "holdHours": 336 } } }""")!,
+        });
+        var entry = Assert.Single((await tools.Scanner.ScanAsync(CancellationToken.None)).Entries);
+        Assert.True(entry.StopLoss <= 60_010m * 0.95m && entry.StopLoss > 60_010m * 0.94m, $"stop {entry.StopLoss}");
+        Assert.True(entry.TakeProfit >= 60_010m * 1.05m && entry.TakeProfit < 60_010m * 1.06m, $"target {entry.TakeProfit}");
+        Assert.Equal(T0.AddHours(336), entry.ExitBy);
+
+        var noTarget = await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Orders.PlaceOrder(Btc, "buy", entry.BaseSize, entry.LimitPrice, "bracket burst without its target",
+            stopLoss: entry.StopLoss, cancellationToken: CancellationToken.None));
+        Assert.Contains("buy with its takeProfit", noTarget.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Orders.PlaceOrder(Btc, "buy", entry.BaseSize, entry.LimitPrice, "bracket burst, another target",
+            stopLoss: entry.StopLoss, takeProfit: entry.TakeProfit + 100m, cancellationToken: CancellationToken.None));
+        Assert.DoesNotContain(tools.Journal.Entries, e => e.Kind == "order");
+
+        await tools.Orders.PlaceOrder(Btc, "buy", entry.BaseSize, entry.LimitPrice, "bracket burst", stopLoss: entry.StopLoss, takeProfit: entry.TakeProfit,
+            cancellationToken: CancellationToken.None);
+        var plan = tools.Rig.Execution.PositionPlanStates[Btc];
+        Assert.Equal((MarketPlays.Burst, T0.AddHours(336), entry.StopLoss, entry.TakeProfit), (plan.Play, plan.ExitBy, plan.StopLoss, plan.TakeProfit));
     }
 
     [Fact]
@@ -284,18 +339,8 @@ public sealed class PlaysTests
     [Fact]
     public void SwingV3_IsV2WithThePlays_AndFitsTheLiveLimits()
     {
-        static StrategySpec Load(int version)
-        {
-            var node = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", $"swing.v{version}.json")))!.AsObject();
-            var parameters = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(node["parameters"]!.ToJsonString())!;
-            return ToolRig.Observer with
-            {
-                Name = "swing", Version = version, Parameters = parameters, Instructions = "Trade the signals.", AllowedTools = ["scan_market", "place_order"],
-            };
-        }
-
-        var v3 = Load(3);
-        Assert.Equal(MarketScanService.FromSpec(Load(2), new ScannerParameters()), MarketScanService.FromSpec(v3, new ScannerParameters()));
+        var v3 = LoadSwing(3);
+        Assert.Equal(MarketScanService.FromSpec(LoadSwing(2), new ScannerParameters()), MarketScanService.FromSpec(v3, new ScannerParameters()));
 
         var plays = MarketScanService.PlaysOf(v3)!;
         Assert.Equal((0.18m, 0.4m), (plays.LossStopFraction, plays.MainExposureFraction));
@@ -310,6 +355,35 @@ public sealed class PlaysTests
         Assert.Empty(StrategySchema.Validate(v3, live, TradingMode.Paper));
         Assert.Contains(StrategySchema.Validate(v3 with { Parameters = WithBurstOrder(v3, 0.21) }, live, TradingMode.Paper),
             e => e.Contains("plays", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void SwingV4_IsV3AsAResearchMode_AndFitsTheLiveLimits()
+    {
+        var (v3, v4) = (LoadSwing(3), LoadSwing(4));
+        Assert.Equal(MarketScanService.FromSpec(v3, new ScannerParameters()), MarketScanService.FromSpec(v4, new ScannerParameters()));
+
+        // Bursts without the BTC trend filter, with a 5% stop that trails 5% under the high once 5% up, for up to 14 days; a smaller rally held a week, a 12% crash, and a tighter loss stop for the plays.
+        var (was, plays) = (MarketScanService.PlaysOf(v3)!, MarketScanService.PlaysOf(v4)!);
+        Assert.Equal((0.1m, 0.4m), (plays.LossStopFraction, plays.MainExposureFraction));
+        Assert.Equal(was.Burst! with { RegimeEmaPeriod = 0, StopFraction = 0.05m, TrailActivationFraction = 0.05m, TrailFraction = 0.05m, HoldHours = 336 }, plays.Burst);
+        Assert.Equal((0.05m, 2, 0.12m, 7), (plays.Rally!.BtcMoveFraction, plays.Rally.MoveDays, plays.Rally.StopFraction, plays.Rally.HoldDays));
+        Assert.Equal((-0.12m, 3, 0.25m, 14), (plays.Crash!.BtcMoveFraction, plays.Crash.MoveDays, plays.Crash.StopFraction, plays.Crash.HoldDays));
+        Assert.Equal(was.Rally!.Basket, plays.Rally.Basket);
+        Assert.Equal(was.Crash!.Basket, plays.Crash.Basket);
+
+        var live = RiskLimitsOptions.LoadFor(TradingMode.Live, AppContext.BaseDirectory);
+        Assert.Empty(StrategySchema.Validate(v4, live, TradingMode.Paper));
+    }
+
+    private static StrategySpec LoadSwing(int version)
+    {
+        var node = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "strategies", $"swing.v{version}.json")))!.AsObject();
+        var parameters = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(node["parameters"]!.ToJsonString())!;
+        return ToolRig.Observer with
+        {
+            Name = "swing", Version = version, Parameters = parameters, Instructions = "Trade the signals.", AllowedTools = ["scan_market", "place_order"],
+        };
     }
 
     private static Dictionary<string, JsonElement> WithBurstOrder(StrategySpec spec, double fraction)

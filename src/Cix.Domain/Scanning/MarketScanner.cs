@@ -165,10 +165,12 @@ public sealed record ScannerParameters
 
 /// <summary>A position the account holds, with the plan recorded when it was bought (null when unknown).</summary>
 /// <param name="FilledAt">When the buy behind it filled, for a trailing stop; null when unknown.</param>
-/// <param name="Play">The play that opened it (ADR-0031): no trend exit and no trailing stop, only its stop and its time.</param>
+/// <param name="Play">The play that opened it (ADR-0031): no trend exit and none of the strategy's trailing stop, only its stop (a burst's may trail, <see cref="MarketPlays.BurstTrail"/>), its target if any and its time.</param>
 /// <param name="ExitBy">When a play's position is sold whatever its price.</param>
+/// <param name="EntryPrice">The average price its buy filled at, for a burst's trail; null when unknown.</param>
 public sealed record HeldPosition(
-    string Symbol, decimal SellableBaseSize, decimal? StopLoss, decimal? TakeProfit, DateTimeOffset? FilledAt = null, string? Play = null, DateTimeOffset? ExitBy = null);
+    string Symbol, decimal SellableBaseSize, decimal? StopLoss, decimal? TakeProfit, DateTimeOffset? FilledAt = null, string? Play = null, DateTimeOffset? ExitBy = null,
+    decimal? EntryPrice = null);
 
 /// <summary>
 /// Everything the scanner needs about one universe symbol. <paramref name="Hourly"/> and <paramref name="Daily"/> are closed

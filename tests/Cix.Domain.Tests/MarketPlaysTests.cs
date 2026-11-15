@@ -71,6 +71,57 @@ public sealed class MarketPlaysTests
     }
 
     [Fact]
+    public void Burst_WithABracket_HasAStopAndATargetAShareFromTheAsk_WhateverBtcDoes()
+    {
+        // swing.v4's research mode: no BTC filter, 5% stop, 5% target, held at most 14 days.
+        var bracket = BurstV3 with { RegimeEmaPeriod = 0, StopFraction = 0.05m, TakeProfitFraction = 0.05m, HoldHours = 336 };
+        var down = Btc(i => i < 100 ? 40_000m + (100m * i) : 49_900m - (600m * (i - 99)));
+        var result = Evaluate(new PlayParameters { Burst = bracket }, [Coin("SOL-EUR")], Candles(("SOL-EUR", Hourly())), down);
+
+        var entry = Assert.Single(result.Entries);
+        // 102.05 x 0.95 = 96.9475, floored to the 0.01 step; 102.05 x 1.05 = 107.1525, rounded up to it.
+        Assert.Equal((96.94m, 107.16m), (entry.StopLoss, entry.TakeProfit));
+        Assert.Equal(Now.AddHours(336), entry.ExitBy);
+        Assert.EndsWith("(Binance); hold 336 h, stop 5% below, target 5% above", entry.Reason, StringComparison.Ordinal);
+
+        // Without a target share the burst has none, as in v3.
+        Assert.Null(Assert.Single(Evaluate(new PlayParameters { Burst = bracket with { TakeProfitFraction = 0 } }, [Coin("SOL-EUR")], Candles(("SOL-EUR", Hourly())), down).Entries).TakeProfit);
+    }
+
+    [Fact]
+    public void ABurstHeld_TrailsFivePercentUnderItsHigh_OnceFivePercentUp()
+    {
+        // swing.v4: bought at 100 with a 95 stop, 10 hours ago.
+        var trail = BurstV3 with { RegimeEmaPeriod = 0, StopFraction = 0.05m, TrailActivationFraction = 0.05m, TrailFraction = 0.05m };
+        var filled = Now.AddHours(-10);
+        HeldPosition Held(string play = MarketPlays.Burst, decimal stop = 95m) => new("SOL-EUR", 0.15m, stop, null, filled, play, Now.AddDays(13), 100m);
+        ScanInput At(decimal bid, params (int HoursAfterFill, decimal Close)[] closes) => Coin("SOL-EUR", bid, bid + 0.1m) with
+        {
+            // Wicks 20 above every close: the trail follows the closes.
+            Hourly = closes.Select(x => new Candle(filled.AddHours(x.HoursAfterFill), 100m, x.Close + 20m, 99m, x.Close, 100m)).ToList(),
+        };
+        IReadOnlyList<StopRaise> Raises(ScanInput coin, HeldPosition? held = null, IReadOnlyList<ExitSignal>? exits = null, BurstPlay? play = null) =>
+            MarketPlays.BurstTrail([coin], [held ?? Held()], exits ?? [], play ?? trail);
+
+        // Up 4% at most: the stop stays.
+        Assert.Empty(Raises(At(103m, (1, 104m))));
+        // Closed 10% up (the hour from 3 hours after the fill), back to 108: 5% under 110 is 104.5, under the bid's 107.46.
+        var raise = Assert.Single(Raises(At(108m, (1, 104m), (3, 110m))));
+        Assert.Equal(("SOL-EUR", 95m, 104.5m), (raise.Symbol, raise.From, raise.To));
+        Assert.StartsWith("burst trail: 5% under the highest price since the buy (110, hourly closes and the bid)", raise.Detail, StringComparison.Ordinal);
+        // Fallen back through the trail: 5% under 115 is 109.25, above the bid of 104, so the stop goes to 0.5% under the bid
+        // (103.48) and a raise alone never sells.
+        Assert.Equal(103.48m, Assert.Single(Raises(At(104m, (3, 115m)))).To);
+        // The hour the buy filled in began before it: its close doesn't count. The bid alone does: 106 x 0.95 = 100.7.
+        Assert.Equal(100.7m, Assert.Single(Raises(At(106m, (-1, 120m)))).To);
+        // Never down, never a rally's position, never a coin being sold, and none without a trail share.
+        Assert.Empty(Raises(At(108m, (3, 110m)), Held(stop: 105m)));
+        Assert.Empty(Raises(At(108m, (3, 110m)), Held(play: MarketPlays.Rally)));
+        Assert.Empty(Raises(At(108m, (3, 110m)), exits: [new ExitSignal("SOL-EUR", 0.15m, 108m, "time", "the burst's holding time ended")]));
+        Assert.Empty(Raises(At(108m, (3, 110m)), play: BurstV3));
+    }
+
+    [Fact]
     public void NoBurst_WithoutTheVolume_TheBreakout_AFreshHour_OrABuyablePrice()
     {
         var burst = new PlayParameters { Burst = BurstV3 };
@@ -238,6 +289,17 @@ public sealed class MarketPlaysTests
         Assert.Throws<InvalidOperationException>(() => new PlayParameters { Rally = RallyV3 with { Basket = [] } }.Validate());
         Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { OrderFraction = 0.3m } }.Validate());
         Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { RegimeEmaPeriod = 1 } }.Validate());
+        Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { StopFraction = 0.005m } }.Validate());
+        Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { StopFraction = 0.6m } }.Validate());
+        Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { TakeProfitFraction = 0.005m } }.Validate());
+        Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { TakeProfitFraction = -0.05m } }.Validate());
+        Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { TrailFraction = 0.6m } }.Validate());
+        Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { TrailActivationFraction = 0.05m } }.Validate()); // no trail to activate
+        Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { StopFraction = 0.05m, TakeProfitFraction = 0.05m, TrailFraction = 0.05m } }.Validate()); // target or trail
+        Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { TrailFraction = 0.05m } }.Validate()); // only with a stopFraction
+        Assert.Throws<InvalidOperationException>(() => new PlayParameters { Burst = BurstV3 with { TakeProfitFraction = 0.05m } }.Validate());
+        new PlayParameters { Burst = BurstV3 with { StopFraction = 0.05m, TakeProfitFraction = 0.05m } }.Validate();
+        new PlayParameters { Burst = BurstV3 with { StopFraction = 0.05m, TrailActivationFraction = 0.05m, TrailFraction = 0.05m } }.Validate();
         new PlayParameters { Burst = BurstV3, Rally = RallyV3, Crash = CrashV3 }.Validate();
     }
 }

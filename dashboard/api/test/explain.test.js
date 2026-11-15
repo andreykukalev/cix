@@ -57,6 +57,12 @@ test('play entries say which play and when it sells, and a time exit says the ti
     'Play: sold after 72 hours or at a stop 4 hourly ATR below, whichever comes first',
   ]);
   assert.equal(explain(burst, 'ru').points[1], 'Игра: продажа через 72 часов или по стопу на 4 часовых ATR ниже, что наступит раньше');
+  const bracket = { ...burst, data: { ...burst.data, takeProfit: '107.1', rationale: 'signal entry SOL-EUR rank 1: volume burst: the hour to 12:00 UTC closed above the 96-hour high on 5.2x the average volume (Binance); hold 336 h, stop 5% below, target 5% above; stop 96.9, risk 0.8' } };
+  assert.equal(own(bracket).points[1], 'Play: sold at 5% up, at 5% down or after 336 hours, whichever comes first');
+  assert.equal(explain(bracket, 'ru').points[1], 'Игра: продажа при росте на 5%, при падении на 5% или через 336 часов, что наступит раньше');
+  const trailing = { ...burst, data: { ...burst.data, rationale: 'signal entry SOL-EUR rank 1: volume burst: the hour to 12:00 UTC closed above the 96-hour high on 5.2x the average volume (Binance); hold 336 h, stop 5% below, trail 5% under the high once 5% up; stop 96.9, risk 0.8' } };
+  assert.equal(own(trailing).points[1], 'Play: stop 5% below; once 5% up it follows 5% under the highest price; sold there or after 336 hours');
+  assert.equal(explain(trailing, 'ru').points[1], 'Игра: стоп на 5% ниже; после роста на 5% он идёт на 5% ниже максимума; продажа там или через 336 часов');
 
   const rally = { ...ENTRY, data: { ...ENTRY.data, symbol: 'ETH-EUR', stopLoss: '2640', takeProfit: undefined, approvedPrice: '3000', requestedPrice: '3000', play: 'rally',
     rationale: 'signal entry ETH-EUR rank 2: BTC rally: BTC +14% over 3 days to the last daily close (the rally play starts at +13%); hold 30 days, stop 12% below; stop 2640, risk 6.1' } };
