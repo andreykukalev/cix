@@ -237,6 +237,8 @@ public sealed class PlaysTests
             stopLoss: entry.StopLoss - 100m, cancellationToken: CancellationToken.None));
         await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Orders.PlaceOrder(Btc, "buy", entry.BaseSize * 2, entry.LimitPrice, "burst play, twice the size",
             stopLoss: entry.StopLoss, cancellationToken: CancellationToken.None));
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Orders.PlaceOrder(Btc, "buy", entry.BaseSize, entry.LimitPrice, "burst play with a target it hasn't",
+            stopLoss: entry.StopLoss, takeProfit: entry.LimitPrice * 1.05m, cancellationToken: CancellationToken.None));
         Assert.DoesNotContain(tools.Journal.Entries, e => e.Kind == "order");
 
         // A smaller size and a higher stop are within the signal.

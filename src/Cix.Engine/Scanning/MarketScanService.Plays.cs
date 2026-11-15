@@ -60,8 +60,8 @@ public sealed partial class MarketScanService
     /// <summary>
     /// The play signal a buy of <paramref name="symbol"/> takes (ADR-0031): the latest scan's, if it is from the last
     /// <paramref name="maxAge"/>. Null when there is none. Throws when the buy doesn't keep to it: a play buy carries the
-    /// signal's stop or a higher one, and at most its size, since the engine then sells it only at that stop, its target (when the
-    /// signal has one, the buy carries exactly it) or its time.
+    /// signal's stop or a higher one, and at most its size, since the engine then sells it only at that stop, its target (the buy
+    /// carries exactly the signal's, or none when it has none) or its time.
     /// </summary>
     public EntrySignal? PlaySignalFor(string symbol, decimal baseSize, decimal? stopLoss, TimeSpan maxAge, decimal? takeProfit = null)
     {
@@ -71,9 +71,10 @@ public sealed partial class MarketScanService
         if (stopLoss is not { } stop || stop < signal.StopLoss || baseSize > signal.BaseSize)
             throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture,
                 $"{symbol} has a {signal.Play} play signal: buy at most its baseSize {signal.BaseSize} with its stopLoss {signal.StopLoss} (or a higher stop)."));
-        if (signal.TakeProfit is { } target && takeProfit != target)
-            throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture,
-                $"{symbol} has a {signal.Play} play signal with a target: buy with its takeProfit {target}."));
+        if (takeProfit != signal.TakeProfit)
+            throw new InvalidOperationException(signal.TakeProfit is { } target
+                ? string.Create(CultureInfo.InvariantCulture, $"{symbol} has a {signal.Play} play signal with a target: buy with its takeProfit {target}.")
+                : $"{symbol} has a {signal.Play} play signal without a target: buy without a takeProfit.");
         return signal;
     }
 
@@ -135,9 +136,11 @@ public sealed partial class MarketScanService
         var entries = result.Entries.ToList();
         foreach (var entry in outcome.Entries.Where(e => entries.All(x => x.Symbol != e.Symbol)))
             entries.Add(entry with { Rank = entries.Count + 1 });
-        // A burst's trail (ADR-0031, swing v4): raised like the swing's, never for a coin being sold or one the swing trails itself.
+        // A burst's trail (swing v4): raised like the swing's, from every coin held (a flagged one too), even when the plays
+        // couldn't be judged: it needs only Revolut X's prices.
         var raises = (result.StopRaises ?? []).ToList();
-        raises.AddRange(outcome.StopRaises.Where(r => result.Exits.All(x => x.Symbol != r.Symbol) && raises.All(x => x.Symbol != r.Symbol)));
+        if (plays.Burst is { TrailFraction: > 0 } burst)
+            raises.AddRange(MarketPlays.BurstTrail(inputs, held, result.Exits, burst));
         return result with { Entries = entries, Plays = outcome.Statuses, StopRaises = raises };
     }
 

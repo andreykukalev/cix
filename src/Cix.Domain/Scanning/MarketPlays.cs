@@ -64,8 +64,9 @@ public sealed record PlayParameters
         if (Burst is { } b && (b.OrderFraction is <= 0 or > 0.25m || b.MaxPositions is < 1 or > 10 || b.BreakoutHours is < 12 or > 240
             || b.VolumeHours is < 24 or > 240 || b.VolumeMultiple is < 1 or > 20 || b.StopAtr is < 1 or > 10 || b.HoldHours is < 1 or > 720
             || b.RegimeEmaPeriod is < 0 or 1 or > 150 || b.StopFraction is < 0 or (> 0 and < 0.01m) or > 0.5m || b.TakeProfitFraction is < 0 or (> 0 and < 0.01m) or > 1
-            || b.TrailFraction is < 0 or (> 0 and < 0.01m) or > 0.5m || b.TrailActivationFraction is < 0 or > 1 || (b.TrailFraction == 0 && b.TrailActivationFraction > 0)))
-            throw new InvalidOperationException("plays.burst is out of range: orderFraction (0, 0.25], maxPositions 1-10, breakoutHours 12-240, volumeHours 24-240, volumeMultiple 1-20, stopAtr 1-10, holdHours 1-720 (30 days), regimeEmaPeriod 0 or 2-150, stopFraction 0 or 0.01-0.5, takeProfitFraction 0 or 0.01-1, trailFraction 0 or 0.01-0.5, trailActivationFraction 0-1 (only with a trailFraction).");
+            || b.TrailFraction is < 0 or (> 0 and < 0.01m) or > 0.5m || b.TrailActivationFraction is < 0 or > 1 || (b.TrailFraction == 0 && b.TrailActivationFraction > 0)
+            || (b.TakeProfitFraction > 0 && b.TrailFraction > 0) || (b.StopFraction == 0 && (b.TakeProfitFraction > 0 || b.TrailFraction > 0))))
+            throw new InvalidOperationException("plays.burst is out of range: orderFraction (0, 0.25], maxPositions 1-10, breakoutHours 12-240, volumeHours 24-240, volumeMultiple 1-20, stopAtr 1-10, holdHours 1-720 (30 days), regimeEmaPeriod 0 or 2-150, stopFraction 0 or 0.01-0.5, takeProfitFraction 0 or 0.01-1, trailFraction 0 or 0.01-0.5, trailActivationFraction 0-1 (only with a trailFraction); a target or a trail, not both, and only with a stopFraction.");
         foreach (var (e, name, sign) in new[] { (Rally, "rally", 1), (Crash, "crash", -1) })
         {
             if (e is null)
@@ -81,15 +82,13 @@ public sealed record PlayParameters
 /// <summary>Where a play stands at this scan, for the trader and the owner: <c>waiting</c>, <c>signal</c>, <c>full</c> or <c>paused</c>.</summary>
 public sealed record PlayStatus(string Play, string State, string Detail);
 
-/// <summary>A play's buy signals, how each play stands, and the trailing-stop raises of the bursts held.</summary>
-public sealed record PlayResult(IReadOnlyList<EntrySignal> Entries, IReadOnlyList<PlayStatus> Statuses)
-{
-    public IReadOnlyList<StopRaise> StopRaises { get; init; } = [];
-}
+/// <summary>A play's buy signals and how each play stands.</summary>
+public sealed record PlayResult(IReadOnlyList<EntrySignal> Entries, IReadOnlyList<PlayStatus> Statuses);
 
 /// <summary>
 /// The plays of ADR-0031, judged on Binance's candles and bought at Revolut X's ask: a volume burst in one coin, and a
-/// basket bought after a sharp BTC rally or crash. Each buy has a stop and a time to sell by, and no trend exit or trail.
+/// basket bought after a sharp BTC rally or crash. Each buy has a stop and a time to sell by, and no trend exit; a burst may also
+/// have a target or a trail (<see cref="BurstTrail"/>).
 /// Pure arithmetic, like <see cref="MarketScanner"/>.
 /// </summary>
 public static class MarketPlays
@@ -195,20 +194,29 @@ public static class MarketPlays
                 statuses.Add(Bursts(inputs, binanceHourly, btcDaily, btcFresh, held, heldSymbols, b, capital, costs, now, entries));
         }
 
-        return new PlayResult(entries, statuses) { StopRaises = p.Burst is { TrailFraction: > 0 } trail ? BurstTrail(inputs, held, trail) : [] };
+        return new PlayResult(entries, statuses);
     }
 
     /// <summary>
-    /// The burst trail: for each burst held with a stop, a buy price and a fill time, once the highest price since the buy (the
-    /// Revolut X hourly highs of the hours that began after the fill, and the bid now) is <see cref="BurstPlay.TrailActivationFraction"/>
-    /// above the buy, a stop <see cref="BurstPlay.TrailFraction"/> under that highest price, when that is above the stop. Like the
-    /// swing's trail it stays at least <see cref="MarketScanner.MinExitDistanceFraction"/> under the bid, so a raise alone never
-    /// sells. Raises are made whatever pauses the plays' buys: a trail only protects.
+    /// The burst trail: for each burst held with a stop, a buy price and a fill time, once the highest price seen since the buy
+    /// (the Revolut X hourly closes of the hours that began after the fill, of the recent ones the scan has, and the bid now) is
+    /// <see cref="BurstPlay.TrailActivationFraction"/> above the buy, a stop <see cref="BurstPlay.TrailFraction"/> under that
+    /// price, when that is above the stop. Closes, not highs: one wick on a thin EUR book shouldn't set the level. A raise is
+    /// kept, so the hours the scan no longer has still count through the stop they raised. Like the swing's trail it stays at
+    /// least <see cref="MarketScanner.MinExitDistanceFraction"/> under the bid, so a raise alone never sells. Every coin held
+    /// counts, flagged by the analyst or not, and whatever pauses the plays' buys: a trail only protects. A coin being sold
+    /// (<paramref name="exits"/>) is left out.
     /// </summary>
-    private static List<StopRaise> BurstTrail(IReadOnlyList<ScanInput> inputs, IReadOnlyList<HeldPosition> held, BurstPlay b)
+    public static IReadOnlyList<StopRaise> BurstTrail(IReadOnlyList<ScanInput> inputs, IReadOnlyList<HeldPosition> held, IReadOnlyList<ExitSignal> exits, BurstPlay b)
     {
+        ArgumentNullException.ThrowIfNull(inputs);
+        ArgumentNullException.ThrowIfNull(held);
+        ArgumentNullException.ThrowIfNull(exits);
+        ArgumentNullException.ThrowIfNull(b);
         var raises = new List<StopRaise>();
-        foreach (var h in held.Where(h => h.Play == Burst).OrderBy(h => h.Symbol, StringComparer.Ordinal))
+        if (b.TrailFraction <= 0)
+            return raises;
+        foreach (var h in held.Where(h => h.Play == Burst && exits.All(x => x.Symbol != h.Symbol)).OrderBy(h => h.Symbol, StringComparer.Ordinal))
         {
             if (h.StopLoss is not { } stop || h.FilledAt is not { } filled || h.EntryPrice is not > 0 || h.SellableBaseSize <= 0)
                 continue;
@@ -216,13 +224,13 @@ public static class MarketPlays
                 || input.Features.IsStale || input.Features.Bid is not > 0)
                 continue;
             var bid = input.Features.Bid.Value;
-            var highest = input.Hourly.Where(c => c.Start >= filled).Select(c => c.High).Append(bid).Max();
+            var highest = input.Hourly.Where(c => c.Start >= filled).Select(c => c.Close).Append(bid).Max();
             if (highest < h.EntryPrice.Value * (1 + b.TrailActivationFraction))
                 continue;
             var step = pair.QuoteStep;
             var level = Math.Min(FloorToStep(highest * (1 - b.TrailFraction), step), FloorToStep(bid * (1 - MarketScanner.MinExitDistanceFraction), step));
             if (level > stop)
-                raises.Add(new StopRaise(h.Symbol, stop, level, Inv($"burst trail: {b.TrailFraction:0.#%} under the highest price since the buy ({highest}), once {b.TrailActivationFraction:0.#%} above the buy")));
+                raises.Add(new StopRaise(h.Symbol, stop, level, Inv($"burst trail: {b.TrailFraction:0.#%} under the highest price since the buy ({highest}, hourly closes and the bid), once {b.TrailActivationFraction:0.#%} above the buy")));
         }
 
         return raises;

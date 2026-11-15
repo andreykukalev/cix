@@ -11,7 +11,7 @@ A strategy spec is what the trading agents follow: instructions, parameters and 
 
 `swing.v4` is `swing.v3` with looser plays, so the account trades while BTC is below its 100-day EMA and the owner gets real trades to study (2026-11-15). The daily swing is unchanged. It is chosen for activity, not for a proven edge:
 
-- `burst`: `regimeEmaPeriod` 0, so bursts are bought whatever BTC's trend, with a stop 5% under the ask (`stopFraction` 0.05) that, once the price is 5% above the buy (`trailActivationFraction` 0.05), follows it 5% under the highest price since the buy (`trailFraction` 0.05; Revolut X hourly highs and the bid, raised by the engine at each scan, never lowered); else sold after 14 days (`holdHours` 336). `takeProfitFraction` would instead sell at a fixed share above the buy; v4 doesn't use it. Without these shares a burst keeps v3's stop of `stopAtr` hourly ATR, no target and no trail.
+- `burst`: `regimeEmaPeriod` 0, so bursts are bought whatever BTC's trend, with a stop 5% under the ask (`stopFraction` 0.05) that, once the price is 5% above the buy (`trailActivationFraction` 0.05), follows it 5% under the highest price since the buy (`trailFraction` 0.05; Revolut X hourly closes and the bid, raised by the engine at each scan, never lowered); else sold after 14 days (`holdHours` 336). `takeProfitFraction` would instead sell at a fixed share above the buy; v4 doesn't use it. Without these shares a burst keeps v3's stop of `stopAtr` hourly ATR, no target and no trail.
 - `rally`: BTC up 5% over two days (was 13% over three), held 7 days (was 30).
 - `crash`: BTC down 12% over three days (was 15%).
 - `lossStopFraction` 0.1: no new play once the plays have lost 10% of the capital (was 18%).
