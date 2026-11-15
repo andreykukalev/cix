@@ -168,7 +168,8 @@ public sealed record ScannerParameters
 /// <param name="Play">The play that opened it (ADR-0031): no trend exit and no trailing stop, only its stop and its time.</param>
 /// <param name="ExitBy">When a play's position is sold whatever its price.</param>
 public sealed record HeldPosition(
-    string Symbol, decimal SellableBaseSize, decimal? StopLoss, decimal? TakeProfit, DateTimeOffset? FilledAt = null, string? Play = null, DateTimeOffset? ExitBy = null);
+    string Symbol, decimal SellableBaseSize, decimal? StopLoss, decimal? TakeProfit, DateTimeOffset? FilledAt = null, string? Play = null, DateTimeOffset? ExitBy = null,
+    decimal? EntryPrice = null);
 
 /// <summary>
 /// Everything the scanner needs about one universe symbol. <paramref name="Hourly"/> and <paramref name="Daily"/> are closed

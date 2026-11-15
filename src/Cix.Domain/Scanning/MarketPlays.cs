@@ -7,7 +7,11 @@ namespace Cix.Domain.Scanning;
 /// <summary>
 /// The volume burst (ADR-0031): an hourly close above the highest high of the <see cref="BreakoutHours"/> before it, on at
 /// least <see cref="VolumeMultiple"/> times the average hourly volume of the <see cref="VolumeHours"/> before it, while BTC's
-/// daily close is above its EMA of <see cref="RegimeEmaPeriod"/> days. All three on Binance's USDT candles.
+/// daily close is above its EMA of <see cref="RegimeEmaPeriod"/> days (0: whatever BTC's trend). All three on Binance's USDT candles.
+/// The stop is <see cref="StopAtr"/> hourly ATR below the ask, or <see cref="StopFraction"/> below it when that is set; with
+/// <see cref="TakeProfitFraction"/> set the engine also sells at that share above the ask (a bracket: stop, target or time).
+/// With <see cref="TrailFraction"/> set, once the price has risen <see cref="TrailActivationFraction"/> above the buy the stop
+/// follows it, <see cref="TrailFraction"/> under the highest price since the buy, and only ever goes up.
 /// </summary>
 public sealed record BurstPlay
 {
@@ -19,6 +23,10 @@ public sealed record BurstPlay
     public decimal StopAtr { get; init; } = 4m;
     public int HoldHours { get; init; } = 72;
     public int RegimeEmaPeriod { get; init; } = 100;
+    public decimal StopFraction { get; init; }
+    public decimal TakeProfitFraction { get; init; }
+    public decimal TrailActivationFraction { get; init; }
+    public decimal TrailFraction { get; init; }
 }
 
 /// <summary>
@@ -55,8 +63,9 @@ public sealed record PlayParameters
             throw new InvalidOperationException("plays.lossStopFraction must be above 0 and at most 0.5, and plays.mainExposureFraction 0 to 1.");
         if (Burst is { } b && (b.OrderFraction is <= 0 or > 0.25m || b.MaxPositions is < 1 or > 10 || b.BreakoutHours is < 12 or > 240
             || b.VolumeHours is < 24 or > 240 || b.VolumeMultiple is < 1 or > 20 || b.StopAtr is < 1 or > 10 || b.HoldHours is < 1 or > 720
-            || b.RegimeEmaPeriod is < 0 or 1 or > 150))
-            throw new InvalidOperationException("plays.burst is out of range: orderFraction (0, 0.25], maxPositions 1-10, breakoutHours 12-240, volumeHours 24-240, volumeMultiple 1-20, stopAtr 1-10, holdHours 1-720 (30 days), regimeEmaPeriod 0 or 2-150.");
+            || b.RegimeEmaPeriod is < 0 or 1 or > 150 || b.StopFraction is < 0 or (> 0 and < 0.01m) or > 0.5m || b.TakeProfitFraction is < 0 or (> 0 and < 0.01m) or > 1
+            || b.TrailFraction is < 0 or (> 0 and < 0.01m) or > 0.5m || b.TrailActivationFraction is < 0 or > 1 || (b.TrailFraction == 0 && b.TrailActivationFraction > 0)))
+            throw new InvalidOperationException("plays.burst is out of range: orderFraction (0, 0.25], maxPositions 1-10, breakoutHours 12-240, volumeHours 24-240, volumeMultiple 1-20, stopAtr 1-10, holdHours 1-720 (30 days), regimeEmaPeriod 0 or 2-150, stopFraction 0 or 0.01-0.5, takeProfitFraction 0 or 0.01-1, trailFraction 0 or 0.01-0.5, trailActivationFraction 0-1 (only with a trailFraction).");
         foreach (var (e, name, sign) in new[] { (Rally, "rally", 1), (Crash, "crash", -1) })
         {
             if (e is null)
@@ -72,8 +81,11 @@ public sealed record PlayParameters
 /// <summary>Where a play stands at this scan, for the trader and the owner: <c>waiting</c>, <c>signal</c>, <c>full</c> or <c>paused</c>.</summary>
 public sealed record PlayStatus(string Play, string State, string Detail);
 
-/// <summary>A play's buy signals and how each play stands.</summary>
-public sealed record PlayResult(IReadOnlyList<EntrySignal> Entries, IReadOnlyList<PlayStatus> Statuses);
+/// <summary>A play's buy signals, how each play stands, and the trailing-stop raises of the bursts held.</summary>
+public sealed record PlayResult(IReadOnlyList<EntrySignal> Entries, IReadOnlyList<PlayStatus> Statuses)
+{
+    public IReadOnlyList<StopRaise> StopRaises { get; init; } = [];
+}
 
 /// <summary>
 /// The plays of ADR-0031, judged on Binance's candles and bought at Revolut X's ask: a volume burst in one coin, and a
@@ -183,8 +195,41 @@ public static class MarketPlays
                 statuses.Add(Bursts(inputs, binanceHourly, btcDaily, btcFresh, held, heldSymbols, b, capital, costs, now, entries));
         }
 
-        return new PlayResult(entries, statuses);
+        return new PlayResult(entries, statuses) { StopRaises = p.Burst is { TrailFraction: > 0 } trail ? BurstTrail(inputs, held, trail) : [] };
     }
+
+    /// <summary>
+    /// The burst trail: for each burst held with a stop, a buy price and a fill time, once the highest price since the buy (the
+    /// Revolut X hourly highs of the hours that began after the fill, and the bid now) is <see cref="BurstPlay.TrailActivationFraction"/>
+    /// above the buy, a stop <see cref="BurstPlay.TrailFraction"/> under that highest price, when that is above the stop. Like the
+    /// swing's trail it stays at least <see cref="MarketScanner.MinExitDistanceFraction"/> under the bid, so a raise alone never
+    /// sells. Raises are made whatever pauses the plays' buys: a trail only protects.
+    /// </summary>
+    private static List<StopRaise> BurstTrail(IReadOnlyList<ScanInput> inputs, IReadOnlyList<HeldPosition> held, BurstPlay b)
+    {
+        var raises = new List<StopRaise>();
+        foreach (var h in held.Where(h => h.Play == Burst).OrderBy(h => h.Symbol, StringComparer.Ordinal))
+        {
+            if (h.StopLoss is not { } stop || h.FilledAt is not { } filled || h.EntryPrice is not > 0 || h.SellableBaseSize <= 0)
+                continue;
+            if (inputs.FirstOrDefault(i => string.Equals(i.Symbol, h.Symbol, StringComparison.Ordinal)) is not { Pair: { } pair } input
+                || input.Features.IsStale || input.Features.Bid is not > 0)
+                continue;
+            var bid = input.Features.Bid.Value;
+            var highest = input.Hourly.Where(c => c.Start >= filled).Select(c => c.High).Append(bid).Max();
+            if (highest < h.EntryPrice.Value * (1 + b.TrailActivationFraction))
+                continue;
+            var step = pair.QuoteStep;
+            var level = Math.Min(FloorToStep(highest * (1 - b.TrailFraction), step), FloorToStep(bid * (1 - MarketScanner.MinExitDistanceFraction), step));
+            if (level > stop)
+                raises.Add(new StopRaise(h.Symbol, stop, level, Inv($"burst trail: {b.TrailFraction:0.#%} under the highest price since the buy ({highest}), once {b.TrailActivationFraction:0.#%} above the buy")));
+        }
+
+        return raises;
+    }
+
+    private static decimal FloorToStep(decimal value, decimal step) =>
+        step > 0 ? Math.Floor(value / step) * step : Math.Round(value, 8, MidpointRounding.ToZero);
 
     /// <summary>The close of the BTC daily candle that started an event and a sentence on it; null with the reason when there is none to buy.</summary>
     private static (DateTimeOffset? TriggerClose, string Detail) EventTrigger(string play, EventPlay e, IReadOnlyList<Candle> btc, bool fresh, DateTimeOffset now)
@@ -254,8 +299,13 @@ public static class MarketPlays
             if (open + added >= b.MaxPositions)
                 break;
             var ask = input.Features.Ask!.Value;
-            if (Sized(input, Burst, ask, ask * (1 - (b.StopAtr * atrFraction)), b.OrderFraction, capital, costs, now + TimeSpan.FromHours(b.HoldHours),
-                Inv($"volume burst: the hour to {close.UtcDateTime:HH:mm} UTC closed above the {b.BreakoutHours}-hour high on {multiple:0.#}x the average volume (Binance); hold {b.HoldHours} h, stop {b.StopAtr:0.#} hourly ATR below")) is { } signal)
+            var rawStop = b.StopFraction > 0 ? ask * (1 - b.StopFraction) : ask * (1 - (b.StopAtr * atrFraction));
+            var stopText = b.StopFraction > 0 ? Inv($"stop {b.StopFraction:0.#%} below") : Inv($"stop {b.StopAtr:0.#} hourly ATR below");
+            var targetText = (b.TakeProfitFraction > 0 ? Inv($", target {b.TakeProfitFraction:0.#%} above") : string.Empty)
+                + (b.TrailFraction > 0 ? Inv($", trail {b.TrailFraction:0.#%} under the high once {b.TrailActivationFraction:0.#%} up") : string.Empty);
+            if (Sized(input, Burst, ask, rawStop, b.OrderFraction, capital, costs, now + TimeSpan.FromHours(b.HoldHours),
+                Inv($"volume burst: the hour to {close.UtcDateTime:HH:mm} UTC closed above the {b.BreakoutHours}-hour high on {multiple:0.#}x the average volume (Binance); hold {b.HoldHours} h, {stopText}{targetText}"),
+                b.TakeProfitFraction > 0 ? ask * (1 + b.TakeProfitFraction) : null) is { } signal)
             {
                 entries.Add(signal with { Rank = entries.Count + 1 });
                 added++;
@@ -280,11 +330,17 @@ public static class MarketPlays
     }
 
     private static EntrySignal? Sized(
-        ScanInput input, string play, decimal ask, decimal rawStop, decimal orderFraction, decimal capital, ScannerParameters costs, DateTimeOffset exitBy, string reason)
+        ScanInput input, string play, decimal ask, decimal rawStop, decimal orderFraction, decimal capital, ScannerParameters costs, DateTimeOffset exitBy, string reason,
+        decimal? rawTarget = null)
     {
         var pair = input.Pair!;
         var stop = pair.QuoteStep > 0 ? Math.Floor(rawStop / pair.QuoteStep) * pair.QuoteStep : Math.Round(rawStop, 8, MidpointRounding.ToZero);
         if (stop <= 0 || stop > ask * (1 - MarketScanner.MinExitDistanceFraction))
+            return null;
+        var target = rawTarget is { } t
+            ? pair.QuoteStep > 0 ? Math.Ceiling(t / pair.QuoteStep) * pair.QuoteStep : Math.Round(t, 8, MidpointRounding.AwayFromZero)
+            : (decimal?)null;
+        if (target < ask * (1 + MarketScanner.MinExitDistanceFraction))
             return null;
         var quote = Math.Round(orderFraction * Math.Max(0m, capital), 2, MidpointRounding.ToZero);
         var step = pair.BaseStep > 0 ? pair.BaseStep : 0.00000001m;
@@ -293,7 +349,7 @@ public static class MarketPlays
             return null;
         var spread = input.Features.SpreadFraction ?? 0m;
         var lossPerUnit = (ask - stop) + (MarketScanner.RoundTripCost(spread, costs) * ask);
-        return new EntrySignal(input.Symbol, 0, ask, size, Math.Round(size * ask, 2), stop, null, Math.Round(size * lossPerUnit, 2), reason, play, exitBy);
+        return new EntrySignal(input.Symbol, 0, ask, size, Math.Round(size * ask, 2), stop, target, Math.Round(size * lossPerUnit, 2), reason, play, exitBy);
     }
 
     private static string Inv(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);

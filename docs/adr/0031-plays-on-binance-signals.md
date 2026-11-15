@@ -51,3 +51,7 @@ The owner fixed the sizes on 2026-11-08: bursts 4 × 6% of the capital, the bask
 - A crash basket's 25% stops can lose more than the 8% daily loss limit in one day across six coins; the limit then stops new buys, it never forces a sale.
 - The loss stop counts play fills from their `play` tag in the journal; fills from before this change have none.
 - Binance's availability only affects the plays: without it they wait, and the swing and every exit go on.
+
+## Amendment (2026-11-15): burst brackets and trails, swing v4
+
+The owner asked for a research mode that trades while BTC is below its EMA100 (`swing.v4`). A burst may now set, in place of `stopAtr`, a `stopFraction` under the ask, and either a fixed `takeProfitFraction` above it or a trail: once the price is `trailActivationFraction` above the buy, the stop follows `trailFraction` under the highest price since the buy (Revolut X hourly highs after the fill and the bid). The trail goes through the swing's stop raises (`ScanResult.StopRaises`, journal kind `stop-raised`): only up, at least 0.5% under the bid, none while trading is halted, made even while the plays' buys are paused. A burst signal with a target is bought only with exactly that `takeProfit`. Backtest (Binance signals, Revolut X costs, 15 EUR buys): a fixed 5% target was about break even and a small target on random or dip entries lost 0.4-1.2% a trade; 5% stop with a 5% trail after 5% up made about +0.9% a trade, 2-3 a week, still losing in the falling last 30 days. Without these shares a burst behaves as before.

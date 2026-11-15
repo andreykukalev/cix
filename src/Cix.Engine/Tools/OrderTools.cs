@@ -91,7 +91,7 @@ public sealed class OrderTools(
         EntrySignal? play;
         try
         {
-            play = orderSide == OrderSide.Buy ? scanner?.PlaySignalFor(normalised, baseSize, stopLoss, PlaySignalAge) : null;
+            play = orderSide == OrderSide.Buy ? scanner?.PlaySignalFor(normalised, baseSize, stopLoss, PlaySignalAge, takeProfit) : null;
         }
         catch (InvalidOperationException ex)
         {

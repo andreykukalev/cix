@@ -60,9 +60,10 @@ public sealed partial class MarketScanService
     /// <summary>
     /// The play signal a buy of <paramref name="symbol"/> takes (ADR-0031): the latest scan's, if it is from the last
     /// <paramref name="maxAge"/>. Null when there is none. Throws when the buy doesn't keep to it: a play buy carries the
-    /// signal's stop or a higher one, and at most its size, since the engine then sells it only at that stop or its time.
+    /// signal's stop or a higher one, and at most its size, since the engine then sells it only at that stop, its target (when the
+    /// signal has one, the buy carries exactly it) or its time.
     /// </summary>
-    public EntrySignal? PlaySignalFor(string symbol, decimal baseSize, decimal? stopLoss, TimeSpan maxAge)
+    public EntrySignal? PlaySignalFor(string symbol, decimal baseSize, decimal? stopLoss, TimeSpan maxAge, decimal? takeProfit = null)
     {
         if (Latest is not { } scan || time.GetUtcNow() - scan.AsOf > maxAge
             || scan.Entries.FirstOrDefault(e => e.Play is not null && string.Equals(e.Symbol, symbol, StringComparison.Ordinal)) is not { } signal)
@@ -70,6 +71,9 @@ public sealed partial class MarketScanService
         if (stopLoss is not { } stop || stop < signal.StopLoss || baseSize > signal.BaseSize)
             throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture,
                 $"{symbol} has a {signal.Play} play signal: buy at most its baseSize {signal.BaseSize} with its stopLoss {signal.StopLoss} (or a higher stop)."));
+        if (signal.TakeProfit is { } target && takeProfit != target)
+            throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture,
+                $"{symbol} has a {signal.Play} play signal with a target: buy with its takeProfit {target}."));
         return signal;
     }
 
@@ -131,7 +135,10 @@ public sealed partial class MarketScanService
         var entries = result.Entries.ToList();
         foreach (var entry in outcome.Entries.Where(e => entries.All(x => x.Symbol != e.Symbol)))
             entries.Add(entry with { Rank = entries.Count + 1 });
-        return result with { Entries = entries, Plays = outcome.Statuses };
+        // A burst's trail (ADR-0031, swing v4): raised like the swing's, never for a coin being sold or one the swing trails itself.
+        var raises = (result.StopRaises ?? []).ToList();
+        raises.AddRange(outcome.StopRaises.Where(r => result.Exits.All(x => x.Symbol != r.Symbol) && raises.All(x => x.Symbol != r.Symbol)));
+        return result with { Entries = entries, Plays = outcome.Statuses, StopRaises = raises };
     }
 
     /// <summary>
